@@ -1,0 +1,49 @@
+name: Build Linux AppImage
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - work/command-center-appimage-bootstrap
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+      - name: Verify source and backend tests
+        run: |
+          npm run check
+          npm test
+      - name: Build AppImage
+        run: npm run dist:appimage
+      - name: Verify AppImage exists
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(release/*.AppImage)
+          if (( ${#files[@]} == 0 )); then
+            echo "No .AppImage was produced" >&2
+            exit 1
+          fi
+          chmod +x "${files[@]}"
+          ls -lh "${files[@]}"
+      - name: Upload AppImage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: hearth-ai-command-center-linux-appimage
+          path: release/*.AppImage
+          if-no-files-found: error
+          retention-days: 14
