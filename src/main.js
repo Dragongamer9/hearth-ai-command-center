@@ -266,7 +266,7 @@ function viewChat() {
   const presence = AGENT_IDS.map((a) => `<span class="agent ${AGENTS[a].cls}" title="${esc(state.roles[a] || DEFAULT_ROLES[a])}"><i style="${live.includes(a) ? '' : 'opacity:.3'}"></i>${AGENTS[a].name}${a === state.lead ? ' ★' : ''}${label(a)}</span>`).join('');
   return `<div class="chat">
     <div class="chat-top"><div class="row">${presence}</div><span style="flex:1"></span>
-      ${state.chat.length ? '<button class="btn small ghost" data-clearchat>Clear chat</button>' : ''}</div>
+      ${state.chat.length ? '<button class="btn small" data-sharechat title="Copies the latest 30 human and AI chat messages to your clipboard; you decide what to paste into ChatGPT">Copy for ChatGPT</button><button class="btn small ghost" data-clearchat>Clear chat</button>' : ''}</div>
     <div class="chat-log" id="chat-log">
       ${state.chat.map(chatMessage).join('') || `<div class="empty" style="padding:30px">Say hi, or try: <i>"Here's the plan for Hearth's settings page — split it into tasks between you."</i><br><br>
         Everyone sees every message. ${esc(AGENTS[state.lead].name)} ★ leads and answers first. Use <b>@claude</b>, <b>@chatgpt</b>, <b>@gemini</b> or <b>@local</b> to talk to one AI. When the team proposes tasks you can add them to the board, or add and start them in one click.
@@ -912,7 +912,7 @@ async function refreshProviders() {
 }
 
 document.addEventListener('click', async (e) => {
-  const el = e.target.closest('[data-nav],[data-new],[data-open],[data-close],[data-cancel],[data-create],[data-advance],[data-approve],[data-reject],[data-changes],[data-note],[data-delete],[data-savekey],[data-rmkey],[data-ask],[data-export],[data-reset],[data-upd],[data-opinion],[data-modalbg],[data-sendchat],[data-target],[data-addprop],[data-addall],[data-clearchat],[data-method],[data-login],[data-recheck],[data-locate],[data-available],[data-run],[data-stop],[data-freebuff],[data-fbdone],[data-openws],[data-pickproject],[data-autohandoff],[data-restore],[data-install],[data-startprop],[data-showchanges],[data-dismisssetup],[data-connect],[data-disconnect],[data-toggleagent],[data-ghlogin],[data-gitrefresh],[data-useproject],[data-clone],[data-gitpull],[data-pushbranch],[data-openpr],[data-approvemerge],[data-access],[data-togglesetting],[data-adddir],[data-removedir]');
+  const el = e.target.closest('[data-nav],[data-new],[data-open],[data-close],[data-cancel],[data-create],[data-advance],[data-approve],[data-reject],[data-changes],[data-note],[data-delete],[data-savekey],[data-rmkey],[data-ask],[data-export],[data-reset],[data-upd],[data-opinion],[data-modalbg],[data-sendchat],[data-target],[data-addprop],[data-addall],[data-clearchat],[data-sharechat],[data-method],[data-login],[data-recheck],[data-locate],[data-available],[data-run],[data-stop],[data-freebuff],[data-fbdone],[data-openws],[data-pickproject],[data-autohandoff],[data-restore],[data-install],[data-startprop],[data-showchanges],[data-dismisssetup],[data-connect],[data-disconnect],[data-toggleagent],[data-ghlogin],[data-gitrefresh],[data-useproject],[data-clone],[data-gitpull],[data-pushbranch],[data-openpr],[data-approvemerge],[data-access],[data-togglesetting],[data-adddir],[data-removedir]');
   if (!el) return;
   const d = el.dataset;
   const task = (id) => state.tasks.find((t) => t.id === id);
@@ -1067,6 +1067,13 @@ document.addEventListener('click', async (e) => {
     save();
     render();
     return toast('Tasks added to the board.');
+  }
+  if (d.sharechat !== undefined) {
+    const messages = state.chat.filter((m) => ['owner', 'anthropic', 'openai', 'google', 'ollama', 'freebuff'].includes(m.who)).slice(-30).map((m) => ({ who: m.who, text: m.text }));
+    if (!messages.length) return toast('No conversation messages to share.');
+    if (!confirm(`Copy the latest ${messages.length} chat messages to your clipboard for ChatGPT? Review before pasting; nothing is sent automatically.`)) return;
+    try { await api.copyChatForChatGPT(messages); return toast('Copied. Paste into ChatGPT when you choose.'); }
+    catch (err) { return toast(cleanErr(err.message)); }
   }
   if (d.clearchat !== undefined) {
     if (!confirm('Clear the team chat? Tasks already on the board stay.')) return;
