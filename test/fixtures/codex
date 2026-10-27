@@ -1,5 +1,6 @@
 #!/bin/sh
 # Fake Codex CLI for tests.
+if [ "$1" = "logout" ]; then echo "Successfully logged out"; exit 0; fi
 if [ "$1" = "login" ]; then echo "Logged in using ChatGPT"; exit 0; fi
 out=""; dir="."
 while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift;; -C) dir="$2"; shift;; esac; shift; done

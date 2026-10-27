@@ -298,6 +298,26 @@ function login(agent, bin, cwd) {
   return openTerminal(file, LOGIN[agent], cwd, { hold: ['anthropic', 'openai'].includes(agent) });
 }
 
+// Sign out using each tool's own sign-out. The Command Center never holds the
+// login itself, so disconnecting means asking the official tool to forget it.
+async function logout(agent, bin) {
+  const file = bin || findBinary(agent);
+  if (agent === 'anthropic' || agent === 'openai') {
+    if (!file) return { ok: false, message: `${BIN[agent]} is not installed.` };
+    const r = await run(file, agent === 'anthropic' ? ['auth', 'logout'] : ['logout'], { timeoutMs: 20000 });
+    return r.code === 0 ? { ok: true } : { ok: false, message: (r.err || r.out || `exit ${r.code}`).trim().split('\n').slice(-1)[0] };
+  }
+  if (agent === 'google') {
+    // Gemini CLI has no sign-out command; its cached Google sign-in lives in
+    // ~/.gemini/oauth_creds.json. Removing that file is how it signs out.
+    const f = path.join(os.homedir(), '.gemini', 'oauth_creds.json');
+    if (!fs.existsSync(f)) return { ok: true, message: 'Gemini was not signed in with Google on this computer.' };
+    fs.unlinkSync(f);
+    return { ok: true };
+  }
+  return { ok: false, message: 'This one signs out inside its own app.' };
+}
+
 // One-click install of an agent's official CLI from npm, shown in a terminal.
 function install(agent) {
   const pkg = NPM_PACKAGE[agent];
@@ -307,4 +327,4 @@ function install(agent) {
   return openTerminal(npm, ['install', '-g', pkg], os.homedir(), { hold: true });
 }
 
-module.exports = { runAgent, status, login, install, openTerminal, findBinary, isLimit, resetHint, parseClaude, parseGemini, BIN, NPM_PACKAGE, execFile };
+module.exports = { runAgent, status, login, logout, install, openTerminal, findBinary, isLimit, resetHint, parseClaude, parseGemini, BIN, NPM_PACKAGE, execFile };

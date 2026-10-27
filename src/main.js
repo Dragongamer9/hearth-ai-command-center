@@ -2,7 +2,7 @@ import './styles.css';
 import { policyCheck, HEARTH_OS_PIN } from './policy.mjs';
 import { recipients, buildPrompt, parseProposals, NAMES } from './chat.mjs';
 import { buildTaskBrief, nextAgent, parseStatus, taskRunState, recoverInterrupted, RUN_STATES } from './team.mjs';
-import { AGENTS, AGENT_IDS, HEADLESS, EDITORS, DEFAULT_ROLES } from './registry.mjs';
+import { AGENTS, AGENT_IDS, HEADLESS, EDITORS, DEFAULT_ROLES, BILLING } from './registry.mjs';
 
 const api = window.hearth;
 
@@ -37,7 +37,7 @@ const NEXT = {
 const ACTIONS = { code: 'Code change', docs: 'Docs', merge: 'Merge', release: 'Release', deploy: 'Deploy' };
 
 // ---------- state ----------
-let state = { version: 1, tasks: [], audit: [], models: {}, chat: [], agentStatus: {}, autoHandoff: true, roles: {}, lead: 'anthropic' };
+let state = { version: 1, tasks: [], audit: [], models: {}, chat: [], agentStatus: {}, autoHandoff: true, roles: {}, lead: 'anthropic', disabled: {} };
 let ui = { view: 'overview', selected: null, modal: null, busy: {}, draft: '', target: 'all', typing: null, running: {}, saving: {}, changes: {} };
 let backups = { recoveredFrom: null, backups: [] };
 let settings = { project: null, connection: { anthropic: 'cli', openai: 'cli' }, bins: {} };
@@ -138,7 +138,7 @@ function setupChecklist() {
     <div class="row"><h3 style="margin:0;flex:1">Set up your AI team</h3>${done ? '<button class="btn small ghost" data-dismisssetup>Hide</button>' : ''}</div>
     <p class="muted" style="font-size:13px;margin:6px 0 10px">Sign in with your own accounts — no API keys to hunt down.</p>
     ${['anthropic', 'openai', 'google'].map((a) => step(connected(a), `<b>${AGENTS[a].name}</b> <span class="muted">· ${esc(AGENTS[a].plan)}</span>`,
-      cli[a].installed ? `<button class="btn small primary" data-login="${a}">Sign in</button>` : `<button class="btn small primary" data-install="${a}">Install</button>`)).join('')}
+      `<button class="btn small primary" data-connect="${a}">Connect account</button>`)).join('')}
     ${step(connected('ollama'), `<b>Local AI</b> <span class="muted">· optional, free, works offline (Ollama${cli.ollama.installed && !cli.ollama.models?.length ? ' is running but has no models yet: run <span class="mono">ollama pull llama3.2</span>' : ''})</span>`, cli.ollama.installed ? '' : '<button class="btn small" data-install="ollama">Get Ollama</button>')}
     ${step(connected('freebuff'), '<b>FreeBuff</b> <span class="muted">· optional, hands-on in a terminal</span>', '<button class="btn small" data-install="freebuff">Install</button>')}
     ${step(Boolean(settings.project), '<b>Shared project folder</b> <span class="muted">· the git repo the AIs work on</span>', '<button class="btn small primary" data-pickproject>Choose folder</button>')}
@@ -151,6 +151,7 @@ function taskRow(t) {
 }
 
 function connected(a) {
+  if (state.disabled?.[a]) return false;
   const c = cli[a] || {};
   if (a === 'freebuff') return Boolean(c.installed);
   if (a === 'ollama') return Boolean(c.installed && c.models?.length);
@@ -172,6 +173,7 @@ function liveAgents() {
 const liveEditors = () => EDITORS.filter(canRun);
 
 function statusText(a) {
+  if (state.disabled?.[a]) return 'turned off';
   if (outInfo(a)) return 'out of usage';
   if (a === 'freebuff') return connected(a) ? 'available hands-on (not in chat)' : 'not installed';
   if (!connected(a)) return 'not linked';
@@ -358,7 +360,8 @@ function providerCard(id) {
   const out = outInfo(id);
   const res = consoleOut[id];
   let status;
-  if (out) status = `<span class="badge red">Out of usage — ${esc(out.reason)}</span>`;
+  if (state.disabled?.[id]) status = '<span class="badge">Turned off</span>';
+  else if (out) status = `<span class="badge red">Out of usage — ${esc(out.reason)}</span>`;
   else if (method === 'api') status = prov.keys[id] ? '<span class="badge sage"><span class="dot"></span>Linked (API key)</span>' : '<span class="badge amber">No API key</span>';
   else if (!c.installed) status = `<span class="badge amber">${id === 'ollama' ? 'Not running' : 'Not installed'}</span>`;
   else if (id === 'freebuff') status = '<span class="badge sage"><span class="dot"></span>Installed · runs in a terminal</span>';
@@ -381,12 +384,12 @@ function providerCard(id) {
         <button class="btn small" data-savekey="${id}">Save</button>
         ${prov.keys[id] ? `<button class="btn danger small" data-rmkey="${id}">Remove</button>` : ''}</div>`;
   } else {
-    body = `<p>Uses ${a.tool} on this computer, signed in with ${esc(a.plan)}${id === 'freebuff' ? '' : ' — no API key needed'}.</p>
+    body = `<p>Signs in through ${a.tool}’s own official sign-in with ${esc(a.plan)}. Hearth AI never sees your password or login tokens — ${a.tool} keeps and refreshes them itself.</p>
       ${c.installed ? `<div class="kv" style="margin:6px 0"><span class="k">Program</span><span class="mono" style="font-size:11.5px;word-break:break-all">${esc(c.path)}</span></div>` : ''}
       <div class="row">
-        ${c.installed ? '' : `<button class="btn small primary" data-install="${id}">Install</button>`}
-        ${c.installed && id !== 'freebuff' ? `<button class="btn small ${c.signedIn ? '' : 'primary'}" data-login="${id}">${c.signedIn ? 'Switch account' : 'Sign in'}</button>` : ''}
-        ${c.installed && id === 'freebuff' ? `<button class="btn small" data-login="${id}">Open FreeBuff (sign in)</button>` : ''}
+        ${id === 'freebuff'
+          ? (c.installed ? `<button class="btn small" data-login="${id}">Open FreeBuff (sign in)</button>` : `<button class="btn small primary" data-connect="${id}">Install</button>`)
+          : c.signedIn ? `<button class="btn small danger" data-disconnect="${id}">Disconnect</button>` : `<button class="btn small primary" data-connect="${id}">Connect account</button>`}
         <button class="btn small ghost" data-recheck>Re-check</button>
         <button class="btn small ghost" data-locate="${id}">Locate program…</button>
       </div>
@@ -402,7 +405,9 @@ function providerCard(id) {
 
   return `<div class="card prov">
     <h4><span class="agent ${a.cls}"><i></i></span>${esc(a.name)} <span class="muted" style="font-size:12px;font-weight:400">${esc(a.vendor)}</span>${id === state.lead ? '<span class="badge sage" style="margin-left:auto">Lead ★</span>' : ''}</h4>
-    <div class="row" style="margin:10px 0">${status}${out ? `<button class="btn small" data-available="${id}">Mark available</button>` : ''}</div>
+    <div class="row" style="margin:10px 0">${status}${out ? `<button class="btn small" data-available="${id}">Mark available</button>` : ''}<span style="flex:1"></span>
+      <label style="display:flex;gap:6px;align-items:center;margin:0;cursor:pointer;font-size:12px"><input type="checkbox" data-toggleagent="${id}" ${state.disabled?.[id] ? '' : 'checked'}> Use</label></div>
+    <div class="billing">${esc(method === 'api' ? BILLING.api : BILLING[id])}</div>
     ${methodToggle}
     ${body}
     <label>Role on the team</label>
@@ -424,7 +429,7 @@ function controlRoom() {
       <span class="muted" style="font-size:12px">Lead</span>
       <select data-lead style="width:auto">${HEADLESS.filter((a) => AGENTS[a].edits).map((a) => `<option value="${a}" ${a === state.lead ? 'selected' : ''}>${esc(AGENTS[a].name)}</option>`).join('')}</select>
       <button class="btn small ghost" data-recheck>Re-check all</button></div>
-    <table><thead><tr><th>AI</th><th>Linked</th><th>Status</th><th>Working on</th><th>Can</th></tr></thead><tbody>
+    <table><thead><tr><th>AI</th><th>Linked</th><th>Status</th><th>Working on</th><th>Can</th><th>Paid by</th></tr></thead><tbody>
     ${AGENT_IDS.map((a) => {
       const st = statusText(a);
       const busy = Object.entries(ui.running).find(([, r]) => r.agent === a);
@@ -432,7 +437,8 @@ function controlRoom() {
       const color = st === 'available' || st.startsWith('busy') || st.startsWith('available') ? 'var(--sage-2)' : st === 'out of usage' ? 'var(--red)' : 'var(--amber)';
       return `<tr><td>${agentChip(a)}${a === state.lead ? ' ★' : ''}</td><td>${connected(a) ? '✓' : '<span class="muted">—</span>'}</td><td style="color:${color}">${esc(st)}</td>
         <td>${busy ? `<a href="#" data-open="${busy[0]}">T-${esc(busy[0])}</a>` : `<span class="muted">${assigned ? `${assigned} assigned` : 'idle'}</span>`}</td>
-        <td class="muted" style="font-size:12px">${AGENTS[a].edits && AGENTS[a].headless ? 'chat · plan · edit code' : AGENTS[a].headless ? 'chat · plan · review' : 'edit code (hands-on)'}</td></tr>`;
+        <td class="muted" style="font-size:12px">${AGENTS[a].edits && AGENTS[a].headless ? 'chat · plan · edit code' : AGENTS[a].headless ? 'chat · plan · review' : 'edit code (hands-on)'}</td>
+        <td class="muted" style="font-size:12px">${['anthropic', 'openai'].includes(a) && settings.connection[a] === 'api' ? 'API billing' : { anthropic: 'Claude subscription', openai: 'ChatGPT plan', google: 'Google account', ollama: 'Free (local)', freebuff: 'Free account' }[a]}</td></tr>`;
     }).join('')}
     </tbody></table>
     ${waiting.length ? `<div class="sep"></div><div class="muted" style="font-size:12px;margin-bottom:6px">Saved tasks waiting to resume</div>${waiting.map((t) => `<div class="task" data-open="${t.id}" style="margin-bottom:6px"><div class="meta">${runBadge(t)}<span>${esc(t.title)}</span></div></div>`).join('')}` : ''}
@@ -811,7 +817,7 @@ async function refreshProviders() {
 }
 
 document.addEventListener('click', async (e) => {
-  const el = e.target.closest('[data-nav],[data-new],[data-open],[data-close],[data-cancel],[data-create],[data-advance],[data-approve],[data-reject],[data-changes],[data-note],[data-delete],[data-savekey],[data-rmkey],[data-ask],[data-export],[data-reset],[data-upd],[data-opinion],[data-modalbg],[data-sendchat],[data-target],[data-addprop],[data-addall],[data-clearchat],[data-method],[data-login],[data-recheck],[data-locate],[data-available],[data-run],[data-stop],[data-freebuff],[data-fbdone],[data-openws],[data-pickproject],[data-autohandoff],[data-restore],[data-install],[data-startprop],[data-showchanges],[data-dismisssetup]');
+  const el = e.target.closest('[data-nav],[data-new],[data-open],[data-close],[data-cancel],[data-create],[data-advance],[data-approve],[data-reject],[data-changes],[data-note],[data-delete],[data-savekey],[data-rmkey],[data-ask],[data-export],[data-reset],[data-upd],[data-opinion],[data-modalbg],[data-sendchat],[data-target],[data-addprop],[data-addall],[data-clearchat],[data-method],[data-login],[data-recheck],[data-locate],[data-available],[data-run],[data-stop],[data-freebuff],[data-fbdone],[data-openws],[data-pickproject],[data-autohandoff],[data-restore],[data-install],[data-startprop],[data-showchanges],[data-dismisssetup],[data-connect],[data-disconnect],[data-toggleagent]');
   if (!el) return;
   const d = el.dataset;
   const task = (id) => state.tasks.find((t) => t.id === id);
@@ -819,6 +825,35 @@ document.addEventListener('click', async (e) => {
   if (d.modalbg !== undefined && e.target === el) { ui.modal = null; return render(); }
   if (d.nav) { ui.view = d.nav; ui.selected = null; if (d.nav === 'settings') backups = await api.backups().catch(() => backups); return render(); }
   if (d.sendchat !== undefined) return sendChat();
+  if (d.connect) {
+    // Install the official tool if it's missing, otherwise open its own sign-in.
+    const a = d.connect;
+    await refreshAgents();
+    const r = cli[a]?.installed ? await api.agentLogin(a) : await api.agentInstall(a);
+    if (!r.ok) return toast(r.message);
+    toast(cli[a]?.installed
+      ? `${AGENTS[a].tool}'s sign-in opened in ${r.terminal}. Finish in your browser, then press Re-check.`
+      : `Installing ${AGENTS[a].tool} in ${r.terminal}. When it's done, press Connect account again to sign in.`);
+    return;
+  }
+  if (d.disconnect) {
+    const a = d.disconnect;
+    if (!confirm(`Sign ${AGENTS[a].name} out on this computer? This signs out ${AGENTS[a].tool} everywhere you use it on this computer, not just in Hearth AI.`)) return;
+    const r = await api.agentLogout(a).catch((err) => ({ ok: false, message: cleanErr(err.message) }));
+    audit(r.ok ? `${AGENTS[a].name} disconnected` : `${AGENTS[a].name} disconnect failed`, null, r.message || '');
+    await refreshAgents();
+    save();
+    toast(r.ok ? (r.message || `${AGENTS[a].name} is signed out.`) : `Couldn't sign out: ${r.message}`);
+    return render();
+  }
+  if (d.toggleagent) {
+    state.disabled = state.disabled || {};
+    state.disabled[d.toggleagent] = !state.disabled[d.toggleagent];
+    if (!state.disabled[d.toggleagent]) delete state.disabled[d.toggleagent];
+    audit(`${AGENTS[d.toggleagent].name} turned ${state.disabled[d.toggleagent] ? 'off' : 'on'}`);
+    save();
+    return render();
+  }
   if (d.install) {
     const r = await api.agentInstall(d.install);
     toast(r.ok ? (d.install === 'ollama' ? 'Opened ollama.com in your browser. Install it, pull a model, then press Re-check.' : `Installing in ${r.terminal}. When it finishes, press Re-check.`) : r.message);
@@ -1060,6 +1095,7 @@ async function boot() {
     if (!state.agentStatus) state.agentStatus = {};
     if (state.autoHandoff === undefined) state.autoHandoff = true;
     if (!state.roles) state.roles = {};
+    if (!state.disabled) state.disabled = {};
     if (!EDITORS.includes(state.lead)) state.lead = 'anthropic';
     upd = await api.updaterInfo();
     api.onUpdaterStatus((s) => {

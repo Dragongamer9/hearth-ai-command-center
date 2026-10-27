@@ -230,6 +230,10 @@ function registerIpc() {
     }
     return agents.install(agent);
   });
+  handle('agents:logout', async (agent) => {
+    validateProvider(agent);
+    return agents.logout(agent, readSettings().bins[agent]);
+  });
   handle('agents:login', (agent) => {
     validateProvider(agent);
     const s = readSettings();

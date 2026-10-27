@@ -73,3 +73,24 @@ test('installers only use the fixed official npm packages', () => {
     anthropic: '@anthropic-ai/claude-code', openai: '@openai/codex', google: '@google/gemini-cli', freebuff: 'freebuff',
   });
 });
+
+test('disconnect uses each tool\'s own sign-out; Gemini forgets only its Google sign-in file', async () => {
+  const agents = require('../electron/agents.cjs');
+  assert.deepStrictEqual(await agents.logout('anthropic', path.join(FIX, 'claude')), { ok: true });
+  assert.deepStrictEqual(await agents.logout('openai', path.join(FIX, 'codex')), { ok: true });
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'hearth-home-'));
+  const old = process.env.HOME;
+  process.env.HOME = home;
+  try {
+    fs.mkdirSync(path.join(home, '.gemini'));
+    fs.writeFileSync(path.join(home, '.gemini', 'oauth_creds.json'), '{}');
+    fs.writeFileSync(path.join(home, '.gemini', 'settings.json'), '{"keep":true}');
+    assert.deepStrictEqual(await agents.logout('google'), { ok: true });
+    assert.ok(!fs.existsSync(path.join(home, '.gemini', 'oauth_creds.json')));
+    assert.ok(fs.existsSync(path.join(home, '.gemini', 'settings.json')), 'other Gemini settings untouched');
+    assert.equal((await agents.logout('google')).ok, true);
+    assert.equal((await agents.logout('freebuff')).ok, false);
+  } finally {
+    process.env.HOME = old;
+  }
+});
