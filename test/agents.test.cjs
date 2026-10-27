@@ -85,3 +85,23 @@ test('non-repo project is refused', async () => {
   await assert.rejects(ws.ensureWorktree({ project: tmp, root: tmp, taskId: 'ABC123', title: 'x' }), /not a git repository/);
   fs.rmSync(tmp, { recursive: true, force: true });
 });
+
+test('detects CLIs from npm custom prefix even with desktop-style PATH', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hearth-cli-path-'));
+  const bin = path.join(tmp, 'bin');
+  fs.mkdirSync(bin);
+  const file = path.join(bin, 'claude');
+  fs.writeFileSync(file, '#!/bin/sh\\nexit 0\\n', { mode: 0o755 });
+  const before = { PATH: process.env.PATH, NPM_CONFIG_PREFIX: process.env.NPM_CONFIG_PREFIX };
+  try {
+    process.env.PATH = '/usr/bin:/bin';
+    process.env.NPM_CONFIG_PREFIX = tmp;
+    assert.equal(agents.findBinary('anthropic'), file);
+  } finally {
+    for (const [key, value] of Object.entries(before)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
