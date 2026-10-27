@@ -1,7 +1,7 @@
 name: Build Linux DEB (test artifact only)
 on:
   push:
-    branches: ['test/deb-auto-detect-ai']
+    branches: ['test/deb-auto-detect-ai', 'test/opt-in-chat-bridge-gemini-login']
   workflow_dispatch:
 permissions:
   contents: read
