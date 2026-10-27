@@ -47,3 +47,9 @@ test('restart recovery marks in-flight runs interrupted and keeps everything els
   assert.equal(taskRunState(state.tasks[0]), 'resume');
   assert.equal(recoverInterrupted(state).length, 0);
 });
+
+test('handoff order follows the lead, then other file-editing AIs; never the local model', () => {
+  assert.equal(nextAgent(['openai', 'google', 'ollama'], ['openai'], 'anthropic'), 'google');
+  assert.equal(nextAgent(['anthropic', 'google'], [], 'google'), 'google');
+  assert.equal(nextAgent(['ollama'], []), null);
+});

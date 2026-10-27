@@ -222,6 +222,14 @@ function registerIpc() {
     const s = readSettings();
     return agents.status(agent, s.bins[agent]);
   });
+  handle('agents:install', (agent) => {
+    validateProvider(agent);
+    if (agent === 'ollama') {
+      shell.openExternal('https://ollama.com/download');
+      return { ok: true, terminal: 'your browser' };
+    }
+    return agents.install(agent);
+  });
   handle('agents:login', (agent) => {
     validateProvider(agent);
     const s = readSettings();
@@ -242,11 +250,14 @@ function registerIpc() {
       const dir = taskDir(opts.taskId);
       if (fs.existsSync(dir)) cwd = dir;
     }
+    if (mode === 'edit' && agent === 'ollama') {
+      return { ok: false, error: { kind: 'read_only', message: 'The local model can chat, plan and review, but cannot edit files.' } };
+    }
     if (mode === 'edit' && (!opts.taskId || cwd !== taskDir(opts.taskId))) {
       return { ok: false, error: { kind: 'no_workspace', message: 'Pick a project folder in Settings first so the task has a workspace.' } };
     }
 
-    if (agent !== 'freebuff' && s.connection[agent] === 'api') {
+    if (['anthropic', 'openai'].includes(agent) && s.connection[agent] === 'api') {
       // API connections can't touch files; in edit mode they answer with a plan instead.
       const r = await callProvider({ provider: agent, apiKey: secrets.get(agent), model: validateModel(opts.model || DEFAULT_MODELS[agent]), prompt });
       if (!r.ok) {
@@ -265,7 +276,7 @@ function registerIpc() {
         prompt,
         cwd,
         mode,
-        model: opts.model && s.connection[agent] === 'cli' ? validateModel(opts.model) : undefined,
+        model: opts.model && s.connection[agent] !== 'api' ? validateModel(opts.model) : undefined,
         timeoutMs: mode === 'edit' ? 30 * 60 * 1000 : 5 * 60 * 1000,
         signal: controller.signal,
         bin: s.bins[agent],

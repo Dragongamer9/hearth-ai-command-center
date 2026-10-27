@@ -1,11 +1,12 @@
 // Shared-progress helpers: what every agent is told when it picks up a task,
 // including work another agent left behind. Pure functions (unit tested).
 import { NAMES } from './chat.mjs';
+import { EDITORS } from './registry.mjs';
 
-export const ORDER = ['anthropic', 'openai'];
-
-export function nextAgent(available, exclude = []) {
-  return ORDER.find((a) => available.includes(a) && !exclude.includes(a)) || null;
+// Who takes over a task when an agent stops: lead first, then the others that can edit files.
+export function nextAgent(available, exclude = [], lead = 'anthropic') {
+  const order = [lead, ...EDITORS.filter((a) => a !== lead)];
+  return order.find((a) => EDITORS.includes(a) && available.includes(a) && !exclude.includes(a)) || null;
 }
 
 // "STATUS: DONE" / "STATUS: CONTINUE ..." line the agent ends with.
@@ -20,7 +21,7 @@ export function buildTaskBrief({ task, agent, summary = '', handoffFrom = null, 
   const runs = (task.runs || []).filter((r) => r.status !== 'running').slice(-4);
   const notes = (task.notes || []).slice(-6);
   return [
-    `You are ${NAMES[agent]}, working on a shared task in the Hearth AI Command Center alongside the other agents (Claude, ChatGPT, FreeBuff).`,
+    `You are ${NAMES[agent]}, working on a shared task in the Hearth AI Command Center alongside the other AIs in the team (Claude, ChatGPT, Gemini, a local model, FreeBuff). The task belongs to the Command Center, not to any one AI.`,
     'Your current directory is this task\'s own git worktree. Everything you change here is checkpointed (committed) automatically after you finish, so another agent can continue if you stop.',
     handoffFrom
       ? `HANDOFF: ${NAMES[handoffFrom]} was working on this and had to stop (${reason || 'stopped'}). Do NOT start over. Inspect the current files and the progress below, then continue from where they left off.`

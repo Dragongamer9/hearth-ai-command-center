@@ -2,17 +2,11 @@ import './styles.css';
 import { policyCheck, HEARTH_OS_PIN } from './policy.mjs';
 import { recipients, buildPrompt, parseProposals, NAMES } from './chat.mjs';
 import { buildTaskBrief, nextAgent, parseStatus, taskRunState, recoverInterrupted, RUN_STATES } from './team.mjs';
+import { AGENTS, AGENT_IDS, HEADLESS, EDITORS, DEFAULT_ROLES } from './registry.mjs';
 
 const api = window.hearth;
 
 // ---------- constants ----------
-const AGENTS = {
-  anthropic: { name: 'Claude', vendor: 'Anthropic', cls: 'a-anthropic' },
-  openai: { name: 'ChatGPT', vendor: 'OpenAI', cls: 'a-openai' },
-  freebuff: { name: 'FreeBuff', vendor: 'FreeBuff', cls: 'a-freebuff' },
-  none: { name: 'Unassigned', vendor: '', cls: 'a-none' },
-};
-
 const STAGES = {
   intake: 'Intake & policy',
   implementing: 'Implementing',
@@ -43,11 +37,11 @@ const NEXT = {
 const ACTIONS = { code: 'Code change', docs: 'Docs', merge: 'Merge', release: 'Release', deploy: 'Deploy' };
 
 // ---------- state ----------
-let state = { version: 1, tasks: [], audit: [], models: {}, chat: [], agentStatus: {}, autoHandoff: true };
-let ui = { view: 'overview', selected: null, modal: null, busy: {}, draft: '', target: 'all', typing: null, running: {}, saving: {} };
+let state = { version: 1, tasks: [], audit: [], models: {}, chat: [], agentStatus: {}, autoHandoff: true, roles: {}, lead: 'anthropic' };
+let ui = { view: 'overview', selected: null, modal: null, busy: {}, draft: '', target: 'all', typing: null, running: {}, saving: {}, changes: {} };
 let backups = { recoveredFrom: null, backups: [] };
 let settings = { project: null, connection: { anthropic: 'cli', openai: 'cli' }, bins: {} };
-let cli = { anthropic: {}, openai: {}, freebuff: {} };
+let cli = Object.fromEntries(AGENT_IDS.map((a) => [a, {}]));
 let info = { appVersion: '?', hearthOsVersion: HEARTH_OS_PIN, dataPath: '', electron: '?', packaged: false };
 let prov = { encryption: false, weakEncryption: false, defaults: {}, keys: {} };
 let upd = { enabled: false, reason: '', status: { state: 'idle' } };
@@ -104,14 +98,14 @@ function stageBadge(t) {
 function viewOverview() {
   const open = state.tasks.filter((t) => !['approved', 'rejected'].includes(t.stage));
   const waiting = state.tasks.filter((t) => t.stage === 'approval');
-  const ready = ['anthropic', 'openai'].filter(canRun).length + (connected('freebuff') ? 1 : 0);
+  const ready = AGENT_IDS.filter((a) => canRun(a) || (a === 'freebuff' && connected(a))).length;
   const counts = Object.fromEntries(Object.keys(STAGES).map((s) => [s, state.tasks.filter((t) => t.stage === s).length]));
   const flow = ['intake', 'implementing', 'checkpoint', 'testing', 'review', 'approval'];
-  return `
+  return `${setupChecklist()}
     <div class="grid stats">
       <div class="card stat"><div class="n">${open.length}</div><div class="l">Open tasks</div></div>
       <div class="card stat"><div class="n" style="color:var(--amber)">${waiting.length}</div><div class="l">Awaiting your approval</div></div>
-      <div class="card stat"><div class="n">${ready}<span class="muted" style="font-size:16px"> / 3</span></div><div class="l">Agents ready</div></div>
+      <div class="card stat"><div class="n">${ready}<span class="muted" style="font-size:16px"> / ${AGENT_IDS.length}</span></div><div class="l">AIs ready</div></div>
       <div class="card stat"><div class="n">${state.audit.length}</div><div class="l">Audit records</div></div>
     </div>
     <div class="card" style="margin-bottom:14px">
@@ -134,20 +128,34 @@ function viewOverview() {
     </div>`;
 }
 
+// First-run checklist: link your AIs (no API keys needed) and pick a project.
+function setupChecklist() {
+  const linked = EDITORS.filter(connected);
+  const done = linked.length > 0 && settings.project;
+  if (done && state.setupDismissed) return '';
+  const step = (ok, text, btn) => `<div class="setup-step ${ok ? 'ok' : ''}"><span class="tick">${ok ? '✓' : ''}</span><span style="flex:1">${text}</span>${ok ? '' : btn}</div>`;
+  return `<div class="card setup" style="margin-bottom:14px">
+    <div class="row"><h3 style="margin:0;flex:1">Set up your AI team</h3>${done ? '<button class="btn small ghost" data-dismisssetup>Hide</button>' : ''}</div>
+    <p class="muted" style="font-size:13px;margin:6px 0 10px">Sign in with your own accounts — no API keys to hunt down.</p>
+    ${['anthropic', 'openai', 'google'].map((a) => step(connected(a), `<b>${AGENTS[a].name}</b> <span class="muted">· ${esc(AGENTS[a].plan)}</span>`,
+      cli[a].installed ? `<button class="btn small primary" data-login="${a}">Sign in</button>` : `<button class="btn small primary" data-install="${a}">Install</button>`)).join('')}
+    ${step(connected('ollama'), `<b>Local AI</b> <span class="muted">· optional, free, works offline (Ollama${cli.ollama.installed && !cli.ollama.models?.length ? ' is running but has no models yet: run <span class="mono">ollama pull llama3.2</span>' : ''})</span>`, cli.ollama.installed ? '' : '<button class="btn small" data-install="ollama">Get Ollama</button>')}
+    ${step(connected('freebuff'), '<b>FreeBuff</b> <span class="muted">· optional, hands-on in a terminal</span>', '<button class="btn small" data-install="freebuff">Install</button>')}
+    ${step(Boolean(settings.project), '<b>Shared project folder</b> <span class="muted">· the git repo the AIs work on</span>', '<button class="btn small primary" data-pickproject>Choose folder</button>')}
+    <div class="row" style="margin-top:8px"><button class="btn small ghost" data-recheck>Re-check</button><span class="muted" style="font-size:12px">After installing or signing in, press Re-check.</span></div>
+  </div>`;
+}
+
 function taskRow(t) {
   return `<div class="task" data-open="${t.id}"><div class="t">${esc(t.title)}</div><div class="meta">${stageBadge(t)}${agentChip(t.assignee)}<span class="badge">${esc(ACTIONS[t.action])}</span></div></div>`;
 }
 
-const INSTALL = {
-  anthropic: 'npm install -g @anthropic-ai/claude-code',
-  openai: 'npm install -g @openai/codex',
-  freebuff: 'npm install -g freebuff',
-};
-
 function connected(a) {
-  if (a === 'freebuff') return Boolean(cli.freebuff.installed);
-  if (settings.connection[a] === 'api') return Boolean(prov.keys[a]);
-  return Boolean(cli[a].installed && cli[a].signedIn);
+  const c = cli[a] || {};
+  if (a === 'freebuff') return Boolean(c.installed);
+  if (a === 'ollama') return Boolean(c.installed && c.models?.length);
+  if (['anthropic', 'openai'].includes(a) && settings.connection[a] === 'api') return Boolean(prov.keys[a]);
+  return Boolean(c.installed && c.signedIn);
 }
 function outInfo(a) {
   const st = state.agentStatus[a];
@@ -155,9 +163,30 @@ function outInfo(a) {
   if (Date.now() > Date.parse(st.outUntil)) return null;
   return st;
 }
-const canRun = (a) => a !== 'freebuff' && connected(a) && !outInfo(a);
+const canRun = (a) => Boolean(AGENTS[a]?.headless) && connected(a) && !outInfo(a);
+// Every AI that can answer right now (chat, reviews).
 function liveAgents() {
-  return ['anthropic', 'openai'].filter(canRun);
+  return HEADLESS.filter(canRun);
+}
+// Every AI that can do file-editing work on a task right now.
+const liveEditors = () => EDITORS.filter(canRun);
+
+function statusText(a) {
+  if (outInfo(a)) return 'out of usage';
+  if (a === 'freebuff') return connected(a) ? 'available hands-on (not in chat)' : 'not installed';
+  if (!connected(a)) return 'not linked';
+  const busy = Object.entries(ui.running).find(([, r]) => r.agent === a);
+  return busy ? `busy on T-${busy[0]}` : 'available';
+}
+
+// What every AI is told about the app, the team and the board.
+function chatCtx() {
+  return {
+    lead: state.lead,
+    project: settings.project,
+    roster: AGENT_IDS.map((id) => ({ id, role: state.roles[id] || DEFAULT_ROLES[id], status: statusText(id) })),
+    board: state.tasks.filter((t) => !['approved', 'rejected'].includes(t.stage)).map((t) => ({ id: t.id, title: t.title, stage: STAGES[t.stage], assignee: t.assignee, state: RUN_STATES[taskRunState(t, { running: Boolean(ui.running[t.id]) })] })),
+  };
 }
 
 function markOut(a, err) {
@@ -182,8 +211,8 @@ async function callAgent(agent, prompt, opts = {}) {
 
 async function refreshAgents() {
   try { settings = await api.settings(); } catch {}
-  const list = await Promise.all(['anthropic', 'openai', 'freebuff'].map((a) => api.agentStatus(a).catch(() => ({}))));
-  cli = { anthropic: list[0], openai: list[1], freebuff: list[2] };
+  const list = await Promise.all(AGENT_IDS.map((a) => api.agentStatus(a).catch(() => ({}))));
+  cli = Object.fromEntries(AGENT_IDS.map((a, i) => [a, list[i] || {}]));
 }
 
 function chatMessage(m) {
@@ -191,7 +220,7 @@ function chatMessage(m) {
   const chip = m.who === 'owner' ? '<b>You</b>' : m.who === 'system' ? '' : agentChip(m.who) + (m.relayed ? '<span class="muted">relayed by you</span>' : '');
   const props = (m.proposals || []).map((p, i) => `<div class="prop">
       <div style="flex:1"><div>${esc(p.title)}</div><div class="meta" style="margin-top:5px">${agentChip(p.assignee)}<span class="muted" style="font-size:11px">review</span>${agentChip(p.reviewer)}<span class="badge">${esc(ACTIONS[p.action])}</span></div></div>
-      ${p.taskId ? `<button class="btn small ghost" data-open="${p.taskId}">On board ✓</button>` : `<button class="btn small" data-addprop="${m.id}:${i}">Add to board</button>`}
+      ${p.taskId ? `<button class="btn small ghost" data-open="${p.taskId}">On board ✓</button>` : `<button class="btn small" data-addprop="${m.id}:${i}">Add</button>${EDITORS.includes(p.assignee) ? `<button class="btn small primary" data-startprop="${m.id}:${i}" ${canRun(p.assignee) && settings.project ? '' : 'disabled'}>Add & start</button>` : ''}`}
     </div>`).join('');
   const pending = (m.proposals || []).filter((p) => !p.taskId).length;
   return `<div class="msg ${cls} ${m.err ? 'err' : ''}">
@@ -206,18 +235,18 @@ function viewChat() {
   const target = (id, label) => `<button class="chip ${ui.target === id ? 'on' : ''}" data-target="${id}" ${id !== 'all' && !live.includes(id) ? 'disabled' : ''}>${label}</button>`;
   if (ui.target !== 'all' && ui.target !== 'relay' && !live.includes(ui.target)) ui.target = 'all';
   const label = (a) => (a === 'freebuff' ? (connected(a) ? ' · manual' : ' · not installed') : outInfo(a) ? ' · out of usage' : connected(a) ? '' : ' · not linked');
-  const presence = ['anthropic', 'openai', 'freebuff'].map((a) => `<span class="agent ${AGENTS[a].cls}"><i style="${live.includes(a) ? '' : 'opacity:.3'}"></i>${AGENTS[a].name}${label(a)}</span>`).join('');
+  const presence = AGENT_IDS.map((a) => `<span class="agent ${AGENTS[a].cls}" title="${esc(state.roles[a] || DEFAULT_ROLES[a])}"><i style="${live.includes(a) ? '' : 'opacity:.3'}"></i>${AGENTS[a].name}${a === state.lead ? ' ★' : ''}${label(a)}</span>`).join('');
   return `<div class="chat">
     <div class="chat-top"><div class="row">${presence}</div><span style="flex:1"></span>
       ${state.chat.length ? '<button class="btn small ghost" data-clearchat>Clear chat</button>' : ''}</div>
     <div class="chat-log" id="chat-log">
       ${state.chat.map(chatMessage).join('') || `<div class="empty" style="padding:30px">Say hi, or try: <i>"Here's the plan for Hearth's settings page — split it into tasks between you."</i><br><br>
-        Everyone sees every message. Use <b>@claude</b> or <b>@chatgpt</b> to talk to one agent. When agents propose tasks you can add them to the board, where they go through the usual policy check and your approval.
+        Everyone sees every message. ${esc(AGENTS[state.lead].name)} ★ leads and answers first. Use <b>@claude</b>, <b>@chatgpt</b>, <b>@gemini</b> or <b>@local</b> to talk to one AI. When the team proposes tasks you can add them to the board, or add and start them in one click.
         ${live.length ? '' : '<br><br><span style="color:var(--amber)">No agents are linked yet — link your accounts on the Agents page.</span>'}</div>`}
       ${ui.typing ? `<div class="msg typing">${agentChip(ui.typing)} <span class="muted">is replying…</span></div>` : ''}
     </div>
     <div class="chat-input">
-      <div class="row" style="margin-bottom:8px"><span class="muted" style="font-size:12px">Send to</span>${target('all', 'Everyone')}${target('anthropic', 'Claude')}${target('openai', 'ChatGPT')}<span style="flex:1"></span><button class="chip ${ui.target === 'relay' ? 'on' : ''}" data-target="relay" title="Paste what FreeBuff said so everyone can see it">Post as FreeBuff</button></div>
+      <div class="row" style="margin-bottom:8px"><span class="muted" style="font-size:12px">Send to</span>${target('all', 'Everyone')}${HEADLESS.map((a) => target(a, AGENTS[a].name)).join('')}<span style="flex:1"></span><button class="chip ${ui.target === 'relay' ? 'on' : ''}" data-target="relay" title="Paste what FreeBuff said so everyone can see it">Post as FreeBuff</button></div>
       <div class="row" style="align-items:flex-end">
         <textarea id="chat-text" placeholder="Message the team…  (Enter to send, Shift+Enter for a new line)" style="flex:1;min-height:52px">${esc(ui.draft)}</textarea>
         <button class="btn primary" data-sendchat ${ui.typing ? 'disabled' : ''}>Send</button>
@@ -237,11 +266,11 @@ async function sendChat() {
     return render();
   }
   const live = liveAgents();
-  const who = recipients(text, live, ui.target);
+  const who = recipients(text, live, ui.target, state.lead);
   state.chat.push({ id: uid(), at: now(), who: 'owner', text: text.slice(0, 8000) });
   ui.draft = '';
   if (/@freebuff/i.test(text)) state.chat.push({ id: uid(), at: now(), who: 'system', text: 'FreeBuff only runs interactively, so it can’t answer in chat by itself. Open it from a task, then use “Post as FreeBuff” to share what it says.' });
-  if (!who.length) state.chat.push({ id: uid(), at: now(), who: 'system', text: live.length ? 'That agent isn’t available right now (not linked or out of usage).' : 'No agents are available. Link Claude or ChatGPT on the Agents page.' });
+  if (!who.length) state.chat.push({ id: uid(), at: now(), who: 'system', text: live.length ? 'That AI isn’t available right now (not linked or out of usage).' : 'No AIs are available yet. Link Claude, ChatGPT or Gemini (or start Ollama) on the Agents page.' });
   trimChat();
   save();
   render();
@@ -252,12 +281,12 @@ async function sendChat() {
     if (!canRun(agent)) continue;
     ui.typing = agent;
     render();
-    const res = await callAgent(agent, buildPrompt(agent, state.chat), { mode: 'read' });
+    const res = await callAgent(agent, buildPrompt(agent, state.chat, chatCtx()), { mode: 'read' });
     if (res.ok) {
       answered.push(agent);
       state.chat.push({ id: uid(), at: now(), who: agent, text: res.text, model: res.via, proposals: parseProposals(res.text) });
     } else if (res.error.kind === 'limit') {
-      const sub = nextAgent(liveAgents(), [...answered, ...queue, agent]);
+      const sub = liveAgents().find((x) => ![...answered, ...queue, agent].includes(x)) || null;
       const still = queue.filter(canRun);
       const after = sub ? ` ${NAMES[sub]} is picking up its turn.` : still.length ? ` ${still.map((x) => NAMES[x]).join(' and ')} will carry on.` : ' No other agent is free right now.';
       state.chat.push({ id: uid(), at: now(), who: 'system', text: `${NAMES[agent]} is out of usage${res.error.reset ? ` (${res.error.reset})` : ''}.${after}` });
@@ -279,9 +308,12 @@ function trimChat() {
 function addProposal(msgId, i) {
   const m = state.chat.find((x) => x.id === msgId);
   const p = m?.proposals?.[i];
-  if (!p || p.taskId) return;
-  const t = makeTask({ ...p, description: `Proposed by ${NAMES[m.who]} in Team chat.` }, NAMES[m.who]);
+  if (!p || p.taskId) return null;
+  // Carry the chat that produced it, so whoever works on it has the context.
+  const context = state.chat.slice(-8).filter((x) => x.who !== 'system').map((x) => `${NAMES[x.who]}: ${x.text}`).join('\n\n').slice(-3000);
+  const t = makeTask({ ...p, description: `Proposed by ${NAMES[m.who]} in Team chat.\n\nChat context:\n${context}` }, NAMES[m.who]);
   if (t) p.taskId = t.id;
+  return t;
 }
 
 function viewBoard() {
@@ -321,48 +353,62 @@ function viewApprovals() {
 function providerCard(id) {
   const a = AGENTS[id];
   const c = cli[id] || {};
-  const method = id === 'freebuff' ? 'cli' : settings.connection[id];
+  const apiCapable = ['anthropic', 'openai'].includes(id);
+  const method = apiCapable ? settings.connection[id] : 'cli';
   const out = outInfo(id);
   const res = consoleOut[id];
-  const tool = { anthropic: 'Claude Code', openai: 'Codex CLI', freebuff: 'FreeBuff CLI' }[id];
-  const plan = { anthropic: 'your Claude subscription', openai: 'your ChatGPT account', freebuff: 'your free FreeBuff account' }[id];
   let status;
   if (out) status = `<span class="badge red">Out of usage — ${esc(out.reason)}</span>`;
   else if (method === 'api') status = prov.keys[id] ? '<span class="badge sage"><span class="dot"></span>Linked (API key)</span>' : '<span class="badge amber">No API key</span>';
-  else if (!c.installed) status = '<span class="badge amber">Not installed</span>';
+  else if (!c.installed) status = `<span class="badge amber">${id === 'ollama' ? 'Not running' : 'Not installed'}</span>`;
   else if (id === 'freebuff') status = '<span class="badge sage"><span class="dot"></span>Installed · runs in a terminal</span>';
+  else if (id === 'ollama') status = c.models?.length ? `<span class="badge sage"><span class="dot"></span>Running · ${c.models.length} model${c.models.length > 1 ? 's' : ''}</span>` : '<span class="badge amber">Running · no models yet</span>';
   else status = c.signedIn ? '<span class="badge sage"><span class="dot"></span>Linked (signed in)</span>' : '<span class="badge amber">Installed · not signed in</span>';
 
-  const methodToggle = id === 'freebuff' ? '' : `<div class="row" style="margin:10px 0"><span class="muted" style="font-size:12px">Link with</span>
-      <button class="chip ${method === 'cli' ? 'on' : ''}" data-method="${id}:cli">Account (${tool})</button>
-      <button class="chip ${method === 'api' ? 'on' : ''}" data-method="${id}:api">API key</button></div>`;
+  const methodToggle = apiCapable ? `<div class="row" style="margin:10px 0"><span class="muted" style="font-size:12px">Link with</span>
+      <button class="chip ${method === 'cli' ? 'on' : ''}" data-method="${id}:cli">My account (${a.tool})</button>
+      <button class="chip ${method === 'api' ? 'on' : ''}" data-method="${id}:api">API key</button></div>` : '';
 
-  const cliBlock = `
-    <p>Uses ${tool} on this computer, signed in with ${esc(plan)}${id === 'freebuff' ? '' : ' — no API credit needed'}.</p>
-    ${c.installed ? `<div class="kv" style="margin:6px 0"><span class="k">Program</span><span class="mono" style="font-size:11.5px;word-break:break-all">${esc(c.path)}</span></div>`
-      : `<p class="muted">Install it, then press Re-check:<br><code class="mono">${esc(INSTALL[id])}</code></p>`}
-    <div class="row">
-      ${c.installed && id !== 'freebuff' ? `<button class="btn small ${c.signedIn ? '' : 'primary'}" data-login="${id}">${c.signedIn ? 'Switch account' : 'Sign in'}</button>` : ''}
-      ${c.installed && id === 'freebuff' ? `<button class="btn small" data-login="${id}">Open FreeBuff (sign in)</button>` : ''}
-      <button class="btn small ghost" data-recheck>Re-check</button>
-      <button class="btn small ghost" data-locate="${id}">Locate program…</button>
-    </div>
-    ${id === 'freebuff' ? '<p class="muted" style="margin-top:12px">FreeBuff has no non-interactive mode, so it works hands-on: from any task, “Continue in FreeBuff” opens it in that task’s shared workspace with the full handoff brief on your clipboard. Share its replies in Team chat with “Post as FreeBuff”.</p>' : ''}`;
+  let body;
+  if (id === 'ollama') {
+    body = `<p>Runs AI models on your own computer with Ollama — free, private, works offline and never runs out of usage. It can chat, plan and review, but doesn't edit files.</p>
+      ${c.installed ? (c.models?.length ? '' : '<p class="muted">Download a model in a terminal, then Re-check:<br><code class="mono">ollama pull llama3.2</code></p>')
+        : '<p class="muted">Install Ollama, start it, pull a model, then Re-check.</p>'}
+      <div class="row">${c.installed ? '' : '<button class="btn small primary" data-install="ollama">Get Ollama</button>'}<button class="btn small ghost" data-recheck>Re-check</button></div>`;
+  } else if (method === 'api') {
+    body = `<p>Uses the official ${esc(a.vendor)} API (billed per use). The key is encrypted with your OS keyring. API-linked AIs can plan and review but not edit files.</p>
+      <div class="row"><input type="password" id="key-${id}" placeholder="${prov.keys[id] ? '•••••••• saved — paste to replace' : 'Paste API key'}" autocomplete="off" style="flex:1">
+        <button class="btn small" data-savekey="${id}">Save</button>
+        ${prov.keys[id] ? `<button class="btn danger small" data-rmkey="${id}">Remove</button>` : ''}</div>`;
+  } else {
+    body = `<p>Uses ${a.tool} on this computer, signed in with ${esc(a.plan)}${id === 'freebuff' ? '' : ' — no API key needed'}.</p>
+      ${c.installed ? `<div class="kv" style="margin:6px 0"><span class="k">Program</span><span class="mono" style="font-size:11.5px;word-break:break-all">${esc(c.path)}</span></div>` : ''}
+      <div class="row">
+        ${c.installed ? '' : `<button class="btn small primary" data-install="${id}">Install</button>`}
+        ${c.installed && id !== 'freebuff' ? `<button class="btn small ${c.signedIn ? '' : 'primary'}" data-login="${id}">${c.signedIn ? 'Switch account' : 'Sign in'}</button>` : ''}
+        ${c.installed && id === 'freebuff' ? `<button class="btn small" data-login="${id}">Open FreeBuff (sign in)</button>` : ''}
+        <button class="btn small ghost" data-recheck>Re-check</button>
+        <button class="btn small ghost" data-locate="${id}">Locate program…</button>
+      </div>
+      ${c.installed ? '' : `<p class="muted" style="font-size:12px;margin-top:8px">Install runs <span class="mono">${esc(a.install)}</span> in a terminal.</p>`}
+      ${id === 'google' && c.installed && !c.signedIn ? '<p class="muted" style="font-size:12px;margin-top:8px">Sign in opens Gemini in a terminal — choose “Sign in with Google”, finish in your browser, then close it and Re-check.</p>' : ''}
+      ${id === 'freebuff' ? '<p class="muted" style="margin-top:12px">FreeBuff has no hands-free mode, so it works hands-on: from any task, “Continue in FreeBuff” opens it in that task’s shared workspace with the full handoff brief on your clipboard. Share its replies in Team chat with “Post as FreeBuff”.</p>' : ''}`;
+  }
 
-  const apiBlock = `
-    <p>Uses the official ${esc(a.vendor)} API (billed per use). The key is encrypted with your OS keyring. API-linked agents can plan and review but not edit files.</p>
-    <div class="row"><input type="password" id="key-${id}" placeholder="${prov.keys[id] ? '•••••••• saved — paste to replace' : 'Paste API key'}" autocomplete="off" style="flex:1">
-      <button class="btn small" data-savekey="${id}">Save</button>
-      ${prov.keys[id] ? `<button class="btn danger small" data-rmkey="${id}">Remove</button>` : ''}</div>`;
+  const modelField = id === 'freebuff' ? '' : id === 'ollama'
+    ? (c.models?.length ? `<label>Model</label><select data-model="ollama">${c.models.map((m) => `<option ${m === (state.models.ollama || c.models[0]) ? 'selected' : ''}>${esc(m)}</option>`).join('')}</select>` : '')
+    : `<label>Model <span class="muted">(optional${method === 'cli' ? ' — blank uses the default' : ''})</span></label>
+      <input type="text" id="model-${id}" value="${esc(state.models[id] || '')}" placeholder="${method === 'api' ? esc(prov.defaults[id] || '') : 'default'}" data-model="${id}">`;
 
   return `<div class="card prov">
-    <h4><span class="agent ${a.cls}"><i></i></span>${esc(a.name)} <span class="muted" style="font-size:12px;font-weight:400">${esc(a.vendor)}</span></h4>
+    <h4><span class="agent ${a.cls}"><i></i></span>${esc(a.name)} <span class="muted" style="font-size:12px;font-weight:400">${esc(a.vendor)}</span>${id === state.lead ? '<span class="badge sage" style="margin-left:auto">Lead ★</span>' : ''}</h4>
     <div class="row" style="margin:10px 0">${status}${out ? `<button class="btn small" data-available="${id}">Mark available</button>` : ''}</div>
     ${methodToggle}
-    ${method === 'api' ? apiBlock : cliBlock}
-    ${id !== 'freebuff' ? `
-      <label>Model <span class="muted">(optional${method === 'cli' ? ' — blank uses the CLI default' : ''})</span></label>
-      <input type="text" id="model-${id}" value="${esc(state.models[id] || '')}" placeholder="${method === 'api' ? esc(prov.defaults[id] || '') : 'default'}" data-model="${id}">
+    ${body}
+    <label>Role on the team</label>
+    <input type="text" data-role="${id}" value="${esc(state.roles[id] || DEFAULT_ROLES[id])}">
+    ${modelField}
+    ${a.headless ? `
       <label>Quick test</label>
       <textarea id="prompt-${id}" placeholder="Ask ${esc(a.name)} something…" style="min-height:56px"></textarea>
       <div class="row" style="margin-top:8px"><button class="btn primary small" data-ask="${id}" ${ui.busy[id] || !canRun(id) ? 'disabled' : ''}>${ui.busy[id] ? 'Waiting…' : 'Send'}</button></div>
@@ -370,15 +416,36 @@ function providerCard(id) {
   </div>`;
 }
 
+// Control Room: everyone's link, availability, current work and waiting tasks at a glance.
+function controlRoom() {
+  const waiting = state.tasks.filter((t) => ['limit', 'outage', 'timeout', 'auth', 'not_installed', 'resume'].includes(taskRunState(t)));
+  return `<div class="card" style="margin-bottom:14px">
+    <div class="row" style="margin-bottom:6px"><h3 style="margin:0;flex:1">Control Room</h3>
+      <span class="muted" style="font-size:12px">Lead</span>
+      <select data-lead style="width:auto">${HEADLESS.filter((a) => AGENTS[a].edits).map((a) => `<option value="${a}" ${a === state.lead ? 'selected' : ''}>${esc(AGENTS[a].name)}</option>`).join('')}</select>
+      <button class="btn small ghost" data-recheck>Re-check all</button></div>
+    <table><thead><tr><th>AI</th><th>Linked</th><th>Status</th><th>Working on</th><th>Can</th></tr></thead><tbody>
+    ${AGENT_IDS.map((a) => {
+      const st = statusText(a);
+      const busy = Object.entries(ui.running).find(([, r]) => r.agent === a);
+      const assigned = state.tasks.filter((t) => t.assignee === a && !['approved', 'rejected'].includes(t.stage)).length;
+      const color = st === 'available' || st.startsWith('busy') || st.startsWith('available') ? 'var(--sage-2)' : st === 'out of usage' ? 'var(--red)' : 'var(--amber)';
+      return `<tr><td>${agentChip(a)}${a === state.lead ? ' ★' : ''}</td><td>${connected(a) ? '✓' : '<span class="muted">—</span>'}</td><td style="color:${color}">${esc(st)}</td>
+        <td>${busy ? `<a href="#" data-open="${busy[0]}">T-${esc(busy[0])}</a>` : `<span class="muted">${assigned ? `${assigned} assigned` : 'idle'}</span>`}</td>
+        <td class="muted" style="font-size:12px">${AGENTS[a].edits && AGENTS[a].headless ? 'chat · plan · edit code' : AGENTS[a].headless ? 'chat · plan · review' : 'edit code (hands-on)'}</td></tr>`;
+    }).join('')}
+    </tbody></table>
+    ${waiting.length ? `<div class="sep"></div><div class="muted" style="font-size:12px;margin-bottom:6px">Saved tasks waiting to resume</div>${waiting.map((t) => `<div class="task" data-open="${t.id}" style="margin-bottom:6px"><div class="meta">${runBadge(t)}<span>${esc(t.title)}</span></div></div>`).join('')}` : ''}
+  </div>`;
+}
+
 function viewAgents() {
   const warn = settings.connection.anthropic === 'api' || settings.connection.openai === 'api'
-    ? (!prov.encryption ? '<div class="policy block">No OS keyring available (GNOME Keyring / KWallet), so API keys can’t be stored securely. Account linking (the default) doesn’t need one.</div>'
+    ? (!prov.encryption ? '<div class="policy block">No OS keyring available (GNOME Keyring / KWallet), so API keys can’t be stored securely. Signing in with your account (the default) doesn’t need one.</div>'
       : prov.weakEncryption ? '<div class="policy warn">No desktop keyring detected; API keys use weak fallback encryption.</div>' : '')
     : '';
-  const proj = settings.project
-    ? `<div class="policy ok">Shared project folder: <span class="mono">${esc(settings.project)}</span></div>`
-    : '<div class="policy warn">Pick a shared project folder in Settings so agents can work on tasks together.</div>';
-  return `${warn}${proj}<div class="grid agents">${['anthropic', 'openai', 'freebuff'].map(providerCard).join('')}</div>`;
+  const proj = settings.project ? '' : '<div class="policy warn">Pick a shared project folder in Settings so the AIs can work on tasks together.</div>';
+  return `${warn}${proj}${controlRoom()}<div class="grid agents">${AGENT_IDS.map(providerCard).join('')}</div>`;
 }
 
 function viewAudit() {
@@ -443,7 +510,7 @@ function viewSettings() {
       <button class="btn danger small" data-reset>Clear tasks & audit log</button>
     </div>
     <div class="card"><h3>About this build</h3>
-      <p class="muted" style="line-height:1.55">Real: account-linked Claude (Claude Code) and ChatGPT (Codex) working in a shared git workspace, automatic checkpoints and out-of-usage handoff, FreeBuff in a terminal on the same workspace, team chat, policy checks, approvals, audit log, in-app updates. Not yet: GitHub PR tracking, executing approved merges/releases.</p>
+      <p class="muted" style="line-height:1.55">Real: Claude, ChatGPT and Gemini signed in with your own accounts and working in a shared git workspace; a local model via Ollama; FreeBuff hands-on in a terminal; lead-coordinated team chat; automatic checkpoints and out-of-usage handoff; approvals, audit log, in-app updates. Not yet: GitHub PR tracking, executing approved merges/releases.</p>
     </div>
   </div>`;
 }
@@ -453,16 +520,17 @@ function workControls(t) {
   if (running) {
     return `<div class="policy ok" style="display:flex;align-items:center;gap:10px">${agentChip(running.agent)} is working in the shared workspace…<span style="flex:1"></span><button class="btn small danger" data-stop="${t.id}">Stop</button></div>`;
   }
-  const others = ['anthropic', 'openai'].filter((a) => a !== t.assignee);
+  const others = EDITORS.filter((a) => a !== t.assignee);
   const ws = t.ws ? `<div class="kv"><span class="k">Workspace</span><span><span class="mono" style="font-size:12px">${esc(t.ws.branch)}</span> <button class="btn small ghost" data-openws="${t.id}">Open folder</button></span></div>` : '';
   return `${ws}<div class="row" style="margin:8px 0">
-      ${['anthropic', 'openai'].includes(t.assignee) ? `<button class="btn primary small" data-run="${t.id}:${t.assignee}" ${canRun(t.assignee) ? '' : 'disabled'}>${t.runs?.length ? 'Continue' : 'Start'} with ${esc(AGENTS[t.assignee].name)}</button>` : ''}
+      ${EDITORS.includes(t.assignee) ? `<button class="btn primary small" data-run="${t.id}:${t.assignee}" ${canRun(t.assignee) ? '' : 'disabled'}>${t.runs?.length ? 'Continue' : 'Start'} with ${esc(AGENTS[t.assignee].name)}</button>` : ''}
       ${others.map((a) => `<button class="btn small" data-run="${t.id}:${a}" ${canRun(a) ? '' : 'disabled'}>Hand off to ${esc(AGENTS[a].name)}</button>`).join('')}
       <button class="btn small" data-freebuff="${t.id}">Continue in FreeBuff</button>
       ${t.freebuffOpen ? `<button class="btn small primary" data-fbdone="${t.id}">FreeBuff finished — checkpoint</button>` : ''}
     </div>
     <div class="row">
-      ${['anthropic', 'openai'].includes(t.reviewer) ? `<button class="btn small ghost" data-opinion="${t.id}" ${canRun(t.reviewer) && !ui.busy[t.id] ? '' : 'disabled'}>${ui.busy[t.id] === 'opinion' ? 'Reviewing…' : `Independent review by ${esc(AGENTS[t.reviewer].name)}`}</button>` : ''}
+      ${t.ws ? `<button class="btn small ghost" data-showchanges="${t.id}">${ui.changes[t.id] ? 'Refresh changes' : 'Show changes'}</button>` : ''}
+      ${HEADLESS.includes(t.reviewer) ? `<button class="btn small ghost" data-opinion="${t.id}" ${canRun(t.reviewer) && !ui.busy[t.id] ? '' : 'disabled'}>${ui.busy[t.id] === 'opinion' ? 'Reviewing…' : `Independent review by ${esc(AGENTS[t.reviewer].name)}`}</button>` : ''}
       ${!settings.project ? '<span class="muted" style="font-size:12px">Set a project folder in Settings to start work.</span>' : ''}
     </div>`;
 }
@@ -492,6 +560,7 @@ function drawer() {
       ${t.stage === 'approval' ? `<button class="btn primary small" data-approve="${t.id}">Approve</button><button class="btn small" data-changes="${t.id}">Request changes</button><button class="btn danger small" data-reject="${t.id}">Reject</button>` : ''}
     </div>` : ''}
     ${t.policy.ok && !closed ? workControls(t) : ''}
+    ${ui.changes[t.id] ? `<div class="note mono" style="font-size:12px;white-space:pre-wrap">${esc(ui.changes[t.id])}</div>` : ''}
     ${t.runs?.length ? `<div class="sep"></div><h3 class="muted" style="font-size:12px;text-transform:uppercase;letter-spacing:.6px">Shared progress</h3>
       ${t.runs.slice().reverse().map((r) => `<div class="note ${['limit', 'failed', 'error', 'timeout', 'not_installed', 'auth', 'no_workspace'].includes(r.status) ? 'err' : ''}"><div class="who">${esc(NAMES[r.agent])} · ${esc(r.status)}${r.via ? ` · ${esc(r.via)}` : ''} · ${esc(time(r.at))}${r.checkpoint ? ` · checkpoint <span class="mono">${esc(r.checkpoint)}</span>` : ''}</div>${esc(r.output ? (r.output.length > 1500 ? `${r.output.slice(0, 1500)}…` : r.output) : r.status === 'running' ? 'Working…' : '')}</div>`).join('')}` : ''}
     <div class="sep"></div>
@@ -505,14 +574,16 @@ function drawer() {
 
 function modal() {
   if (ui.modal !== 'new') return '';
-  const opt = (sel) => Object.entries(AGENTS).map(([k, a]) => `<option value="${k}" ${k === sel ? 'selected' : ''}>${esc(a.name)}</option>`).join('');
+  const opt = (sel, ids) => ids.map((k) => `<option value="${k}" ${k === sel ? 'selected' : ''}>${esc(AGENTS[k].name)}</option>`).join('');
+  const firstEditor = liveEditors()[0] || state.lead;
+  const firstReviewer = liveAgents().find((a) => a !== firstEditor) || HEADLESS.find((a) => a !== firstEditor);
   return `<div class="modal-bg" data-modalbg><div class="modal">
     <h2>New task</h2><div class="muted" style="font-size:13px">Runs a policy & scope check when created.</div>
     <label>Title</label><input type="text" id="f-title" placeholder="e.g. Add update toast to Hearth settings">
     <label>Description</label><textarea id="f-desc" placeholder="What should be done, constraints, acceptance criteria"></textarea>
     <div class="two-in">
-      <div><label>Implementer</label><select id="f-assignee">${opt('anthropic')}</select></div>
-      <div><label>Independent reviewer</label><select id="f-reviewer">${opt('openai')}</select></div>
+      <div><label>Implementer</label><select id="f-assignee">${opt(firstEditor, [...EDITORS, 'freebuff', 'none'])}</select></div>
+      <div><label>Independent reviewer</label><select id="f-reviewer">${opt(firstReviewer, [...HEADLESS, 'none'])}</select></div>
     </div>
     <label>Action type</label><select id="f-action">${Object.entries(ACTIONS).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join('')}</select>
     <div class="row" style="margin-top:18px;justify-content:flex-end"><button class="btn ghost" data-cancel>Cancel</button><button class="btn primary" data-create>Create task</button></div>
@@ -529,11 +600,11 @@ const NAV = [
   ['settings', '⚙', 'Settings'],
 ];
 const TITLES = {
-  overview: ['Command Center', 'Coordinate Claude, ChatGPT and FreeBuff under your approval'],
-  chat: ['Team chat', 'You, Claude, ChatGPT and FreeBuff in one room — everyone sees everything'],
+  overview: ['Command Center', 'Your AI team, working on your projects under your approval'],
+  chat: ['Team chat', 'You and the whole AI team in one room — everyone sees everything'],
   board: ['Task board', 'Owner → policy → agent → checkpoint → tests → review → approval'],
   approvals: ['Approvals', 'Nothing high-impact happens without your explicit sign-off'],
-  agents: ['Agents', 'Link your Claude, ChatGPT and FreeBuff accounts'],
+  agents: ['Agents', 'Sign in with your accounts, see who is available and what they are doing'],
   audit: ['Audit log', 'Every decision, recorded'],
   settings: ['Settings', 'Updates, data and Hearth OS pin'],
 };
@@ -641,7 +712,7 @@ async function runTask(t, agent, handoff = null, depth = 0) {
   if (t.assignee !== agent) {
     const prev = t.assignee;
     t.assignee = agent;
-    if (t.reviewer === agent) t.reviewer = ['anthropic', 'openai'].find((a) => a !== agent) || 'none';
+    if (t.reviewer === agent) t.reviewer = HEADLESS.find((a) => a !== agent && canRun(a)) || HEADLESS.find((a) => a !== agent) || 'none';
     audit(`Handed off to ${NAMES[agent]}`, t.id, handoff ? `${NAMES[handoff.from]}: ${handoff.reason}` : `from ${NAMES[prev] || 'unassigned'}`);
   }
   if (t.stage === 'intake') { t.stage = 'implementing'; audit('Work started', t.id, NAMES[agent]); }
@@ -688,13 +759,13 @@ async function runTask(t, agent, handoff = null, depth = 0) {
   render();
 
   if (!res.ok && ['outage', 'auth', 'not_installed'].includes(res.error.kind)) {
-    const next = nextAgent(liveAgents(), [agent]);
+    const next = nextAgent(liveEditors(), [agent], state.lead);
     t.notes.push({ at: now(), who: 'System', text: `${NAMES[agent]}: ${res.error.message} Progress is saved${cp ? ` (checkpoint ${cp.sha})` : ''}. Resume with ${NAMES[agent]} later${next ? `, or hand it to ${NAMES[next]} now` : ''}.` });
     await save();
     render();
   }
   if (!res.ok && res.error.kind === 'limit') {
-    const next = nextAgent(liveAgents(), [agent]);
+    const next = nextAgent(liveEditors(), [agent], state.lead);
     if (next && state.autoHandoff && depth < 3) {
       toast(`${NAMES[agent]} ran out of usage — ${NAMES[next]} is continuing from the checkpoint.`);
       return runTask(t, next, { from: agent, reason: 'ran out of usage' }, depth + 1);
@@ -740,7 +811,7 @@ async function refreshProviders() {
 }
 
 document.addEventListener('click', async (e) => {
-  const el = e.target.closest('[data-nav],[data-new],[data-open],[data-close],[data-cancel],[data-create],[data-advance],[data-approve],[data-reject],[data-changes],[data-note],[data-delete],[data-savekey],[data-rmkey],[data-ask],[data-export],[data-reset],[data-upd],[data-opinion],[data-modalbg],[data-sendchat],[data-target],[data-addprop],[data-addall],[data-clearchat],[data-method],[data-login],[data-recheck],[data-locate],[data-available],[data-run],[data-stop],[data-freebuff],[data-fbdone],[data-openws],[data-pickproject],[data-autohandoff],[data-restore]');
+  const el = e.target.closest('[data-nav],[data-new],[data-open],[data-close],[data-cancel],[data-create],[data-advance],[data-approve],[data-reject],[data-changes],[data-note],[data-delete],[data-savekey],[data-rmkey],[data-ask],[data-export],[data-reset],[data-upd],[data-opinion],[data-modalbg],[data-sendchat],[data-target],[data-addprop],[data-addall],[data-clearchat],[data-method],[data-login],[data-recheck],[data-locate],[data-available],[data-run],[data-stop],[data-freebuff],[data-fbdone],[data-openws],[data-pickproject],[data-autohandoff],[data-restore],[data-install],[data-startprop],[data-showchanges],[data-dismisssetup]');
   if (!el) return;
   const d = el.dataset;
   const task = (id) => state.tasks.find((t) => t.id === id);
@@ -748,6 +819,26 @@ document.addEventListener('click', async (e) => {
   if (d.modalbg !== undefined && e.target === el) { ui.modal = null; return render(); }
   if (d.nav) { ui.view = d.nav; ui.selected = null; if (d.nav === 'settings') backups = await api.backups().catch(() => backups); return render(); }
   if (d.sendchat !== undefined) return sendChat();
+  if (d.install) {
+    const r = await api.agentInstall(d.install);
+    toast(r.ok ? (d.install === 'ollama' ? 'Opened ollama.com in your browser. Install it, pull a model, then press Re-check.' : `Installing in ${r.terminal}. When it finishes, press Re-check.`) : r.message);
+    return;
+  }
+  if (d.startprop) {
+    const [id, i] = d.startprop.split(':');
+    const t = addProposal(id, Number(i));
+    await save();
+    render();
+    if (t && t.policy.ok) return runTask(t, t.assignee);
+    if (t) toast('Added, but the policy check blocked it — open it to see why.');
+    return;
+  }
+  if (d.showchanges) {
+    const t = task(d.showchanges);
+    ui.changes[t.id] = await api.workspaceSummary(t.id, t.ws.baseSha).catch((err) => cleanErr(err.message));
+    return render();
+  }
+  if (d.dismisssetup !== undefined) { state.setupDismissed = true; save(); return render(); }
   if (d.method) {
     const [a, m] = d.method.split(':');
     settings = await api.setConnection(a, m);
@@ -811,7 +902,7 @@ document.addEventListener('click', async (e) => {
     return setStage(t, 'rejected', 'Owner rejected', 'Branch kept; decision recorded.');
   }
   if (d.changes) return setStage(task(d.changes), 'implementing', 'Changes requested', 'Sent back to implementer');
-  if (d.open) { ui.selected = d.open; return render(); }
+  if (d.open) { e.preventDefault(); ui.selected = d.open; return render(); }
   if (d.note) {
     const text = document.getElementById('note-text').value.trim();
     if (!text) return;
@@ -898,6 +989,17 @@ document.addEventListener('click', async (e) => {
 });
 
 document.addEventListener('change', (e) => {
+  if (e.target.dataset?.role) {
+    state.roles[e.target.dataset.role] = e.target.value.trim().slice(0, 200) || DEFAULT_ROLES[e.target.dataset.role];
+    save();
+    return;
+  }
+  if (e.target.dataset?.lead !== undefined && e.target.matches('select[data-lead]')) {
+    state.lead = EDITORS.includes(e.target.value) ? e.target.value : 'anthropic';
+    audit('Lead coordinator changed', null, NAMES[state.lead]);
+    save();
+    return render();
+  }
   const p = e.target.dataset?.model;
   if (!p) return;
   const val = e.target.value.trim();
@@ -957,6 +1059,8 @@ async function boot() {
     await refreshAgents();
     if (!state.agentStatus) state.agentStatus = {};
     if (state.autoHandoff === undefined) state.autoHandoff = true;
+    if (!state.roles) state.roles = {};
+    if (!EDITORS.includes(state.lead)) state.lead = 'anthropic';
     upd = await api.updaterInfo();
     api.onUpdaterStatus((s) => {
       const prev = upd.status?.state;

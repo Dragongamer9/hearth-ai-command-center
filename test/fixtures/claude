@@ -9,5 +9,6 @@ if [ -n "$FAKE_CLAUDE_LIMIT" ]; then
   echo "partial work" > claude-partial.txt
   echo '{"type":"result","is_error":true,"result":"Claude AI usage limit reached|resets 3pm"}'; exit 1
 fi
+case "$prompt" in *"You are the LEAD"*split*) echo '{"type":"result","is_error":false,"result":"Plan: Gemini researches, ChatGPT builds.\nTASK: Add Gemini settings panel | implementer: chatgpt | reviewer: gemini | action: code"}'; exit 0;; esac
 echo "claude was here" > claude.txt
 echo '{"type":"result","is_error":false,"result":"Did the thing.\nSTATUS: DONE"}'

@@ -20,6 +20,7 @@ contextBridge.exposeInMainWorld('hearth', {
   pickBinary: (agent) => ipcRenderer.invoke('settings:pickBinary', agent),
   agentStatus: (agent) => ipcRenderer.invoke('agents:status', agent),
   agentLogin: (agent) => ipcRenderer.invoke('agents:login', agent),
+  agentInstall: (agent) => ipcRenderer.invoke('agents:install', agent),
   run: (opts) => ipcRenderer.invoke('agents:run', opts),
   cancelRun: (runId) => ipcRenderer.invoke('agents:cancel', runId),
   ensureWorkspace: (taskId, title) => ipcRenderer.invoke('workspace:ensure', taskId, title),

@@ -1,0 +1,7 @@
+#!/bin/sh
+# Fake Gemini CLI for tests.
+prompt=$(cat)
+if [ -n "$FAKE_GEMINI_LIMIT" ]; then echo '{"error":{"message":"Quota exceeded for quota metric requests per day","code":429}}'; exit 1; fi
+mode=""; while [ $# -gt 0 ]; do [ "$1" = "--approval-mode" ] && mode="$2"; shift; done
+echo "gemini ($mode)" > gemini.txt 2>/dev/null
+printf '{"response":"Gemini did it in %s mode.\\nSTATUS: DONE","stats":{}}' "$mode"
