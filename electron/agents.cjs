@@ -250,12 +250,15 @@ async function runAgent({ agent, prompt, cwd, mode = 'read', model, timeoutMs, s
 }
 
 function geminiSignedIn() {
-  if (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || process.env.GOOGLE_CLOUD_PROJECT) return true;
+  if (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY) return true;
   const dir = path.join(os.homedir(), '.gemini');
   if (fs.existsSync(path.join(dir, 'oauth_creds.json'))) return true;
   try {
     const st = JSON.parse(fs.readFileSync(path.join(dir, 'settings.json'), 'utf8'));
-    if (st?.security?.auth?.selectedType || st?.selectedAuthType) return true;
+    if (st?.security?.auth?.selectedType === 'gemini-api-key' || st?.selectedAuthType === 'gemini-api-key') return Boolean(process.env.GEMINI_API_KEY);
+    // Selecting OAuth is a preference, not proof of completed Google sign-in.
+    if (st?.security?.auth?.selectedType === 'oauth-personal' || st?.selectedAuthType === 'oauth-personal') return fs.existsSync(path.join(dir, 'oauth_creds.json'));
+    if (st?.security?.auth?.selectedType === 'vertex-ai' || st?.selectedAuthType === 'vertex-ai') return Boolean(process.env.GOOGLE_APPLICATION_CREDENTIALS);
   } catch {}
   return false;
 }
@@ -317,8 +320,9 @@ function openTerminal(file, args, cwd, { hold = false } = {}) {
 function login(agent, bin, cwd) {
   const file = bin || findBinary(agent);
   if (!file) return { ok: false, message: `${BIN[agent]} is not installed.` };
-  // Gemini and FreeBuff sign in inside their own first session, so no hold wrapper.
-  return openTerminal(file, LOGIN[agent], cwd, { hold: ['anthropic', 'openai'].includes(agent) });
+  // Gemini opens an interactive OAuth selection screen; keep terminal open on exit
+  // so authentication errors are visible instead of disappearing immediately.
+  return openTerminal(file, LOGIN[agent], cwd, { hold: ['anthropic', 'openai', 'google'].includes(agent) });
 }
 
 // Sign out using each tool's own sign-out. The Command Center never holds the
