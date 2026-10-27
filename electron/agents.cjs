@@ -29,6 +29,11 @@ function searchDirs() {
   const extra = [
     path.join(home, '.local', 'bin'),
     path.join(home, '.npm-global', 'bin'),
+    path.join(home, '.local', 'npm', 'bin'),
+    path.join(home, '.config', 'npm', 'bin'),
+    path.join(home, '.local', 'share', 'pnpm'),
+    path.join(home, '.local', 'share', 'mise', 'shims'),
+    path.join(home, '.asdf', 'shims'),
     path.join(home, '.bun', 'bin'),
     path.join(home, '.claude', 'local'),
     path.join(home, '.volta', 'bin'),
@@ -36,6 +41,10 @@ function searchDirs() {
     '/usr/local/bin',
     '/usr/bin',
   ];
+  // Desktop launchers may not inherit a login shell's npm prefix or PATH.
+  // Only add npm's user-level prefix; never invoke a shell to discover tools.
+  const npmPrefix = process.env.npm_config_prefix || process.env.NPM_CONFIG_PREFIX;
+  if (npmPrefix && path.isAbsolute(npmPrefix)) extra.push(path.join(npmPrefix, 'bin'));
   const nvm = path.join(home, '.nvm', 'versions', 'node');
   try {
     for (const v of fs.readdirSync(nvm)) extra.push(path.join(nvm, v, 'bin'));
