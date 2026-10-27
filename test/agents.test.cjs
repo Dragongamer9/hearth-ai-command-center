@@ -93,10 +93,11 @@ test('detects CLIs from npm custom prefix even with desktop-style PATH', () => {
   const file = path.join(bin, 'claude');
   fs.copyFileSync(path.join(FIX, 'claude'), file);
   fs.chmodSync(file, 0o755);
-  const before = { PATH: process.env.PATH, NPM_CONFIG_PREFIX: process.env.NPM_CONFIG_PREFIX };
+  const before = { PATH: process.env.PATH, NPM_CONFIG_PREFIX: process.env.NPM_CONFIG_PREFIX, npm_config_prefix: process.env.npm_config_prefix };
   try {
     process.env.PATH = '/usr/bin:/bin';
     process.env.NPM_CONFIG_PREFIX = tmp;
+    process.env.npm_config_prefix = tmp;
     assert.equal(agents.findBinary('anthropic'), file);
   } finally {
     for (const [key, value] of Object.entries(before)) {
