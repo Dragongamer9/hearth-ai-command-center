@@ -1,25 +1,28 @@
 :root {
-  --bg: #0d0f0e;
-  --bg-2: #121513;
-  --panel: #171b19;
-  --panel-2: #1d2220;
-  --line: #2a312d;
-  --line-2: #36403a;
-  --text: #e6ebe7;
-  --muted: #9aa69e;
-  --faint: #6b766f;
-  --sage: #8fb39a;
-  --sage-2: #a9c8b2;
-  --sage-dim: #1f2b24;
-  --sage-ink: #0f1712;
-  --amber: #d9b26a;
-  --amber-dim: #2b2517;
-  --red: #d97a6c;
-  --red-dim: #2c1a17;
-  --blue: #86a7c9;
-  --radius: 14px;
-  --radius-sm: 9px;
-  --font: 'Inter', 'Fira Sans', 'Cantarell', 'Noto Sans', system-ui, sans-serif;
+  /* Hearth OS palette: warm ember dark, coral accent, flame orange */
+  --bg: #140f0d;
+  --bg-2: #1c1512;
+  --panel: #231a16;
+  --panel-2: #2c211c;
+  --line: #3a2a22;
+  --line-2: #4c362b;
+  --text: #f7eeea;
+  --muted: #bba79c;
+  --faint: #86726a;
+  --sage: #ff5d5d;        /* accent (coral, like Hearth's Game Mode button) */
+  --sage-2: #ff9c84;
+  --sage-dim: #3b1c19;
+  --sage-ink: #1c0f0c;
+  --ember: #fda74e;
+  --ember-deep: #871c07;
+  --amber: #f6bf62;
+  --amber-dim: #33261a;
+  --red: #ff7a6b;
+  --red-dim: #3a1712;
+  --blue: #8fb0d6;
+  --radius: 16px;
+  --radius-sm: 10px;
+  --font: 'Fira Sans', 'Inter', 'Cantarell', 'Noto Sans', system-ui, sans-serif;
   --mono: 'JetBrains Mono', 'Fira Mono', 'DejaVu Sans Mono', ui-monospace, monospace;
 }
 
@@ -174,3 +177,34 @@ td.mono { font-family: var(--mono); font-size: 12px; color: var(--muted); white-
 .agents { grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
 td a { color: var(--sage-2); }
 .billing { font-size: 12px; color: var(--muted); background: var(--bg-2); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; margin: 4px 0 6px; line-height: 1.45; }
+
+
+/* ---- Hearth OS look ---- */
+body { background: radial-gradient(1200px 500px at 70% -10%, #2a1610 0%, transparent 60%), var(--bg); }
+.side { background: linear-gradient(180deg, #1f1612, #17110e); border-right: 1px solid var(--line); position: relative; }
+.side::after { content: ''; position: absolute; top: 0; right: -1px; width: 1px; height: 100%; background: linear-gradient(180deg, transparent, rgba(255,93,93,.55) 30%, rgba(253,167,78,.45) 70%, transparent); }
+.main { position: relative; }
+.main::before { content: ''; position: sticky; top: 0; display: block; height: 2px; margin: -22px -28px 20px; background: linear-gradient(90deg, transparent 5%, #954433 25%, #ff5d5d 50%, #954433 75%, transparent 95%); opacity: .8; }
+.nav { border-radius: 12px; }
+.nav.on { background: linear-gradient(90deg, rgba(255,93,93,.22), rgba(255,93,93,.06)); color: #fff; border-color: rgba(255,93,93,.45); box-shadow: inset 3px 0 0 var(--sage); }
+.nav .count { background: var(--sage); color: #fff; }
+.btn { border-radius: 999px; }
+.btn.primary { background: linear-gradient(180deg, #ff6b6b, #f04d4d); border-color: #ff5d5d; color: #fff; box-shadow: 0 2px 10px rgba(255,93,93,.25); }
+.btn.primary:hover { background: linear-gradient(180deg, #ff7f7f, #ff5d5d); }
+.btn:hover { border-color: var(--ember); }
+.card { background: linear-gradient(180deg, #261c18, #211813); border-color: var(--line); box-shadow: 0 1px 0 rgba(255,255,255,.02) inset; }
+.card h3 { color: var(--ember); }
+.badge.sage { color: #ffd9cf; border-color: rgba(255,93,93,.45); background: rgba(255,93,93,.14); }
+.chip.on { background: rgba(255,93,93,.18); color: #fff; border-color: rgba(255,93,93,.5); }
+.msg.me { background: linear-gradient(180deg, rgba(255,93,93,.2), rgba(255,93,93,.1)); border-color: rgba(255,93,93,.4); }
+.policy.ok { background: rgba(253,167,78,.1); color: #ffd3a3; border-color: rgba(253,167,78,.35); }
+.setup-step.ok .tick { background: var(--ember); border-color: var(--ember); color: #1c0f0c; }
+.stat .n { color: #fff; }
+.pin b { color: var(--ember); }
+.brand b { color: #fff; }
+.step.gate { color: var(--ember); border-color: rgba(253,167,78,.5); }
+input:focus, textarea:focus, select:focus { border-color: var(--ember); box-shadow: 0 0 0 3px rgba(253,167,78,.15); }
+.progress > div { background: linear-gradient(90deg, var(--ember), var(--sage)); }
+.toast { border-color: var(--sage); background: #2a1d18; }
+.task.sel { border-color: var(--sage); box-shadow: 0 0 0 1px rgba(255,93,93,.4); }
+::selection { background: var(--sage); color: #fff; }

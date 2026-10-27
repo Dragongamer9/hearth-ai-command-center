@@ -130,7 +130,6 @@ function classify(agent, res, text) {
   return { kind: 'failed', message: tail || `Exited with code ${res.code}` };
 }
 
-// mode: 'read' (look, answer, plan — no file changes) or 'edit' (may edit files in cwd).
 async function runOllama({ prompt, model, timeoutMs = 300000, signal }) {
   const st = await ollamaStatus();
   if (!st.installed) return { ok: false, error: { kind: 'not_installed', message: 'Ollama is not running on this computer.' } };
@@ -182,7 +181,14 @@ function parseGemini(stdout) {
   }
 }
 
-async function runAgent({ agent, prompt, cwd, mode = 'read', model, timeoutMs, signal, bin }) {
+// mode: 'read'     — look, answer, plan, browse the web; no changes
+//       'standard' — what the tool does in its own app when working on its own:
+//                    edits, commands and web, with the tool's built-in safety checks
+//       'full'     — no safety checks at all (owner opt-in only)
+// ('edit' is accepted as 'standard'.) extraDirs: other folders the owner granted.
+async function runAgent({ agent, prompt, cwd, mode = 'read', model, timeoutMs, signal, bin, extraDirs = [] }) {
+  if (mode === 'edit') mode = 'standard';
+  const dirs = extraDirs.filter((d) => typeof d === 'string' && path.isAbsolute(d) && fs.existsSync(d));
   const file = bin || findBinary(agent);
   if (agent === 'ollama') return runOllama({ prompt, model, timeoutMs, signal });
   if (!file) return { ok: false, error: { kind: 'not_installed', message: `${BIN[agent]} is not installed.` } };
@@ -192,7 +198,10 @@ async function runAgent({ agent, prompt, cwd, mode = 'read', model, timeoutMs, s
   const workdir = cwd && fs.existsSync(cwd) ? cwd : os.homedir();
 
   if (agent === 'anthropic') {
-    const args = ['-p', '--output-format', 'json', '--permission-mode', mode === 'edit' ? 'acceptEdits' : 'plan'];
+    const perm = { read: 'plan', standard: 'auto', full: 'bypassPermissions' }[mode];
+    const args = ['-p', '--output-format', 'json', '--permission-mode', perm, '--allowedTools', 'WebSearch', 'WebFetch'];
+    if (mode === 'full') args.push('--dangerously-skip-permissions');
+    for (const d of dirs) args.push('--add-dir', d);
     if (model) args.push('--model', model);
     const res = await run(file, args, { cwd: workdir, input: prompt, timeoutMs, signal });
     const parsed = parseClaude(res.out);
@@ -202,7 +211,11 @@ async function runAgent({ agent, prompt, cwd, mode = 'read', model, timeoutMs, s
 
   if (agent === 'openai') {
     const outFile = path.join(os.tmpdir(), `hearth-codex-${process.pid}-${Date.now()}.txt`);
-    const args = ['exec', '--skip-git-repo-check', '--color', 'never', '-s', mode === 'edit' ? 'workspace-write' : 'read-only', '-C', workdir, '-o', outFile];
+    const args = ['exec', '--skip-git-repo-check', '--color', 'never', '-C', workdir, '-o', outFile];
+    if (mode === 'full') args.push('--dangerously-bypass-approvals-and-sandbox');
+    else if (mode === 'standard') args.push('--approve-for-me');
+    else args.push('-s', 'read-only');
+    if (mode !== 'read') for (const d of dirs) args.push('--add-dir', d);
     if (model) args.push('-m', model);
     args.push('-');
     const res = await run(file, args, { cwd: workdir, input: prompt, timeoutMs, signal });
@@ -216,7 +229,8 @@ async function runAgent({ agent, prompt, cwd, mode = 'read', model, timeoutMs, s
   }
   if (agent === 'google') {
     // Brief comes in over stdin; -p forces headless mode and is appended to it.
-    const args = ['-p', 'Follow the instructions above.', '--output-format', 'json', '--approval-mode', mode === 'edit' ? 'auto_edit' : 'plan'];
+    const args = ['-p', 'Follow the instructions above.', '--output-format', 'json', '--approval-mode', { read: 'plan', standard: 'auto_edit', full: 'yolo' }[mode]];
+    if (dirs.length) args.push('--include-directories', dirs.join(','));
     if (model) args.push('-m', model);
     const res = await run(file, args, { cwd: workdir, input: prompt, timeoutMs, signal });
     const parsed = parseGemini(res.out);
