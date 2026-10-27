@@ -1,0 +1,83 @@
+name: Release (draft, automatic)
+
+# Runs when a version tag like v0.3.0 is pushed. Builds and tests on GitHub,
+# then creates a DRAFT release with the AppImage + latest-linux.yml from the
+# same build. Drafts are invisible to the in-app updater, so nothing reaches
+# anyone until the owner presses Publish on GitHub.
+#
+# Optional: the owner can set the repository variable AUTO_PUBLISH=true
+# (Settings > Secrets and variables > Actions > Variables) to publish
+# automatically after a successful build instead.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Tag must match package.json version
+        run: |
+          pkg="v$(node -p "require('./package.json').version")"
+          if [ "$pkg" != "$GITHUB_REF_NAME" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match package.json ($pkg). Nothing released."; exit 1
+          fi
+
+      - run: npm ci
+      - run: npm run check
+      - run: npm test
+      - run: npx vite build
+      - run: npx electron-builder --linux AppImage --x64 --publish never
+
+      - name: Verify build output
+        run: |
+          f=$(ls release/*.AppImage)
+          test "$(stat -c%s "$f")" -gt 50000000
+          file "$f" | grep -q ELF
+          grep -q "url: $(basename "$f")" release/latest-linux.yml
+          sha256sum "$f" | tee release/SHA256SUMS.txt
+
+      - name: Create draft release with assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          AUTO_PUBLISH: ${{ vars.AUTO_PUBLISH }}
+        run: |
+          set -euo pipefail
+          # Notes: release-notes/<tag>.md, else an existing draft's notes, else a default.
+          old=$(gh api "repos/$REPO/releases?per_page=50" --jq ".[] | select(.draft and .tag_name==\"$TAG\") | .id")
+          if [ -f "release-notes/$TAG.md" ]; then cp "release-notes/$TAG.md" notes.md
+          elif [ -n "$old" ]; then gh api "repos/$REPO/releases/$(echo "$old" | head -1)" --jq .body > notes.md
+          else echo "Hearth AI Command Center $TAG" > notes.md; fi
+          printf '\nSHA-256: `%s`\n' "$(cut -d' ' -f1 release/SHA256SUMS.txt)" >> notes.md
+          # Replace any earlier unpublished draft for this tag (drafts are private).
+          for id in $old; do gh api -X DELETE "repos/$REPO/releases/$id"; done
+          rel=$(jq -n --arg tag "$TAG" --arg sha "$GITHUB_SHA" --arg name "Hearth AI Command Center ${TAG#v}" --rawfile body notes.md \
+            '{tag_name:$tag, target_commitish:$sha, name:$name, body:$body, draft:true, prerelease:false}' \
+            | gh api -X POST "repos/$REPO/releases" --input - --jq .id)
+          for f in release/*.AppImage release/latest-linux.yml; do
+            curl -sSf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Content-Type: application/octet-stream" \
+              --data-binary @"$f" "https://uploads.github.com/repos/$REPO/releases/$rel/assets?name=$(basename "$f")" > /dev/null
+            echo "uploaded $(basename "$f")"
+          done
+          if [ "${AUTO_PUBLISH:-}" = "true" ]; then
+            gh api -X PATCH "repos/$REPO/releases/$rel" -F draft=false > /dev/null
+            echo "Published $TAG (AUTO_PUBLISH=true)."
+          else
+            echo "Draft $TAG is ready. Press Publish on GitHub to release it."
+          fi
