@@ -154,6 +154,20 @@ function cleanResult(r) {
 }
 
 function registerIpc() {
+  // Explicit one-way bridge: copy a bounded conversation excerpt locally.
+  // There is no background sync, network transport, or access to ChatGPT sessions.
+  handle('chat:copyForChatGPT', (messages) => {
+    if (!Array.isArray(messages) || messages.length > 30) throw new Error('Select up to 30 chat messages.');
+    const allowed = new Set(['owner', 'anthropic', 'openai', 'google', 'ollama', 'freebuff']);
+    const transcript = messages.map((m) => {
+      if (!m || !allowed.has(m.who) || typeof m.text !== 'string') throw new Error('Invalid chat message.');
+      return `[${m.who}] ${m.text.slice(0, 4000)}`;
+    }).join('\n\n');
+    if (!transcript) throw new Error('No messages to copy.');
+    // Reuse the same secret-scrubber as the existing state export.
+    clipboard.writeText('Hearth AI Command Center — shared by the owner\n\n' + redact(transcript));
+    return { ok: true, count: messages.length };
+  });
   handle('state:load', () => readState());
   handle('state:save', (state) => writeState(state));
   handle('state:backups', () => ({ recoveredFrom: lastLoad.recoveredFrom, lost: Boolean(lastLoad.lost), backups: store.list() }));
