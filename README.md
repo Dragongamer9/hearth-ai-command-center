@@ -1,10 +1,10 @@
 # Hearth AI Command Center
 
-Desktop coordination console for Hearth OS: hand tasks to **Claude**, **ChatGPT** and **FreeBuff**, run them through a policy check, independent review and your approval, and keep an audit record of every decision. Linux AppImage, local-only, prototype.
+Desktop command center for Hearth OS: link your **Claude**, **ChatGPT** and **FreeBuff** accounts, talk to all of them in one team chat, hand them tasks, and let them pick up each other's work when one runs out of usage. Every task runs through a policy check, independent review and your approval, and every step is saved. Linux AppImage.
 
 Hearth OS stays pinned at **0.6.55**. This app never changes Hearth OS, merges, releases or deploys anything.
 
-See `FULL_VERSION_ROADMAP.md` for what's real vs. planned, and `docs/IN_APP_UPDATES.md` for updates.
+Docs: `docs/SAVING_AND_RESUME.md` (what's saved, recovery, handoff), `docs/IN_APP_UPDATES.md` (updates), `FULL_VERSION_ROADMAP.md` (what's next).
 
 ## Install & run
 
@@ -14,7 +14,8 @@ See `FULL_VERSION_ROADMAP.md` for what's real vs. planned, and `docs/IN_APP_UPDA
 
 ### Required Linux libraries
 - **FUSE 2** to mount the AppImage: `sudo apt install libfuse2` (Ubuntu 22.04+ / Debian: `libfuse2t64` on 24.04). Fedora: `sudo dnf install fuse-libs`. Arch: `sudo pacman -S fuse2`.
-- A **keyring** to store API keys securely: GNOME Keyring or KWallet (most desktops have one). Without it the app refuses to save keys.
+- **git** (for the shared workspace) and **Node.js 18+** (for the agent CLIs).
+- A keyring (GNOME Keyring / KWallet) only if you use API keys instead of account linking.
 - Standard desktop libs (GTK3, NSS, libasound) present on any normal desktop install.
 
 ### Troubleshooting
@@ -22,28 +23,46 @@ See `FULL_VERSION_ROADMAP.md` for what's real vs. planned, and `docs/IN_APP_UPDA
 |---|---|
 | "dlopen(): error loading libfuse.so.2" | Install FUSE 2 (above), or run with `--appimage-extract-and-run`. |
 | Nothing opens, "SUID sandbox" error | Your distro restricts user namespaces (Ubuntu 24.04+ AppArmor). Run with `--no-sandbox`, or add an AppArmor profile for the AppImage. |
-| "No OS keyring available" on Agents page | Install/unlock GNOME Keyring or KWallet and restart the app. |
+| Agent shows "Not installed" but it is | Use *Locate program…*; desktop launchers often have a shorter PATH than your terminal. |
+| Sign in does nothing | No terminal app found. Run `claude auth login` / `codex login` yourself, then *Re-check*. |
 | Updates say "disabled" | You launched an unpacked build — run the `.AppImage` file itself. |
 
-## Connecting agents
-Agents → paste your **Anthropic** or **OpenAI** API key → Save. Keys are encrypted with your OS keyring in the app's data folder (`~/.config/Hearth AI Command Center/`, file mode 0600) and never go to the UI, logs or Git. API usage is billed by the provider; chat subscriptions (Claude Pro, ChatGPT Plus) do not include API credit.
+## Linking your AIs
+Agents page. Each AI is linked through its official tool, signed in with **your own account** (no API credit needed):
 
-FreeBuff has no verified public API, so it's assignable but not connected.
+| AI | Install | Sign in |
+|---|---|---|
+| Claude | `npm install -g @anthropic-ai/claude-code` | *Sign in* button (runs `claude auth login`) |
+| ChatGPT | `npm install -g @openai/codex` | *Sign in* button (runs `codex login`) |
+| FreeBuff | `npm install -g freebuff` | Opens FreeBuff in a terminal; sign in there |
+
+Press **Re-check** after installing or signing in. If the app can't find a program, use **Locate program…**. Claude and ChatGPT can also use an API key instead.
+
+Then pick a **shared project folder** (any git repo) in Settings.
+
+## Using it
+- **Team chat:** everyone sees every message. `@claude` / `@chatgpt` talks to one agent. Ask them to split up work and their `TASK:` proposals become one-click *Add to board* cards. FreeBuff can't reply on its own, so paste what it says with *Post as FreeBuff*.
+- **Tasks:** *Start with Claude/ChatGPT* runs the agent in that task's own git branch and working copy. Every run is committed as a checkpoint. *Hand off to…* or *Continue in FreeBuff* lets another agent continue from the same files.
+- **Out of usage:** the task is checkpointed and handed to the next free agent automatically.
+- **Approvals:** nothing is merged, pushed, released or deployed by the app.
 
 ## Develop
 ```bash
 npm ci
-npm test            # 19 unit tests: provider errors, IPC validation, policy
+npm test            # unit + integration tests (fake CLIs, real git)
 npm start           # build UI and launch Electron
 npm run dist:linux  # check + test + build release/*.AppImage
 ```
 
 ## Architecture
 - `electron/main.cjs` — window, IPC (sender-checked, every input validated), state file, crash/start-failure handling, single instance.
-- `electron/providers.cjs` — official Anthropic Messages / OpenAI Chat Completions calls with timeouts, auth / rate-limit / malformed-response handling.
+- `electron/agents.cjs` — runs Claude Code / Codex / FreeBuff (spawn, no shell, prompt over stdin, timeouts), detects usage limits, outages and sign-in problems.
+- `electron/workspace.cjs` — per-task git branch + worktree, checkpoint commits, progress summaries.
+- `electron/store.cjs` — atomic, versioned, self-recovering state file with secret scrubbing.
+- `electron/providers.cjs` — optional API-key path (Anthropic Messages / OpenAI Chat Completions).
 - `electron/secrets.cjs` — keyring-encrypted key store.
 - `electron/updater.cjs` — consent-only `electron-updater` flow.
 - `electron/preload.cjs` — the only API the UI can touch.
-- `src/` — UI (Vite, no framework) and the policy check.
+- `src/` — UI (Vite, no framework); `policy.mjs`, `chat.mjs`, `team.mjs` hold the testable logic (policy check, chat routing, handoff briefs, task states, crash recovery).
 
 No local HTTP server or open port: the UI talks to the background process over Electron IPC only. Renderer runs sandboxed with context isolation, no Node access, strict CSP, navigation and pop-ups blocked.
