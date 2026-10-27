@@ -13,12 +13,13 @@
     "start": "vite build && electron .",
     "dist:linux": "npm run check && npm test && vite build && electron-builder --linux AppImage --x64 --publish never",
     "test": "node --test \"test/*.test.*\"",
-    "check": "for f in electron/*.cjs; do node --check $f || exit 1; done"
+    "check": "for f in electron/*.cjs; do node --check $f || exit 1; done",
+    "dist:deb": "npm run check && npm test && vite build && electron-builder --linux deb --x64 --publish never"
   },
   "build": {
     "appId": "os.hearth.ai-command-center",
     "productName": "Hearth AI Command Center",
-    "artifactName": "Hearth-AI-Command-Center-${version}-x86_64.AppImage",
+    "artifactName": "Hearth-AI-Command-Center-${version}-${arch}.${ext}",
     "directories": {
       "output": "release",
       "buildResources": "build"
@@ -33,6 +34,12 @@
       "target": [
         {
           "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "deb",
           "arch": [
             "x64"
           ]
