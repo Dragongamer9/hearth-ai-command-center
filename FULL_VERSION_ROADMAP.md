@@ -1,6 +1,11 @@
 # Roadmap & current limitations
 
-## Working now (0.2.0)
+## New in 0.3.0
+- Connect account / Disconnect for every AI through official sign-ins; billing shown per AI; Use on/off switch.
+- Gemini (Google sign-in) and a local AI (Ollama) join the team.
+- Setup checklist, Control Room, Claude as lead coordinator, agents told what the Command Center can do, Add & start from chat, Show changes on tasks.
+
+## Working since 0.2.0
 - Account-linked Claude (Claude Code) and ChatGPT (Codex CLI); FreeBuff via its CLI in a terminal. Optional API keys.
 - Team chat: everyone sees everything, @mentions, task proposals become board cards, FreeBuff relay.
 - Shared, provider-independent tasks: per-task git branch and worktree, checkpoint before and after every agent run, handoff briefs, auto-handoff when an agent runs out of usage.
