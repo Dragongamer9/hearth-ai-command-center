@@ -2,6 +2,8 @@
 // with the user's own subscriptions (no API credit needed).
 //   Claude   -> Claude Code  (`claude -p`)          sign in: `claude auth login`
 //   ChatGPT  -> OpenAI Codex (`codex exec`)         sign in: `codex login`
+//   Gemini   -> Gemini CLI   (`gemini -p`)          sign in: run `gemini`, "Sign in with Google"
+//   Local    -> Ollama on this machine (HTTP on 127.0.0.1:11434, no account)
 //   FreeBuff -> `freebuff` (interactive only; opened in a terminal)
 // Every process is started with execFile/spawn and an argument array (never a
 // shell), prompts go in over stdin, and runs have hard timeouts.
@@ -10,8 +12,17 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const BIN = { anthropic: 'claude', openai: 'codex', freebuff: 'freebuff' };
-const LOGIN = { anthropic: ['auth', 'login'], openai: ['login'], freebuff: [] };
+const BIN = { anthropic: 'claude', openai: 'codex', google: 'gemini', freebuff: 'freebuff', ollama: 'ollama' };
+const LOGIN = { anthropic: ['auth', 'login'], openai: ['login'], google: [], freebuff: [] };
+const NPM_PACKAGE = {
+  anthropic: '@anthropic-ai/claude-code',
+  openai: '@openai/codex',
+  google: '@google/gemini-cli',
+  freebuff: 'freebuff',
+};
+const OLLAMA = process.env.OLLAMA_HOST && /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(process.env.OLLAMA_HOST)
+  ? process.env.OLLAMA_HOST
+  : 'http://127.0.0.1:11434';
 
 function searchDirs() {
   const home = os.homedir();
@@ -120,8 +131,60 @@ function classify(agent, res, text) {
 }
 
 // mode: 'read' (look, answer, plan — no file changes) or 'edit' (may edit files in cwd).
+async function runOllama({ prompt, model, timeoutMs = 300000, signal }) {
+  const st = await ollamaStatus();
+  if (!st.installed) return { ok: false, error: { kind: 'not_installed', message: 'Ollama is not running on this computer.' } };
+  const use = model && st.models.includes(model) ? model : st.models[0];
+  if (!use) return { ok: false, error: { kind: 'not_installed', message: 'Ollama has no models yet. Run e.g. `ollama pull llama3.2` first.' } };
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  signal?.addEventListener('abort', () => controller.abort());
+  try {
+    const r = await fetch(`${OLLAMA}/api/chat`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: use, stream: false, messages: [{ role: 'user', content: prompt }] }),
+      signal: controller.signal,
+    });
+    const j = await r.json().catch(() => null);
+    const text = j?.message?.content;
+    if (r.ok && typeof text === 'string' && text) return { ok: true, text, via: `Ollama · ${use}` };
+    return { ok: false, error: { kind: 'failed', message: (j?.error || `HTTP ${r.status}`).toString().slice(0, 300) } };
+  } catch (e) {
+    if (signal?.aborted) return { ok: false, error: { kind: 'cancelled', message: 'Stopped by you.' } };
+    if (e.name === 'AbortError') return { ok: false, error: { kind: 'timeout', message: 'The local model took too long.' } };
+    return { ok: false, error: { kind: 'outage', message: 'Could not reach Ollama on this computer.' } };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function ollamaStatus() {
+  try {
+    const r = await fetch(`${OLLAMA}/api/tags`, { signal: AbortSignal.timeout(3000) });
+    const j = await r.json();
+    const models = Array.isArray(j.models) ? j.models.map((m) => String(m.name)).filter(Boolean) : [];
+    return { installed: true, signedIn: true, path: OLLAMA, models };
+  } catch {
+    return { installed: false, signedIn: false, path: null, models: [] };
+  }
+}
+
+function parseGemini(stdout) {
+  const s = stdout.trim();
+  const start = s.indexOf('{');
+  try {
+    const j = JSON.parse(s.slice(Math.max(0, start)));
+    const err = j.error ? (typeof j.error === 'string' ? j.error : j.error.message || JSON.stringify(j.error)) : null;
+    return { text: typeof j.response === 'string' ? j.response : '', error: err };
+  } catch {
+    return { text: s, error: null };
+  }
+}
+
 async function runAgent({ agent, prompt, cwd, mode = 'read', model, timeoutMs, signal, bin }) {
   const file = bin || findBinary(agent);
+  if (agent === 'ollama') return runOllama({ prompt, model, timeoutMs, signal });
   if (!file) return { ok: false, error: { kind: 'not_installed', message: `${BIN[agent]} is not installed.` } };
   if (agent === 'freebuff') {
     return { ok: false, error: { kind: 'interactive', message: 'FreeBuff only runs interactively — open it in a terminal from the task.' } };
@@ -151,10 +214,31 @@ async function runAgent({ agent, prompt, cwd, mode = 'read', model, timeoutMs, s
     if (res.code === 0 && text) return { ok: true, text, via: 'Codex' };
     return { ok: false, error: classify(agent, res, text), partial: text || null };
   }
+  if (agent === 'google') {
+    // Brief comes in over stdin; -p forces headless mode and is appended to it.
+    const args = ['-p', 'Follow the instructions above.', '--output-format', 'json', '--approval-mode', mode === 'edit' ? 'auto_edit' : 'plan'];
+    if (model) args.push('-m', model);
+    const res = await run(file, args, { cwd: workdir, input: prompt, timeoutMs, signal });
+    const parsed = parseGemini(res.out);
+    if (res.code === 0 && !parsed.error && parsed.text) return { ok: true, text: parsed.text, via: 'Gemini CLI' };
+    return { ok: false, error: classify(agent, res, `${parsed.error || ''}\n${parsed.text}`), partial: parsed.text || null };
+  }
   return { ok: false, error: { kind: 'unsupported', message: 'Unknown agent.' } };
 }
 
+function geminiSignedIn() {
+  if (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || process.env.GOOGLE_CLOUD_PROJECT) return true;
+  const dir = path.join(os.homedir(), '.gemini');
+  if (fs.existsSync(path.join(dir, 'oauth_creds.json'))) return true;
+  try {
+    const st = JSON.parse(fs.readFileSync(path.join(dir, 'settings.json'), 'utf8'));
+    if (st?.security?.auth?.selectedType || st?.selectedAuthType) return true;
+  } catch {}
+  return false;
+}
+
 async function status(agent, bin) {
+  if (agent === 'ollama') return ollamaStatus();
   const file = bin || findBinary(agent);
   if (!file) return { installed: false, signedIn: false, path: null };
   if (agent === 'anthropic') {
@@ -167,6 +251,7 @@ async function status(agent, bin) {
     const r = await run(file, ['login', 'status'], { timeoutMs: 15000 });
     return { installed: true, signedIn: r.code === 0 && !/not logged/i.test(r.out + r.err), path: file };
   }
+  if (agent === 'google') return { installed: true, signedIn: geminiSignedIn(), path: file };
   // FreeBuff has no status command; signing in happens inside its own session.
   return { installed: true, signedIn: null, path: file };
 }
@@ -186,12 +271,19 @@ const TERMINALS = [
   ['xterm', ['-e']],
 ];
 
-// Open an interactive terminal (sign-in flows, FreeBuff sessions).
-function openTerminal(file, args, cwd) {
+// Open an interactive terminal (sign-in flows, installs, FreeBuff sessions).
+// With hold: true the window stays open afterwards so you can read the result.
+function openTerminal(file, args, cwd, { hold = false } = {}) {
+  let cmd = [file, ...args];
+  if (hold) {
+    // Fixed script; the program and its arguments are passed as positional
+    // parameters ("$@"), never pasted into the shell text.
+    cmd = ['/bin/sh', '-c', '"$@"; s=$?; echo; if [ $s -eq 0 ]; then echo "Done. Return to Hearth AI and press Re-check."; else echo "Finished with an error (code $s)."; fi; printf "Press Enter to close… "; read _', 'hearth', file, ...args];
+  }
   for (const [term, pre] of TERMINALS) {
     const t = searchDirs().map((d) => path.join(d, term)).find((p) => fs.existsSync(p));
     if (!t) continue;
-    const child = spawn(t, [...pre, file, ...args], { cwd: cwd || os.homedir(), env: childEnv(), detached: true, stdio: 'ignore' });
+    const child = spawn(t, [...pre, ...cmd], { cwd: cwd || os.homedir(), env: childEnv(), detached: true, stdio: 'ignore' });
     child.on('error', () => {});
     child.unref();
     return { ok: true, terminal: term };
@@ -202,7 +294,17 @@ function openTerminal(file, args, cwd) {
 function login(agent, bin, cwd) {
   const file = bin || findBinary(agent);
   if (!file) return { ok: false, message: `${BIN[agent]} is not installed.` };
-  return openTerminal(file, LOGIN[agent], cwd);
+  // Gemini and FreeBuff sign in inside their own first session, so no hold wrapper.
+  return openTerminal(file, LOGIN[agent], cwd, { hold: ['anthropic', 'openai'].includes(agent) });
 }
 
-module.exports = { runAgent, status, login, openTerminal, findBinary, isLimit, resetHint, parseClaude, BIN, execFile };
+// One-click install of an agent's official CLI from npm, shown in a terminal.
+function install(agent) {
+  const pkg = NPM_PACKAGE[agent];
+  if (!pkg) return { ok: false, message: 'No installer for this agent.' };
+  const npm = searchDirs().map((d) => path.join(d, 'npm')).find((p) => fs.existsSync(p));
+  if (!npm) return { ok: false, message: 'npm was not found. Install Node.js 18 or newer first (it includes npm).' };
+  return openTerminal(npm, ['install', '-g', pkg], os.homedir(), { hold: true });
+}
+
+module.exports = { runAgent, status, login, install, openTerminal, findBinary, isLimit, resetHint, parseClaude, parseGemini, BIN, NPM_PACKAGE, execFile };
