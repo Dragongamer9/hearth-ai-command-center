@@ -4,8 +4,8 @@ The app updates itself from **published GitHub Releases** of this repository usi
 
 ## How it works
 
-1. You build a release with the manual **Draft release** workflow (Actions tab → *Draft release (manual, owner only)* → enter the version that's in `package.json`). It uploads the AppImage and `latest-linux.yml` to a **draft** release.
-2. Drafts are invisible to the updater. Nothing reaches anyone until you open the draft on GitHub and press **Publish release**. That button is the sign-off.
+1. Pushing a version tag (for example `v0.3.0`, which must match `package.json`) starts the **Release (draft, automatic)** workflow. GitHub builds, tests, and creates a **draft** release with the AppImage and `latest-linux.yml` from that same build. Release notes come from `release-notes/<tag>.md`.
+2. Drafts are invisible to the updater. Nothing reaches anyone until you open the draft on GitHub and press **Publish release**. That button is the sign-off. (Optional: set the repository variable `AUTO_PUBLISH=true` to publish automatically after a successful build.)
 3. In the app, **Settings → App updates → Check for updates** reads `latest-linux.yml` from the latest published release.
 4. If a newer version exists you get a notice. You choose **Download update** (progress bar shown); the download is verified against the SHA-512 in `latest-linux.yml`.
 5. You choose **Restart & install**. The new AppImage replaces the old file in place and the app relaunches.
