@@ -1,0 +1,37 @@
+name: Draft release (manual, owner only)
+
+# Run by hand from the Actions tab. Creates a DRAFT GitHub Release with the
+# AppImage + latest-linux.yml attached. Drafts are invisible to the in-app
+# updater; users only get the update after the owner presses "Publish" on GitHub.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release - must exactly match "version" in package.json (you choose it)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  draft:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Version must match package.json
+        run: |
+          pkg=$(node -p "require('./package.json').version")
+          if [ "$pkg" != "${{ inputs.version }}" ]; then
+            echo "package.json is $pkg but you entered ${{ inputs.version }}. Nothing was released."; exit 1
+          fi
+      - run: npm ci
+      - run: npm run check && npm test
+      - run: npx vite build
+      - name: Build and upload to a draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx electron-builder --linux AppImage --x64 --publish always
