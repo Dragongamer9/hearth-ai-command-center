@@ -1,0 +1,3 @@
+#!/bin/sh
+# Fake agent that hangs (for cancel/timeout tests).
+sleep 10

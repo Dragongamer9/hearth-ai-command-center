@@ -2,7 +2,7 @@
 const PROVIDERS = Object.freeze(['anthropic', 'openai', 'freebuff']);
 const LIVE_PROVIDERS = Object.freeze(['anthropic', 'openai']);
 const MAX_STATE_BYTES = 5 * 1024 * 1024;
-const MAX_PROMPT_CHARS = 20000;
+const MAX_PROMPT_CHARS = 60000;
 
 function isPlainObject(v) {
   return v !== null && typeof v === 'object' && !Array.isArray(v);

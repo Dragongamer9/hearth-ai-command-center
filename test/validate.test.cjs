@@ -25,5 +25,5 @@ test('state shape and size', () => {
 });
 test('prompt', () => {
   assert.throws(() => v.validatePrompt('   '));
-  assert.throws(() => v.validatePrompt('x'.repeat(20001)));
+  assert.throws(() => v.validatePrompt('x'.repeat(60001)));
 });

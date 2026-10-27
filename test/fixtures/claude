@@ -1,0 +1,13 @@
+#!/bin/sh
+# Fake Claude Code for tests.
+prompt=$(cat)
+if [ "$1" = "auth" ]; then echo '{"loggedIn": true}'; exit 0; fi
+if [ -n "$FAKE_CLAUDE_OUTAGE" ]; then echo "API Error: 529 overloaded_error Overloaded" >&2; exit 1; fi
+if [ -n "$FAKE_CLAUDE_SECRET" ]; then echo '{"is_error":false,"result":"key is sk-ant-abcdefghijklmnopqrstuv ok"}'; exit 0; fi
+if [ -n "$FAKE_CLAUDE_SLOW" ]; then echo "half-done work" > claude-inflight.txt; sleep 60; fi
+if [ -n "$FAKE_CLAUDE_LIMIT" ]; then
+  echo "partial work" > claude-partial.txt
+  echo '{"type":"result","is_error":true,"result":"Claude AI usage limit reached|resets 3pm"}'; exit 1
+fi
+echo "claude was here" > claude.txt
+echo '{"type":"result","is_error":false,"result":"Did the thing.\nSTATUS: DONE"}'

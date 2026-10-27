@@ -1,0 +1,9 @@
+#!/bin/sh
+# Fake Codex CLI for tests.
+if [ "$1" = "login" ]; then echo "Logged in using ChatGPT"; exit 0; fi
+out=""; dir="."
+while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift;; -C) dir="$2"; shift;; esac; shift; done
+prompt=$(cat)
+case "$prompt" in *HANDOFF*) note="continued handoff";; *) note="fresh";; esac
+echo "codex $note" > "$dir/codex.txt"
+printf 'Codex finished (%s).\nSTATUS: DONE' "$note" > "$out"
