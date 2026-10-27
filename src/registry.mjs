@@ -11,6 +11,16 @@ export const AGENTS = {
   none: { name: 'Unassigned', vendor: '', cls: 'a-none', headless: false, edits: false, mention: [] },
 };
 
+// How each connection is paid for, shown next to every AI.
+export const BILLING = {
+  anthropic: 'Uses your Claude subscription (Pro/Max) — no API charges. Heavy non-stop use reaches your plan limits sooner.',
+  openai: 'Uses your ChatGPT plan’s included Codex usage — no API charges.',
+  google: 'Uses your Google account — free tier (about 1,000 requests a day) or your Gemini plan.',
+  ollama: 'Free — runs on your own computer. No account, never runs out.',
+  freebuff: 'Free FreeBuff account (it has its own daily limits).',
+  api: 'API key — billed per use to your developer account, separate from any subscription.',
+};
+
 export const DEFAULT_ROLES = {
   anthropic: 'Lead coordinator: plans, splits work into tasks, reviews results, decides next steps',
   openai: 'Coding: implementation and debugging',

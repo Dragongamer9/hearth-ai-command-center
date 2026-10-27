@@ -1,10 +1,10 @@
 # Hearth AI Command Center
 
-Desktop command center for Hearth OS: link your **Claude**, **ChatGPT** and **FreeBuff** accounts, talk to all of them in one team chat, hand them tasks, and let them pick up each other's work when one runs out of usage. Every task runs through a policy check, independent review and your approval, and every step is saved. Linux AppImage.
+Desktop command center for Hearth OS: sign in with your **Claude**, **ChatGPT**, **Gemini** and **FreeBuff** accounts (plus a free **local AI**), talk to all of them in one team chat, hand them tasks, and let them pick up each other's work when one runs out of usage. Every task runs through a policy check, independent review and your approval, and every step is saved. Linux AppImage.
 
 Hearth OS stays pinned at **0.6.55**. This app never changes Hearth OS, merges, releases or deploys anything.
 
-Docs: `docs/SAVING_AND_RESUME.md` (what's saved, recovery, handoff), `docs/IN_APP_UPDATES.md` (updates), `FULL_VERSION_ROADMAP.md` (what's next).
+Docs: `docs/ACCOUNTS.md` (connecting accounts), `docs/SAVING_AND_RESUME.md` (what's saved, recovery, handoff), `docs/IN_APP_UPDATES.md` (updates), `FULL_VERSION_ROADMAP.md` (what's next).
 
 ## Install & run
 
@@ -27,21 +27,21 @@ Docs: `docs/SAVING_AND_RESUME.md` (what's saved, recovery, handoff), `docs/IN_AP
 | Sign in does nothing | No terminal app found. Run `claude auth login` / `codex login` yourself, then *Re-check*. |
 | Updates say "disabled" | You launched an unpacked build — run the `.AppImage` file itself. |
 
-## Linking your AIs
-Agents page. Each AI is linked through its official tool, signed in with **your own account** (no API credit needed):
+## Connecting your AIs
+Open **Agents** (or follow the setup checklist on the Overview page) and press **Connect account** on each AI. That installs the official tool if needed, then opens the provider's own sign-in. No API keys to hunt down. Details, billing and limits: `docs/ACCOUNTS.md`.
 
-| AI | Install | Sign in |
+| AI | Signs in with | Paid by |
 |---|---|---|
-| Claude | `npm install -g @anthropic-ai/claude-code` | *Sign in* button (runs `claude auth login`) |
-| ChatGPT | `npm install -g @openai/codex` | *Sign in* button (runs `codex login`) |
-| FreeBuff | `npm install -g freebuff` | Opens FreeBuff in a terminal; sign in there |
-
-Press **Re-check** after installing or signing in. If the app can't find a program, use **Locate program…**. Claude and ChatGPT can also use an API key instead.
+| Claude (lead coordinator) | Claude Code | Your Claude subscription |
+| ChatGPT | Codex CLI ("Sign in with ChatGPT") | Your ChatGPT plan |
+| Gemini | Gemini CLI ("Sign in with Google") | Free tier / your Google plan |
+| Local AI | Ollama on your computer | Free |
+| FreeBuff | FreeBuff (hands-on in a terminal) | Free account |
 
 Then pick a **shared project folder** (any git repo) in Settings.
 
 ## Using it
-- **Team chat:** everyone sees every message. `@claude` / `@chatgpt` talks to one agent. Ask them to split up work and their `TASK:` proposals become one-click *Add to board* cards. FreeBuff can't reply on its own, so paste what it says with *Post as FreeBuff*.
+- **Team chat:** everyone sees every message; Claude leads and answers first. `@claude` / `@chatgpt` / `@gemini` / `@local` talks to one AI. Ask them to split up work and their `TASK:` proposals become one-click *Add to board* cards. FreeBuff can't reply on its own, so paste what it says with *Post as FreeBuff*.
 - **Tasks:** *Start with Claude/ChatGPT* runs the agent in that task's own git branch and working copy. Every run is committed as a checkpoint. *Hand off to…* or *Continue in FreeBuff* lets another agent continue from the same files.
 - **Out of usage:** the task is checkpointed and handed to the next free agent automatically.
 - **Approvals:** nothing is merged, pushed, released or deployed by the app.
