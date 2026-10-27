@@ -37,3 +37,28 @@ not a task line`);
   assert.equal(out[1].reviewer, 'anthropic'); // self-review auto-corrected
   assert.equal(out[2].action, 'code'); // unknown action falls back
 });
+
+import { teamContext } from '../src/chat.mjs';
+test('lead answers first; new mentions work', () => {
+  const live = ['openai', 'google', 'anthropic', 'ollama'];
+  assert.deepStrictEqual(recipients('plan this', live, 'all', 'anthropic'), ['anthropic', 'openai', 'google', 'ollama']);
+  assert.deepStrictEqual(recipients('plan this', live, 'all', 'google')[0], 'google');
+  assert.deepStrictEqual(recipients('@gemini and @local check', live), ['google', 'ollama']);
+});
+test('agents are told what the Command Center can do, the team and the board', () => {
+  const ctx = { lead: 'anthropic', project: '/home/chris/hearth', roster: [{ id: 'anthropic', status: 'available' }, { id: 'ollama', status: 'available' }], board: [{ id: 'ABC123', title: 'Fix boot menu', stage: 'Implementing', assignee: 'openai' }] };
+  const p = buildPrompt('anthropic', [{ who: 'owner', text: 'hi' }], ctx);
+  assert.match(p, /Electron, Linux AppImage/);
+  assert.match(p, /\/home\/chris\/hearth/);
+  assert.match(p, /Claude \(you\) \[LEAD\]/);
+  assert.match(p, /You are the LEAD/);
+  assert.match(p, /T-ABC123 "Fix boot menu"/);
+  assert.match(p, /Never claim something was pushed/);
+  assert.doesNotMatch(buildPrompt('openai', [], ctx), /You are the LEAD/);
+  assert.match(teamContext({}), /not chosen yet/);
+});
+test('proposals for Gemini and local AI', () => {
+  const out = parseProposals('TASK: Research boot loaders | implementer: gemini | reviewer: local | action: docs\nTASK: Review it | implementer: local | reviewer: claude');
+  assert.deepStrictEqual(out[0], { title: 'Research boot loaders', assignee: 'google', reviewer: 'ollama', action: 'docs' });
+  assert.equal(out[1].assignee, 'none'); // the local model can't implement
+});

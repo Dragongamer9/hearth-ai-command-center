@@ -1,18 +1,42 @@
 // Team chat helpers (pure, unit tested).
-export const NAMES = { owner: 'Owner', anthropic: 'Claude', openai: 'ChatGPT', freebuff: 'FreeBuff', system: 'System' };
-const ALIASES = { claude: 'anthropic', anthropic: 'anthropic', chatgpt: 'openai', gpt: 'openai', openai: 'openai', freebuff: 'freebuff' };
+import { AGENTS, AGENT_IDS, DEFAULT_ROLES, EDITORS, aliasOf } from './registry.mjs';
+
+export const NAMES = { owner: 'Owner', system: 'System', ...Object.fromEntries(AGENT_IDS.map((a) => [a, AGENTS[a].name])) };
 const ACTIONS = ['code', 'docs', 'merge', 'release', 'deploy'];
 const MAX_TRANSCRIPT_CHARS = 12000;
 
-// Which agents should answer. "@claude ..." targets one; otherwise everyone live.
-export function recipients(text, live, target = 'all') {
-  const mentioned = [...new Set([...text.matchAll(/@(\w+)/g)].map((m) => ALIASES[m[1].toLowerCase()]).filter(Boolean))];
-  let list = mentioned.length ? mentioned : target === 'all' ? ['anthropic', 'openai'] : [target];
-  return list.filter((a) => live.includes(a));
+// Who should answer, in order. "@claude ..." targets one; otherwise every live
+// agent, with the lead coordinator answering first.
+export function recipients(text, live, target = 'all', lead = 'anthropic') {
+  const mentioned = [...new Set([...String(text).matchAll(/@(\w+)/g)].map((m) => aliasOf(m[1])).filter(Boolean))];
+  let list = mentioned.length ? mentioned : target === 'all' ? [...live] : [target];
+  list = list.filter((a) => live.includes(a));
+  if (!mentioned.length && list.includes(lead)) list = [lead, ...list.filter((a) => a !== lead)];
+  return list;
 }
 
-export function buildPrompt(agent, messages) {
-  const others = ['anthropic', 'openai', 'freebuff'].filter((a) => a !== agent).map((a) => NAMES[a]).join(', ');
+// What every agent is told about the Command Center, so it knows what it can
+// actually do instead of guessing.
+export function teamContext({ agent, roster = [], lead = 'anthropic', board = [], project = null } = {}) {
+  const roleOf = (r) => r.role || DEFAULT_ROLES[r.id] || '';
+  return [
+    'ABOUT THE HEARTH AI COMMAND CENTER (facts, not suggestions):',
+    '- It is a desktop app (Electron, Linux AppImage) on the Owner\'s own computer. It coordinates several AIs on the Owner\'s software projects, mainly Hearth OS.',
+    `- Shared project folder (a git repo): ${project || 'not chosen yet'}. In this chat you can READ it (your current directory) but not change it.`,
+    '- Real work happens in TASKS. When the Owner starts a task, the assigned agent runs headless (Claude Code, Codex CLI or Gemini CLI) with permission to edit files inside that task\'s own git branch and worktree. Every run is committed automatically as a checkpoint, so another agent can continue if one runs out of usage.',
+    '- You cannot push, merge, release or deploy. Those only happen when the Owner does them. Never claim something was pushed, committed or done unless a task run shows a checkpoint commit for it.',
+    '- Hearth OS is pinned at 0.6.55; only the Owner picks version numbers. Anything touching booting must keep the previous version startable.',
+    '',
+    'THE TEAM:',
+    ...roster.map((r) => `- ${NAMES[r.id]}${r.id === agent ? ' (you)' : ''}${r.id === lead ? ' [LEAD]' : ''}: ${roleOf(r)} — ${r.status}`),
+    '',
+    board.length ? 'OPEN TASKS ON THE BOARD:' : 'The task board is empty.',
+    ...board.slice(0, 15).map((t) => `- T-${t.id} "${t.title}" — ${t.stage}, implementer ${NAMES[t.assignee] || 'none'}${t.state ? `, ${t.state}` : ''}`),
+  ].join('\n');
+}
+
+export function buildPrompt(agent, messages, ctx = {}) {
+  const lead = ctx.lead || 'anthropic';
   let lines = [];
   let used = 0;
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -23,15 +47,19 @@ export function buildPrompt(agent, messages) {
     lines.unshift(line);
     used += line.length;
   }
+  const editors = EDITORS.map((a) => AGENTS[a].mention[0]).join('|');
   return [
-    `You are ${NAMES[agent]} in the Hearth AI Command Center team chat with the Owner and the other agents (${others}).`,
-    'Everyone sees every message. FreeBuff is not connected yet and cannot reply.',
-    'Be concise. Build on what the other agents said instead of repeating it; disagree when you have a reason.',
-    'You cannot run code or change repositories from this chat. Never claim to have done work.',
-    'Hearth OS is pinned at 0.6.55; never propose changing its version, the Owner picks version numbers.',
-    'When the Owner asks to split up or distribute work, propose tasks, one per line, in exactly this format:',
-    'TASK: <title> | implementer: claude|chatgpt|freebuff | reviewer: claude|chatgpt|freebuff | action: code|docs|merge|release|deploy',
-    'The reviewer must differ from the implementer. The Owner decides which tasks go on the board.',
+    `You are ${NAMES[agent]} in the Hearth AI Command Center team chat with the Owner and the other AIs. Everyone sees every message.`,
+    teamContext({ ...ctx, agent }),
+    '',
+    'HOW TO BEHAVE:',
+    agent === lead
+      ? '- You are the LEAD: when the Owner asks for work, break it down and assign it to the best-suited teammates by their roles. Keep the plan short.'
+      : `- ${NAMES[lead]} is the lead. Build on the lead's plan and the other replies instead of repeating them; disagree when you have a reason.`,
+    '- Be concise. Do not ask the Owner for facts that are stated above.',
+    '- To put work on the board, write one line per task in exactly this format (the Owner gets Add / Add & start buttons):',
+    `TASK: <title> | implementer: ${editors} | reviewer: ${editors}|local | action: code|docs|merge|release|deploy`,
+    '- The reviewer must differ from the implementer. The local AI cannot implement (it can only review).',
     '',
     '--- Chat so far ---',
     ...lines,
@@ -53,9 +81,10 @@ export function parseProposals(text) {
       const p = parts.find((x) => x.toLowerCase().startsWith(`${k}:`));
       return p ? p.slice(k.length + 1).trim().toLowerCase() : '';
     };
-    const assignee = ALIASES[field('implementer')] || 'none';
-    let reviewer = ALIASES[field('reviewer')] || 'none';
-    if (reviewer === assignee && assignee !== 'none') reviewer = assignee === 'anthropic' ? 'openai' : 'anthropic';
+    let assignee = aliasOf(field('implementer')) || 'none';
+    if (assignee !== 'none' && !EDITORS.concat('freebuff').includes(assignee)) assignee = 'none';
+    let reviewer = aliasOf(field('reviewer')) || 'none';
+    if (reviewer === assignee && assignee !== 'none') reviewer = EDITORS.find((a) => a !== assignee) || 'none';
     const action = ACTIONS.includes(field('action')) ? field('action') : 'code';
     out.push({ title: title.slice(0, 200), assignee, reviewer, action });
   }

@@ -1,5 +1,5 @@
 // Input validation for everything that crosses the IPC boundary.
-const PROVIDERS = Object.freeze(['anthropic', 'openai', 'freebuff']);
+const PROVIDERS = Object.freeze(['anthropic', 'openai', 'google', 'ollama', 'freebuff']);
 const LIVE_PROVIDERS = Object.freeze(['anthropic', 'openai']);
 const MAX_STATE_BYTES = 5 * 1024 * 1024;
 const MAX_PROMPT_CHARS = 60000;
