@@ -1,13 +1,16 @@
 // Hearth AI Command Center — Electron main process.
 // All privileged work (files, secrets, provider APIs, updates) happens here.
 // The renderer only gets the narrow API exposed in preload.cjs.
-const { app, BrowserWindow, ipcMain, shell, Menu, safeStorage, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, Menu, safeStorage, dialog, clipboard } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const { validateState, validateProvider, validateApiKey, validateModel, validatePrompt } = require('./validate.cjs');
 const { callProvider, DEFAULT_MODELS } = require('./providers.cjs');
 const { createSecretStore } = require('./secrets.cjs');
 const { createUpdater } = require('./updater.cjs');
+const agents = require('./agents.cjs');
+const workspace = require('./workspace.cjs');
+const { createStore, redact, redactDeep } = require('./store.cjs');
 
 // Hearth OS version this console is pinned to. Display-only: this app never
 // changes, bumps, publishes or deploys Hearth OS.
@@ -24,27 +27,41 @@ let updater = null;
 
 const dataDir = () => app.getPath('userData');
 const stateFile = () => path.join(dataDir(), 'command-center-state.json');
+const settingsFile = () => path.join(dataDir(), 'settings.json');
+const worktreeRoot = () => path.join(dataDir(), 'workspaces');
+const runs = new Map(); // runId -> AbortController
+
+// Main-side settings: the renderer can never hand us an arbitrary path to run in.
+function readSettings() {
+  let s = {};
+  try { s = JSON.parse(fs.readFileSync(settingsFile(), 'utf8')); } catch {}
+  return {
+    project: typeof s.project === 'string' ? s.project : null,
+    connection: { anthropic: 'cli', openai: 'cli', ...(s.connection || {}) },
+    bins: { ...(s.bins || {}) },
+  };
+}
+function writeSettings(s) {
+  fs.mkdirSync(dataDir(), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(settingsFile(), JSON.stringify(s, null, 2), { mode: 0o600 });
+}
+const TASK_ID = /^[A-Z0-9]{4,10}$/;
+function taskDir(taskId) {
+  if (!TASK_ID.test(taskId)) throw new Error('bad task id');
+  return path.join(worktreeRoot(), taskId);
+}
+
+let store = null;
+let lastLoad = { recoveredFrom: null };
 
 function readState() {
-  try {
-    return JSON.parse(fs.readFileSync(stateFile(), 'utf8'));
-  } catch (e) {
-    if (e.code !== 'ENOENT') {
-      // Keep a copy of an unreadable file instead of silently losing it.
-      try { fs.copyFileSync(stateFile(), `${stateFile()}.corrupt-${Date.now()}`); } catch {}
-    }
-    return null;
-  }
+  lastLoad = store.load();
+  return lastLoad.state;
 }
 
 function writeState(state) {
   validateState(state);
-  const file = stateFile();
-  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-  const tmp = `${file}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(state, null, 2), { mode: 0o600 });
-  fs.renameSync(tmp, file);
-  return true;
+  return store.save(state);
 }
 
 function send(channel, payload) {
@@ -111,9 +128,27 @@ function createWindow() {
   });
 }
 
+// Never let a secret that an agent echoed back reach the UI, state or logs.
+function cleanResult(r) {
+  if (r.text) r.text = redact(r.text);
+  if (r.partial) r.partial = redact(r.partial);
+  if (r.error?.message) r.error.message = redact(r.error.message);
+  return r;
+}
+
 function registerIpc() {
   handle('state:load', () => readState());
   handle('state:save', (state) => writeState(state));
+  handle('state:backups', () => ({ recoveredFrom: lastLoad.recoveredFrom, lost: Boolean(lastLoad.lost), backups: store.list() }));
+  handle('state:restore', (n) => store.restore(Number(n)));
+  // Export everything (tasks, progress, chat, audit) with secrets scrubbed.
+  handle('state:export', async (state) => {
+    validateState(state);
+    const r = await dialog.showSaveDialog(mainWindow, { title: 'Export Hearth AI work', defaultPath: `hearth-ai-backup-${new Date().toISOString().slice(0, 10)}.json` });
+    if (r.canceled || !r.filePath) return { ok: false };
+    fs.writeFileSync(r.filePath, JSON.stringify(redactDeep({ exportedAt: new Date().toISOString(), app: app.getVersion(), ...state }), null, 2), { mode: 0o600 });
+    return { ok: true, file: r.filePath };
+  });
 
   handle('app:info', () => ({
     appVersion: app.getVersion(),
@@ -153,6 +188,126 @@ function registerIpc() {
     });
   });
 
+  // ---- linked agents & shared workspace ----
+  handle('settings:get', () => readSettings());
+  handle('settings:setConnection', (agent, method) => {
+    validateProvider(agent, { liveOnly: true });
+    if (!['cli', 'api'].includes(method)) throw new Error('bad method');
+    const s = readSettings();
+    s.connection[agent] = method;
+    writeSettings(s);
+    return s;
+  });
+  handle('settings:pickProject', async () => {
+    const r = await dialog.showOpenDialog(mainWindow, { title: 'Choose the shared project folder (a git repository)', properties: ['openDirectory'] });
+    if (r.canceled || !r.filePaths[0]) return readSettings();
+    const dir = r.filePaths[0];
+    if (!(await workspace.isRepo(dir))) throw new Error('That folder is not a git repository. Run `git init` in it (and make a first commit), then pick it again.');
+    const s = readSettings();
+    s.project = dir;
+    writeSettings(s);
+    return s;
+  });
+  handle('settings:pickBinary', async (agent) => {
+    validateProvider(agent);
+    const r = await dialog.showOpenDialog(mainWindow, { title: `Locate the ${agents.BIN[agent]} program`, properties: ['openFile'] });
+    const s = readSettings();
+    if (!r.canceled && r.filePaths[0]) s.bins[agent] = r.filePaths[0];
+    writeSettings(s);
+    return s;
+  });
+
+  handle('agents:status', async (agent) => {
+    validateProvider(agent);
+    const s = readSettings();
+    return agents.status(agent, s.bins[agent]);
+  });
+  handle('agents:login', (agent) => {
+    validateProvider(agent);
+    const s = readSettings();
+    return agents.login(agent, s.bins[agent], s.project || undefined);
+  });
+
+  // Run an agent. mode 'read' answers/plans in the project folder; mode 'edit'
+  // works inside the task's own worktree. Out-of-usage is reported as kind 'limit'.
+  handle('agents:run', async (opts) => {
+    if (!opts || typeof opts !== 'object') throw new Error('bad request');
+    const agent = validateProvider(opts.agent);
+    const prompt = validatePrompt(opts.prompt);
+    const mode = opts.mode === 'edit' ? 'edit' : 'read';
+    const runId = typeof opts.runId === 'string' && /^[A-Za-z0-9]{4,20}$/.test(opts.runId) ? opts.runId : null;
+    const s = readSettings();
+    let cwd = s.project || undefined;
+    if (opts.taskId) {
+      const dir = taskDir(opts.taskId);
+      if (fs.existsSync(dir)) cwd = dir;
+    }
+    if (mode === 'edit' && (!opts.taskId || cwd !== taskDir(opts.taskId))) {
+      return { ok: false, error: { kind: 'no_workspace', message: 'Pick a project folder in Settings first so the task has a workspace.' } };
+    }
+
+    if (agent !== 'freebuff' && s.connection[agent] === 'api') {
+      // API connections can't touch files; in edit mode they answer with a plan instead.
+      const r = await callProvider({ provider: agent, apiKey: secrets.get(agent), model: validateModel(opts.model || DEFAULT_MODELS[agent]), prompt });
+      if (!r.ok) {
+        if (r.error.kind === 'rate_limit' || agents.isLimit(r.error.message)) r.error.kind = 'limit';
+        else if (r.error.kind === 'server' || r.error.kind === 'network') r.error.kind = 'outage';
+        else if (r.error.kind === 'no_key') r.error.kind = 'auth';
+      }
+      return cleanResult(r.ok ? { ...r, via: 'API' } : r);
+    }
+
+    const controller = new AbortController();
+    if (runId) runs.set(runId, controller);
+    try {
+      return cleanResult(await agents.runAgent({
+        agent,
+        prompt,
+        cwd,
+        mode,
+        model: opts.model && s.connection[agent] === 'cli' ? validateModel(opts.model) : undefined,
+        timeoutMs: mode === 'edit' ? 30 * 60 * 1000 : 5 * 60 * 1000,
+        signal: controller.signal,
+        bin: s.bins[agent],
+      }));
+    } finally {
+      if (runId) runs.delete(runId);
+    }
+  });
+  handle('agents:cancel', (runId) => {
+    runs.get(runId)?.abort();
+    return true;
+  });
+
+  handle('workspace:ensure', async (taskId, title) => {
+    const s = readSettings();
+    if (!s.project) throw new Error('Pick a shared project folder in Settings first.');
+    taskDir(taskId);
+    return workspace.ensureWorktree({ project: s.project, root: worktreeRoot(), taskId, title: String(title).slice(0, 200) });
+  });
+  handle('workspace:checkpoint', (taskId, author, message) =>
+    workspace.checkpoint(taskDir(taskId), { author: String(author).slice(0, 40), message: String(message).slice(0, 300) }));
+  handle('workspace:summary', (taskId, baseSha) => {
+    if (!/^[0-9a-f]{7,40}$/.test(baseSha)) throw new Error('bad sha');
+    return workspace.summary(taskDir(taskId), baseSha);
+  });
+  handle('workspace:open', (taskId) => shell.openPath(taskId ? taskDir(taskId) : readSettings().project || dataDir()));
+  // Hand a task to FreeBuff: brief goes to the clipboard and a file next to the
+  // worktree, then FreeBuff opens in a terminal inside the task's worktree.
+  handle('workspace:openFreebuff', (taskId, brief) => {
+    const dir = taskDir(taskId);
+    if (!fs.existsSync(dir)) throw new Error('Start the task first so it has a workspace.');
+    const s = readSettings();
+    const file = agents.findBinary('freebuff', s.bins.freebuff);
+    if (!file) return { ok: false, message: 'freebuff is not installed. Install it with: npm install -g freebuff' };
+    const text = String(brief).slice(0, 20000);
+    const briefFile = path.join(worktreeRoot(), `${taskId}-HANDOFF.md`);
+    fs.writeFileSync(briefFile, text, { mode: 0o600 });
+    clipboard.writeText(text);
+    const r = agents.openTerminal(file, [], dir);
+    return r.ok ? { ...r, briefFile } : r;
+  });
+
   handle('updater:info', () => updater.info());
   handle('updater:check', () => updater.check());
   handle('updater:download', () => updater.download());
@@ -173,12 +328,17 @@ process.on('uncaughtException', (e) => {
 app.whenReady().then(() => {
   Menu.setApplicationMenu(null);
   secrets = createSecretStore({ safeStorage, dir: dataDir() });
+  store = createStore(stateFile());
   updater = createUpdater({ app, send });
   registerIpc();
   createWindow();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
+});
+
+app.on('before-quit', () => {
+  for (const c of runs.values()) c.abort();
 });
 
 app.on('window-all-closed', () => {
