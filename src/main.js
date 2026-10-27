@@ -40,7 +40,9 @@ const ACTIONS = { code: 'Code change', docs: 'Docs', merge: 'Merge', release: 'R
 let state = { version: 1, tasks: [], audit: [], models: {}, chat: [], agentStatus: {}, autoHandoff: true, roles: {}, lead: 'anthropic', disabled: {} };
 let ui = { view: 'overview', selected: null, modal: null, busy: {}, draft: '', target: 'all', typing: null, running: {}, saving: {}, changes: {} };
 let backups = { recoveredFrom: null, backups: [] };
-let settings = { project: null, connection: { anthropic: 'cli', openai: 'cli' }, bins: {} };
+let settings = { project: null, projects: [], connection: { anthropic: 'cli', openai: 'cli' }, bins: {}, access: 'standard', extraDirs: [], autoPush: true, chatEdits: true };
+let gh = { git: null, gh: null, ghUser: null };
+let repo = { repo: false };
 let cli = Object.fromEntries(AGENT_IDS.map((a) => [a, {}]));
 let info = { appVersion: '?', hearthOsVersion: HEARTH_OS_PIN, dataPath: '', electron: '?', packaged: false };
 let prov = { encryption: false, weakEncryption: false, defaults: {}, keys: {} };
@@ -141,6 +143,8 @@ function setupChecklist() {
       `<button class="btn small primary" data-connect="${a}">Connect account</button>`)).join('')}
     ${step(connected('ollama'), `<b>Local AI</b> <span class="muted">· optional, free, works offline (Ollama${cli.ollama.installed && !cli.ollama.models?.length ? ' is running but has no models yet: run <span class="mono">ollama pull llama3.2</span>' : ''})</span>`, cli.ollama.installed ? '' : '<button class="btn small" data-install="ollama">Get Ollama</button>')}
     ${step(connected('freebuff'), '<b>FreeBuff</b> <span class="muted">· optional, hands-on in a terminal</span>', '<button class="btn small" data-install="freebuff">Install</button>')}
+    ${step(Boolean(gh.git), '<b>git</b> <span class="muted">· needed to save and share work</span>', '<span class="muted" style="font-size:12px">install git (see the GitHub page)</span>')}
+    ${step(Boolean(gh.ghUser), `<b>GitHub</b> <span class="muted">· ${gh.ghUser ? `signed in as ${esc(gh.ghUser)}` : 'sign in on github.com to pull and push'}</span>`, gh.gh ? '<button class="btn small primary" data-ghlogin>Connect GitHub</button>' : '<button class="btn small" data-nav="github">How to install</button>')}
     ${step(Boolean(settings.project), '<b>Shared project folder</b> <span class="muted">· the git repo the AIs work on</span>', '<button class="btn small primary" data-pickproject>Choose folder</button>')}
     <div class="row" style="margin-top:8px"><button class="btn small ghost" data-recheck>Re-check</button><span class="muted" style="font-size:12px">After installing or signing in, press Re-check.</span></div>
   </div>`;
@@ -181,11 +185,33 @@ function statusText(a) {
   return busy ? `busy on T-${busy[0]}` : 'available';
 }
 
+// The team chat's own workspace id, one per project (so switching projects never mixes them up).
+function chatId() {
+  let h = 0;
+  for (const c of String(settings.project || '')) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+  return `CHAT${h.toString(36).toUpperCase().padStart(6, '0').slice(-6)}`;
+}
+const chatCanEdit = () => Boolean(settings.chatEdits && settings.project && gh.git);
+
+// After a checkpoint, back the branch up to GitHub (never main).
+async function autoPush(taskId) {
+  if (!settings.autoPush || !gh.ghUser || !repo.remote) return null;
+  const r = await api.gitPushTask(taskId).catch((e) => ({ ok: false, message: cleanErr(e.message) }));
+  return r;
+}
+
+async function refreshGit() {
+  try { gh = await api.gitTools(); } catch {}
+  try { repo = await api.gitStatus(); } catch { repo = { repo: false }; }
+}
+
 // What every AI is told about the app, the team and the board.
 function chatCtx() {
   return {
     lead: state.lead,
     project: settings.project,
+    chatEdits: chatCanEdit(),
+    extraDirs: settings.extraDirs,
     roster: AGENT_IDS.map((id) => ({ id, role: state.roles[id] || DEFAULT_ROLES[id], status: statusText(id) })),
     board: state.tasks.filter((t) => !['approved', 'rejected'].includes(t.stage)).map((t) => ({ id: t.id, title: t.title, stage: STAGES[t.stage], assignee: t.assignee, state: RUN_STATES[taskRunState(t, { running: Boolean(ui.running[t.id]) })] })),
   };
@@ -278,15 +304,31 @@ async function sendChat() {
   render();
   const queue = [...who];
   const answered = [];
+  const canEdit = chatCanEdit();
+  if (canEdit && who.length) {
+    try {
+      state.chatWs = state.chatWs?.id === chatId() ? state.chatWs : { ...(await api.ensureWorkspace(chatId(), 'team chat')), id: chatId() };
+    } catch (e) {
+      state.chat.push({ id: uid(), at: now(), who: 'system', text: `Chat can't edit files right now: ${cleanErr(e.message)} — answering read-only.` });
+    }
+  }
   while (queue.length) {
     const agent = queue.shift();
     if (!canRun(agent)) continue;
     ui.typing = agent;
     render();
-    const res = await callAgent(agent, buildPrompt(agent, state.chat, chatCtx()), { mode: 'read' });
+    const edit = canEdit && state.chatWs && EDITORS.includes(agent);
+    const res = await callAgent(agent, buildPrompt(agent, state.chat, { ...chatCtx(), chatEdits: Boolean(edit) }), edit ? { mode: 'edit', taskId: chatId() } : { mode: 'read', taskId: state.chatWs ? chatId() : undefined });
     if (res.ok) {
       answered.push(agent);
       state.chat.push({ id: uid(), at: now(), who: agent, text: res.text, model: res.via, proposals: parseProposals(res.text) });
+      if (edit) {
+        const cp = await api.checkpoint(chatId(), NAMES[agent], `${NAMES[agent]} in team chat: ${text.slice(0, 80)}`).catch(() => null);
+        if (cp) {
+          const pushed = await autoPush(chatId());
+          state.chat.push({ id: uid(), at: now(), who: 'system', text: `${NAMES[agent]} changed files — saved as commit ${cp.sha} (${cp.stat}) on ${state.chatWs.branch}${pushed?.ok ? ', pushed to GitHub' : pushed ? `; push failed: ${pushed.message}` : ''}.` });
+        }
+      }
     } else if (res.error.kind === 'limit') {
       const sub = liveAgents().find((x) => ![...answered, ...queue, agent].includes(x)) || null;
       const still = queue.filter(canRun);
@@ -341,7 +383,7 @@ function viewApprovals() {
         <div class="meta" style="margin-bottom:10px">${agentChip(t.assignee)}<span class="muted" style="font-size:12px">reviewed by</span>${agentChip(t.reviewer)}<span class="badge">${esc(ACTIONS[t.action])}</span></div>
         ${t.policy.warn.length ? `<div class="policy warn">${t.policy.warn.map(esc).join('<br>')}</div>` : ''}
         <div class="row">
-          <button class="btn primary small" data-approve="${t.id}">Approve</button>
+          ${t.ws ? `<button class="btn primary small" data-approvemerge="${t.id}">Approve & merge into main</button><button class="btn small" data-approve="${t.id}">Approve only</button>` : `<button class="btn primary small" data-approve="${t.id}">Approve</button>`}
           <button class="btn small" data-changes="${t.id}">Request changes</button>
           <button class="btn danger small" data-reject="${t.id}">Reject</button>
           <button class="btn ghost small" data-open="${t.id}">Details</button>
@@ -454,6 +496,41 @@ function viewAgents() {
   return `${warn}${proj}${controlRoom()}<div class="grid agents">${AGENT_IDS.map(providerCard).join('')}</div>`;
 }
 
+function viewGithub() {
+  const tool = (ok, name, how) => `<div class="setup-step ${ok ? 'ok' : ''}"><span class="tick">${ok ? '✓' : ''}</span><span style="flex:1">${name}</span>${ok ? '' : how}</div>`;
+  const st = repo;
+  return `<div class="grid two">
+    <div class="card"><h3>Connection</h3>
+      ${tool(Boolean(gh.git), '<b>git</b>', '<span class="muted mono" style="font-size:12px">sudo apt install git &nbsp;or&nbsp; sudo dnf install git</span>')}
+      ${tool(Boolean(gh.gh), '<b>GitHub CLI</b> <span class="muted">· official GitHub tool used for sign-in</span>', '<span class="muted mono" style="font-size:12px">sudo apt install gh &nbsp;or&nbsp; sudo dnf install gh</span>')}
+      ${tool(Boolean(gh.ghUser), `<b>GitHub account</b> ${gh.ghUser ? `<span class="muted">· ${esc(gh.ghUser)}</span>` : ''}`, gh.gh ? '<button class="btn small primary" data-ghlogin>Connect GitHub</button>' : '')}
+      <p class="muted" style="font-size:12.5px;line-height:1.5;margin-top:10px">Connect GitHub opens GitHub's own sign-in in your browser. git then pushes and pulls with that same sign-in — Hearth AI never sees your password or token.</p>
+      <div class="row"><button class="btn small ghost" data-gitrefresh>Re-check</button></div>
+    </div>
+    <div class="card"><h3>Projects</h3>
+      ${settings.projects.map((p) => `<div class="row" style="margin:4px 0;font-size:13px"><span class="mono" style="flex:1;word-break:break-all">${esc(p)}</span>${p === settings.project ? '<span class="badge sage">Active</span>' : `<button class="btn small ghost" data-useproject="${esc(p)}">Use</button>`}</div>`).join('') || '<div class="empty">No projects yet.</div>'}
+      <div class="row" style="margin-top:10px"><button class="btn small" data-pickproject>Open folder…</button></div>
+      <label>Clone from GitHub</label>
+      <div class="row"><input type="text" id="clone-input" placeholder="owner/repo or https://github.com/owner/repo" style="flex:1"><button class="btn small primary" data-clone ${gh.git ? '' : 'disabled'}>Clone</button></div>
+      <p class="muted" style="font-size:12px">Cloned into ~/HearthProjects and set as the active project.</p>
+    </div>
+  </div>
+  <div class="card" style="margin-top:14px">
+    <div class="row" style="margin-bottom:8px"><h3 style="margin:0;flex:1">Active project</h3>
+      <button class="btn small" data-gitpull ${st.repo && st.remote ? '' : 'disabled'}>Pull latest</button>
+      <button class="btn small ghost" data-gitrefresh>Refresh</button></div>
+    ${st.repo ? `<div class="kv">
+      <span class="k">Folder</span><span class="mono" style="word-break:break-all">${esc(settings.project)}</span>
+      <span class="k">GitHub</span><span class="mono">${esc(st.remote || 'not connected to a GitHub repo')}</span>
+      <span class="k">Checked out</span><span class="mono">${esc(st.branch)}${st.ahead ? ` · ${st.ahead} to push` : ''}${st.behind ? ` · ${st.behind} to pull` : ''}${st.dirty ? ` · ${st.dirty} uncommitted change${st.dirty > 1 ? 's' : ''}` : ''}</span>
+      <span class="k">Main branch</span><span class="mono">${esc(st.defaultBranch)} <span class="muted">(only changes when you approve a merge)</span></span>
+    </div>
+    <table><thead><tr><th>Branch</th><th>Status</th><th>Updated</th><th></th></tr></thead><tbody>
+      ${st.branches.map((b) => `<tr><td class="mono">${esc(b.name)}${b.protected ? ' 🔒' : ''}</td><td class="muted">${esc(b.track || (b.protected ? '' : 'not on GitHub yet'))}</td><td class="muted">${esc(b.when)}</td><td>${b.protected || !st.remote ? '' : `<button class="btn small ghost" data-pushbranch="${esc(b.name)}">Push</button>`}</td></tr>`).join('')}
+    </tbody></table>` : `<div class="empty">${settings.project ? 'The active project is not a git repository.' : 'Open a folder or clone a repo to get started.'}</div>`}
+  </div>`;
+}
+
 function viewAudit() {
   return `<div class="card">
     <div class="row" style="margin-bottom:10px"><h3 style="margin:0;flex:1">Append-only audit record</h3>
@@ -499,6 +576,17 @@ function viewSettings() {
       <div class="sep"></div>
       <label style="display:flex;gap:10px;align-items:center;margin:0;cursor:pointer"><input type="checkbox" data-autohandoff ${state.autoHandoff ? 'checked' : ''}> Automatically hand a task to the next free agent when one runs out of usage</label>
     </div>
+    <div class="card"><h3>What the AIs may do</h3>
+      <label style="display:flex;gap:10px;align-items:flex-start;margin:6px 0;cursor:pointer;font-size:13.5px;color:var(--text)"><input type="radio" name="access" data-access="standard" ${settings.access !== 'full' ? 'checked' : ''}><span><b>Like their own apps (recommended)</b><br><span class="muted">Edit files, run commands, use git and the web — each with its own built-in safety checks (Claude Code auto mode, Codex auto-review, Gemini auto-edit).</span></span></label>
+      <label style="display:flex;gap:10px;align-items:flex-start;margin:6px 0;cursor:pointer;font-size:13.5px;color:var(--text)"><input type="radio" name="access" data-access="full" ${settings.access === 'full' ? 'checked' : ''}><span><b>Full access, no safety checks</b><br><span class="muted">Anything, without asking. Only if you accept that one bad command can break a Hearth device.</span></span></label>
+      <div class="sep"></div>
+      <label style="display:flex;gap:10px;align-items:center;margin:4px 0;cursor:pointer"><input type="checkbox" data-togglesetting="chatEdits" ${settings.chatEdits ? 'checked' : ''}> AIs can work (edit, run, use git) right from Team chat</label>
+      <label style="display:flex;gap:10px;align-items:center;margin:4px 0;cursor:pointer"><input type="checkbox" data-togglesetting="autoPush" ${settings.autoPush ? 'checked' : ''}> Back up every checkpoint to its own branch on GitHub</label>
+      <div class="sep"></div>
+      <div class="muted" style="font-size:12px;margin-bottom:6px">Other folders on this computer the AIs may use</div>
+      ${settings.extraDirs.map((d) => `<div class="row" style="font-size:12.5px;margin:3px 0"><span class="mono" style="flex:1;word-break:break-all">${esc(d)}</span><button class="btn small ghost" data-removedir="${esc(d)}">Remove</button></div>`).join('') || '<div class="empty" style="padding:4px 0">None yet.</div>'}
+      <button class="btn small" data-adddir style="margin-top:6px">Add folder…</button>
+    </div>
     <div class="card"><h3>Saved work & backups</h3>
       <p class="muted" style="font-size:13px;line-height:1.5">Everything is saved automatically and atomically, with the last ${backups.backups.length || 10} versions kept. Code progress also lives in git checkpoints on each task branch.</p>
       ${backups.recoveredFrom ? `<div class="policy warn">The latest save was damaged, so it was set aside and your work was restored from ${esc(backups.recoveredFrom)}.</div>` : ''}
@@ -535,6 +623,7 @@ function workControls(t) {
       ${t.freebuffOpen ? `<button class="btn small primary" data-fbdone="${t.id}">FreeBuff finished — checkpoint</button>` : ''}
     </div>
     <div class="row">
+      ${t.ws && gh.ghUser && repo.remote ? `<button class="btn small ghost" data-openpr="${t.id}">Open pull request</button>` : ''}
       ${t.ws ? `<button class="btn small ghost" data-showchanges="${t.id}">${ui.changes[t.id] ? 'Refresh changes' : 'Show changes'}</button>` : ''}
       ${HEADLESS.includes(t.reviewer) ? `<button class="btn small ghost" data-opinion="${t.id}" ${canRun(t.reviewer) && !ui.busy[t.id] ? '' : 'disabled'}>${ui.busy[t.id] === 'opinion' ? 'Reviewing…' : `Independent review by ${esc(AGENTS[t.reviewer].name)}`}</button>` : ''}
       ${!settings.project ? '<span class="muted" style="font-size:12px">Set a project folder in Settings to start work.</span>' : ''}
@@ -563,12 +652,12 @@ function drawer() {
     ${t.description ? `<div class="note">${esc(t.description)}</div>` : ''}
     ${!closed && t.policy.ok ? `<div class="row" style="margin:12px 0">
       ${next ? `<button class="btn primary small" data-advance="${t.id}">${esc(next[1])}</button>` : ''}
-      ${t.stage === 'approval' ? `<button class="btn primary small" data-approve="${t.id}">Approve</button><button class="btn small" data-changes="${t.id}">Request changes</button><button class="btn danger small" data-reject="${t.id}">Reject</button>` : ''}
+      ${t.stage === 'approval' ? `${t.ws ? `<button class="btn primary small" data-approvemerge="${t.id}">Approve & merge into main</button>` : ''}<button class="btn ${t.ws ? '' : 'primary'} small" data-approve="${t.id}">Approve${t.ws ? ' only' : ''}</button><button class="btn small" data-changes="${t.id}">Request changes</button><button class="btn danger small" data-reject="${t.id}">Reject</button>` : ''}
     </div>` : ''}
     ${t.policy.ok && !closed ? workControls(t) : ''}
     ${ui.changes[t.id] ? `<div class="note mono" style="font-size:12px;white-space:pre-wrap">${esc(ui.changes[t.id])}</div>` : ''}
     ${t.runs?.length ? `<div class="sep"></div><h3 class="muted" style="font-size:12px;text-transform:uppercase;letter-spacing:.6px">Shared progress</h3>
-      ${t.runs.slice().reverse().map((r) => `<div class="note ${['limit', 'failed', 'error', 'timeout', 'not_installed', 'auth', 'no_workspace'].includes(r.status) ? 'err' : ''}"><div class="who">${esc(NAMES[r.agent])} · ${esc(r.status)}${r.via ? ` · ${esc(r.via)}` : ''} · ${esc(time(r.at))}${r.checkpoint ? ` · checkpoint <span class="mono">${esc(r.checkpoint)}</span>` : ''}</div>${esc(r.output ? (r.output.length > 1500 ? `${r.output.slice(0, 1500)}…` : r.output) : r.status === 'running' ? 'Working…' : '')}</div>`).join('')}` : ''}
+      ${t.runs.slice().reverse().map((r) => `<div class="note ${['limit', 'failed', 'error', 'timeout', 'not_installed', 'auth', 'no_workspace'].includes(r.status) ? 'err' : ''}"><div class="who">${esc(NAMES[r.agent])} · ${esc(r.status)}${r.via ? ` · ${esc(r.via)}` : ''} · ${esc(time(r.at))}${r.checkpoint ? ` · checkpoint <span class="mono">${esc(r.checkpoint)}</span>` : ''}${r.pushed ? ` · ${esc(r.pushed)}` : ''}</div>${esc(r.output ? (r.output.length > 1500 ? `${r.output.slice(0, 1500)}…` : r.output) : r.status === 'running' ? 'Working…' : '')}</div>`).join('')}` : ''}
     <div class="sep"></div>
     <h3 class="muted" style="font-size:12px;text-transform:uppercase;letter-spacing:.6px">Notes</h3>
     ${t.notes.map((n) => `<div class="note ${n.err ? 'err' : ''}"><div class="who">${esc(n.who)} · ${esc(time(n.at))}</div>${esc(n.text)}</div>`).join('') || '<div class="empty">No notes yet.</div>'}
@@ -602,6 +691,7 @@ const NAV = [
   ['board', '▦', 'Task board'],
   ['approvals', '✓', 'Approvals'],
   ['agents', '✦', 'Agents'],
+  ['github', '⑂', 'GitHub'],
   ['audit', '☰', 'Audit log'],
   ['settings', '⚙', 'Settings'],
 ];
@@ -612,12 +702,13 @@ const TITLES = {
   approvals: ['Approvals', 'Nothing high-impact happens without your explicit sign-off'],
   agents: ['Agents', 'Sign in with your accounts, see who is available and what they are doing'],
   audit: ['Audit log', 'Every decision, recorded'],
+  github: ['GitHub', 'Pull, push and projects — main only changes when you approve'],
   settings: ['Settings', 'Updates, data and Hearth OS pin'],
 };
 
 function render() {
   const waiting = state.tasks.filter((t) => t.stage === 'approval').length;
-  const views = { chat: viewChat, overview: viewOverview, board: viewBoard, approvals: viewApprovals, agents: viewAgents, audit: viewAudit, settings: viewSettings };
+  const views = { github: viewGithub, chat: viewChat, overview: viewOverview, board: viewBoard, approvals: viewApprovals, agents: viewAgents, audit: viewAudit, settings: viewSettings };
   const [title, sub] = TITLES[ui.view];
   const updBadge = upd.status?.state === 'available' || upd.status?.state === 'ready' ? '<span class="badge sage" data-nav="settings" style="cursor:pointer">Update available</span>' : '';
   document.getElementById('app').innerHTML = `
@@ -630,7 +721,7 @@ function render() {
     </aside>
     <main class="main">
       <div class="top"><div><h1>${esc(title)}</h1><div class="sub">${esc(sub)}</div></div><div class="grow"></div>
-        ${updBadge}<span class="badge amber">Prototype</span>
+        ${updBadge}<span class="badge amber">Beta</span>
         <button class="btn primary" data-new>+ New task</button></div>
       ${views[ui.view]()}
     </main>
@@ -754,6 +845,10 @@ async function runTask(t, agent, handoff = null, depth = 0) {
   run.via = res.via || '';
   run.output = res.ok ? res.text : `${res.error.message}${res.partial ? `\n\nLast output:\n${res.partial}` : ''}`;
   run.checkpoint = cp?.sha || null;
+  if (cp) {
+    const pushed = await autoPush(t.id);
+    if (pushed) run.pushed = pushed.ok ? 'pushed to GitHub' : `push failed: ${pushed.message}`;
+  }
   t.updatedAt = now();
   audit(res.ok ? `${NAMES[agent]} finished a run` : `${NAMES[agent]} stopped (${res.error.kind})`, t.id, cp ? `checkpoint ${cp.sha} · ${cp.stat}` : 'no file changes');
   if (res.ok && run.status === 'done' && t.stage === 'implementing') {
@@ -817,14 +912,75 @@ async function refreshProviders() {
 }
 
 document.addEventListener('click', async (e) => {
-  const el = e.target.closest('[data-nav],[data-new],[data-open],[data-close],[data-cancel],[data-create],[data-advance],[data-approve],[data-reject],[data-changes],[data-note],[data-delete],[data-savekey],[data-rmkey],[data-ask],[data-export],[data-reset],[data-upd],[data-opinion],[data-modalbg],[data-sendchat],[data-target],[data-addprop],[data-addall],[data-clearchat],[data-method],[data-login],[data-recheck],[data-locate],[data-available],[data-run],[data-stop],[data-freebuff],[data-fbdone],[data-openws],[data-pickproject],[data-autohandoff],[data-restore],[data-install],[data-startprop],[data-showchanges],[data-dismisssetup],[data-connect],[data-disconnect],[data-toggleagent]');
+  const el = e.target.closest('[data-nav],[data-new],[data-open],[data-close],[data-cancel],[data-create],[data-advance],[data-approve],[data-reject],[data-changes],[data-note],[data-delete],[data-savekey],[data-rmkey],[data-ask],[data-export],[data-reset],[data-upd],[data-opinion],[data-modalbg],[data-sendchat],[data-target],[data-addprop],[data-addall],[data-clearchat],[data-method],[data-login],[data-recheck],[data-locate],[data-available],[data-run],[data-stop],[data-freebuff],[data-fbdone],[data-openws],[data-pickproject],[data-autohandoff],[data-restore],[data-install],[data-startprop],[data-showchanges],[data-dismisssetup],[data-connect],[data-disconnect],[data-toggleagent],[data-ghlogin],[data-gitrefresh],[data-useproject],[data-clone],[data-gitpull],[data-pushbranch],[data-openpr],[data-approvemerge],[data-access],[data-togglesetting],[data-adddir],[data-removedir]');
   if (!el) return;
   const d = el.dataset;
   const task = (id) => state.tasks.find((t) => t.id === id);
 
   if (d.modalbg !== undefined && e.target === el) { ui.modal = null; return render(); }
-  if (d.nav) { ui.view = d.nav; ui.selected = null; if (d.nav === 'settings') backups = await api.backups().catch(() => backups); return render(); }
+  if (d.nav) { ui.view = d.nav; ui.selected = null; if (d.nav === 'settings') backups = await api.backups().catch(() => backups); if (d.nav === 'github') await refreshGit(); return render(); }
   if (d.sendchat !== undefined) return sendChat();
+  if (d.ghlogin !== undefined) {
+    const r = await api.gitLogin();
+    return toast(r.ok ? `GitHub sign-in opened in ${r.terminal} — choose "Login with a web browser", finish on github.com, then press Re-check.` : r.message);
+  }
+  if (d.gitrefresh !== undefined) { await refreshGit(); return render(); }
+  if (d.useproject) { settings = await api.useProject(d.useproject); state.chatWs = null; await refreshGit(); return render(); }
+  if (d.clone !== undefined) {
+    const input = document.getElementById('clone-input').value.trim();
+    if (!input) return;
+    toast('Cloning…');
+    const r = await api.gitClone(input).catch((err) => ({ ok: false, message: cleanErr(err.message) }));
+    if (r.ok) { settings = await api.settings(); state.chatWs = null; await refreshGit(); audit('Cloned project', null, r.dir); save(); }
+    toast(r.ok ? `Cloned to ${r.dir} — it's now the active project.` : `Clone failed: ${r.message}`);
+    return render();
+  }
+  if (d.gitpull !== undefined) {
+    const r = await api.gitPull().catch((err) => ({ ok: false, message: cleanErr(err.message) }));
+    audit(r.ok ? 'Pulled from GitHub' : 'Pull failed', null, r.message);
+    await refreshGit();
+    save();
+    toast(r.message);
+    return render();
+  }
+  if (d.pushbranch) {
+    const r = await api.gitPushBranch(d.pushbranch).catch((err) => ({ ok: false, message: cleanErr(err.message) }));
+    audit(r.ok ? 'Pushed to GitHub' : 'Push failed', null, `${d.pushbranch}: ${r.message}`);
+    await refreshGit();
+    save();
+    toast(r.message);
+    return render();
+  }
+  if (d.openpr) {
+    const t = task(d.openpr);
+    const body = `${t.description}\n\n---\nWork by ${[...new Set((t.runs || []).map((r) => NAMES[r.agent]))].join(', ') || 'the team'} in Hearth AI Command Center (task T-${t.id}).`;
+    const r = await api.gitOpenPr(t.id, t.title, body).catch((err) => ({ ok: false, message: cleanErr(err.message) }));
+    if (r.ok) { t.pr = r.url; t.notes.push({ at: now(), who: 'System', text: `Pull request: ${r.url}` }); audit('Pull request opened', t.id, r.url); save(); }
+    toast(r.ok ? 'Pull request opened on GitHub.' : `Couldn't open a pull request: ${r.message}`);
+    return render();
+  }
+  if (d.approvemerge) {
+    const t = task(d.approvemerge);
+    const r = await api.gitMergeApproved(t.id).catch((err) => ({ ok: false, message: cleanErr(err.message) }));
+    if (!r.ok) { if (r.message !== 'Cancelled.') toast(r.message); return; }
+    t.decision = 'approved';
+    t.notes.push({ at: now(), who: 'System', text: r.message });
+    await refreshGit();
+    return setStage(t, 'approved', 'Owner approved and merged', r.message);
+  }
+  if (d.access) {
+    if (d.access === 'full' && !confirm('Give the AIs full access with no safety checks? They could run any command on this computer without asking. One bad command could break a Hearth device.')) return render();
+    settings = await api.setSettings({ access: d.access });
+    audit(`AI permissions set to ${d.access === 'full' ? 'full access' : 'like their own apps'}`);
+    save();
+    return render();
+  }
+  if (d.togglesetting) { settings = await api.setSettings({ [d.togglesetting]: !settings[d.togglesetting] }); return render(); }
+  if (d.adddir !== undefined) {
+    try { settings = await api.addDir(); audit('Folder access granted', null, settings.extraDirs.slice(-1)[0] || ''); save(); } catch (err) { toast(cleanErr(err.message)); }
+    return render();
+  }
+  if (d.removedir) { settings = await api.removeDir(d.removedir); audit('Folder access removed', null, d.removedir); save(); return render(); }
   if (d.connect) {
     // Install the official tool if it's missing, otherwise open its own sign-in.
     const a = d.connect;
@@ -893,7 +1049,7 @@ document.addEventListener('click', async (e) => {
   if (d.fbdone) return freebuffDone(task(d.fbdone));
   if (d.openws !== undefined) return api.openWorkspace(d.openws || null);
   if (d.pickproject !== undefined) {
-    try { settings = await api.pickProject(); } catch (err) { toast(cleanErr(err.message)); }
+    try { settings = await api.pickProject(); state.chatWs = null; await refreshGit(); } catch (err) { toast(cleanErr(err.message)); }
     return render();
   }
   if (d.autohandoff !== undefined) { state.autoHandoff = !state.autoHandoff; save(); return render(); }
@@ -1092,6 +1248,7 @@ async function boot() {
     if (backups.recoveredFrom) setTimeout(() => toast(`Your last save was damaged; restored from ${backups.recoveredFrom}.`), 600);
     await refreshProviders();
     await refreshAgents();
+    await refreshGit();
     if (!state.agentStatus) state.agentStatus = {};
     if (state.autoHandoff === undefined) state.autoHandoff = true;
     if (!state.roles) state.roles = {};

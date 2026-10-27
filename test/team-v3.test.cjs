@@ -36,6 +36,8 @@ test('Gemini CLI: plan vs edit mode, JSON parsing, quota = usage limit', async (
   assert.match(r.text, /plan mode/);
   r = await agents.runAgent({ agent: 'google', prompt: 'x', cwd: dir, mode: 'edit', bin });
   assert.match(r.text, /auto_edit mode/);
+  r = await agents.runAgent({ agent: 'google', prompt: 'x', cwd: dir, mode: 'full', bin });
+  assert.match(r.text, /yolo mode/);
   assert.equal(r.via, 'Gemini CLI');
   process.env.FAKE_GEMINI_LIMIT = '1';
   r = await agents.runAgent({ agent: 'google', prompt: 'x', cwd: dir, mode: 'edit', bin });
@@ -93,4 +95,18 @@ test('disconnect uses each tool\'s own sign-out; Gemini forgets only its Google 
   } finally {
     process.env.HOME = old;
   }
+});
+
+test('permission levels map to each tool\'s own modes', async () => {
+  const agents = require('../electron/agents.cjs');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hearth-m-'));
+  const echo = path.join(dir, 'echo-args');
+  fs.writeFileSync(echo, '#!/bin/sh\ncat >/dev/null\nprintf \'{"is_error":false,"result":"%s"}\' "$*"\n');
+  fs.chmodSync(echo, 0o755);
+  const args = async (mode, extraDirs = []) => (await agents.runAgent({ agent: 'anthropic', prompt: 'x', cwd: dir, mode, bin: echo, extraDirs })).text;
+  assert.match(await args('read'), /--permission-mode plan .*WebSearch WebFetch/);
+  assert.match(await args('edit'), /--permission-mode auto /);
+  assert.doesNotMatch(await args('standard'), /dangerously/);
+  assert.match(await args('full'), /bypassPermissions.*--dangerously-skip-permissions/);
+  assert.match(await args('standard', [dir, '/does/not/exist', 'relative']), new RegExp(`--add-dir ${dir}$`));
 });

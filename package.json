@@ -1,7 +1,7 @@
 {
   "name": "hearth-ai-command-center",
   "productName": "Hearth AI Command Center",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Desktop command center for Hearth OS: your AI team (Claude, ChatGPT, Gemini, local AI, FreeBuff) signed in with your own accounts.",
   "author": "Dragongamer9",
   "license": "UNLICENSED",

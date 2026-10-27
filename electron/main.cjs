@@ -4,12 +4,14 @@
 const { app, BrowserWindow, ipcMain, shell, Menu, safeStorage, dialog, clipboard } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
+const os = require('node:os');
 const { validateState, validateProvider, validateApiKey, validateModel, validatePrompt } = require('./validate.cjs');
 const { callProvider, DEFAULT_MODELS } = require('./providers.cjs');
 const { createSecretStore } = require('./secrets.cjs');
 const { createUpdater } = require('./updater.cjs');
 const agents = require('./agents.cjs');
 const workspace = require('./workspace.cjs');
+const gitops = require('./git.cjs');
 const { createStore, redact, redactDeep } = require('./store.cjs');
 
 // Hearth OS version this console is pinned to. Display-only: this app never
@@ -37,15 +39,30 @@ function readSettings() {
   try { s = JSON.parse(fs.readFileSync(settingsFile(), 'utf8')); } catch {}
   return {
     project: typeof s.project === 'string' ? s.project : null,
+    projects: Array.isArray(s.projects) ? s.projects.filter((p) => typeof p === 'string') : (typeof s.project === 'string' ? [s.project] : []),
     connection: { anthropic: 'cli', openai: 'cli', ...(s.connection || {}) },
     bins: { ...(s.bins || {}) },
+    // What AIs may do when working: 'standard' = each tool's own autonomous mode
+    // with its built-in safety checks; 'full' = no checks (owner opt-in).
+    access: s.access === 'full' ? 'full' : 'standard',
+    extraDirs: Array.isArray(s.extraDirs) ? s.extraDirs.filter((d) => typeof d === 'string' && path.isAbsolute(d)) : [],
+    autoPush: s.autoPush !== false,
+    chatEdits: s.chatEdits !== false,
   };
+}
+function useProject(dir) {
+  const s = readSettings();
+  s.project = dir;
+  if (!s.projects.includes(dir)) s.projects.unshift(dir);
+  s.projects = s.projects.slice(0, 20);
+  writeSettings(s);
+  return s;
 }
 function writeSettings(s) {
   fs.mkdirSync(dataDir(), { recursive: true, mode: 0o700 });
   fs.writeFileSync(settingsFile(), JSON.stringify(s, null, 2), { mode: 0o600 });
 }
-const TASK_ID = /^[A-Z0-9]{4,10}$/;
+const TASK_ID = /^[A-Z0-9]{4,10}$/; // 'CHATROOM' is the team chat's own workspace
 function taskDir(taskId) {
   if (!TASK_ID.test(taskId)) throw new Error('bad task id');
   return path.join(worktreeRoot(), taskId);
@@ -199,12 +216,53 @@ function registerIpc() {
     return s;
   });
   handle('settings:pickProject', async () => {
-    const r = await dialog.showOpenDialog(mainWindow, { title: 'Choose the shared project folder (a git repository)', properties: ['openDirectory'] });
+    const r = await dialog.showOpenDialog(mainWindow, { title: 'Choose a project folder', properties: ['openDirectory'] });
     if (r.canceled || !r.filePaths[0]) return readSettings();
     const dir = r.filePaths[0];
-    if (!(await workspace.isRepo(dir))) throw new Error('That folder is not a git repository. Run `git init` in it (and make a first commit), then pick it again.');
+    if (!gitops.find('git')) throw new Error('git is not installed on this computer. Install it first (see the setup checklist).');
+    if (!(await workspace.isRepo(dir))) {
+      const choice = dialog.showMessageBoxSync(mainWindow, {
+        type: 'question',
+        message: 'Start tracking this folder with git?',
+        detail: `${dir} isn't a git repository yet. Hearth AI needs git to save checkpoints so no AI work is ever lost. This adds a hidden .git folder and one first commit; your files are not changed.`,
+        buttons: ['Start tracking', 'Cancel'],
+        defaultId: 0,
+        cancelId: 1,
+      });
+      if (choice !== 0) return readSettings();
+      const init = await gitops.initRepo(dir);
+      if (!init.ok) throw new Error(`Couldn't start git here: ${init.message}`);
+    }
+    return useProject(dir);
+  });
+  handle('settings:useProject', (dir) => {
     const s = readSettings();
-    s.project = dir;
+    if (!s.projects.includes(dir)) throw new Error('Unknown project.');
+    return useProject(dir);
+  });
+  handle('settings:set', (patch) => {
+    if (!patch || typeof patch !== 'object') throw new Error('bad settings');
+    const s = readSettings();
+    if ('access' in patch) s.access = patch.access === 'full' ? 'full' : 'standard';
+    if ('autoPush' in patch) s.autoPush = Boolean(patch.autoPush);
+    if ('chatEdits' in patch) s.chatEdits = Boolean(patch.chatEdits);
+    writeSettings(s);
+    return s;
+  });
+  handle('settings:addDir', async () => {
+    const r = await dialog.showOpenDialog(mainWindow, { title: 'Give the AIs access to a folder', properties: ['openDirectory'] });
+    const s = readSettings();
+    if (!r.canceled && r.filePaths[0]) {
+      const d = r.filePaths[0];
+      if (d === '/' || d === os.homedir()) throw new Error('Pick a specific folder, not your whole home folder or the whole disk.');
+      if (!s.extraDirs.includes(d)) s.extraDirs.push(d);
+      writeSettings(s);
+    }
+    return s;
+  });
+  handle('settings:removeDir', (d) => {
+    const s = readSettings();
+    s.extraDirs = s.extraDirs.filter((x) => x !== d);
     writeSettings(s);
     return s;
   });
@@ -246,7 +304,7 @@ function registerIpc() {
     if (!opts || typeof opts !== 'object') throw new Error('bad request');
     const agent = validateProvider(opts.agent);
     const prompt = validatePrompt(opts.prompt);
-    const mode = opts.mode === 'edit' ? 'edit' : 'read';
+    let mode = opts.mode === 'edit' ? 'edit' : 'read';
     const runId = typeof opts.runId === 'string' && /^[A-Za-z0-9]{4,20}$/.test(opts.runId) ? opts.runId : null;
     const s = readSettings();
     let cwd = s.project || undefined;
@@ -254,10 +312,11 @@ function registerIpc() {
       const dir = taskDir(opts.taskId);
       if (fs.existsSync(dir)) cwd = dir;
     }
-    if (mode === 'edit' && agent === 'ollama') {
+    if (mode === 'edit') mode = s.access; // 'standard' or 'full'
+    if (mode !== 'read' && agent === 'ollama') {
       return { ok: false, error: { kind: 'read_only', message: 'The local model can chat, plan and review, but cannot edit files.' } };
     }
-    if (mode === 'edit' && (!opts.taskId || cwd !== taskDir(opts.taskId))) {
+    if (mode !== 'read' && (!opts.taskId || cwd !== taskDir(opts.taskId))) {
       return { ok: false, error: { kind: 'no_workspace', message: 'Pick a project folder in Settings first so the task has a workspace.' } };
     }
 
@@ -281,9 +340,10 @@ function registerIpc() {
         cwd,
         mode,
         model: opts.model && s.connection[agent] !== 'api' ? validateModel(opts.model) : undefined,
-        timeoutMs: mode === 'edit' ? 30 * 60 * 1000 : 5 * 60 * 1000,
+        timeoutMs: mode === 'read' ? 10 * 60 * 1000 : 30 * 60 * 1000,
         signal: controller.signal,
         bin: s.bins[agent],
+        extraDirs: s.extraDirs,
       }));
     } finally {
       if (runId) runs.delete(runId);
@@ -321,6 +381,71 @@ function registerIpc() {
     clipboard.writeText(text);
     const r = agents.openTerminal(file, [], dir);
     return r.ok ? { ...r, briefFile } : r;
+  });
+
+  // ---- git + GitHub ----
+  handle('git:tools', async () => {
+    const t = await gitops.tools();
+    if (t.ghUser) await gitops.setupGitAuth();
+    return t;
+  });
+  handle('git:login', () => {
+    const gh = gitops.find('gh');
+    if (!gh) return { ok: false, message: 'GitHub CLI (gh) is not installed. Install it first (see the setup checklist).' };
+    // GitHub's own sign-in in your browser; afterwards git push/pull use it too.
+    return agents.openTerminal(gh, ['auth', 'login', '--web', '--git-protocol', 'https', '--hostname', 'github.com'], os.homedir(), { hold: true });
+  });
+  handle('git:status', () => {
+    const s = readSettings();
+    return s.project ? gitops.status(s.project) : { repo: false };
+  });
+  handle('git:pull', () => {
+    const s = readSettings();
+    if (!s.project) throw new Error('Pick a project first.');
+    return gitops.pull(s.project);
+  });
+  handle('git:pushTask', async (taskId) => {
+    const s = readSettings();
+    const dir = taskDir(taskId);
+    if (!fs.existsSync(dir)) return { ok: false, message: 'No workspace yet.' };
+    const branch = (await workspace.git(dir, ['branch', '--show-current'])).out;
+    return gitops.pushBranch(s.project || dir, branch);
+  });
+  handle('git:pushBranch', (branch) => {
+    const s = readSettings();
+    if (!s.project) throw new Error('Pick a project first.');
+    return gitops.pushBranch(s.project, String(branch));
+  });
+  // Only called from the Approve flow in the UI (owner click).
+  handle('git:mergeApproved', async (taskId) => {
+    const s = readSettings();
+    const dir = taskDir(taskId);
+    if (!s.project || !fs.existsSync(dir)) return { ok: false, message: 'This task has no workspace to merge.' };
+    const branch = (await workspace.git(dir, ['branch', '--show-current'])).out;
+    const confirm = dialog.showMessageBoxSync(mainWindow, {
+      type: 'warning',
+      message: `Merge ${branch} into the main branch and push it to GitHub?`,
+      detail: 'This changes the main branch of your project. If it touches booting, make sure the previous version stays startable.',
+      buttons: ['Merge and push', 'Cancel'],
+      defaultId: 1,
+      cancelId: 1,
+    });
+    if (confirm !== 0) return { ok: false, message: 'Cancelled.' };
+    return gitops.mergeApproved(s.project, branch);
+  });
+  handle('git:openPr', async (taskId, title, body) => {
+    const s = readSettings();
+    const dir = taskDir(taskId);
+    const branch = (await workspace.git(dir, ['branch', '--show-current'])).out;
+    const r = await gitops.openPr(s.project, branch, title, redact(String(body)));
+    if (r.ok && r.url?.startsWith('https://github.com/')) shell.openExternal(r.url);
+    return r;
+  });
+  handle('git:clone', async (input) => {
+    if (!gitops.find('git')) return { ok: false, message: 'git is not installed.' };
+    const r = await gitops.clone(String(input), path.join(os.homedir(), 'HearthProjects'));
+    if (r.ok) useProject(r.dir);
+    return r;
   });
 
   handle('updater:info', () => updater.info());

@@ -2,9 +2,9 @@
 
 Desktop command center for Hearth OS: sign in with your **Claude**, **ChatGPT**, **Gemini** and **FreeBuff** accounts (plus a free **local AI**), talk to all of them in one team chat, hand them tasks, and let them pick up each other's work when one runs out of usage. Every task runs through a policy check, independent review and your approval, and every step is saved. Linux AppImage.
 
-Hearth OS stays pinned at **0.6.55**. This app never changes Hearth OS, merges, releases or deploys anything.
+Hearth OS stays pinned at **0.6.55**. The AIs work on their own branches. Nothing reaches your main branch unless you click **Approve & merge**, and the app never releases or deploys anything.
 
-Docs: `docs/ACCOUNTS.md` (connecting accounts), `docs/SAVING_AND_RESUME.md` (what's saved, recovery, handoff), `docs/IN_APP_UPDATES.md` (updates), `FULL_VERSION_ROADMAP.md` (what's next).
+Docs: `docs/ACCOUNTS.md` (connecting accounts), `docs/GITHUB_AND_ACCESS.md` (GitHub, folders, permissions), `docs/SAVING_AND_RESUME.md` (what's saved, recovery, handoff), `docs/IN_APP_UPDATES.md` (updates), `FULL_VERSION_ROADMAP.md` (what's next).
 
 ## Install & run
 
@@ -44,7 +44,9 @@ Then pick a **shared project folder** (any git repo) in Settings.
 - **Team chat:** everyone sees every message; Claude leads and answers first. `@claude` / `@chatgpt` / `@gemini` / `@local` talks to one AI. Ask them to split up work and their `TASK:` proposals become one-click *Add to board* cards. FreeBuff can't reply on its own, so paste what it says with *Post as FreeBuff*.
 - **Tasks:** *Start with Claude/ChatGPT* runs the agent in that task's own git branch and working copy. Every run is committed as a checkpoint. *Hand off to…* or *Continue in FreeBuff* lets another agent continue from the same files.
 - **Out of usage:** the task is checkpointed and handed to the next free agent automatically.
-- **Approvals:** nothing is merged, pushed, released or deployed by the app.
+- **AIs work like in their own apps:** in chat and tasks they can edit files, run commands, use git and the web, with each tool's own safety checks. Full access is an opt-in.
+- **GitHub:** connect with GitHub's own sign-in. You can pull, clone and push, and every checkpoint is backed up to its own branch.
+- **Approvals:** `main` only changes when you click **Approve & merge into main**.
 
 ## Develop
 ```bash
@@ -58,6 +60,7 @@ npm run dist:linux  # check + test + build release/*.AppImage
 - `electron/main.cjs` — window, IPC (sender-checked, every input validated), state file, crash/start-failure handling, single instance.
 - `electron/agents.cjs` — runs Claude Code / Codex / FreeBuff (spawn, no shell, prompt over stdin, timeouts), detects usage limits, outages and sign-in problems.
 - `electron/workspace.cjs` — per-task git branch + worktree, checkpoint commits, progress summaries.
+- `electron/git.cjs` — pull, push (never main/master), approved merge, pull requests and clone, via your own git and `gh` sign-in.
 - `electron/store.cjs` — atomic, versioned, self-recovering state file with secret scrubbing.
 - `electron/providers.cjs` — optional API-key path (Anthropic Messages / OpenAI Chat Completions).
 - `electron/secrets.cjs` — keyring-encrypted key store.

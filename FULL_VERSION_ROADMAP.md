@@ -1,5 +1,11 @@
 # Roadmap & current limitations
 
+## New in 0.4.0
+- AIs can do in chat and tasks what they do in their own apps: edit, run commands, git and web, with each tool's own safety checks. Full access is an opt-in.
+- GitHub page: Connect GitHub (official sign-in), clone, open any folder, pull, push branches, pull requests.
+- Every checkpoint is backed up to its own GitHub branch. "Approve & merge into main" merges and pushes after you confirm.
+- Extra folders on your computer can be shared with the AIs.
+
 ## New in 0.3.0
 - Connect account / Disconnect for every AI through official sign-ins; billing shown per AI; Use on/off switch.
 - Gemini (Google sign-in) and a local AI (Ollama) join the team.

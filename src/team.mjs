@@ -26,7 +26,8 @@ export function buildTaskBrief({ task, agent, summary = '', handoffFrom = null, 
     handoffFrom
       ? `HANDOFF: ${NAMES[handoffFrom]} was working on this and had to stop (${reason || 'stopped'}). Do NOT start over. Inspect the current files and the progress below, then continue from where they left off.`
       : '',
-    'Rules: stay within this task; keep changes focused; do not push, merge, publish or deploy; do not change the Hearth OS version (pinned 0.6.55, the owner chooses version numbers); anything touching booting must keep the previous version startable.',
+    'You can do everything you normally can in your own app here: edit files, run commands, use git and the web (with your own built-in safety checks). The Command Center commits your work as a checkpoint and pushes this task\'s branch to GitHub after you finish.',
+    'Rules: stay within this task; keep changes focused; never push to main/master, merge, publish or deploy (the owner approves merges); do not change the Hearth OS version (pinned 0.6.55, the owner chooses version numbers); anything touching booting must keep the previous version startable.',
     '',
     `# Task T-${task.id}: ${task.title}`,
     task.description ? clip(task.description, 4000) : '',

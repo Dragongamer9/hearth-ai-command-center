@@ -17,14 +17,18 @@ export function recipients(text, live, target = 'all', lead = 'anthropic') {
 
 // What every agent is told about the Command Center, so it knows what it can
 // actually do instead of guessing.
-export function teamContext({ agent, roster = [], lead = 'anthropic', board = [], project = null } = {}) {
+export function teamContext({ agent, roster = [], lead = 'anthropic', board = [], project = null, chatEdits = false, extraDirs = [] } = {}) {
   const roleOf = (r) => r.role || DEFAULT_ROLES[r.id] || '';
   return [
     'ABOUT THE HEARTH AI COMMAND CENTER (facts, not suggestions):',
     '- It is a desktop app (Electron, Linux AppImage) on the Owner\'s own computer. It coordinates several AIs on the Owner\'s software projects, mainly Hearth OS.',
-    `- Shared project folder (a git repo): ${project || 'not chosen yet'}. In this chat you can READ it (your current directory) but not change it.`,
-    '- Real work happens in TASKS. When the Owner starts a task, the assigned agent runs headless (Claude Code, Codex CLI or Gemini CLI) with permission to edit files inside that task\'s own git branch and worktree. Every run is committed automatically as a checkpoint, so another agent can continue if one runs out of usage.',
-    '- You cannot push, merge, release or deploy. Those only happen when the Owner does them. Never claim something was pushed, committed or done unless a task run shows a checkpoint commit for it.',
+    `- Shared project folder (a git repo): ${project || 'not chosen yet'}.`,
+    chatEdits
+      ? '- In this chat you can do everything you normally can in your own app: read and edit files, run commands, use git and search or read websites (with your own built-in safety checks). Your current directory is the team chat\'s own git branch/worktree of the project, so your edits never touch the main branch directly. After every reply the Command Center commits your changes as a checkpoint and pushes that branch to GitHub.'
+      : '- In this chat you can read the project (your current directory) and search the web, but not change files.',
+    `- Folders on the Owner\'s computer you may also use: ${extraDirs.length ? extraDirs.join(', ') : 'none granted yet (the Owner can add some in Settings)'}.`,
+    '- Bigger work goes in TASKS: each task gets its own git branch and worktree, every run is checkpointed and pushed to GitHub, and another AI can continue if one runs out of usage.',
+    '- Merging into the main branch only happens when the Owner clicks Approve. Do not push to main/master yourself. Never claim something was pushed or done unless it really was (a checkpoint commit shows it).',
     '- Hearth OS is pinned at 0.6.55; only the Owner picks version numbers. Anything touching booting must keep the previous version startable.',
     '',
     'THE TEAM:',
