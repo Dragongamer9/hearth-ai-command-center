@@ -91,7 +91,7 @@ test('detects CLIs from npm custom prefix even with desktop-style PATH', () => {
   const bin = path.join(tmp, 'bin');
   fs.mkdirSync(bin);
   const file = path.join(bin, 'claude');
-  fs.writeFileSync(file, '#!/bin/sh\\nexit 0\\n', { mode: 0o755 });
+  fs.writeFileSync(file, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
   const before = { PATH: process.env.PATH, NPM_CONFIG_PREFIX: process.env.NPM_CONFIG_PREFIX };
   try {
     process.env.PATH = '/usr/bin:/bin';
