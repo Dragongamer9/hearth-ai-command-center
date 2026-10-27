@@ -1,0 +1,55 @@
+name: Build Linux AppImage (artifact only)
+
+# Builds a test AppImage and uploads it as a workflow artifact.
+# Never creates or publishes a GitHub Release, so nothing here reaches the in-app updater.
+on:
+  push:
+    branches: ['feature/**', 'main']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  appimage:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies (clean, from lockfile)
+        run: npm ci
+
+      - name: Syntax check
+        run: npm run check
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Build web UI
+        run: npx vite build
+
+      - name: Build AppImage
+        run: npx electron-builder --linux AppImage --x64 --publish never
+
+      - name: Verify AppImage exists and is non-empty
+        run: |
+          f=$(ls release/*.AppImage)
+          size=$(stat -c%s "$f")
+          echo "$f is $size bytes"
+          test "$size" -gt 50000000
+          file "$f" | grep -q ELF
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Hearth-AI-Command-Center-AppImage
+          path: |
+            release/*.AppImage
+            release/latest-linux.yml
+          if-no-files-found: error
+          retention-days: 30

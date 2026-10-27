@@ -1,0 +1,63 @@
+{
+  "name": "hearth-ai-command-center",
+  "productName": "Hearth AI Command Center",
+  "version": "0.1.0",
+  "description": "Desktop-first coordination dashboard for Hearth OS AI agents (prototype, local-only).",
+  "author": "Dragongamer9",
+  "license": "UNLICENSED",
+  "private": true,
+  "main": "electron/main.cjs",
+  "scripts": {
+    "dev": "vite",
+    "build:web": "vite build",
+    "start": "vite build && electron .",
+    "dist:linux": "npm run check && npm test && vite build && electron-builder --linux AppImage --x64 --publish never",
+    "test": "node --test \"test/*.test.*\"",
+    "check": "node --check electron/main.cjs && node --check electron/preload.cjs && node --check electron/providers.cjs && node --check electron/secrets.cjs && node --check electron/updater.cjs && node --check electron/validate.cjs"
+  },
+  "build": {
+    "appId": "os.hearth.ai-command-center",
+    "productName": "Hearth AI Command Center",
+    "artifactName": "Hearth-AI-Command-Center-${version}-x86_64.AppImage",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "linux": {
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "category": "Development",
+      "icon": "build/icon.png",
+      "synopsis": "Hearth AI Command Center",
+      "maintainer": "Dragongamer9",
+      "syncDesktopName": true,
+      "executableName": "hearth-ai-command-center"
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "Dragongamer9",
+      "repo": "hearth-ai-command-center",
+      "releaseType": "release"
+    }
+  },
+  "devDependencies": {
+    "electron": "^45.0.0",
+    "electron-builder": "^26.18.0",
+    "vite": "^8.3.5"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.11"
+  },
+  "desktopName": "hearth-ai-command-center.desktop"
+}
