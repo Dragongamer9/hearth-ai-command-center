@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld('hearth', {
   backups: () => ipcRenderer.invoke('state:backups'),
   restoreBackup: (n) => ipcRenderer.invoke('state:restore', n),
   exportAll: (state) => ipcRenderer.invoke('state:export', state),
+  copyChatForChatGPT: (messages) => ipcRenderer.invoke('chat:copyForChatGPT', messages),
 
   providerStatus: () => ipcRenderer.invoke('providers:status'),
   setKey: (provider, key) => ipcRenderer.invoke('providers:setKey', provider, key),
