@@ -33,7 +33,7 @@ jobs:
 
       - name: Take screenshots
         run: |
-          npx vite preview --port 4173 --strictPort &
+          npx vite preview --host 127.0.0.1 --port 4173 --strictPort &
           for i in $(seq 1 60); do curl -sf http://127.0.0.1:4173/ >/dev/null && break; sleep 1; done
           OUT_DIR=shots node ci/screenshots/shoot.mjs
           ls -la shots
