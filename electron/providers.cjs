@@ -1,14 +1,25 @@
 // Official-API provider adapters. Runs only in the main process; API keys
 // never reach the renderer and are never logged.
+// Official endpoints only. xAI, Mistral, Perplexity and DeepSeek use the
+// OpenAI-style chat-completions shape (messages in, choices[0].message out).
 const ENDPOINTS = Object.freeze({
   anthropic: 'https://api.anthropic.com/v1/messages',
   openai: 'https://api.openai.com/v1/chat/completions',
+  xai: 'https://api.x.ai/v1/chat/completions',
+  mistral: 'https://api.mistral.ai/v1/chat/completions',
+  perplexity: 'https://api.perplexity.ai/v1/sonar',
+  deepseek: 'https://api.deepseek.com/chat/completions',
 });
 
 const DEFAULT_MODELS = Object.freeze({
   anthropic: 'claude-sonnet-5-5',
   openai: 'gpt-5',
+  xai: 'grok-4',
+  mistral: 'mistral-large-latest',
+  perplexity: 'sonar',
+  deepseek: 'deepseek-chat',
 });
+const OPENAI_STYLE = ['openai', 'xai', 'mistral', 'perplexity', 'deepseek'];
 
 const MAX_RESPONSE_CHARS = 50000;
 
@@ -36,9 +47,9 @@ function buildRequest(provider, apiKey, model, prompt) {
       body: { model, max_tokens: 1024, messages: [{ role: 'user', content: prompt }] },
     };
   }
-  if (provider === 'openai') {
+  if (OPENAI_STYLE.includes(provider)) {
     return {
-      url: ENDPOINTS.openai,
+      url: ENDPOINTS[provider],
       headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
       body: { model, messages: [{ role: 'user', content: prompt }] },
     };
@@ -58,9 +69,14 @@ function extractText(provider, json) {
       .join('\n');
     return text || null;
   }
-  if (provider === 'openai') {
+  if (OPENAI_STYLE.includes(provider)) {
     const msg = json.choices?.[0]?.message?.content;
-    return typeof msg === 'string' && msg ? msg : null;
+    if (typeof msg === 'string' && msg) {
+      // Perplexity returns its sources separately; keep them with the answer.
+      const cites = Array.isArray(json.citations) ? json.citations.filter((c) => typeof c === 'string').slice(0, 10) : [];
+      return cites.length ? `${msg}\n\nSources:\n${cites.map((c, i) => `[${i + 1}] ${c}`).join('\n')}` : msg;
+    }
+    return null;
   }
   return null;
 }

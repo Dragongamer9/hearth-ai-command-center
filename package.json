@@ -13,7 +13,8 @@
     "start": "vite build && electron .",
     "dist:linux": "npm run check && npm test && vite build && electron-builder --linux AppImage --x64 --publish never",
     "test": "node --test \"test/*.test.*\"",
-    "check": "for f in electron/*.cjs; do node --check $f || exit 1; done"
+    "check": "for f in electron/*.cjs; do node --check $f || exit 1; done",
+    "dist:deb": "npm run check && npm test && vite build && electron-builder --linux deb --x64 --publish never"
   },
   "build": {
     "appId": "os.hearth.ai-command-center",
@@ -50,6 +51,9 @@
       "owner": "Dragongamer9",
       "repo": "hearth-ai-command-center",
       "releaseType": "draft"
+    },
+    "deb": {
+      "artifactName": "Hearth-AI-Command-Center-${version}-amd64.deb"
     }
   },
   "devDependencies": {

@@ -3,8 +3,13 @@
 //   Claude   -> Claude Code  (`claude -p`)          sign in: `claude auth login`
 //   ChatGPT  -> OpenAI Codex (`codex exec`)         sign in: `codex login`
 //   Gemini   -> Gemini CLI   (`gemini -p`)          sign in: run `gemini`, "Sign in with Google"
+//   Grok     -> xAI Grok Build (`grok -p`)       sign in: `grok login` (browser OAuth, grok.com account)
+//   Mistral  -> Mistral Vibe (`vibe -p`)          sign in: `vibe --setup` (browser, Mistral account)
+//   Qwen     -> Qwen Code (`qwen -p`)             sign in: run `qwen`, choose Qwen OAuth
 //   Local    -> Ollama on this machine (HTTP on 127.0.0.1:11434, no account)
 //   FreeBuff -> `freebuff` (interactive only; opened in a terminal)
+// Every run reports the CLI's own session id, so the conversation can be
+// resumed later in that CLI (`claude --resume <id>`, `codex resume <id>` …).
 // Every process is started with execFile/spawn and an argument array (never a
 // shell), prompts go in over stdin, and runs have hard timeouts.
 const { spawn, execFile } = require('node:child_process');
@@ -12,14 +17,35 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const BIN = { anthropic: 'claude', openai: 'codex', google: 'gemini', freebuff: 'freebuff', ollama: 'ollama' };
-const LOGIN = { anthropic: ['auth', 'login'], openai: ['login'], google: [], freebuff: [] };
+const crypto = require('node:crypto');
+
+const BIN = { anthropic: 'claude', openai: 'codex', google: 'gemini', xai: 'grok', mistral: 'vibe', qwen: 'qwen', freebuff: 'freebuff', ollama: 'ollama' };
+const CLI_AGENTS = ['anthropic', 'openai', 'google', 'xai', 'mistral', 'qwen'];
+// Each tool's own sign-in. hold: keep the terminal open afterwards to read the result.
+const LOGIN = { anthropic: ['auth', 'login'], openai: ['login'], google: [], xai: ['login'], mistral: ['--setup'], qwen: [], freebuff: [] };
+const LOGIN_HOLD = ['anthropic', 'openai', 'xai'];
 const NPM_PACKAGE = {
   anthropic: '@anthropic-ai/claude-code',
   openai: '@openai/codex',
   google: '@google/gemini-cli',
+  xai: '@xai-official/grok',
+  qwen: '@qwen-code/qwen-code',
   freebuff: 'freebuff',
 };
+// Claude Code adds AI attribution to commits/PRs by default; the owner's rule is
+// commits only as Dragongamer9 with no AI attribution, so turn it off per run.
+// Passed as a settings file (not inline JSON) in the user's own cache folder.
+function claudeSettingsFile() {
+  const dir = path.join(os.homedir(), '.cache', 'hearth-ai');
+  const file = path.join(dir, 'claude-settings.json');
+  try {
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(file, JSON.stringify({ includeCoAuthoredBy: false, attribution: { commit: '', pr: '' } }), { mode: 0o600 });
+    return file;
+  } catch {
+    return null;
+  }
+}
 const OLLAMA = process.env.OLLAMA_HOST && /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(process.env.OLLAMA_HOST)
   ? process.env.OLLAMA_HOST
   : 'http://127.0.0.1:11434';
@@ -29,6 +55,12 @@ function searchDirs() {
   const extra = [
     path.join(home, '.local', 'bin'),
     path.join(home, '.npm-global', 'bin'),
+    path.join(home, '.local', 'npm', 'bin'),
+    path.join(home, '.config', 'npm', 'bin'),
+    path.join(home, '.local', 'share', 'pnpm'),
+    path.join(home, '.local', 'share', 'mise', 'shims'),
+    path.join(home, '.asdf', 'shims'),
+    path.join(home, '.grok', 'bin'),
     path.join(home, '.bun', 'bin'),
     path.join(home, '.claude', 'local'),
     path.join(home, '.volta', 'bin'),
@@ -36,6 +68,9 @@ function searchDirs() {
     '/usr/local/bin',
     '/usr/bin',
   ];
+  // Desktop launchers may not inherit a login shell's npm prefix; never run a shell to find it.
+  const npmPrefix = process.env.npm_config_prefix || process.env.NPM_CONFIG_PREFIX;
+  if (npmPrefix && path.isAbsolute(npmPrefix)) extra.push(path.join(npmPrefix, 'bin'));
   const nvm = path.join(home, '.nvm', 'versions', 'node');
   try {
     for (const v of fs.readdirSync(nvm)) extra.push(path.join(nvm, v, 'bin'));
@@ -175,67 +210,167 @@ function parseGemini(stdout) {
   try {
     const j = JSON.parse(s.slice(Math.max(0, start)));
     const err = j.error ? (typeof j.error === 'string' ? j.error : j.error.message || JSON.stringify(j.error)) : null;
-    return { text: typeof j.response === 'string' ? j.response : '', error: err };
+    return { text: typeof j.response === 'string' ? j.response : '', error: err, sessionId: j.session_id || j.sessionId || j.stats?.session_id || null };
   } catch {
-    return { text: s, error: null };
+    return { text: s, error: null, sessionId: null };
   }
 }
+
+// Pull the result object out of a CLI's JSON output (tolerates log lines before it).
+function lastJson(stdout) {
+  const s = String(stdout || '').trim();
+  for (const open of ['\n{', '\n[']) {
+    const i = s.lastIndexOf(open);
+    if (i >= 0) { try { return JSON.parse(s.slice(i + 1)); } catch {} }
+  }
+  for (const ch of ['{', '[']) {
+    const i = s.indexOf(ch);
+    if (i >= 0) { try { return JSON.parse(s.slice(i)); } catch {} }
+  }
+  return null;
+}
+
+function textOf(v) {
+  if (typeof v === 'string') return v;
+  if (Array.isArray(v)) return v.map(textOf).filter(Boolean).join('\n');
+  if (v && typeof v === 'object') return textOf(v.text ?? v.content ?? v.parts ?? '');
+  return '';
+}
+
+// Codex `exec --json` prints JSONL events; the first one carries the thread id.
+function parseCodexEvents(stdout) {
+  let threadId = null;
+  let last = '';
+  for (const line of String(stdout || '').split('\n')) {
+    if (!line.startsWith('{')) continue;
+    try {
+      const j = JSON.parse(line);
+      if (j.type === 'thread.started' && j.thread_id) threadId = String(j.thread_id);
+      if (j.type === 'session.created' && j.session_id) threadId = threadId || String(j.session_id);
+      if (j.type === 'item.completed' && j.item?.type === 'agent_message' && typeof j.item.text === 'string') last = j.item.text;
+    } catch {}
+  }
+  return { threadId, text: last };
+}
+
+function parseGrok(stdout) {
+  const j = lastJson(stdout);
+  if (!j || Array.isArray(j)) return { text: String(stdout || '').trim(), sessionId: null, isError: false };
+  return {
+    text: textOf(j.result ?? j.response ?? j.text ?? j.content ?? j.message ?? ''),
+    sessionId: j.session_id || j.sessionId || null,
+    isError: Boolean(j.is_error || j.error),
+  };
+}
+
+function parseVibe(stdout) {
+  const j = lastJson(stdout);
+  const msgs = Array.isArray(j) ? j : Array.isArray(j?.messages) ? j.messages : null;
+  if (!msgs) return { text: String(stdout || '').trim(), sessionId: null };
+  const last = [...msgs].reverse().find((m) => m && (m.role === 'assistant' || m.type === 'assistant'));
+  return { text: last ? textOf(last.content ?? last.text) : '', sessionId: j?.session_id || null };
+}
+
+const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{3,99}$/; // never starts with "-"
+const uuid = () => crypto.randomUUID();
 
 // mode: 'read'     — look, answer, plan, browse the web; no changes
 //       'standard' — what the tool does in its own app when working on its own:
 //                    edits, commands and web, with the tool's built-in safety checks
 //       'full'     — no safety checks at all (owner opt-in only)
 // ('edit' is accepted as 'standard'.) extraDirs: other folders the owner granted.
-async function runAgent({ agent, prompt, cwd, mode = 'read', model, timeoutMs, signal, bin, extraDirs = [] }) {
+// resumeId: continue that CLI session (its own session list keeps the whole
+// conversation); on success the result carries sessionId for next time.
+async function runAgent({ agent, prompt, cwd, mode = 'read', model, timeoutMs, signal, bin, extraDirs = [], resumeId = null }) {
   if (mode === 'edit') mode = 'standard';
   const dirs = extraDirs.filter((d) => typeof d === 'string' && path.isAbsolute(d) && fs.existsSync(d));
-  const file = bin || findBinary(agent);
   if (agent === 'ollama') return runOllama({ prompt, model, timeoutMs, signal });
-  if (!file) return { ok: false, error: { kind: 'not_installed', message: `${BIN[agent]} is not installed.` } };
+  const file = bin || findBinary(agent);
+  if (!file) return { ok: false, error: { kind: 'not_installed', message: `${BIN[agent] || agent} is not installed.` } };
   if (agent === 'freebuff') {
     return { ok: false, error: { kind: 'interactive', message: 'FreeBuff only runs interactively — open it in a terminal from the task.' } };
   }
   const workdir = cwd && fs.existsSync(cwd) ? cwd : os.homedir();
+  const resume = resumeId && SAFE_ID.test(resumeId) ? resumeId : null;
 
   if (agent === 'anthropic') {
     const perm = { read: 'plan', standard: 'auto', full: 'bypassPermissions' }[mode];
+    const sid = resume || uuid();
     const args = ['-p', '--output-format', 'json', '--permission-mode', perm, '--allowedTools', 'WebSearch', 'WebFetch'];
+    const settingsFile = claudeSettingsFile();
+    if (settingsFile) args.push('--settings', settingsFile);
+    args.push(...(resume ? ['--resume', resume] : ['--session-id', sid]));
     if (mode === 'full') args.push('--dangerously-skip-permissions');
     for (const d of dirs) args.push('--add-dir', d);
     if (model) args.push('--model', model);
     const res = await run(file, args, { cwd: workdir, input: prompt, timeoutMs, signal });
     const parsed = parseClaude(res.out);
-    if (res.code === 0 && !parsed.isError && parsed.text) return { ok: true, text: parsed.text, via: 'Claude Code' };
-    return { ok: false, error: classify(agent, res, parsed.text), partial: parsed.text || null };
+    const sessionId = (parsed.raw && parsed.raw.session_id) || sid;
+    if (res.code === 0 && !parsed.isError && parsed.text) return { ok: true, text: parsed.text, via: 'Claude Code', sessionId };
+    return { ok: false, error: classify(agent, res, parsed.text), partial: parsed.text || null, resumeFailed: Boolean(resume) };
   }
 
   if (agent === 'openai') {
     const outFile = path.join(os.tmpdir(), `hearth-codex-${process.pid}-${Date.now()}.txt`);
-    const args = ['exec', '--skip-git-repo-check', '--color', 'never', '-C', workdir, '-o', outFile];
+    const args = ['exec', '--json', '--skip-git-repo-check', '--color', 'never', '-C', workdir, '-o', outFile];
     if (mode === 'full') args.push('--dangerously-bypass-approvals-and-sandbox');
     else if (mode === 'standard') args.push('--approve-for-me');
     else args.push('-s', 'read-only');
     if (mode !== 'read') for (const d of dirs) args.push('--add-dir', d);
     if (model) args.push('-m', model);
-    args.push('-');
-    const res = await run(file, args, { cwd: workdir, input: prompt, timeoutMs, signal });
+    let input = prompt;
+    if (resume && prompt.length < 100000) { args.push('resume', resume, prompt); input = null; } else args.push('-');
+    const res = await run(file, args, { cwd: workdir, input, timeoutMs, signal });
+    const ev = parseCodexEvents(res.out);
     let text = '';
     try {
       text = fs.readFileSync(outFile, 'utf8').trim();
       fs.unlinkSync(outFile);
     } catch {}
-    if (res.code === 0 && text) return { ok: true, text, via: 'Codex' };
-    return { ok: false, error: classify(agent, res, text), partial: text || null };
+    text = text || ev.text;
+    const sessionId = ev.threadId || resume || null;
+    if (res.code === 0 && text) return { ok: true, text, via: 'Codex', sessionId };
+    return { ok: false, error: classify(agent, res, text), partial: text || null, resumeFailed: Boolean(resume) };
   }
-  if (agent === 'google') {
+
+  if (agent === 'google' || agent === 'qwen') {
     // Brief comes in over stdin; -p forces headless mode and is appended to it.
+    // Qwen Code is built on the Gemini CLI and takes the same flags.
     const args = ['-p', 'Follow the instructions above.', '--output-format', 'json', '--approval-mode', { read: 'plan', standard: 'auto_edit', full: 'yolo' }[mode]];
+    if (resume) args.push('--resume', resume);
     if (dirs.length) args.push('--include-directories', dirs.join(','));
     if (model) args.push('-m', model);
     const res = await run(file, args, { cwd: workdir, input: prompt, timeoutMs, signal });
     const parsed = parseGemini(res.out);
-    if (res.code === 0 && !parsed.error && parsed.text) return { ok: true, text: parsed.text, via: 'Gemini CLI' };
-    return { ok: false, error: classify(agent, res, `${parsed.error || ''}\n${parsed.text}`), partial: parsed.text || null };
+    const via = agent === 'google' ? 'Gemini CLI' : 'Qwen Code';
+    if (res.code === 0 && !parsed.error && parsed.text) return { ok: true, text: parsed.text, via, sessionId: parsed.sessionId || resume || null };
+    return { ok: false, error: classify(agent, res, `${parsed.error || ''}\n${parsed.text}`), partial: parsed.text || null, resumeFailed: Boolean(resume) };
+  }
+
+  if (agent === 'xai') {
+    // Grok's headless mode has no "safe auto" level: it either asks (denied when
+    // nobody can answer) or auto-approves. Read mode leaves approvals on.
+    const sid = resume || uuid();
+    const args = ['-p', prompt, '--output-format', 'json'];
+    args.push(...(resume ? ['--resume', resume] : ['--session-id', sid]));
+    if (mode !== 'read') args.push('--always-approve');
+    if (model) args.push('-m', model);
+    const res = await run(file, args, { cwd: workdir, timeoutMs, signal });
+    const parsed = parseGrok(res.out);
+    if (res.code === 0 && !parsed.isError && parsed.text) return { ok: true, text: parsed.text, via: 'Grok Build', sessionId: parsed.sessionId || sid };
+    return { ok: false, error: classify(agent, res, parsed.text), partial: parsed.text || null, resumeFailed: Boolean(resume) };
+  }
+
+  if (agent === 'mistral') {
+    // `vibe -p` with no text reads the prompt from stdin. Standard = Vibe's
+    // default accept-edits agent (commands needing approval are denied).
+    const args = ['-p', '--output', 'json'];
+    if (resume) args.push('--resume', resume);
+    if (mode === 'full') args.push('--auto-approve');
+    const res = await run(file, args, { cwd: workdir, input: prompt, timeoutMs, signal });
+    const parsed = parseVibe(res.out);
+    if (res.code === 0 && parsed.text) return { ok: true, text: parsed.text, via: 'Mistral Vibe', sessionId: parsed.sessionId || resume || null };
+    return { ok: false, error: classify(agent, res, parsed.text), partial: parsed.text || null, resumeFailed: Boolean(resume) };
   }
   return { ok: false, error: { kind: 'unsupported', message: 'Unknown agent.' } };
 }
@@ -249,6 +384,21 @@ function geminiSignedIn() {
     if (st?.security?.auth?.selectedType || st?.selectedAuthType) return true;
   } catch {}
   return false;
+}
+
+function fileHas(f, needle) {
+  try { return fs.readFileSync(f, 'utf8').includes(needle); } catch { return false; }
+}
+function grokHome() {
+  const h = process.env.GROK_HOME;
+  return h && path.isAbsolute(h) ? h : path.join(os.homedir(), '.grok');
+}
+function grokSignedIn() {
+  return Boolean(process.env.XAI_API_KEY) || fs.existsSync(path.join(grokHome(), 'auth.json'));
+}
+function qwenSignedIn() {
+  const dir = path.join(os.homedir(), '.qwen');
+  return fs.existsSync(path.join(dir, 'oauth_creds.json')) || fileHas(path.join(dir, '.env'), 'OPENAI_API_KEY');
 }
 
 async function status(agent, bin) {
@@ -266,6 +416,11 @@ async function status(agent, bin) {
     return { installed: true, signedIn: r.code === 0 && !/not logged/i.test(r.out + r.err), path: file };
   }
   if (agent === 'google') return { installed: true, signedIn: geminiSignedIn(), path: file };
+  if (agent === 'xai') return { installed: true, signedIn: grokSignedIn(), path: file };
+  if (agent === 'qwen') return { installed: true, signedIn: qwenSignedIn(), path: file };
+  // Vibe keeps a browser sign-in in the OS keyring, which can't be checked
+  // without reading it; null = installed, sign-in state unknown.
+  if (agent === 'mistral') return { installed: true, signedIn: process.env.MISTRAL_API_KEY || fileHas(path.join(os.homedir(), '.vibe', '.env'), 'MISTRAL_API_KEY') ? true : null, path: file };
   // FreeBuff has no status command; signing in happens inside its own session.
   return { installed: true, signedIn: null, path: file };
 }
@@ -308,15 +463,15 @@ function openTerminal(file, args, cwd, { hold = false } = {}) {
 function login(agent, bin, cwd) {
   const file = bin || findBinary(agent);
   if (!file) return { ok: false, message: `${BIN[agent]} is not installed.` };
-  // Gemini and FreeBuff sign in inside their own first session, so no hold wrapper.
-  return openTerminal(file, LOGIN[agent], cwd, { hold: ['anthropic', 'openai'].includes(agent) });
+  // Gemini, Qwen and FreeBuff sign in inside their own first session, so no hold wrapper.
+  return openTerminal(file, LOGIN[agent] || [], cwd, { hold: LOGIN_HOLD.includes(agent) || agent === 'mistral' });
 }
 
 // Sign out using each tool's own sign-out. The Command Center never holds the
 // login itself, so disconnecting means asking the official tool to forget it.
 async function logout(agent, bin) {
   const file = bin || findBinary(agent);
-  if (agent === 'anthropic' || agent === 'openai') {
+  if (agent === 'anthropic' || agent === 'openai' || agent === 'xai') {
     if (!file) return { ok: false, message: `${BIN[agent]} is not installed.` };
     const r = await run(file, agent === 'anthropic' ? ['auth', 'logout'] : ['logout'], { timeoutMs: 20000 });
     return r.code === 0 ? { ok: true } : { ok: false, message: (r.err || r.out || `exit ${r.code}`).trim().split('\n').slice(-1)[0] };
@@ -329,11 +484,22 @@ async function logout(agent, bin) {
     fs.unlinkSync(f);
     return { ok: true };
   }
+  if (agent === 'qwen') {
+    const f = path.join(os.homedir(), '.qwen', 'oauth_creds.json');
+    if (!fs.existsSync(f)) return { ok: true, message: 'Qwen was not signed in with Qwen OAuth on this computer.' };
+    fs.unlinkSync(f);
+    return { ok: true };
+  }
   return { ok: false, message: 'This one signs out inside its own app.' };
 }
 
 // One-click install of an agent's official CLI from npm, shown in a terminal.
 function install(agent) {
+  if (agent === 'mistral') {
+    const uv = searchDirs().map((d) => path.join(d, 'uv')).find((p) => fs.existsSync(p));
+    if (!uv) return { ok: false, message: 'Mistral Vibe installs with uv (Python). Install uv first, or follow docs.mistral.ai/vibe.', docs: 'https://docs.mistral.ai/vibe/code/cli/install-setup' };
+    return openTerminal(uv, ['tool', 'install', 'mistral-vibe'], os.homedir(), { hold: true });
+  }
   const pkg = NPM_PACKAGE[agent];
   if (!pkg) return { ok: false, message: 'No installer for this agent.' };
   const npm = searchDirs().map((d) => path.join(d, 'npm')).find((p) => fs.existsSync(p));
@@ -341,4 +507,4 @@ function install(agent) {
   return openTerminal(npm, ['install', '-g', pkg], os.homedir(), { hold: true });
 }
 
-module.exports = { runAgent, status, login, logout, install, openTerminal, findBinary, isLimit, resetHint, parseClaude, parseGemini, BIN, NPM_PACKAGE, execFile };
+module.exports = { runAgent, status, login, logout, install, openTerminal, findBinary, isLimit, resetHint, parseClaude, parseGemini, parseCodexEvents, parseGrok, parseVibe, lastJson, run, searchDirs, BIN, CLI_AGENTS, NPM_PACKAGE, execFile };

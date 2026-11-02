@@ -19,7 +19,11 @@ test('handoff brief carries everyone\'s progress', () => {
   assert.match(b, /built half the page/);
   assert.match(b, /abc1234/);
   assert.match(b, /use sage green/);
-  assert.match(b, /0\.6\.55/);
+  assert.match(b, /owner chooses every number/);
+  assert.match(b, /Dragongamer9/);
+  assert.match(b, /Debian/);
+  assert.match(b, /Steam Game Mode/);
+  assert.doesNotMatch(b, /0\.6\.55/);
 });
 
 import { taskRunState, recoverInterrupted } from '../src/team.mjs';

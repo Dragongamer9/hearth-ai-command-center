@@ -1,7 +1,7 @@
 // Shared workspace: one git branch + worktree per task that every agent works in,
 // with automatic checkpoint commits so progress survives an agent running out of
 // usage. Git is called with execFile and argument arrays only. Nothing is ever
-// pushed or merged.
+// pushed or merged here.
 const { execFile } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -43,16 +43,28 @@ async function ensureWorktree({ project, root, taskId, title }) {
   return { dir, branch, created: true, baseSha: head.out };
 }
 
+// The owner's rule: commits only as Dragongamer9, with no AI attribution.
+// Uses git's own user.name/email when set, else the GitHub no-reply address.
+async function ownerIdentity(dir) {
+  const [n, e] = await Promise.all([git(dir, ['config', 'user.name']), git(dir, ['config', 'user.email'])]);
+  return { name: (n.ok && n.out) || 'Dragongamer9', email: (e.ok && e.out) || 'Dragongamer9@users.noreply.github.com' };
+}
+// Strip AI attribution lines an agent might have suggested.
+function cleanMessage(message) {
+  return String(message).split('\n').filter((l) => !/^\s*(co-authored-by:|claude-session:|🤖?\s*generated with)/i.test(l)).join('\n').trim() || 'Checkpoint';
+}
+
 // Commit whatever is in the worktree. Returns null when nothing changed.
-async function checkpoint(dir, { author, message }) {
+// (author is who worked on it, recorded in the app's audit log — not in git.)
+async function checkpoint(dir, { message }) {
   if (!fs.existsSync(dir)) return null;
   await git(dir, ['add', '-A']);
   const staged = await git(dir, ['diff', '--cached', '--stat']);
   if (!staged.out) return null;
-  const who = `${author} (Hearth AI) <hearth-ai@localhost>`;
+  const id = await ownerIdentity(dir);
   const r = await git(dir, [
-    '-c', 'user.name=Hearth AI Command Center', '-c', 'user.email=hearth-ai@localhost',
-    'commit', '--no-verify', '--author', who, '-m', message,
+    '-c', `user.name=${id.name}`, '-c', `user.email=${id.email}`,
+    'commit', '--no-verify', '-m', cleanMessage(message),
   ]);
   if (!r.ok) throw new Error(`Checkpoint failed: ${r.err}`);
   const sha = await git(dir, ['rev-parse', '--short', 'HEAD']);
@@ -62,7 +74,7 @@ async function checkpoint(dir, { author, message }) {
 // What has been done on this task's branch so far — shared with the next agent.
 async function summary(dir, baseSha) {
   if (!fs.existsSync(dir)) return '';
-  const log = await git(dir, ['log', '--format=%h %an: %s', `${baseSha}..HEAD`]);
+  const log = await git(dir, ['log', '--format=%h %s', `${baseSha}..HEAD`]);
   const stat = await git(dir, ['diff', '--stat', baseSha]);
   const dirty = await git(dir, ['status', '--short']);
   return [
@@ -72,4 +84,4 @@ async function summary(dir, baseSha) {
   ].filter(Boolean).join('\n\n').slice(0, 6000);
 }
 
-module.exports = { isRepo, ensureWorktree, checkpoint, summary, git, slug };
+module.exports = { isRepo, ensureWorktree, checkpoint, summary, git, slug, cleanMessage, ownerIdentity };

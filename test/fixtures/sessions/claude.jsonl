@@ -1,0 +1,6 @@
+{"type":"summary","summary":"Fix Wi-Fi refresh","leafUuid":"x"}
+{"type":"user","sessionId":"11111111-2222-3333-4444-555555555555","cwd":"/home/owner/Projects/hearth-os","timestamp":"2026-11-01T10:00:00.000Z","message":{"role":"user","content":"Why does the Wi-Fi list not refresh after resume?"}}
+{"type":"assistant","sessionId":"11111111-2222-3333-4444-555555555555","timestamp":"2026-11-01T10:00:05.000Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"hmm"},{"type":"text","text":"NetworkManager emits a signal we ignore."},{"type":"tool_use","name":"Read","input":{}}]}}
+{"type":"user","sessionId":"11111111-2222-3333-4444-555555555555","timestamp":"2026-11-01T10:00:06.000Z","message":{"role":"user","content":[{"type":"tool_result","content":"file text"}]}}
+{"type":"user","isSidechain":true,"message":{"role":"user","content":"subagent noise"}}
+{"type":"assistant","sessionId":"11111111-2222-3333-4444-555555555555","timestamp":"2026-11-01T10:01:00.000Z","message":{"role":"assistant","content":[{"type":"text","text":"Fixed it in wifi.rs."}]}}

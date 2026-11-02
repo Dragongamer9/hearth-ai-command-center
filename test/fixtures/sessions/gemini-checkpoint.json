@@ -1,0 +1,1 @@
+[{"role":"user","parts":[{"text":"Plan the boot menu theme"}]},{"role":"model","parts":[{"text":"Use a GRUB theme, keep the menu visible."},{"functionCall":{"name":"x"}}]}]

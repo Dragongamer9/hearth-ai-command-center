@@ -34,6 +34,10 @@ test('status of fake signed-in CLIs', async () => {
 });
 
 test('shared workspace: Claude runs out, ChatGPT continues on the same branch, nothing lost', async () => {
+  // Hermetic: ignore this machine's global git identity.
+  const oldGlobal = process.env.GIT_CONFIG_GLOBAL;
+  process.env.GIT_CONFIG_GLOBAL = '/dev/null';
+  test.after?.(() => { if (oldGlobal === undefined) delete process.env.GIT_CONFIG_GLOBAL; else process.env.GIT_CONFIG_GLOBAL = oldGlobal; });
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hearth-test-'));
   const project = path.join(tmp, 'project');
   fs.mkdirSync(project);
@@ -71,9 +75,12 @@ test('shared workspace: Claude runs out, ChatGPT continues on the same branch, n
   await ws.checkpoint(w.dir, { author: 'ChatGPT', message: 'ChatGPT: progress' });
 
   for (const f of ['claude.txt', 'claude-partial.txt', 'codex.txt']) assert.ok(fs.existsSync(path.join(w.dir, f)), f);
-  const log = execFileSync('git', ['log', '--format=%an', `${w.baseSha}..HEAD`], { cwd: w.dir }).toString();
-  assert.match(log, /ChatGPT \(Hearth AI\)/);
-  assert.match(log, /Claude \(Hearth AI\)/);
+  // Commits are the owner's: no AI names as authors/committers, no attribution lines.
+  const who = execFileSync('git', ['log', '--format=%an <%ae>%n%cn <%ce>', `${w.baseSha}..HEAD`], { cwd: w.dir }).toString();
+  assert.ok(who.trim().split('\n').length >= 6);
+  assert.doesNotMatch(who, /Claude|ChatGPT|Hearth AI|hearth-ai@localhost/);
+  assert.match(who, /Dragongamer9 <Dragongamer9@users\.noreply\.github\.com>/);
+  assert.doesNotMatch(execFileSync('git', ['log', '--format=%B', `${w.baseSha}..HEAD`], { cwd: w.dir }).toString(), /Co-authored-by/i);
   // Main branch untouched.
   assert.equal(execFileSync('git', ['log', '--oneline'], { cwd: project }).toString().trim().split('\n').length, 1);
   assert.equal(await ws.checkpoint(w.dir, { author: 'x', message: 'nothing' }), null);

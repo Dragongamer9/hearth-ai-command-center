@@ -1,8 +1,8 @@
 # Hearth AI Command Center
 
-Desktop command center for Hearth OS: sign in with your **Claude**, **ChatGPT**, **Gemini** and **FreeBuff** accounts (plus a free **local AI**), talk to all of them in one team chat, hand them tasks, and let them pick up each other's work when one runs out of usage. Every task runs through a policy check, independent review and your approval, and every step is saved. Linux AppImage.
+Standalone desktop command center for working on the Hearth OS project (it is not part of Hearth OS itself). Sign in with your own **Claude**, **ChatGPT**, **Gemini**, **Grok**, **Mistral** and **Qwen** accounts through their official CLIs, add **Perplexity** and **DeepSeek** with official API keys, open **Copilot** and **Meta AI** in sandboxed windows of their own sites, plus a free **local AI** and **FreeBuff**. Talk to all of them in one team chat (they post, edit, hand off and ask your permission), hand them tasks, and let them pick up each other's work when one runs out of usage. Every conversation is saved and searchable, and resumable in each AI's own CLI; official web-chat exports (ChatGPT, Claude, Gemini Takeout, DeepSeek) can be imported. Linux AppImage.
 
-Hearth OS stays pinned at **0.6.55**. The AIs work on their own branches. Nothing reaches your main branch unless you click **Approve & merge**, and the app never releases or deploys anything.
+The AIs know the Hearth OS 1.x facts (Debian, Mantel, Steam Game Mode, Decky plugins, MAJOR.MINOR versions chosen by you) and the red-flag rules. They work on their own branches; nothing reaches main unless you press **Approve & merge** (local merge or the task's pull request), and a release needs a separate approval with the version typed by you. The look follows the Hearth desktop theme (`~/.config/hearth/theme.json` / `theme.css`) when present, else the Steam-style Hearth OS 1.0 look; light mode too.
 
 Docs: `docs/ACCOUNTS.md` (connecting accounts), `docs/GITHUB_AND_ACCESS.md` (GitHub, folders, permissions), `docs/SAVING_AND_RESUME.md` (what's saved, recovery, handoff), `docs/IN_APP_UPDATES.md` (updates), `FULL_VERSION_ROADMAP.md` (what's next).
 

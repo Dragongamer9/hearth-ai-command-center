@@ -13,10 +13,18 @@ const agents = require('./agents.cjs');
 const workspace = require('./workspace.cjs');
 const gitops = require('./git.cjs');
 const { createStore, redact, redactDeep } = require('./store.cjs');
+const bridge = require('./bridge.cjs');
+const imports = require('./imports.cjs');
+const { createHistory } = require('./history.cjs');
+const theme = require('./theme.cjs');
+const web = require('./webapps.cjs');
+const { LIVE_PROVIDERS } = require('./validate.cjs');
 
-// Hearth OS version this console is pinned to. Display-only: this app never
-// changes, bumps, publishes or deploys Hearth OS.
-const HEARTH_OS_VERSION = '0.6.55';
+// No Hearth OS version pin: the app never changes, bumps, publishes or deploys
+// Hearth OS versions (the owner picks every number). It only shows which Hearth
+// OS this computer runs, read from /etc/os-release.
+const API_ONLY = ['perplexity', 'deepseek'];
+const THEMES = ['hearth', 'dark', 'light', 'system'];
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();
@@ -31,6 +39,7 @@ const dataDir = () => app.getPath('userData');
 const stateFile = () => path.join(dataDir(), 'command-center-state.json');
 const settingsFile = () => path.join(dataDir(), 'settings.json');
 const worktreeRoot = () => path.join(dataDir(), 'workspaces');
+const historyFile = () => path.join(dataDir(), 'chat-history.json');
 const runs = new Map(); // runId -> AbortController
 
 // Main-side settings: the renderer can never hand us an arbitrary path to run in.
@@ -40,7 +49,7 @@ function readSettings() {
   return {
     project: typeof s.project === 'string' ? s.project : null,
     projects: Array.isArray(s.projects) ? s.projects.filter((p) => typeof p === 'string') : (typeof s.project === 'string' ? [s.project] : []),
-    connection: { anthropic: 'cli', openai: 'cli', ...(s.connection || {}) },
+    connection: { anthropic: 'cli', openai: 'cli', xai: 'cli', mistral: 'cli', perplexity: 'api', deepseek: 'api', ...(s.connection || {}), perplexity: 'api', deepseek: 'api' },
     bins: { ...(s.bins || {}) },
     // What AIs may do when working: 'standard' = each tool's own autonomous mode
     // with its built-in safety checks; 'full' = no checks (owner opt-in).
@@ -48,6 +57,9 @@ function readSettings() {
     extraDirs: Array.isArray(s.extraDirs) ? s.extraDirs.filter((d) => typeof d === 'string' && path.isAbsolute(d)) : [],
     autoPush: s.autoPush !== false,
     chatEdits: s.chatEdits !== false,
+    // Keep one CLI session per AI for the team chat, so it's resumable in that AI's own CLI.
+    chatResume: s.chatResume !== false,
+    theme: THEMES.includes(s.theme) ? s.theme : 'hearth',
   };
 }
 function useProject(dir) {
@@ -69,6 +81,8 @@ function taskDir(taskId) {
 }
 
 let store = null;
+let history = null;
+let openWeb = null;
 let lastLoad = { recoveredFrom: null };
 
 function readState() {
@@ -105,7 +119,7 @@ function createWindow() {
     height: 900,
     minWidth: 1024,
     minHeight: 680,
-    backgroundColor: '#0d0f0e',
+    backgroundColor: '#171a21',
     title: 'Hearth AI Command Center',
     icon: path.join(__dirname, '..', 'dist', 'icon.png'),
     autoHideMenuBar: true,
@@ -169,7 +183,7 @@ function registerIpc() {
 
   handle('app:info', () => ({
     appVersion: app.getVersion(),
-    hearthOsVersion: HEARTH_OS_VERSION,
+    hearthOs: theme.hearthOsRelease(),
     dataPath: dataDir(),
     electron: process.versions.electron,
     packaged: app.isPackaged,
@@ -179,7 +193,7 @@ function registerIpc() {
     encryption: await secrets.available(),
     weakEncryption: secrets.weak(),
     defaults: DEFAULT_MODELS,
-    keys: { anthropic: secrets.has('anthropic'), openai: secrets.has('openai'), freebuff: false },
+    keys: Object.fromEntries(LIVE_PROVIDERS.map((p) => [p, secrets.has(p)])),
   }));
 
   handle('providers:setKey', async (provider, key) => {
@@ -210,6 +224,7 @@ function registerIpc() {
   handle('settings:setConnection', (agent, method) => {
     validateProvider(agent, { liveOnly: true });
     if (!['cli', 'api'].includes(method)) throw new Error('bad method');
+    if (API_ONLY.includes(agent) && method !== 'api') throw new Error('This one connects by API key only.');
     const s = readSettings();
     s.connection[agent] = method;
     writeSettings(s);
@@ -246,6 +261,8 @@ function registerIpc() {
     if ('access' in patch) s.access = patch.access === 'full' ? 'full' : 'standard';
     if ('autoPush' in patch) s.autoPush = Boolean(patch.autoPush);
     if ('chatEdits' in patch) s.chatEdits = Boolean(patch.chatEdits);
+    if ('chatResume' in patch) s.chatResume = Boolean(patch.chatResume);
+    if ('theme' in patch && THEMES.includes(patch.theme)) s.theme = patch.theme;
     writeSettings(s);
     return s;
   });
@@ -297,6 +314,21 @@ function registerIpc() {
     const s = readSettings();
     return agents.login(agent, s.bins[agent], s.project || undefined);
   });
+  // The provider's own account / API-key page in your browser.
+  handle('agents:openSignin', (agent) => {
+    const url = web.SIGNIN[agent];
+    if (!url) throw new Error('No sign-in page for this one.');
+    shell.openExternal(url);
+    return { ok: true, url };
+  });
+  // The provider's own chat site in a sandboxed in-app window (you sign in there).
+  handle('web:open', (provider) => openWeb(String(provider)));
+  handle('web:openExport', (provider) => {
+    const url = web.EXPORT[provider];
+    if (!url) return { ok: false, message: 'This provider offers no chat export.' };
+    shell.openExternal(url);
+    return { ok: true };
+  });
 
   // Run an agent. mode 'read' answers/plans in the project folder; mode 'edit'
   // works inside the task's own worktree. Out-of-usage is reported as kind 'limit'.
@@ -320,7 +352,11 @@ function registerIpc() {
       return { ok: false, error: { kind: 'no_workspace', message: 'Pick a project folder in Settings first so the task has a workspace.' } };
     }
 
-    if (['anthropic', 'openai'].includes(agent) && s.connection[agent] === 'api') {
+    const title = typeof opts.title === 'string' ? opts.title.slice(0, 120) : 'Conversation';
+    const shown = typeof opts.historyText === 'string' && opts.historyText.trim() ? opts.historyText.slice(0, 8000) : prompt.slice(0, 8000);
+    const taskId = typeof opts.taskId === 'string' && TASK_ID.test(opts.taskId) ? opts.taskId : null;
+
+    if (LIVE_PROVIDERS.includes(agent) && s.connection[agent] === 'api') {
       // API connections can't touch files; in edit mode they answer with a plan instead.
       const r = await callProvider({ provider: agent, apiKey: secrets.get(agent), model: validateModel(opts.model || DEFAULT_MODELS[agent]), prompt });
       if (!r.ok) {
@@ -328,27 +364,101 @@ function registerIpc() {
         else if (r.error.kind === 'server' || r.error.kind === 'network') r.error.kind = 'outage';
         else if (r.error.kind === 'no_key') r.error.kind = 'auth';
       }
-      return cleanResult(r.ok ? { ...r, via: 'API' } : r);
+      const out = cleanResult(r.ok ? { ...r, via: 'API' } : r);
+      // API chats have no CLI session; the app's history is their only copy.
+      if (out.ok) {
+        const thread = typeof opts.thread === 'string' && /^[A-Za-z0-9:_-]{2,60}$/.test(opts.thread) ? opts.thread : `once-${Date.now()}`;
+        try { history.append({ provider: agent, sessionId: `api-${thread}`, title, cwd, taskId, resumable: false, messages: [{ role: 'user', text: shown, at: new Date().toISOString() }, { role: 'assistant', text: out.text, at: new Date().toISOString() }] }); } catch {}
+      }
+      return out;
     }
 
     const controller = new AbortController();
     if (runId) runs.set(runId, controller);
+    const base = {
+      agent,
+      cwd,
+      mode,
+      model: opts.model && s.connection[agent] !== 'api' ? validateModel(opts.model) : undefined,
+      timeoutMs: mode === 'read' ? 10 * 60 * 1000 : 30 * 60 * 1000,
+      signal: controller.signal,
+      bin: s.bins[agent],
+      extraDirs: s.extraDirs,
+    };
     try {
-      return cleanResult(await agents.runAgent({
-        agent,
-        prompt,
-        cwd,
-        mode,
-        model: opts.model && s.connection[agent] !== 'api' ? validateModel(opts.model) : undefined,
-        timeoutMs: mode === 'read' ? 10 * 60 * 1000 : 30 * 60 * 1000,
-        signal: controller.signal,
-        bin: s.bins[agent],
-        extraDirs: s.extraDirs,
-      }));
+      const resumeId = typeof opts.resumeId === 'string' ? opts.resumeId : null;
+      let r = await agents.runAgent({ ...base, prompt, resumeId });
+      // If continuing the saved CLI session didn't work, start a fresh one with the full brief.
+      if (!r.ok && r.resumeFailed && ['failed', 'unsupported'].includes(r.error.kind) && typeof opts.fallbackPrompt === 'string' && !controller.signal.aborted) {
+        r = await agents.runAgent({ ...base, prompt: validatePrompt(opts.fallbackPrompt) });
+        r.resumeReset = true;
+      }
+      r = cleanResult(r);
+      if (r.ok && r.sessionId) {
+        try {
+          history.append({ provider: agent, sessionId: r.sessionId, title, cwd, taskId, resumable: true, messages: [{ role: 'user', text: shown, at: new Date().toISOString() }, { role: 'assistant', text: r.text, at: new Date().toISOString() }] });
+        } catch {}
+      }
+      return r;
     } finally {
       if (runId) runs.delete(runId);
     }
   });
+
+  // ---- chat history bridge ----
+  const knownDirs = () => {
+    const s = readSettings();
+    let ws = [];
+    try { ws = fs.readdirSync(worktreeRoot()).map((d) => path.join(worktreeRoot(), d)); } catch {}
+    return [...s.projects, ...ws, os.homedir()];
+  };
+  handle('history:scan', () => {
+    const found = bridge.scanAll({ knownDirs: knownDirs() });
+    const n = history.upsertMany(found);
+    return { ok: true, found: n, stats: history.stats() };
+  });
+  handle('history:search', (q, filters) => history.search(String(q || '').slice(0, 200), filters && typeof filters === 'object' ? filters : {}));
+  handle('history:get', (key) => history.get(String(key)));
+  handle('history:stats', () => history.stats());
+  handle('history:remove', (key) => history.remove(String(key)));
+  // Reopen a conversation in that AI's own CLI, in a terminal, in its folder.
+  handle('history:resume', (key) => {
+    const c = history.get(String(key));
+    if (!c) return { ok: false, message: 'Not found.' };
+    const args = bridge.resumeArgs(c.provider, c.sessionId);
+    if (!c.resumable || !args) return { ok: false, message: 'This conversation can\'t be resumed in a CLI (imported from a web app, or an API chat).' };
+    const file = agents.findBinary(c.provider, readSettings().bins[c.provider]);
+    if (!file) return { ok: false, message: `${agents.BIN[c.provider]} is not installed.` };
+    const cwd = c.cwd && fs.existsSync(c.cwd) ? c.cwd : os.homedir();
+    return { ...agents.openTerminal(file, args, cwd), command: `${agents.BIN[c.provider]} ${args.join(' ')}`, cwd };
+  });
+  // "Open in <provider>": the conversation's own page when the export gave its id.
+  handle('history:openWeb', (key, inApp) => {
+    const c = history.get(String(key));
+    if (!c) return { ok: false };
+    const url = web.conversationUrl(c.provider, c.source?.startsWith('import') ? c.sessionId : null) || web.WEB[c.provider];
+    if (!url) return { ok: false, message: 'No web app for this one.' };
+    if (inApp && web.WEB[c.provider]) return openWeb(c.provider, url);
+    shell.openExternal(url);
+    return { ok: true };
+  });
+  handle('history:import', async (kind) => {
+    const k = ['auto', 'chatgpt', 'claude', 'gemini', 'deepseek', 'generic'].includes(kind) ? kind : 'auto';
+    const r = await dialog.showOpenDialog(mainWindow, { title: 'Import an official chat export', properties: ['openFile'], filters: [{ name: 'Chat exports', extensions: ['zip', 'json'] }] });
+    if (r.canceled || !r.filePaths[0]) return { ok: false, cancelled: true };
+    const f = r.filePaths[0];
+    if (fs.statSync(f).size > 1024 * 1024 * 1024) return { ok: false, message: 'That file is over 1 GB.' };
+    try {
+      const out = imports.importFile(fs.readFileSync(f), { name: path.basename(f), kind: k });
+      const n = history.upsertMany(out.conversations);
+      return { ok: true, kind: out.kind, imported: n, file: path.basename(f) };
+    } catch (e) {
+      return { ok: false, message: e.message };
+    }
+  });
+
+  // ---- theme (follows Hearth OS's desktop theme when present) ----
+  handle('theme:get', () => theme.readTheme());
   handle('agents:cancel', (runId) => {
     runs.get(runId)?.abort();
     return true;
@@ -441,6 +551,49 @@ function registerIpc() {
     if (r.ok && r.url?.startsWith('https://github.com/')) shell.openExternal(r.url);
     return r;
   });
+  handle('git:prList', () => {
+    const s = readSettings();
+    return s.project ? gitops.prList(s.project) : { ok: false, prs: [], message: 'Pick a project first.' };
+  });
+  handle('git:prView', async (taskId) => {
+    const s = readSettings();
+    const dir = taskDir(taskId);
+    if (!s.project || !fs.existsSync(dir)) return { ok: false, message: 'No workspace.' };
+    const branch = (await workspace.git(dir, ['branch', '--show-current'])).out;
+    return gitops.prView(s.project, branch);
+  });
+  // Only from the owner's Approve click; a native confirmation is the last gate.
+  handle('git:prMerge', async (number) => {
+    const s = readSettings();
+    if (!s.project) return { ok: false, message: 'Pick a project first.' };
+    const n = Number(number);
+    const confirm = dialog.showMessageBoxSync(mainWindow, {
+      type: 'warning',
+      message: `Merge pull request #${n} on GitHub?`,
+      detail: 'You approved this in Hearth AI Command Center. This changes the base branch (usually main). If it touches booting, make sure the previous version stays startable.',
+      buttons: ['Merge pull request', 'Cancel'],
+      defaultId: 1,
+      cancelId: 1,
+    });
+    if (confirm !== 0) return { ok: false, message: 'Cancelled.' };
+    return gitops.prMerge(s.project, n);
+  });
+  // Releases: separate explicit approval, version typed by the owner twice.
+  handle('git:release', async (o) => {
+    const s = readSettings();
+    if (!s.project) return { ok: false, message: 'Pick a project first.' };
+    if (!o || typeof o.version !== 'string' || o.version !== o.confirmVersion) return { ok: false, message: 'The two version fields must match exactly.' };
+    const confirm = dialog.showMessageBoxSync(mainWindow, {
+      type: 'warning',
+      message: `Create release v${o.version} from ${o.target}?`,
+      detail: `Version v${o.version} was typed by you. ${o.draft === false ? 'It is published right away.' : 'It is created as a draft; press Publish on GitHub when ready.'}`,
+      buttons: [`Create v${o.version}`, 'Cancel'],
+      defaultId: 1,
+      cancelId: 1,
+    });
+    if (confirm !== 0) return { ok: false, message: 'Cancelled.' };
+    return gitops.releaseCreate(s.project, { version: o.version, target: String(o.target || ''), notes: redact(String(o.notes || '')), draft: o.draft !== false });
+  });
   handle('git:clone', async (input) => {
     if (!gitops.find('git')) return { ok: false, message: 'git is not installed.' };
     const r = await gitops.clone(String(input), path.join(os.homedir(), 'HearthProjects'));
@@ -469,6 +622,9 @@ app.whenReady().then(() => {
   Menu.setApplicationMenu(null);
   secrets = createSecretStore({ safeStorage, dir: dataDir() });
   store = createStore(stateFile());
+  history = createHistory(historyFile());
+  openWeb = web.createWebWindows({ BrowserWindow, shell, iconPath: path.join(__dirname, '..', 'dist', 'icon.png') });
+  theme.watchTheme((t) => send('theme:changed', t));
   updater = createUpdater({ app, send });
   registerIpc();
   createWindow();

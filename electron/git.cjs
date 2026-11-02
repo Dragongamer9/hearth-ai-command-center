@@ -144,9 +144,10 @@ async function openPr(dir, branch, title, body) {
   if (!push.ok) return push;
   const def = await defaultBranch(dir);
   const r = await exec(gh, ['pr', 'create', '--head', branch, '--base', def, '--title', String(title).slice(0, 200), '--body', String(body).slice(0, 5000)], dir, 60000);
-  if (r.ok) return { ok: true, url: r.out.split('\n').filter((l) => l.startsWith('https://')).pop() || r.out };
+  const num = (u) => Number((String(u).match(/\/pull\/(\d+)/) || [])[1]) || null;
+  if (r.ok) { const url = r.out.split('\n').filter((l) => l.startsWith('https://')).pop() || r.out; return { ok: true, url, number: num(url) }; }
   const existing = await exec(gh, ['pr', 'view', branch, '--json', 'url', '--jq', '.url'], dir, 30000);
-  return existing.ok ? { ok: true, url: existing.out } : { ok: false, message: lastLine(r) };
+  return existing.ok ? { ok: true, url: existing.out, number: num(existing.out) } : { ok: false, message: lastLine(r) };
 }
 
 // "owner/repo" or a github.com URL -> https clone URL + folder name.
@@ -169,10 +170,19 @@ async function clone(input, parent) {
   return r.ok ? { ok: true, dir } : { ok: false, message: lastLine(r) };
 }
 
+// The owner's identity for commits the app makes: git's own user.name/email when
+// set, otherwise Dragongamer9's GitHub no-reply address. Never an AI name.
+const OWNER = { name: 'Dragongamer9', email: 'Dragongamer9@users.noreply.github.com' };
+async function ownerIdentity(dir) {
+  const [n, e] = await Promise.all([git(dir, ['config', 'user.name']), git(dir, ['config', 'user.email'])]);
+  return { name: (n.ok && n.out) || OWNER.name, email: (e.ok && e.out) || OWNER.email };
+}
+
 // Start tracking a plain folder with git so work on it can be checkpointed.
 async function initRepo(dir) {
   if (await isRepo(dir)) return { ok: true };
-  const steps = [['init', '-b', 'main'], ['add', '-A'], ['-c', 'user.name=Hearth AI Command Center', '-c', 'user.email=hearth-ai@localhost', 'commit', '--allow-empty', '-m', 'Start tracking with Hearth AI Command Center']];
+  const id = await ownerIdentity(dir);
+  const steps = [['init', '-b', 'main'], ['add', '-A'], ['-c', `user.name=${id.name}`, '-c', `user.email=${id.email}`, 'commit', '--allow-empty', '-m', 'Start tracking the project']];
   for (const s of steps) {
     const r = await git(dir, s);
     if (!r.ok) return { ok: false, message: lastLine(r) };
@@ -180,4 +190,92 @@ async function initRepo(dir) {
   return { ok: true };
 }
 
-module.exports = { tools, setupGitAuth, isRepo, status, pull, pushBranch, mergeApproved, openPr, clone, initRepo, parseRepo, defaultBranch, find };
+// ---- Pull requests (GitHub CLI with your own `gh auth login`) ----
+const PR_FIELDS = 'number,title,url,state,isDraft,headRefName,baseRefName,reviewDecision,mergeable,mergeStateStatus,statusCheckRollup,reviews,updatedAt,mergedAt';
+const PASS = ['SUCCESS', 'NEUTRAL', 'SKIPPED'];
+const FAIL = ['FAILURE', 'ERROR', 'TIMED_OUT', 'CANCELLED', 'ACTION_REQUIRED', 'STARTUP_FAILURE', 'STALE'];
+
+// gh's JSON -> what the app shows: state label, check counts, latest review per person.
+function summarizePr(j) {
+  if (!j || typeof j !== 'object' || !j.number) return null;
+  const checks = { total: 0, passed: 0, failed: 0, pending: 0, items: [] };
+  for (const c of Array.isArray(j.statusCheckRollup) ? j.statusCheckRollup : []) {
+    const name = c.name || c.context || 'check';
+    const res = String(c.conclusion || c.state || '').toUpperCase();
+    const done = c.status ? String(c.status).toUpperCase() === 'COMPLETED' : res && res !== 'PENDING' && res !== 'EXPECTED';
+    const st = done && PASS.includes(res) ? 'passed' : done && FAIL.includes(res) ? 'failed' : 'pending';
+    checks.total++;
+    checks[st]++;
+    checks.items.push({ name: String(name).slice(0, 80), state: st, url: c.detailsUrl || c.targetUrl || null });
+  }
+  const latest = new Map();
+  for (const r of Array.isArray(j.reviews) ? j.reviews : []) {
+    const who = r.author?.login || 'someone';
+    if (r.state === 'COMMENTED' && latest.has(who)) continue;
+    latest.set(who, { who, state: r.state, at: r.submittedAt || null });
+  }
+  const reviews = [...latest.values()];
+  const state = String(j.state || '').toUpperCase();
+  let label = 'open';
+  if (state === 'MERGED' || j.mergedAt) label = 'merged';
+  else if (state === 'CLOSED') label = 'closed';
+  else if (j.isDraft) label = 'draft';
+  else if (checks.failed) label = 'checks failing';
+  else if (j.reviewDecision === 'CHANGES_REQUESTED') label = 'changes requested';
+  else if (checks.pending) label = 'checks running';
+  else if (j.reviewDecision === 'APPROVED') label = 'approved';
+  else if (j.reviewDecision === 'REVIEW_REQUIRED') label = 'review required';
+  return {
+    number: j.number, title: String(j.title || ''), url: String(j.url || ''), state, label, draft: Boolean(j.isDraft),
+    head: j.headRefName || '', base: j.baseRefName || '', mergeable: j.mergeable || 'UNKNOWN', mergeState: j.mergeStateStatus || '',
+    reviewDecision: j.reviewDecision || '', checks, reviews, updatedAt: j.updatedAt || null,
+  };
+}
+
+async function prView(dir, ref) {
+  const gh = find('gh');
+  if (!gh) return { ok: false, message: 'GitHub CLI (gh) is not installed.' };
+  if (!/^(\d{1,7}|[A-Za-z0-9._/-]{1,120})$/.test(String(ref))) return { ok: false, message: 'Bad pull request reference.' };
+  const r = await exec(gh, ['pr', 'view', String(ref), '--json', PR_FIELDS], dir, 30000);
+  if (!r.ok) return { ok: false, message: /no pull requests found/i.test(r.err) ? 'No pull request for this branch yet.' : lastLine(r) };
+  try { return { ok: true, pr: summarizePr(JSON.parse(r.out)) }; } catch { return { ok: false, message: 'Unexpected answer from gh.' }; }
+}
+
+async function prList(dir) {
+  const gh = find('gh');
+  if (!gh) return { ok: false, message: 'GitHub CLI (gh) is not installed.', prs: [] };
+  const r = await exec(gh, ['pr', 'list', '--state', 'all', '--limit', '30', '--json', PR_FIELDS], dir, 30000);
+  if (!r.ok) return { ok: false, message: lastLine(r), prs: [] };
+  try { return { ok: true, prs: JSON.parse(r.out).map(summarizePr).filter(Boolean) }; } catch { return { ok: false, message: 'Unexpected answer from gh.', prs: [] }; }
+}
+
+// Owner-approved only (the UI calls this after Approve + a confirmation dialog).
+// A normal merge commit: never --admin (doesn't bypass branch protection), never --auto.
+async function prMerge(dir, number) {
+  const gh = find('gh');
+  if (!gh) return { ok: false, message: 'GitHub CLI (gh) is not installed.' };
+  if (!/^\d{1,7}$/.test(String(number))) return { ok: false, message: 'Bad pull request number.' };
+  const view = await prView(dir, String(number));
+  if (!view.ok) return view;
+  if (view.pr.state !== 'OPEN') return { ok: false, message: `Pull request #${number} is ${view.pr.state.toLowerCase()}.` };
+  if (view.pr.checks.failed) return { ok: false, message: `Pull request #${number} has failing checks; nothing merged.` };
+  const r = await exec(gh, ['pr', 'merge', String(number), '--merge'], dir, 120000);
+  return r.ok ? { ok: true, message: `Merged pull request #${number} into ${view.pr.base}.` } : { ok: false, message: lastLine(r) };
+}
+
+const VERSION = /^\d{1,4}\.\d{1,4}(\.\d{1,4})?$/;
+// Owner-approved only, with the version typed by the owner (twice). Never picks a number.
+async function releaseCreate(dir, { version, target, notes = '', draft = true }) {
+  const gh = find('gh');
+  if (!gh) return { ok: false, message: 'GitHub CLI (gh) is not installed.' };
+  if (!VERSION.test(String(version || ''))) return { ok: false, message: 'Type the version as MAJOR.MINOR (for example 1.1).' };
+  if (!BRANCH_RE.test(String(target || ''))) return { ok: false, message: 'Bad target branch.' };
+  const tag = `v${version}`;
+  const args = ['release', 'create', tag, '--target', target, '--title', `${tag}`, '--notes', String(notes).slice(0, 20000) || `Release ${tag}`];
+  if (draft) args.push('--draft');
+  const r = await exec(gh, args, dir, 120000);
+  if (!r.ok) return { ok: false, message: lastLine(r) };
+  return { ok: true, tag, draft, url: r.out.split('\n').filter((l) => l.startsWith('https://')).pop() || '', message: `${draft ? 'Draft release' : 'Release'} ${tag} created${draft ? ' — press Publish on GitHub when ready' : ''}.` };
+}
+
+module.exports = { summarizePr, prView, prList, prMerge, releaseCreate, ownerIdentity, tools, setupGitAuth, isRepo, status, pull, pushBranch, mergeApproved, openPr, clone, initRepo, parseRepo, defaultBranch, find };

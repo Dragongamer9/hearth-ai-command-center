@@ -1,0 +1,11 @@
+#!/bin/sh
+# Fake Grok Build CLI for tests: echoes its arguments back as the answer.
+if [ "$1" = "logout" ]; then echo "Signed out"; exit 0; fi
+sid=""; prev=""
+for a in "$@"; do
+  case "$prev" in --session-id|--resume) sid="$a";; esac
+  prev="$a"
+done
+case "$*" in *--resume*) mode="resumed";; *) mode="new";; esac
+case "$*" in *--always-approve*) appr="auto";; *) appr="ask";; esac
+printf '{"result":"Grok %s session, approvals %s.","session_id":"%s"}\n' "$mode" "$appr" "$sid"

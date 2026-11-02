@@ -43,7 +43,7 @@ test('Gemini CLI: plan vs edit mode, JSON parsing, quota = usage limit', async (
   r = await agents.runAgent({ agent: 'google', prompt: 'x', cwd: dir, mode: 'edit', bin });
   delete process.env.FAKE_GEMINI_LIMIT;
   assert.equal(r.error.kind, 'limit');
-  assert.deepStrictEqual(agents.parseGemini('{"response":"hi"}'), { text: 'hi', error: null });
+  assert.deepStrictEqual(agents.parseGemini('{"response":"hi"}'), { text: 'hi', error: null, sessionId: null });
 });
 
 test('local AI via Ollama: lists models and answers', async () => {
@@ -72,7 +72,7 @@ test('OLLAMA_HOST pointing off this machine is ignored', () => {
 test('installers only use the fixed official npm packages', () => {
   const agents = require('../electron/agents.cjs');
   assert.deepStrictEqual(agents.NPM_PACKAGE, {
-    anthropic: '@anthropic-ai/claude-code', openai: '@openai/codex', google: '@google/gemini-cli', freebuff: 'freebuff',
+    anthropic: '@anthropic-ai/claude-code', openai: '@openai/codex', google: '@google/gemini-cli', xai: '@xai-official/grok', qwen: '@qwen-code/qwen-code', freebuff: 'freebuff',
   });
 });
 

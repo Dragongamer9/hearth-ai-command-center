@@ -1,0 +1,5 @@
+#!/bin/sh
+# Fake Mistral Vibe CLI for tests.
+prompt=$(cat)
+case "$*" in *--auto-approve*) appr="auto";; *) appr="accept-edits";; esac
+printf '[{"role":"user","content":"x"},{"role":"assistant","content":"Vibe answered (%s)."}]\n' "$appr"
