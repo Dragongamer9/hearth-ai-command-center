@@ -49,7 +49,7 @@ function stub(scenario) {
     loadState: () => ok(JSON.parse(JSON.stringify(state))),
     saveState: () => ok(true),
     appInfo: () => ok({ appVersion: '0.4.0', hearthOsVersion: '0.6.55', dataPath: '/home/owner/.config/Hearth AI Command Center', electron: '45.0.0', packaged: true }),
-    backups: () => ok({ recoveredFrom: null, backups: populated ? [{ n: 1, at: ago(60), size: 18234 }, { n: 2, at: ago(240), size: 17012 }] : [] }),
+    backups: () => ok({ recoveredFrom: null, backups: populated ? [{ n: 1, ok: true, savedAt: ago(60), tasks: 6 }, { n: 2, ok: true, savedAt: ago(240), tasks: 5 }] : [] }),
     restoreBackup: () => ok(state), exportAll: () => ok({ ok: false }),
     providerStatus: () => ok({ encryption: true, weakEncryption: false, defaults: { anthropic: 'claude-sonnet-4-5', openai: 'gpt-5' }, keys: {} }),
     setKey: () => ok(true), removeKey: () => ok(true), ask: () => ok({ ok: false }),
