@@ -1,0 +1,57 @@
+name: UI screenshots (CI only)
+
+# Renders the app's UI with fake data and saves PNGs. Never builds a release.
+on:
+  push:
+    branches: ['ci/screenshots']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  shots:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build web UI
+        run: npx vite build
+
+      - name: Install Playwright (CI only, not saved to package.json)
+        run: |
+          npm install --no-save playwright@1.49.1
+          npx playwright install --with-deps chromium
+
+      - name: Take screenshots
+        run: |
+          npx vite preview --port 4173 --strictPort &
+          for i in $(seq 1 60); do curl -sf http://127.0.0.1:4173/ >/dev/null && break; sleep 1; done
+          OUT_DIR=shots node ci/screenshots/shoot.mjs
+          ls -la shots
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ui-screenshots
+          path: shots/*.png
+          if-no-files-found: error
+
+      - name: Commit screenshots to ci/screenshots-out (orphan branch)
+        run: |
+          src_sha=$(git rev-parse --short HEAD)
+          mkdir /tmp/out && cp shots/*.png /tmp/out/
+          cd /tmp/out
+          git init -q -b ci/screenshots-out
+          git config user.name Dragongamer9
+          git config user.email Dragongamer9@users.noreply.github.com
+          git add -A
+          git commit -q -m "UI screenshots from ${src_sha}"
+          git push -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" ci/screenshots-out
