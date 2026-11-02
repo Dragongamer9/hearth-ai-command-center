@@ -662,7 +662,8 @@ function agentActions(a) {
   if (a === 'ollama') return c.installed ? '' : '<button class="btn small" data-install="ollama">Get Ollama</button>';
   if (m === 'api') out.push(prov.keys[a] ? '' : `<button class="btn small primary" data-opensignin="${a}">Get API key</button>`);
   else if (a === 'freebuff') out.push(c.installed ? `<button class="btn small" data-login="${a}">Open</button>` : `<button class="btn small primary" data-signin="${a}">Install</button>`);
-  else if (!connected(a) && !state.disabled?.[a]) out.push(`<button class="btn small primary" data-signin="${a}">${c.installed ? 'Sign in' : 'Install & sign in'}</button>`);
+  else if (['waiting', 'installing'].includes(ui.signin[a]?.state) && !connected(a)) out.push(`<button class="btn small" disabled><span class="dot pulse"></span> ${ui.signin[a].state === 'installing' ? 'Installing…' : 'Waiting for browser…'}</button>`);
+  else if (!connected(a) && !state.disabled?.[a]) out.push(`<button class="btn small primary" data-signin="${a}">${c.installed ? (ui.signin[a]?.state === 'timeout' ? 'Try again' : 'Sign in') : 'Install & sign in'}</button>`);
   return out.join('');
 }
 
@@ -686,7 +687,7 @@ function agentDetail(a) {
       ${a === 'qwen' ? '<p class="faint">Qwen Code needs its Qwen OAuth sign-in cached before it can run from the app; if runs report “not signed in”, open it once in a terminal (Sign in) or give it an API key in ~/.qwen/.env.</p>' : ''}
       ${a === 'freebuff' ? '<p class="faint">FreeBuff has no hands-free mode: from any task, “Continue in FreeBuff” opens it in that task’s workspace with the handoff brief on your clipboard.</p>' : ''}`}
     <div class="row" style="margin-top:8px">
-      ${ag.kind === 'cli' && m !== 'api' && c.installed && !connected(a) ? `<button class="btn small primary" data-signin="${a}">Sign in</button>` : ''}
+      ${ag.kind === 'cli' && m !== 'api' && c.installed && !connected(a) && ui.signin[a]?.state !== 'waiting' ? `<button class="btn small primary" data-signin="${a}">${ui.signin[a]?.state === 'timeout' ? 'Try again' : 'Sign in'}</button>` : ''}
       ${ag.kind === 'cli' && m !== 'api' && c.signedIn ? `<button class="btn small danger" data-disconnect="${a}">Sign out</button>` : ''}
       ${ag.signin ? `<button class="btn small ghost" data-opensignin="${a}">${m === 'api' ? 'API key page' : 'Account page'} ↗</button>` : ''}
       ${ag.web ? `<button class="btn small ghost" data-openweb="${a}">Open ${esc(ag.name)} web chat</button>` : ''}
