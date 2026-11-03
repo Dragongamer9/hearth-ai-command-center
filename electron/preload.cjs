@@ -12,6 +12,7 @@ contextBridge.exposeInMainWorld('hearth', {
   providerStatus: () => ipcRenderer.invoke('providers:status'),
   setKey: (provider, key) => ipcRenderer.invoke('providers:setKey', provider, key),
   removeKey: (provider) => ipcRenderer.invoke('providers:removeKey', provider),
+  testKey: (provider, model) => ipcRenderer.invoke('providers:test', provider, model),
   ask: (provider, model, prompt) => ipcRenderer.invoke('providers:ask', provider, model, prompt),
 
   settings: () => ipcRenderer.invoke('settings:get'),

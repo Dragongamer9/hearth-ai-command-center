@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert');
-const { callProvider, extractText } = require('../electron/providers.cjs');
+const { callProvider, extractText, testProvider } = require('../electron/providers.cjs');
 
 const res = (status, body, headers = {}) => ({
   ok: status >= 200 && status < 300,
@@ -58,4 +58,39 @@ test('missing key and freebuff are refused without a network call', async () => 
   const fetchImpl = async () => { throw new Error('should not be called'); };
   assert.equal((await callProvider({ ...base, apiKey: null, provider: 'openai', fetchImpl })).error.kind, 'no_key');
   assert.equal((await callProvider({ ...base, provider: 'freebuff', fetchImpl })).error.kind, 'unsupported');
+});
+
+
+test('key test sends only Hello for every API provider and hides response text', async () => {
+  for (const provider of ['anthropic', 'openai', 'xai', 'mistral', 'perplexity', 'deepseek']) {
+    let request;
+    const out = await testProvider({ ...base, provider, prompt: 'must not be sent', fetchImpl: async (_url, init) => {
+      request = JSON.parse(init.body);
+      return res(200, provider === 'anthropic'
+        ? { content: [{ type: 'text', text: base.apiKey }] }
+        : { choices: [{ message: { content: base.apiKey } }] });
+    } });
+    assert.deepStrictEqual(request.messages, [{ role: 'user', content: 'Hello' }]);
+    assert.equal(request.model, base.model);
+    assert.deepStrictEqual(out, { ok: true });
+  }
+});
+
+test('key test preserves failure category without exposing provider error or key', async () => {
+  for (const [status, kind] of [[401, 'auth'], [429, 'rate_limit'], [404, 'not_found'], [500, 'server']]) {
+    const out = await testProvider({ ...base, provider: 'mistral', fetchImpl: async () =>
+      res(status, { error: { message: base.apiKey } }, { 'retry-after': base.apiKey }) });
+    assert.equal(out.ok, false);
+    assert.equal(out.error.kind, kind);
+    assert.equal(out.error.status, status);
+    assert.ok(!JSON.stringify(out).includes(base.apiKey));
+  }
+});
+
+test('key test without a saved key never contacts provider', async () => {
+  let called = false;
+  const out = await testProvider({ ...base, provider: 'mistral', apiKey: null,
+    fetchImpl: async () => { called = true; } });
+  assert.equal(called, false);
+  assert.equal(out.error.kind, 'no_key');
 });

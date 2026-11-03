@@ -53,6 +53,7 @@ let prov = { encryption: false, weakEncryption: false, defaults: {}, keys: {} };
 let upd = { enabled: false, reason: '', status: { state: 'idle' } };
 let hearthTheme = { found: false, tokens: {}, css: '', dir: '~/.config/hearth' };
 let consoleOut = {};
+const keyTests = {};
 
 const uid = () => Math.random().toString(36).slice(2, 8).toUpperCase();
 const now = () => new Date().toISOString();
@@ -704,9 +705,11 @@ function agentDetail(a) {
     <p><b style="color:var(--strong)">${esc(ACCESS_NOTE[a])}</b></p>
     <div class="billing">${esc(m === 'api' && !API_ONLY.includes(a) ? BILLING.api : BILLING[a])}</div>
     ${ag.kind !== 'local' && ag.kind !== 'web' ? signinSteps(a) : ''}
-    ${m === 'api' ? `<div class="row"><input type="password" id="key-${a}" placeholder="${prov.keys[a] ? '•••••••• saved — paste to replace' : `Paste your ${esc(ag.vendor)} API key`}" autocomplete="off" style="flex:1">
-        <button class="btn small" data-savekey="${a}">Save</button>${prov.keys[a] ? `<button class="btn danger small" data-rmkey="${a}">Remove</button>` : ''}</div>
-        <p style="margin-top:6px">The key is encrypted with your OS keyring and never shown again. ${ag.edits ? 'API-linked AIs can chat, plan and review but not edit files.' : 'Chat, plan, research and review — no file edits.'}</p>`
+    ${m === 'api' ? `<div class="row"><input type="password" id="key-${a}" aria-label="${esc(ag.name)} API key" placeholder="${prov.keys[a] ? '•••••••• saved — paste to replace' : `Paste your ${esc(ag.vendor)} API key`}" autocomplete="off" style="flex:1">
+        <button class="btn small" data-savekey="${a}">Save</button>
+        <button class="btn small" data-testkey="${a}" ${!prov.keys[a] || keyTests[a]?.busy ? 'disabled' : ''}>${keyTests[a]?.busy ? 'Testing…' : 'Test'}</button>${prov.keys[a] ? `<button class="btn danger small" data-rmkey="${a}">Remove</button>` : ''}</div>
+        <p style="margin-top:6px">The key is encrypted with your OS keyring and never shown again. Save before testing; Test sends “Hello” with the selected model and may use API credit. ${ag.edits ? 'API-linked AIs can chat, plan and review but not edit files.' : 'Chat, plan, research and review — no file edits.'}</p>
+        ${keyTests[a]?.result ? `<div class="note ${keyTests[a].result.ok ? '' : 'err'}" role="status">${esc(keyTests[a].result.ok ? 'Connection successful.' : keyTests[a].result.error.message)}</div>` : ''}`
     : a === 'ollama' ? `<p>Runs models on your own computer — free, private, offline. ${c.installed ? (c.models?.length ? `Models: ${esc(c.models.join(', '))}` : 'Download a model: <span class="mono">ollama pull llama3.2</span>') : `Install runs ${esc(ag.install)} in a terminal you can see. ${esc(ag.installNote)} Then download a model: <span class="mono">ollama pull llama3.2</span>.`}</p>`
     : `<p>Signs in through ${esc(ag.tool)}’s own official sign-in (it opens ${esc(ag.vendor)}’s page in your browser) with ${esc(ag.plan)}. This app never sees your password; ${esc(ag.tool)} keeps its own login token where it always does.</p>
       ${c.installed ? `<div class="kv" style="margin:4px 0"><span class="k">Program</span><span class="mono" style="font-size:11px;word-break:break-all">${esc(c.path)}</span></div>` : `<p class="faint">Install runs <span class="mono">${esc(ag.install)}</span> in a terminal you can see. ${esc(ag.installNote || '')}${ag.kind === 'cli' ? ' Sign-in starts by itself when it finishes.' : ''}</p>`}
@@ -1744,6 +1747,7 @@ document.addEventListener('click', async (e) => {
     try {
       await api.setKey(d.savekey, input.value);
       input.value = '';
+      delete keyTests[d.savekey];
       audit('API key saved', null, AGENTS[d.savekey].name);
       save();
       toast(`${AGENTS[d.savekey].name} key saved securely.`);
@@ -1753,7 +1757,24 @@ document.addEventListener('click', async (e) => {
     await refreshProviders();
     return render();
   }
+  if (d.testkey) {
+    const p = d.testkey;
+    if (keyTests[p]?.busy || !prov.keys[p]) return;
+    const test = { busy: true };
+    keyTests[p] = test;
+    render();
+    try {
+      test.result = await api.testKey(p, state.models[p] || '');
+    } catch {
+      test.result = { ok: false, error: { message: 'Could not complete the connection test. Try again.' } };
+    } finally {
+      test.busy = false;
+      render();
+    }
+    return;
+  }
   if (d.rmkey) {
+    delete keyTests[d.rmkey];
     await api.removeKey(d.rmkey);
     audit('API key removed', null, AGENTS[d.rmkey].name);
     save();

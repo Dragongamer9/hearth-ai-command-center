@@ -6,7 +6,7 @@ const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
 const { validateState, validateProvider, validateApiKey, validateModel, validatePrompt } = require('./validate.cjs');
-const { callProvider, DEFAULT_MODELS } = require('./providers.cjs');
+const { testProvider, callProvider, DEFAULT_MODELS } = require('./providers.cjs');
 const { createSecretStore } = require('./secrets.cjs');
 const { createUpdater } = require('./updater.cjs');
 const agents = require('./agents.cjs');
@@ -204,6 +204,16 @@ function registerIpc() {
   handle('providers:removeKey', (provider) => {
     secrets.remove(validateProvider(provider, { liveOnly: true }));
     return true;
+  });
+
+  handle('providers:test', async (provider, model) => {
+    const p = validateProvider(provider, { liveOnly: true });
+    return testProvider({
+      provider: p,
+      apiKey: secrets.get(p),
+      model: validateModel(model || DEFAULT_MODELS[p]),
+      timeoutMs: 30000,
+    });
   });
 
   handle('providers:ask', async (provider, model, prompt) => {

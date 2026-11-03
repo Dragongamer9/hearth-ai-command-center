@@ -132,4 +132,25 @@ async function callProvider({ provider, apiKey, model, prompt, timeoutMs = 60000
   return { ok: true, text: text.slice(0, MAX_RESPONSE_CHARS), model };
 }
 
-module.exports = { callProvider, extractText, classifyStatus, DEFAULT_MODELS, ENDPOINTS };
+// Connection checks never return provider text: even an error can echo a key.
+async function testProvider(options) {
+  const result = await callProvider({ ...options, prompt: 'Hello' });
+  if (result.ok) return { ok: true };
+  const messages = {
+    no_key: 'Save an API key first.',
+    auth: 'The provider rejected this key or denied access.',
+    rate_limit: 'The provider reports a usage or rate limit.',
+    not_found: 'The selected model or endpoint was not found.',
+    server: 'The provider is temporarily unavailable.',
+    network: 'Could not reach the provider (offline or blocked).',
+    timeout: 'The connection test timed out.',
+    malformed: 'The provider returned an unexpected response.',
+  };
+  return { ok: false, error: {
+    kind: result.error.kind,
+    message: messages[result.error.kind] || 'The provider could not complete the connection test.',
+    status: result.error.status,
+  } };
+}
+
+module.exports = { testProvider, callProvider, extractText, classifyStatus, DEFAULT_MODELS, ENDPOINTS };
