@@ -2,6 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { runInNewContext } from 'node:vm';
 
 const ui = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
 const main = readFileSync(new URL('../electron/main.cjs', import.meta.url), 'utf8');
@@ -49,4 +50,81 @@ test('a failed key Test sets the shared sign-in hold', () => {
   const t = between(ui, 'if (d.testkey) {', 'if (d.rmkey) {');
   assert.match(t, /authProblem\(test\.result\?\.error, \{ method: 'api' \}\)/);
   assert.match(t, /setHold\(p, problem\)/);
+});
+
+test('text size is opt-in, validated, persisted and restored on renderer load', () => {
+  assert.match(main, /const TEXT_SIZES = \[100, 115, 130, 150\]/);
+  assert.match(main, /textSize: TEXT_SIZES.includes\(s.textSize\) \? s.textSize : 100/);
+  assert.match(main, /on\('did-finish-load', \(\) => \{\s*mainWindow.webContents.setZoomFactor\(readSettings\(\).textSize \/ 100\)/);
+  const setter = between(main, "handle('settings:set',", "handle('settings:addDir'");
+  assert.match(setter, /if \(!TEXT_SIZES.includes\(patch.textSize\)\) throw/);
+  assert.ok(setter.indexOf('writeSettings(s)') < setter.indexOf('setZoomFactor'));
+  assert.match(ui, /e.ctrlKey && !e.altKey && !e.metaKey/);
+  assert.match(ui, /e.preventDefault\(\);\s*changeTextSize/);
+  assert.match(ui, /textSizeChange = textSizeChange.then/);
+});
+
+test('saved text size survives unrelated edits and is reapplied on renderer recovery', () => {
+  let saved = { textSize: 100, theme: 'hearth' };
+  let zoom = 1;
+  let setSettings;
+  let restore;
+  const context = {
+    TEXT_SIZES: [100, 115, 130, 150], THEMES: ['hearth'],
+    readSettings: () => structuredClone(saved),
+    writeSettings: (value) => { saved = structuredClone(value); },
+    handle: (_name, handler) => { setSettings = handler; },
+    mainWindow: { webContents: {
+      setZoomFactor: (value) => { zoom = value; },
+      on: (_event, handler) => { restore = handler; },
+    } },
+  };
+  runInNewContext(between(main, "handle('settings:set',", "handle('settings:addDir'"), context);
+  for (const size of [100, 115, 130, 150]) {
+    setSettings({ textSize: size });
+    assert.equal(saved.textSize, size);
+    assert.equal(zoom, size / 100);
+  }
+  setSettings({ chatResume: false });
+  assert.equal(saved.textSize, 150);
+  for (const invalid of [0, 125, '150', null]) {
+    assert.throws(() => setSettings({ textSize: invalid }), /Invalid text size/);
+    assert.equal(saved.textSize, 150);
+    assert.equal(zoom, 1.5);
+  }
+  zoom = 1;
+  runInNewContext(between(main, "mainWindow.webContents.on('did-finish-load'", "mainWindow.once('ready-to-show'"), context);
+  restore();
+  assert.equal(zoom, 1.5);
+  assert.equal(saved.textSize, 150);
+});
+
+test('rapid text-size changes serialize, respect bounds and recover after a failed save', async () => {
+  const select = { value: '100' };
+  const saved = [];
+  const errors = [];
+  let fail = false;
+  const context = {
+    settings: { textSize: 100 },
+    document: { getElementById: () => select },
+    api: { setSettings: async (patch) => {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      if (fail) throw new Error('Disk full');
+      saved.push(patch.textSize);
+      return { textSize: patch.textSize };
+    } },
+    toast: (message) => errors.push(message),
+    cleanErr: (message) => message,
+  };
+  runInNewContext(between(ui, 'let textSizeChange = Promise.resolve();', "document.addEventListener('change'"), context);
+  await Promise.all(['up', 'up', 'up', 'up', 'down', 100, 'down'].map(context.changeTextSize));
+  assert.deepEqual(saved, [115, 130, 150, 150, 130, 100, 100]);
+  fail = true;
+  select.value = '150';
+  await context.changeTextSize(150);
+  assert.equal(select.value, '100', 'failed save restores the last saved choice');
+  assert.deepEqual(errors, ['Could not save text size: Disk full']);
+  fail = false;
+  await context.changeTextSize('up');
+  assert.equal(select.value, '115', 'a failed save does not block later changes');
 });

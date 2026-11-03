@@ -55,7 +55,7 @@ const MAX_HOPS = 6;
 let state = { version: 1, tasks: [], audit: [], models: {}, chat: [], agentStatus: {}, autoHandoff: true, roles: {}, lead: 'anthropic', disabled: {}, permissions: [], chatSessions: {} };
 let ui = { view: 'overview', selected: null, modal: null, busy: {}, draft: '', target: 'all', typing: null, running: {}, saving: {}, changes: {}, expanded: null, side: 'anthropic', signin: {}, installOllama: false, editing: null, showHist: {}, typingSet: new Set(), attach: [], lightbox: null, hist: { q: '', provider: 'all', source: 'all', list: [], sel: null, stats: null, kind: 'auto', scanning: false }, prs: { list: [], loaded: false, msg: '', byTask: {} }, release: { version: '', confirm: '', target: '', notes: '', draft: true } };
 let backups = { recoveredFrom: null, backups: [] };
-let settings = { project: null, projects: [], connection: { anthropic: 'cli', openai: 'cli', xai: 'cli', mistral: 'cli', perplexity: 'api', deepseek: 'api' }, bins: {}, access: 'standard', extraDirs: [], autoPush: true, chatEdits: true, chatResume: true, theme: 'hearth', reduceMotion: false };
+let settings = { project: null, projects: [], connection: { anthropic: 'cli', openai: 'cli', xai: 'cli', mistral: 'cli', perplexity: 'api', deepseek: 'api' }, bins: {}, access: 'standard', extraDirs: [], autoPush: true, chatEdits: true, chatResume: true, theme: 'hearth', reduceMotion: false, textSize: 100 };
 let gh = { git: null, gh: null, ghUser: null };
 let repo = { repo: false };
 let cli = Object.fromEntries(AGENT_IDS.map((a) => [a, {}]));
@@ -1599,6 +1599,10 @@ function viewSettings() {
       <p class="muted" style="font-size:12.5px;line-height:1.5;margin:8px 0 0">${hearthTheme.found
         ? `Using the Hearth desktop theme${hearthTheme.tokens.name ? ` “${esc(hearthTheme.tokens.name)}”` : ''} from <span class="mono">${esc(hearthTheme.dir)}</span> — changes there apply here live.`
         : `No Hearth desktop theme found at <span class="mono">${esc(hearthTheme.dir)}</span> (theme.json / theme.css), so the Steam-style Hearth OS 1.0 look is used. On Hearth OS it follows Mantel's theme automatically.`}</p>
+      <div class="sep"></div>
+      <label for="text-size">Text size</label>
+      <select id="text-size" aria-describedby="text-size-help">${[100, 115, 130, 150].map((size) => `<option value="${size}" ${size === (settings.textSize || 100) ? 'selected' : ''}>${size}%${size === 100 ? ' (default)' : ''}</option>`).join('')}</select>
+      <p id="text-size-help" class="muted">Scales the whole interface. Ctrl+= increases, Ctrl+- decreases, Ctrl+0 resets to 100%. Your choice is remembered.</p>
     </div>
     <div class="card"><h3>App updates</h3>
       <div class="kv"><span class="k">Installed</span><span class="mono">${esc(info.appVersion)}</span>
@@ -2735,7 +2739,34 @@ document.addEventListener('input', (e) => {
   }
 });
 
+// Serialize rapid shortcut presses so the saved value and visible zoom stay in sync.
+let textSizeChange = Promise.resolve();
+function changeTextSize(value) {
+  textSizeChange = textSizeChange.then(async () => {
+    const sizes = [100, 115, 130, 150];
+    const current = sizes.indexOf(settings.textSize || 100);
+    const size = value === 'up' ? sizes[Math.min(3, current + 1)]
+      : value === 'down' ? sizes[Math.max(0, current - 1)] : value;
+    settings = await api.setSettings({ textSize: size });
+    const select = document.getElementById('text-size');
+    if (select) select.value = String(settings.textSize);
+  }).catch((e) => {
+    const select = document.getElementById('text-size');
+    if (select) select.value = String(settings.textSize || 100);
+    toast(`Could not save text size: ${cleanErr(e.message)}`);
+  });
+  return textSizeChange;
+}
+document.addEventListener('change', (e) => {
+  if (e.target.id === 'text-size') changeTextSize(Number(e.target.value));
+});
+
 document.addEventListener('keydown', (e) => {
+  if (e.ctrlKey && !e.altKey && !e.metaKey && ['=', '+', '-', '0'].includes(e.key)) {
+    e.preventDefault();
+    changeTextSize(e.key === '0' ? 100 : e.key === '-' ? 'down' : 'up');
+    return;
+  }
   if (e.target.id === 'chat-text' && e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
     return sendChat();

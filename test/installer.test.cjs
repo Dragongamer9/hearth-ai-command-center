@@ -179,7 +179,16 @@ test('binary discovery: finds tools in ~/.local/bin and puts the app’s Node.js
   assert.equal(agents.searchDirs()[0], installer.nodeBin());
 });
 
-test('status reports a failed install while the tool is still missing', async () => {
+test('status reports a failed install while the tool is still missing', async (t) => {
+  // Discovery also checks system folders and npm's prefix, regardless of PATH.
+  // Model a missing Grok even when the host already has it installed.
+  const accessSync = fs.accessSync;
+  t.mock.method(fs, 'accessSync', (file, ...args) => {
+    if (path.basename(file) === 'grok') {
+      throw Object.assign(new Error('Grok is absent in this fixture'), { code: 'ENOENT' });
+    }
+    return accessSync(file, ...args);
+  });
   installer.markQueued(['xai']);
   assert.equal(installer.readRun('xai'), 'queued');
   fs.writeFileSync(path.join(installer.statusDir(), 'xai'), 'failed\n');
