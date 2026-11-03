@@ -231,6 +231,25 @@ test('N: passive Habitat status: location, activity and the latest hall board no
   assert.equal(whereIs(store, { id: 'openai', status: 'idle' }, now + 5 * 3600e3).place, 'room', 'old walks expire');
 });
 
+test('N: Habitat presence line starts with You: <place> and still lists everyone else', () => {
+  const now = Date.parse('2026-11-03T12:00:00Z');
+  const store = { journal: { openai: [{ at: '2026-11-03T11:30:00Z', text: 'went to the garden' }], xai: [{ at: '2026-11-03T11:40:00Z', text: 'went to the garden' }] }, board: { anthropic: { text: 'Release prep today', at: '2026-11-03T11:00:00Z' } } };
+  const agents = [{ id: 'anthropic', status: 'idle', task: { id: 'ABC123' } }, { id: 'openai', status: 'idle' }, { id: 'google', status: 'out' }, { id: 'xai', status: 'idle' }];
+  const names = { anthropic: 'Claude', openai: 'ChatGPT', google: 'Gemini', xai: 'Grok' };
+  const line = teamHabitatLine(store, agents, names, now, 360, 'xai');
+  assert.match(line, /^You \(Grok\): in the garden \(idle\)\. /);
+  assert.match(line, /Team in the Habitat now: Claude at the desk \(working on T-ABC123\); ChatGPT in the garden \(idle\); Gemini in its room \(out of usage\)\./);
+  assert.doesNotMatch(line, /Team in the Habitat now:.*Grok /);
+  assert.match(line, /Hall board: Claude: 'Release prep today'/);
+  const alone = teamHabitatLine({ journal: {} }, [{ id: 'xai', status: 'idle' }], names, now, 360, 'xai');
+  assert.equal(alone, 'You (Grok): in your room (idle).');
+  const working = teamHabitatLine(store, agents, names, now, 360, 'anthropic');
+  assert.match(working, /^You \(Claude\): at the desk \(working on T-ABC123\)\. Team in the Habitat now:/);
+  const ui = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
+  const prompt = ui.slice(ui.indexOf('function habitatPrompt('), ui.indexOf('function updatePanel('));
+  assert.match(prompt, /teamHabitatLine\(state\.habitat, snap\.agents, NAMES, Date\.now\(\), 360, agent\)/, 'each turn names the speaker before the team list');
+});
+
 // ---------- wiring checks (the window code) ----------
 test('wiring: runs pass through the gate, verify/docs enforcement, the instruction log and the review packet', () => {
   const ui = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');

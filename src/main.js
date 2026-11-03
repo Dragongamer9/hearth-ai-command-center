@@ -913,7 +913,7 @@ function habitatPrompt(agent, resumed) {
   const r = habitatSection(state.habitat, { agent, ids: snap.agents.map((a) => a.id), names: NAMES, local: agent === 'ollama', full: !resumed });
   if (r.changed) state.habitat = r.store;
   // Passive status of the whole team next to its own memory line: no HABITAT: look round trip needed.
-  const team = r.text ? teamHabitatLine(state.habitat, snap.agents.filter((a) => a.id !== agent), NAMES) : '';
+  const team = r.text ? teamHabitatLine(state.habitat, snap.agents, NAMES, Date.now(), 360, agent) : '';
   return team ? `${r.text}\n${team}` : r.text;
 }
 
