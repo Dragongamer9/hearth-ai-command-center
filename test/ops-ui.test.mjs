@@ -228,9 +228,9 @@ test('approval: the owner can move routine/major either way, never out of owner-
 test('approval: the lead may answer major requests but never owner-only, boot or main/tags pushes', () => {
   const on = { lead: 'anthropic', enabled: true, tasks: [] };
   const ask = (kind, what = 'do it') => leadDecision({ kind: 'allow', id: 'R1' }, { ...on, request: { id: 'R1', agent: 'openai', kind, what, status: 'pending' } });
-  for (const k of ['install', 'outside', 'secrets', 'network', 'delete', 'command']) assert.equal(ask(k).ok, true, k);
+  for (const k of ['install', 'outside', 'network', 'delete', 'command']) assert.equal(ask(k).ok, true, k);
   assert.equal(ask('push', 'push hearth/k7q2ma to origin').ok, true);
-  for (const k of ['merge', 'release', 'version', 'tag', 'settings', 'boot']) assert.equal(ask(k).ok, false, k);
+  for (const k of ['merge', 'release', 'version', 'tag', 'settings', 'boot', 'secrets', 'other']) assert.equal(ask(k).ok, false, k);
   assert.equal(ask('push', 'git push origin main --tags').ok, false);
   assert.equal(ask('command', 'git push --force origin hearth/x').ok, false);
   assert.equal(leadMayApprove({ kind: 'push', what: 'git push origin master' }).ok, false);

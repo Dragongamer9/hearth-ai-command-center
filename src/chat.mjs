@@ -4,6 +4,7 @@ import { hearthFacts } from './hearth.mjs';
 import { leadRules } from './lead.mjs';
 import { ATTACH_RULE } from './media.mjs';
 import { CATEGORIES, splitAsks, policyText } from './ops/approval.mjs';
+import { waitingSection, refusalSection } from './ops/leadwake.mjs';
 
 export const NAMES = { owner: 'Owner', system: 'System', ...Object.fromEntries(AGENT_IDS.map((a) => [a, AGENTS[a].name])) };
 const ACTIONS = ['code', 'docs', 'merge', 'release', 'deploy'];
@@ -43,7 +44,7 @@ export function mentions(text) {
 
 // What every agent is told about the Command Center, so it knows what it can
 // actually do instead of guessing.
-export function teamContext({ agent, roster = [], lead = 'anthropic', board = [], project = null, chatEdits = false, extraDirs = [], pending = [] } = {}) {
+export function teamContext({ agent, roster = [], lead = 'anthropic', board = [], project = null, chatEdits = false, extraDirs = [], pending = [], leadActions = false } = {}) {
   const roleOf = (r) => r.role || DEFAULT_ROLES[r.id] || '';
   return [
     'ABOUT THE HEARTH AI COMMAND CENTER (facts, not suggestions):',
@@ -65,7 +66,7 @@ export function teamContext({ agent, roster = [], lead = 'anthropic', board = []
     '',
     board.length ? 'OPEN TASKS ON THE BOARD:' : 'The task board is empty.',
     ...board.slice(0, 15).map((t) => `- T-${t.id} "${t.title}" — ${t.stage}, implementer ${NAMES[t.assignee] || 'none'}${t.reviewer && t.reviewer !== 'none' ? `, reviewer ${NAMES[t.reviewer] || t.reviewer}` : ''}${t.state ? `, ${t.state}` : ''}${t.queue ? `, ${t.queue}` : ''}`),
-    pending.length ? '\nPERMISSION REQUESTS WAITING FOR THE OWNER:' : '',
+    pending.length ? (leadActions ? '\nPERMISSION REQUESTS WAITING FOR THE OWNER OR THE LEAD:' : '\nPERMISSION REQUESTS WAITING FOR THE OWNER:') : '',
     ...pending.map((p) => `- R-${p.id} by ${NAMES[p.agent]}: ${PERMISSION_KINDS[p.kind] || p.kind} — ${p.what}`),
   ].filter((l) => l !== '').join('\n');
 }
@@ -85,11 +86,12 @@ export function chatRules(agent, lead, { leadActions = false } = {}) {
     `TASK: <title> | implementer: ${editors} | reviewer: ${editors}|local | action: code|docs|merge|release|deploy`,
     '- The reviewer must differ from the implementer. The local AI cannot implement (it can only review).',
     '- If you are the assigned REVIEWER of a task: when it is ready for the Owner write APPROVE: T-<task id> <short note>; to send it back write CHANGES: T-<task id> <what must be fixed>. Only the assigned reviewer counts, and APPROVE only moves it to Owner approval.',
+    ...(leadActions ? ['- With the lead switch on, APPROVE moves the task to the approval stage, where the lead (if allowed) or the Owner approves it.'] : []),
     ...(agent === 'ollama' ? [] : [ATTACH_RULE]),
     '- To fix one of YOUR OWN earlier messages, write a line: EDIT #<message id>: <the corrected full text>',
     '- To take back one of YOUR OWN earlier messages, write a line: RETRACT #<message id>',
     '- To hand the conversation to a teammate, write a line: HANDOFF: @<name> <what they should do>',
-    policyText(),
+    policyText(undefined, { leadActions }),
     ...(leadActions && agent === lead ? [leadRules(lead)] : []),
   ].join('\n');
 }
@@ -102,6 +104,7 @@ export function buildPrompt(agent, messages, ctx = {}) {
     teamContext({ ...ctx, agent }),
     '',
     chatRules(agent, lead, { leadActions: ctx.leadActions === true }),
+    ...(ctx.leadActions === true && agent === lead ? ['', waitingSection(ctx.waiting, NAMES), refusalSection(ctx.refusals)] : []),
     '',
     '--- Chat so far ---',
     ...lines,
@@ -117,7 +120,9 @@ export function buildDelta(agent, newMessages, ctx = {}) {
     `(Hearth AI Command Center team chat — continuing. You are ${NAMES[agent]}. Same rules as before; red-flag rules still apply.)`,
     ...(agent === 'ollama' ? LOCAL_RULES : []),
     ctx.leadActions === true && agent === (ctx.lead || 'anthropic') ? leadRules(agent) : '',
-    ctx.pending?.length ? `Waiting for the Owner: ${ctx.pending.map((p) => `R-${p.id} (${NAMES[p.agent]}: ${p.what})`).join('; ')}` : '',
+    ctx.pending?.length ? `Waiting for the Owner${ctx.leadActions === true ? ' or the lead' : ''}: ${ctx.pending.map((p) => `R-${p.id} (${NAMES[p.agent]}: ${p.what})`).join('; ')}` : '',
+    ctx.leadActions === true && agent === (ctx.lead || 'anthropic') ? waitingSection(ctx.waiting, NAMES) : '',
+    ctx.leadActions === true && agent === (ctx.lead || 'anthropic') ? refusalSection(ctx.refusals) : '',
     '--- New messages since your last turn ---',
     ...(lines.length ? lines : ['(none)']),
     '--- End ---',

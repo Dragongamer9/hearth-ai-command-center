@@ -124,6 +124,7 @@ export function leadRules(lead) {
     '  APPROVE: R-<id> / DENY: R-<id> <reason> — answer a teammate\'s permission card',
     '  ADD TASK: <title> — <details> | implementer: <name> | reviewer: <name> | action: code|docs',
     '- Limits that always hold: you cannot approve your own work (a task you built needs another AI\'s review first, or the Owner) or your own permission requests; releases, deploys, version numbers, tags and merge/release/boot permission requests stay with the Owner; new tasks go through the duplicate check. Everything you do is shown to the Owner, who can undo it.',
+    '- Permission cards you MAY answer (approval levels): install software, commands outside the workspace or other risky commands, deleting files, network access, and pushes to hearth/ or release/ branches only (no main, no tags, no force). Merge, release, boot-critical, version, tag, settings and secrets requests stay with the Owner. Answer the cards marked for you in your NEXT reply with APPROVE: R-<id> or DENY: R-<id> <reason>; do not defer them to the Owner.',
   ].join('\n');
 }
 

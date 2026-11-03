@@ -12,6 +12,9 @@ import { AGENTS, AGENT_IDS, WEB_ONLY, HEADLESS, EDITORS, API_CAPABLE, DEFAULT_RO
 import { viewHabitat, mountHabitat, stopHabitat } from './habitat.mjs';
 import { HEARTH_OS, RED_FLAGS } from './hearth.mjs';
 import { tokensToCss, pickMode } from './theme.mjs';
+import { createOps } from './ops/ui.mjs';
+import { setLevels as setApprovalLevels } from './ops/approval.mjs';
+import { createLeadWaker, waitingForLead } from './ops/leadwake.mjs';
 
 const api = window.hearth;
 
@@ -61,6 +64,16 @@ let upd = { enabled: false, reason: '', status: { state: 'idle' } };
 let hearthTheme = { found: false, tokens: {}, css: '', dir: '~/.config/hearth' };
 let consoleOut = {};
 const keyTests = {};
+// Team ops (src/ops/): summary, budget, strengths, stats, tests, CI, logs, projects, phone, voice.
+const ops = createOps({
+  api, esc: (s) => esc(s), NAMES, AGENTS, AGENT_IDS, EDITORS, HEADLESS, roleKinds, taskNeed, requestChanges,
+  state: () => state, ui: () => ui, settings: () => settings, setSettings: (s) => { settings = s; setApprovalLevels(s.approvalLevels); },
+  save: () => save(), render: () => render(), audit: (...a) => audit(...a), post: (m) => post(m), toast: (m) => toast(m),
+  now: () => now(), uid: () => uid(), time: (x) => time(x), ago: (x) => ago(x), agentChip: (a) => agentChip(a), connected: (a) => connected(a),
+  canRun: (a) => canRun(a), isFree: (a) => isFree(a), roleMap: () => roleMap(), moveWaiting: (a, id) => moveWaiting(a, id), assignTask: (t, a, why) => assignTask(t, a, why),
+  runTask: (...a) => runTask(...a), startOrQueue: (t, a) => startOrQueue(t, a), decide: (...a) => decide(...a), sendChat: () => sendChat(),
+  makeTask: (o, src) => makeTask(o, src), actionFor: (t) => actionFor(t),
+});
 
 const uid = () => Math.random().toString(36).slice(2, 8).toUpperCase();
 const now = () => new Date().toISOString();
@@ -211,6 +224,7 @@ const isFree = (a) => canRun(a) && !busyOn(a) && !isTyping(a) && !blocked().incl
 // Start now, or, if that AI is busy, queue it as Start next (several run oldest-first).
 function startOrQueue(t, a) {
   if (!t) return null;
+  ops.beforeStart(t, a);
   const b = busyOn(a);
   if ((b && b[0] !== t.id) || isTyping(a)) {
     if (t.startNext && t.assignee === a) { toast(`T-${t.id} is already next for ${NAMES[a]}.`); return 'queued'; }
@@ -228,6 +242,7 @@ function startOrQueue(t, a) {
 // Each free AI starts its next Start-next task.
 async function pumpQueues() {
   if (!settings.project) return;
+  ops.routeQueued();
   const starts = [];
   for (const a of EDITORS) {
     if (!isFree(a)) continue;
@@ -278,6 +293,8 @@ async function handleVerdicts(agent, text) {
     const sha = v.verdict === 'approve' && t.ws ? await api.workspaceHead(t.id).catch(() => null) : null;
     const r = applyVerdict(t, { by: agent, verdict: v.verdict, reason: v.reason, at: now(), sha });
     if (!r.ok) { post({ who: 'system', text: `${NAMES[agent]} wrote ${v.verdict === 'approve' ? 'APPROVE' : 'CHANGES'} for T-${v.taskId}, but ${r.reason}.` }); continue; }
+    ops.recordVerdict(t, v.verdict, agent);
+    wakeLead(v.verdict === 'approve' ? 'task reached approval' : 'reviewer verdict', agent);
     if (v.verdict === 'approve') {
       audit('Reviewer approved', t.id, `${NAMES[agent]}${sha ? ` at ${sha}` : ''}${v.reason ? `: ${v.reason}` : ''}`, agent);
       post({ who: 'system', text: `${NAMES[agent]} approved T-${t.id} “${t.title}”${sha ? ` at ${sha}` : ''}. It's in Approvals, waiting for you.` });
@@ -324,6 +341,7 @@ const leadCtx = () => ({ lead: state.lead, enabled: settings.leadActions === tru
 
 // START / APPROVE R- / DENY R- / ADD TASK lines from the lead (switch on only).
 function handleLeadLines(agent, text) {
+  ops.leadLines(agent, text); // MEMORY: proposals become owner-approved cards
   if (!leadOn({ enabled: settings.leadActions === true, agent, lead: state.lead })) return;
   for (const cmd of parseLeadLines(text)) {
     const t = cmd.id ? state.tasks.find((x) => x.id === cmd.id) : null;
@@ -351,6 +369,7 @@ async function leadAct(cmd, dec, t = null, request = null) {
   const ref = cmd.id ? `${cmd.kind === 'allow' || cmd.kind === 'deny' ? 'R' : 'T'}-${cmd.id}` : `“${cmd.title}”`;
   if (!dec.ok) {
     audit(`${NAMES[lead]} (lead) was refused`, t?.id || null, `${ref}: ${dec.reason}`, lead);
+    state.leadRefusals = [...(state.leadRefusals || []), { ref, reason: dec.reason, at: now() }].slice(-8);
     post({ who: 'system', text: `${NAMES[lead]} (lead) can't act on ${ref}: ${dec.reason}.${dec.duplicate ? ` Open T-${dec.duplicate} instead.` : ''}` });
     save();
     render();
@@ -421,7 +440,7 @@ async function agentAttachments(parsed, base, agent) {
   const atts = [];
   for (const f of parsed.files) {
     const r = await api.attachFromAgent(f.path, base).catch((e) => ({ ok: false, message: cleanErr(e.message) }));
-    if (r?.ok) atts.push(r.att);
+    if (r?.ok) { atts.push(r.att); audit('Routine: posted an attachment', null, `${NAMES[agent]}: ${f.path} (no approval needed)`, agent); }
     else post({ who: 'system', text: `${NAMES[agent]} tried to attach ${f.path}: ${r?.message || 'failed'}` });
   }
   return { atts, text: parsed.text };
@@ -462,6 +481,9 @@ async function undoLead(id) {
 
 // ---------- views ----------
 function viewOverview() {
+  return `${ops.summaryCard()}${viewOverviewMain()}`;
+}
+function viewOverviewMain() {
   const open = openTasks();
   const waiting = state.tasks.filter((t) => t.stage === 'approval');
   const asks = pendingAsks();
@@ -635,8 +657,19 @@ function chatCtx() {
     roster: AGENT_IDS.map((id) => ({ id, role: state.roles[id] || DEFAULT_ROLES[id], status: statusText(id) })),
     board: openTasks().map((t) => ({ id: t.id, title: t.title, stage: STAGES[t.stage], assignee: t.assignee, reviewer: t.reviewer, state: RUN_STATES[taskRunState(t, { running: Boolean(ui.running[t.id]) })], queue: queueText(t) })),
     leadActions: settings.leadActions === true,
+    // With the lead switch on, the lead sees what waits for it and its refused actions.
+    ...(settings.leadActions === true ? { waiting: waitingForLead({ tasks: state.tasks, permissions: state.permissions, lead: state.lead, running: ui.running, editors: EDITORS }), refusals: state.leadRefusals || [] } : {}),
   };
 }
+
+// The lead gets a short turn when something needs it (switch on only; debounced).
+const leadWaker = createLeadWaker({
+  isOn: () => settings.leadActions === true,
+  lead: () => state.lead,
+  canRun: () => canRun(state.lead) && !blocked().includes(state.lead) && !isTyping(state.lead),
+  run: (why) => runRoom([state.lead], { trigger: `lead check: ${why.join(', ')}` }),
+});
+const wakeLead = (reason, from = null) => leadWaker.nudge(reason, from);
 
 function markOut(a, err) {
   // Unknown reset time: assume an hour; you can mark it available any time.
@@ -698,7 +731,9 @@ async function refreshAgents() {
 
 function attachmentsHtml(m) {
   if (!m.attachments?.length) return '';
-  return `<div class="atts">${m.attachments.map((a, i) => a.kind === 'video'
+  return `<div class="atts">${m.attachments.map((a, i) => a.kind === 'audio'
+    ? `<figure><audio controls preload="none" src="${esc(a.url || '')}"></audio><figcaption>${esc(a.name)}</figcaption></figure>`
+    : a.kind === 'video'
     ? `<figure><video controls preload="metadata" src="${esc(a.url || '')}"></video><figcaption>${esc(a.name)}${a.duration ? ` · ${Math.round(a.duration)}s` : ''}${a.note ? ` · ${esc(a.note)}` : ''}</figcaption></figure>`
     : `<figure><img src="${esc(a.url || '')}" alt="${esc(a.name)}" data-lightbox="${esc(m.id)}:${i}" title="Click to enlarge"><figcaption>${esc(a.name)}</figcaption></figure>`).join('')}</div>`;
 }
@@ -807,7 +842,7 @@ function viewChat() {
       ${ui.attach.length ? `<div class="row att-pending" style="margin-bottom:7px">${ui.attach.map((a, i) => `<span class="badge">${a.kind === 'video' ? '🎬' : '🖼'} ${esc(a.name)}<button class="btn small link" data-unattach="${i}" title="Remove">✕</button></span>`).join('')}</div>` : ''}
       <div class="row" style="margin-bottom:7px"><span class="faint" style="font-size:12px">Send to</span>${target('all', 'Team (lead first)')}${HEADLESS.filter((a) => connected(a)).map((a) => target(a, AGENTS[a].name)).join('')}<span style="flex:1"></span><button class="chip ${ui.target === 'relay' ? 'on' : ''}" data-target="relay" title="Paste what FreeBuff said so everyone can see it">Post as FreeBuff</button></div>
       <div class="row" style="align-items:flex-end">
-        <button class="btn ghost" data-attach title="Attach images or videos (or paste / drag them in)">📎</button>
+        <button class="btn ghost" data-attach title="Attach images or videos (or paste / drag them in)">📎</button>${ops.voiceButton()}
         <textarea id="chat-text" placeholder="Message the team…  (Enter to send, Shift+Enter for a new line, @name to address one AI)" style="flex:1;min-height:48px">${esc(ui.draft)}</textarea>
         <button class="btn primary" data-sendchat>Send</button>
       </div>
@@ -955,6 +990,7 @@ async function chatTurn(agent, { trigger = '', canEdit = false, snapshot = null,
   const chat = snapshot || state.chat;
   const edit = canEdit && state.chatWs && EDITORS.includes(agent) && method(agent) !== 'api';
   const full = buildPrompt(agent, chat, { ...chatCtx(), chatEdits: Boolean(edit) });
+  if (agent === state.lead && state.leadRefusals?.length && settings.leadActions === true) state.leadRefusals = []; // shown in this prompt
   const skey = `${chatId()}:${agent}`;
   const sess = settings.chatResume && method(agent) !== 'api' ? state.chatSessions?.[skey] : null;
   let prompt = full;
@@ -1006,7 +1042,9 @@ async function chatTurn(agent, { trigger = '', canEdit = false, snapshot = null,
         audit('Permission requested', null, `${NAMES[agent]} · ${PERMISSION_KINDS[req.kind]}: ${req.what}`, agent);
         return req.id;
       });
+      if (m.asks.length) wakeLead('permission card', agent);
     }
+    ops.auditRoutine(agent, d.routine, null);
     await handleVerdicts(agent, d.text);
     handleLeadLines(agent, d.text);
     if (res.sessionId && settings.chatResume) {
@@ -1101,7 +1139,7 @@ function viewBoard() {
     return `<div class="col"><div class="col-h">${esc(c.title)}<span class="n">${items.length}</span></div>
       ${items.map((t) => `<div class="task ${ui.selected === t.id ? 'sel' : ''}" data-open="${t.id}">
         <div class="t">${esc(t.title)}</div>
-        <div class="meta">${actionFor(t) && !actionFor(t).passive ? '<span class="badge warn">Waiting for you</span>' : ''}${t.stage === 'review' && t.reviewWaiting ? `<span class="badge">Waiting for ${esc(NAMES[t.reviewer] || 'a reviewer')}</span>` : ''}${stageBadge(t)}${runBadge(t)}${queueBadge(t)}${agentChip(t.assignee)}${t.pr ? `<span class="badge accent">PR #${esc(t.pr.number || '')}</span>` : ''}${doneBadge(t)}</div>
+        <div class="meta">${ops.ciBadge(t)}${actionFor(t) && !actionFor(t).passive ? '<span class="badge warn">Waiting for you</span>' : ''}${t.stage === 'review' && t.reviewWaiting ? `<span class="badge">Waiting for ${esc(NAMES[t.reviewer] || 'a reviewer')}</span>` : ''}${stageBadge(t)}${runBadge(t)}${queueBadge(t)}${agentChip(t.assignee)}${t.pr ? `<span class="badge accent">PR #${esc(t.pr.number || '')}</span>` : ''}${doneBadge(t)}</div>
         ${ownerButton(t)}
       </div>`).join('') || `<div class="empty">${{ Intake: 'New tasks land here after the policy check.', 'In progress': 'Nothing being built.', Verify: 'Nothing waiting for tests or review.', 'Owner approval': 'Nothing waiting for you.', Closed: 'No decisions yet.' }[c.title]}</div>`}
     </div>`;
@@ -1130,7 +1168,7 @@ function viewApprovals() {
   const waiting = state.tasks.filter((t) => t.stage === 'approval');
   const decided = state.tasks.filter((t) => ['approved', 'rejected'].includes(t.stage));
   const asks = state.permissions.slice().reverse();
-  return `
+  return `${ops.approvalCards()}
     <div class="card mb"><h3>Permission requests from the AIs</h3>
       ${asks.filter((p) => p.status === 'pending').map((p) => `<div style="margin-bottom:6px">${agentChip(p.agent)} ${askCard(p)}</div>`).join('') || '<div class="empty">No AI is waiting for permission.</div>'}
     </div>
@@ -1482,7 +1520,7 @@ function updateBlock() {
 function viewSettings() {
   const themeChip = (v, l) => `<button class="chip ${settings.theme === v ? 'on' : ''}" data-theme="${v}">${l}</button>`;
   const check = (key, label) => `<label style="display:flex;gap:10px;align-items:center;margin:4px 0;cursor:pointer;color:var(--text)"><input type="checkbox" data-togglesetting="${key}" ${settings[key] ? 'checked' : ''}> ${label}</label>`;
-  return `<div class="grid two">
+  return `${ops.approvalSettings()}<div class="grid two">
     <div class="card"><h3>Appearance</h3>
       <div class="row">${themeChip('hearth', 'Follow Hearth OS desktop')}${themeChip('dark', 'Dark')}${themeChip('light', 'Light')}${themeChip('system', 'System')}</div>
       ${check('reduceMotion', 'Reduce motion (Habitat characters stay in place instead of walking around)')}
@@ -1584,6 +1622,7 @@ function drawer() {
     <h2>${esc(t.title)}</h2>
     <div class="row">${stageBadge(t)}${runBadge(t)}${queueBadge(t)}${doneBadge(t)}<span class="badge">${esc(ACTIONS[t.action])}</span></div>
     ${pol}
+    ${ops.drawerPanel(t)}
     ${asks.map(askCard).join('')}
     ${['resume', 'start', 'signin'].includes(actionFor(t)?.kind) ? ownerButton(t) : ''}
     <div class="kv">
@@ -1619,8 +1658,9 @@ function modal() {
   if (ui.lightbox) return lightbox();
   if (ui.modal !== 'new') return '';
   const opt = (sel, ids) => ids.map((k) => `<option value="${k}" ${k === sel ? 'selected' : ''}>${esc(AGENTS[k].name)}${k !== 'none' && !connected(k) ? ' (not linked)' : ''}</option>`).join('');
-  const firstEditor = liveEditors()[0] || state.lead;
-  const firstReviewer = pickReviewer(firstEditor, { candidates: [...liveAgents(), ...HEADLESS.filter((a) => !liveAgents().includes(a))], lead: state.lead });
+  const sug = ops.suggestHint(); // assign by strength and headroom (the owner can change both)
+  const firstEditor = sug.builder || liveEditors()[0] || state.lead;
+  const firstReviewer = sug.reviewer && sug.reviewer !== firstEditor ? sug.reviewer : pickReviewer(firstEditor, { candidates: [...liveAgents(), ...HEADLESS.filter((a) => !liveAgents().includes(a))], lead: state.lead });
   return `<div class="modal-bg" data-modalbg><div class="modal">
     <h2>New task</h2><div class="muted" style="font-size:12.5px">Runs a policy & scope check when created. If it needs a version number, write the exact one — only you pick versions.</div>
     <label>Title</label><input type="text" id="f-title" placeholder="e.g. Add Settings › Storage page to Mantel">
@@ -1629,6 +1669,7 @@ function modal() {
       <div><label>Implementer</label><select id="f-assignee">${opt(firstEditor, [...EDITORS, 'freebuff', 'none'])}</select></div>
       <div><label>Independent reviewer</label><select id="f-reviewer">${opt(firstReviewer, [...HEADLESS, 'none'])}</select></div>
     </div>
+    ${sug.html}
     <label>Action type</label><select id="f-action">${Object.entries(ACTIONS).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join('')}</select>
     <div id="f-dup"></div>
     <div class="row" style="margin-top:16px;justify-content:flex-end"><button class="btn ghost" data-cancel>Cancel</button><button class="btn primary" data-create>Create task</button></div>
@@ -1645,6 +1686,7 @@ const NAV = [
   ['history', '⌕', 'Chat history'],
   ['github', '⑂', 'GitHub'],
   ['audit', '☰', 'Audit log'],
+  ...ops.nav,
   ['settings', '⚙', 'Settings'],
 ];
 const TITLES = {
@@ -1658,11 +1700,12 @@ const TITLES = {
   audit: ['Audit log', 'Every decision, recorded'],
   github: ['GitHub', 'Pull requests, pushes and releases — main only changes when you approve'],
   settings: ['Settings', 'Appearance, permissions, Hearth OS facts, updates and data'],
+  ...ops.titles,
 };
 
 function render() {
   const waiting = state.tasks.filter((t) => t.stage === 'approval').length + pendingAsks().length;
-  const views = { habitat: viewHabitat, github: viewGithub, chat: viewChat, overview: viewOverview, board: viewBoard, approvals: viewApprovals, agents: viewAgents, history: viewHistory, audit: viewAudit, settings: viewSettings };
+  const views = { habitat: viewHabitat, github: viewGithub, chat: viewChat, overview: viewOverview, board: viewBoard, approvals: viewApprovals, agents: viewAgents, history: viewHistory, audit: viewAudit, settings: viewSettings, ...ops.views };
   const [title, sub] = TITLES[ui.view];
   const updBadge = upd.status?.state === 'available' || upd.status?.state === 'ready' ? '<span class="badge accent" data-nav="settings" style="cursor:pointer">Update available</span>' : '';
   const scroll = document.querySelector('.main')?.scrollTop || 0;
@@ -1670,6 +1713,7 @@ function render() {
   <div class="shell">
     <aside class="side">
       <div class="brand"><img src="./icon.png" alt=""><div><b>Hearth AI</b><span>Command Center</span></div></div>
+      ${ops.projectSwitcher()}
       ${NAV.map(([id, ico, label]) => `<button class="nav ${ui.view === id ? 'on' : ''}" data-nav="${id}"><span class="ico">${ico}</span>${label}${id === 'approvals' && waiting ? `<span class="count warn">${waiting}</span>` : ''}${id === 'chat' && typingNow() ? '<span class="count">…</span>' : ''}</button>`).join('')}
       <div class="spacer"></div>
       <div class="pin">Working on <b>Hearth OS ${esc(HEARTH_OS.line)}</b><br>Debian · Mantel · Steam Game Mode<br><span class="faint">App v${esc(info.appVersion)} · standalone</span></div>
@@ -1726,6 +1770,7 @@ function makeTask({ title, description = '', assignee, reviewer, action }, sourc
   state.tasks.unshift(t);
   audit('Task created', t.id, source === 'Owner' ? t.title : `${t.title} (proposed by ${source} in Team chat)`);
   audit(t.policy.ok ? 'Policy check passed' : 'Policy check blocked', t.id, [...t.policy.block, ...t.policy.warn].join(' '));
+  if (t.policy.ok) wakeLead('task waiting to start', source === NAMES[state.lead] ? state.lead : null);
   return t;
 }
 
@@ -1820,6 +1865,7 @@ async function runTask(t, agent, handoff = null, depth = 0) {
   run.sessionId = res.sessionId || null;
   run.output = res.ok ? res.text : `${res.error.message}${res.partial ? `\n\nLast output:\n${res.partial}` : ''}`;
   run.checkpoint = cp?.sha || null;
+  ops.afterRun(run, res);
   // A "done" after a review only counts with a new commit since that review.
   let refused = null;
   if (res.ok) {
@@ -1838,6 +1884,8 @@ async function runTask(t, agent, handoff = null, depth = 0) {
       t.done = { sha: run.head, tests: run.tests, at: now(), by: agent };
     }
   }
+  // The app runs the project's tests itself; its result replaces the AI's claim, and a failure refuses the report.
+  if (res.ok && run.status === 'done' && !refused) refused = await ops.checkDone(t, run, agent);
   if (cp) {
     const pushed = await autoPush(t.id);
     if (pushed) run.pushed = pushed.ok ? 'pushed to GitHub' : `push failed: ${pushed.message}`;
@@ -1859,11 +1907,16 @@ async function runTask(t, agent, handoff = null, depth = 0) {
       audit('Permission requested', t.id, `${NAMES[agent]} · ${PERMISSION_KINDS[req.kind]}: ${req.what}`, agent);
       return req.id;
     });
+    ops.auditRoutine(agent, d.routine, t.id);
+    if (m.asks.length) wakeLead('permission card', agent);
   }
   await save();
   delete ui.saving[t.id];
   render();
 
+  if (!res.ok && res.error.kind !== 'cancelled') wakeLead('task waiting to resume', null);
+  // Crash, stall or limit: resume on another AI with the same role (at most 2 hand-offs, then ask).
+  if (!res.ok && (await ops.handoff(t, agent, res, cp, depth))) { await pumpQueues(); return; }
   if (!res.ok && ['outage', 'auth', 'not_installed'].includes(res.error.kind)) {
     const next = nextAgent(liveEditors(), [agent], state.lead);
     t.notes.push({ at: now(), who: 'System', text: `${NAMES[agent]}: ${res.error.message} Progress is saved${cp ? ` (checkpoint ${cp.sha})` : ''}. Resume with ${NAMES[agent]} later${next ? `, or hand it to ${NAMES[next]} now` : ''}.` });
@@ -2665,6 +2718,7 @@ async function boot() {
     toast(`Startup problem: ${e.message}`);
   }
   render();
+  ops.boot();
   // Update only the status panel, so a usage pause can expire without touching the draft.
   setInterval(updatePanel, 15000);
   // In the background: pick up CLI sessions started outside the app, and PR status.

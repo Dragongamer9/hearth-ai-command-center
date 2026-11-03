@@ -90,19 +90,31 @@ export function splitAsks(asks = [], levels = current) {
   return { cards, routine };
 }
 
-// May the lead (switch on) allow this request? Never owner-only ones, boot-critical
-// ones, or pushes that are really a merge/release (main, tags, force).
+// What the lead (switch on) may answer: major categories except secrets, boot and
+// "other"; pushes only to hearth/ or release/ branches, with no main, tags or force.
+export const LEAD_NEVER = ['secrets', 'boot', 'other'];
+const BRANCHES = /(?<![\w:/.-])[A-Za-z0-9._-]+\/[A-Za-z0-9._/-]*[A-Za-z0-9_-]/g;
+export function pushTargetsOk(what) {
+  const text = String(what || '');
+  if (DANGEROUS_PUSH.test(text)) return { ok: false, reason: 'pushes that touch main, tags or force stay with the Owner' };
+  const refs = (text.match(BRANCHES) || []).filter((b) => !/^(origin|upstream)\//.test(b) || /^(origin|upstream)\/(hearth|release)\//.test(b)).map((b) => b.replace(/^(origin|upstream)\//, ''));
+  if (!refs.length) return { ok: false, reason: 'the branch is unclear; only pushes to hearth/ or release/ branches can be answered by the lead' };
+  const bad = refs.find((b) => !/^(hearth|release)\/[A-Za-z0-9._/-]+$/.test(b));
+  if (bad) return { ok: false, reason: `${bad} is not a hearth/ or release/ branch` };
+  return { ok: true, branches: refs };
+}
 export function leadMayApprove(request, levels = current) {
   if (!request) return { ok: false, reason: 'no request' };
   const kind = CATEGORIES[request.kind] ? request.kind : 'other';
-  if (levelOf(kind, levels) === 'owner') return { ok: false, reason: `${kind} requests stay with the Owner` };
-  if (CATEGORIES[kind].ownerAnswers) return { ok: false, reason: `${kind} requests stay with the Owner` };
-  if (DANGEROUS_PUSH.test(String(request.what || ''))) return { ok: false, reason: `${kind} requests that touch main, tags or force-pushes stay with the Owner` };
+  const lv = levelOf(kind, levels);
+  if (lv === 'owner' || LEAD_NEVER.includes(kind)) return { ok: false, reason: `${kind} requests stay with the Owner` };
+  if (kind === 'push') return pushTargetsOk(request.what);
+  if (DANGEROUS_PUSH.test(String(request.what || '')) && /\bpush\b/i.test(String(request.what || ''))) return { ok: false, reason: `${kind} requests that push to main, tags or with force stay with the Owner` };
   return { ok: true };
 }
 
 // What every AI is told, so it stops asking for routine things.
-export function policyText(levels = current) {
+export function policyText(levels = current, { leadActions = false } = {}) {
   const l = cleanLevels(levels);
   const of = (lv) => Object.keys(CATEGORIES).filter((k) => k !== 'other' && l[k] === lv).map((k) => CATEGORIES[k].label.replace(/ \(.*\)$/, ''));
   const asks = Object.keys(CATEGORIES).filter((k) => l[k] !== 'routine').join('|');
@@ -111,6 +123,8 @@ export function policyText(levels = current) {
     `- ROUTINE, just do it, never ask (it is recorded in the Audit log): ${of('routine').join('; ')}.`,
     `- MAJOR, ask first and stop until answered: ${of('major').join('; ')}. Write one line: ASK: <${asks}> | <exactly what you want to do> | <why>`,
     `- OWNER-ONLY, always the Owner (never do these yourself): ${of('owner').join('; ')}.`,
-    '- After an ASK line, do NOT do that action in this reply. You will be told the answer.',
+    leadActions
+      ? '- After an ASK line, do NOT do that action in this reply. The Owner or the lead answers (the lead only for major requests it is allowed to answer); you will be told the answer.'
+      : '- After an ASK line, do NOT do that action in this reply. The Owner answers Approve / Deny / Ask why; you will be told the answer.',
   ].join('\n');
 }

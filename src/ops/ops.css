@@ -1,0 +1,33 @@
+/* Team ops (src/ops/ui.mjs). Uses the app's theme tokens. */
+.ops-stats { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; }
+.ops-stats > div { background: var(--panel-2); border-radius: var(--r); padding: 8px 10px; display: flex; flex-direction: column; }
+.ops-stats b { font-size: 20px; color: var(--strong); }
+.ops-stats span { font-size: 12px; color: var(--muted); }
+.ops-stats .warn b { color: var(--warn); }
+.ops-stats .bad b { color: var(--bad, #e06c6c); }
+.ops-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.ops-table th { text-align: left; color: var(--muted); font-weight: 500; padding: 4px 6px; border-bottom: 1px solid var(--line); }
+.ops-table td { padding: 5px 6px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+.ops-table .bad-t { color: var(--bad, #e06c6c); font-weight: 600; }
+.ops-click { cursor: pointer; }
+.ops-click:hover { background: var(--hover); }
+.ops-bar { display: inline-block; width: 90px; height: 7px; background: var(--panel-2); border-radius: 2px; overflow: hidden; vertical-align: middle; margin-right: 8px; }
+.ops-bar > div { height: 100%; background: var(--good, #5fbf77); }
+.ops-bar.near > div { background: var(--warn); }
+.ops-bar.out > div { background: var(--bad, #e06c6c); }
+.ops-note { font-size: 12px; line-height: 1.5; margin-top: 8px; }
+.ops-detail { font-size: 11.5px; margin-top: 4px; }
+.ops-proj { padding: 6px 8px 10px; display: flex; flex-direction: column; gap: 4px; font-size: 11.5px; }
+.ops-proj select { width: 100%; }
+.ops-prow { padding: 6px 0; border-bottom: 1px solid var(--line); }
+.ops-field { display: flex; flex-direction: column; gap: 3px; margin: 6px 0; font-size: 12.5px; color: var(--muted); }
+.ops-check { display: flex; gap: 8px; align-items: center; margin: 6px 0; font-size: 12.5px; color: var(--text); cursor: pointer; }
+.ops-mem { width: 100%; min-height: 260px; font-size: 12px; }
+.ops-code { font-size: 34px; letter-spacing: 10px; font-weight: 700; color: var(--strong); background: var(--panel-2); border-radius: var(--r); padding: 10px 16px; display: inline-block; margin: 8px 0; font-family: ui-monospace, monospace; }
+.ops-log { margin: 6px 0; }
+.ops-log pre { max-height: 240px; overflow: auto; font-size: 11px; background: var(--bg-2); padding: 8px; border-radius: var(--r); white-space: pre-wrap; }
+.ops-drawer { margin: 8px 0; display: flex; flex-direction: column; gap: 6px; }
+.ops-lv { padding: 4px 0; font-size: 12.5px; border-bottom: 1px solid var(--line); }
+.ops-mic.rec { color: var(--bad, #e06c6c); border-color: var(--bad, #e06c6c); }
+.ops-card { margin-bottom: 8px; }
+.atts audio { width: 260px; }
