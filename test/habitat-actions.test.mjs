@@ -307,3 +307,22 @@ test('look uses saved visits without a canvas, expires them, and respects work/s
     assert.deepEqual(actorLocation(world, { x: room.x0 + room.w - 1, y: room.y0 + room.h - 1 }), { room: room.id });
   }
 });
+
+test('closed-Habitat look covers every saved destination and live positions override only their AI', () => {
+  const opts = { ids: IDS, names: NAMES, agents: AGENTS, now: NOW + 1000 };
+  for (const [destination, expected] of [
+    ['break room', 'break room'], ['garden', 'garden courtyard'],
+    ['hall', 'hall'], ['desk', 'shared workroom'], ['room', 'Claude’s room'],
+  ]) {
+    const result = run(base().s, `HABITAT: go ${destination}`);
+    assert.equal(result.results[0].ok, true);
+    assert.ok(describeRoom(result.store, 'anthropic', opts).includes(`Claude: ${expected}`));
+  }
+  let s = run(base().s, 'HABITAT: go garden').store;
+  s = run(s, 'HABITAT: go hall', { agent: 'google' }).store;
+  const text = describeRoom(s, 'anthropic', { ...opts, presence: { anthropic: 'shared workroom' } });
+  assert.match(text, /Claude: shared workroom/);
+  assert.match(text, /Gemini: hall/);
+  assert.match(text, /ChatGPT: ChatGPT’s room/);
+  assert.match(text, /Grok: Grok’s room/);
+});
