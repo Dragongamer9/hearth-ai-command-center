@@ -371,3 +371,23 @@ test('closed-Habitat watering presence ends at the visit boundary', () => {
   assert.match(describeRoom(result.store, 'anthropic', { ...opts, now: NOW + 15000 }), /Claude: Claude’s room/);
   assert.match(describeRoom(result.store, 'anthropic', { ...opts, now: NOW - 1 }), /Claude: Claude’s room/);
 });
+
+test('each teammate sees the shared break-room visit and board notes on its next turn without a canvas', () => {
+  let s = base().s;
+  for (const id of IDS) {
+    const result = run(s, `HABITAT: go break room\nHABITAT: note Hello from ${NAMES[id]}\nHABITAT: look`, { agent: id });
+    assert.ok(result.results.every((r) => r.ok));
+    s = result.store;
+  }
+  // Simulate persisted state being loaded for chat, with no live scene positions.
+  s = JSON.parse(JSON.stringify(s));
+  for (const id of IDS) {
+    const result = habitatSection(s, { agent: id, ids: IDS, names: NAMES, agents: AGENTS, now: NOW + 1000 });
+    for (const name of Object.values(NAMES).slice(0, IDS.length)) {
+      assert.ok(result.text.includes(`${name}: break room`));
+      assert.ok(result.text.includes(`${name}: 'Hello from ${name}'`));
+    }
+    assert.equal(result.store.life.look[id], undefined);
+    s = result.store;
+  }
+});
