@@ -1,7 +1,8 @@
 // The Habitat page: a cozy top-down pixel world where each AI has its own room
 // and a desk in the shared workroom. Rendering only; the world logic lives in
 // ./habitat/world.mjs (pure, unit tested). All art is original and drawn in code.
-import { TILE, T, buildWorld, behaviourOf, newActor, stepActor, closedDoors, walkFrame, deskOf, roomOf, newPet, stepPet } from './habitat/world.mjs';
+import { TILE, T, buildWorld, behaviourOf, newActor, stepActor, closedDoors, walkFrame, deskOf, roomOf, newPet, stepPet, kitchenSpot } from './habitat/world.mjs';
+import { undoLast, setLock, freeOwnerProps, clearBoard, clearJournal, isLocked, relDay } from './habitat/actions.mjs';
 import { SPRITES, SLEEP, ICONS, ICONS2, PET, glyph, textWidth } from './habitat/sprites.mjs';
 import { lightAt, weatherAt, migrateStore, reconcile, resetStore, applyUnlocks, layoutOf, gardenState, moodOf, MOOD_SPEED, deskLight, opsCi, visitsFrom, effectFor, busiestAi, petGoal, boardNotes, noteText, canPlace, roomLocal, TROPHIES, ACHIEVEMENTS, UNLOCK_EVERY, unlockedCount, hashStr } from './habitat/life.mjs';
 
@@ -295,15 +296,18 @@ function buildStatic(world, th, agents, extra = {}) {
   }
   for (const r of world.rooms) {
     const color = agents[r.id]?.color || '#888888';
-    drawRug(ctx, r.rug, th, color);
+    const mine = store.ai[r.id] || {};
+    drawRug(ctx, mine.rug != null ? { ...r.rug, style: mine.rug } : r.rug, th, color);
     drawBed(ctx, r, th, color);
-    for (const p of r.props) drawProp(ctx, p.kind, p.x * TILE, p.y * TILE, th, color);
-    drawPlate(ctx, r, agents[r.id]?.name || r.id, color, th);
+    const lit = mine.lamp ? { ...th, night: mine.lamp === 'on' } : th;
+    for (const p of r.props) drawProp(ctx, p.kind, p.x * TILE, p.y * TILE, p.kind === 'lamp' ? lit : th, color);
+    drawPlate(ctx, r, mine.plate || agents[r.id]?.name || r.id, color, th);
   }
   for (const d of world.decor) drawProp(ctx, d.kind, d.x * TILE, d.y * TILE, th, th.accent);
   for (const r of world.rooms) {
     const color = agents[r.id]?.color || '#888888';
-    for (const p of r.extras || []) drawProp(ctx, p.kind, p.x * TILE, p.y * TILE, th, color);
+    const lit = store.ai[r.id]?.lamp ? { ...th, night: store.ai[r.id].lamp === 'on' } : th;
+    for (const p of r.extras || []) drawProp(ctx, p.kind, p.x * TILE, p.y * TILE, p.kind === 'lantern' ? lit : th, color);
     if (r.side === 'top') drawWindow(ctx, r.x0 * TILE, (r.y0 - 1) * TILE, 2 * TILE + 8, light, th);
     drawPlaques(ctx, r, th, store.ai[r.id]);
   }
@@ -408,6 +412,31 @@ function drawEffects(ctx, list, th, t) {
   }
 }
 
+// HABITAT: actions: emote and wave bubbles, the pet's heart, watering drops.
+const EMOTE_ICON = { happy: 'smile', thinking: 'dots', tired: 'cloud', celebrate: 'sparkle' };
+function drawLifeFx(ctx, list, th, t, reduced) {
+  for (const e of list) {
+    const k = Math.min(1, (t - e.t0) / (e.ttl * 1000));
+    const bob = reduced ? 0 : Math.round(Math.sin(t / 250) * 1);
+    if (e.kind === 'bubble') {
+      const a = H.actors.get(e.who); if (!a) continue;
+      const x = Math.round(a.x * TILE) + 2; const y = Math.round(a.y * TILE) - 16 + bob;
+      px(ctx, x - 1, y - 1, 14, 12, th.outline); px(ctx, x, y, 12, 10, '#ffffff'); px(ctx, x + 3, y + 10, 3, 2, th.outline);
+      if (e.icon === 'wave') drawText(ctx, 'HI', x + 2, y + 3, th.plateInk);
+      else { const rows = ICONS2[EMOTE_ICON[e.icon]] || ICONS2.smile; drawMap(ctx, rows, x + 6 - Math.floor(rows[0].length / 2), y + 5 - Math.floor(rows.length / 2), { o: th.outline, y: '#ffd166', w: '#ffffff', k: th.outline }); }
+    } else if (e.kind === 'heart' && H.pet) {
+      const x = Math.round(H.pet.x * TILE) + 4; const y = Math.round(H.pet.y * TILE) - 4 - (reduced ? 0 : Math.round(k * 8));
+      drawMap(ctx, ICONS2.heart, x, y, { o: th.outline, r: '#ff6b8a' });
+    } else if (e.kind === 'water' && H.world.courtyard) {
+      for (const [i, b] of H.world.courtyard.beds.entries()) {
+        if (i % 2) continue;
+        const fall = reduced ? 4 : Math.round(((t / 120) + i * 3) % 10);
+        drawMap(ctx, ICONS2.drop, b.x * TILE + 6 + (i % 3) * 2, b.y * TILE + fall, { b: '#7cc4ef' });
+      }
+    }
+  }
+}
+
 function drawWeather(ctx, world, kind, t) {
   if (kind === 'clear' || !world.courtyard) return;
   const c = world.courtyard;
@@ -438,10 +467,10 @@ function drawLighting(ctx, world, light, lamps, th) {
   ctx.restore();
 }
 
-function lampList(world) {
+function lampList(world, store = null) {
   const out = [];
   const warm = 'rgba(255,196,120,.30)';
-  for (const r of world.rooms) for (const p of [...r.props, ...(r.extras || [])]) if (p.kind === 'lamp' || p.kind === 'lantern') out.push({ x: p.x * TILE + 8, y: p.y * TILE + 5, r: 26, c: warm });
+  for (const r of world.rooms) if (store?.ai?.[r.id]?.lamp !== 'off') for (const p of [...r.props, ...(r.extras || [])]) if (p.kind === 'lamp' || p.kind === 'lantern') out.push({ x: p.x * TILE + 8, y: p.y * TILE + 5, r: 26, c: warm });
   if (world.kitchen) { const h = world.kitchen.props.find((p) => p.kind === 'heater'); out.push({ x: h.x * TILE + 8, y: h.y * TILE + 9, r: 22, c: 'rgba(255,150,80,.28)' }); out.push({ x: world.kitchen.table.x * TILE + 16, y: world.kitchen.table.y * TILE + 12, r: 30, c: 'rgba(255,214,150,.20)' }); }
   for (const d of world.desks) out.push({ x: d.monitor.x * TILE + 8, y: d.monitor.y * TILE + 2, r: 14, c: 'rgba(255,220,170,.10)', desk: d.id });
   return out;
@@ -536,7 +565,8 @@ function draw(t) {
     const a = H.actors.get(d.id);
     if (!(a && a.pose === 'sit' && a.mode === 'desk')) drawChairBack(b, d.seat, th);
   }
-  drawEffects(b, H.effects.filter((e) => e.kind !== 'paper'), th, t);
+  drawEffects(b, H.effects.filter((e) => e.kind !== 'paper' && !LIFE_FX.has(e.kind)), th, t);
+  drawLifeFx(b, H.effects.filter((e) => LIFE_FX.has(e.kind)), th, t, reduced);
   drawWeather(b, world, H.weather, t);
   drawLighting(b, world, H.light, H.lamps, th);
   if (H.rearrange) drawRearrange(b, th);
@@ -549,10 +579,11 @@ function draw(t) {
   ctx.drawImage(base, 0, 0, base.width * H.scale, base.height * H.scale);
 }
 
+const LIFE_FX = new Set(['bubble', 'heart', 'water']);
 // AIs on a coffee break together in the break room (two or more) chat.
 function kitchenChat() {
   const k = H.world?.kitchen;
-  const ids = k ? [...H.actors.values()].filter((a) => a.goal === 'coffee' && !a.path.length && a.x >= k.x0 && a.x < k.x0 + k.w && a.y >= k.y0 && a.y < k.y0 + k.h).map((a) => a.id) : [];
+  const ids = k ? [...H.actors.values()].filter((a) => (a.goal === 'coffee' || a.goal === 'visit') && !a.path.length && a.x >= k.x0 && a.x < k.x0 + k.w && a.y >= k.y0 && a.y < k.y0 + k.h).map((a) => a.id) : [];
   return new Set(ids.length >= 2 ? ids : []);
 }
 
@@ -575,7 +606,30 @@ function themeKey() {
 const clock = () => (H.clockAt != null ? new Date(H.clockAt) : new Date());
 
 function saveStore() {
+  H.store.rev = (H.store.rev || 0) + 1;
   H.opts.saveStore?.(JSON.parse(JSON.stringify(H.store)));
+}
+
+// HABITAT: actions the AIs wrote in team chat, played once each (instantly with reduced motion).
+function playLife(ev, reduced) {
+  const t = performance.now();
+  const visit = (id, to, secs) => { const a = H.actors.get(id); if (a && to && H.behs[id]?.mode === 'idle') { a.visit = { to: { x: to.x, y: to.y }, until: Date.now() + secs * 1000 }; a.goal = a.goal === 'visit' ? 'rest' : a.goal; } };
+  const w = H.world;
+  if (ev.kind === 'go') {
+    const to = ev.place === 'desk' ? deskOf(w, ev.who)?.seat : ev.place === 'room' ? roomOf(w, ev.who)?.rugSpot : ev.place === 'kitchen' ? kitchenSpot(w, new Set([...H.actors.values()].filter((a) => a.dest).map((a) => a.dest)))
+      : ev.place === 'garden' ? { x: w.courtyard.x0 + 1, y: w.courtyard.y0 + 2 } : { x: w.hall.board.x + 1, y: w.hall.board.y + 2 };
+    visit(ev.who, to, 45);
+  } else if (ev.kind === 'coffee') {
+    const k = w.kitchen;
+    visit(ev.who, k.spots[0], 40); visit(ev.with, k.spots[1], 40);
+  } else if (ev.kind === 'water') {
+    visit(ev.who, { x: w.courtyard.x0 + 2, y: w.courtyard.y0 + 2 }, 15);
+    H.effects.push({ kind: 'water', t0: t, ttl: reduced ? 4 : 5 });
+  } else if (ev.kind === 'pet') H.effects.push({ kind: 'heart', t0: t, ttl: 3 });
+  else if (ev.kind === 'emote') H.effects.push({ kind: 'bubble', who: ev.who, icon: ev.emote, t0: t, ttl: 5 });
+  else if (ev.kind === 'wave') { H.effects.push({ kind: 'bubble', who: ev.who, icon: 'wave', t0: t, ttl: 5 }); H.effects.push({ kind: 'bubble', who: ev.to, icon: 'happy', t0: t + 600, ttl: 4 }); }
+  H.lifePlayed.push({ ...ev });
+  if (H.lifePlayed.length > 30) H.lifePlayed.splice(0, H.lifePlayed.length - 30);
 }
 
 function poll() {
@@ -587,7 +641,8 @@ function poll() {
   const ids = snap.agents.map((a) => a.id);
   const tk = themeKey();
   // Saved progress: loaded once, then only changed by real task events or the owner.
-  if (!H.store) H.store = migrateStore(snap.store);
+  // AIs' HABITAT: actions change the saved store from team chat: a newer revision wins.
+  if (!H.store || (Number(snap.store?.rev) || 0) > (H.store.rev || 0)) { H.store = migrateStore(snap.store); H.layoutKey = H.layoutKey === null ? null : `${H.layoutKey}*`; }
   const rec = reconcile(H.store, tasks, now.getTime());
   H.store = rec.store;
   let dirty = rec.changed;
@@ -607,7 +662,7 @@ function poll() {
     H.actors = new Map(H.world.ids.map((id) => [id, old?.get(id) && old.get(id).x < H.world.w ? old.get(id) : newActor(H.world, id, H.behs[id])]));
     for (const a of H.actors.values()) { a.path = []; a.mode = null; }
     H.pet = null;
-    H.lamps = lampList(H.world);
+    H.lamps = lampList(H.world, H.store);
     H.base = null;
   }
   if (dirty) saveStore();
@@ -625,10 +680,16 @@ function poll() {
   // Visits mirror the hand-offs that just happened in this session.
   if (H.prevTasks) for (const ev of visitsFrom(H.prevTasks, tasks)) playEvent(ev, reduced);
   H.prevTasks = tasks;
-  const notes = boardNotes(snap.chat || [], tasks);
+  for (const ev of H.store.life?.events || []) {
+    if (H.lifeSeen.has(ev.id)) continue;
+    H.lifeSeen.add(ev.id);
+    if (Date.now() - ev.at < 120000) playLife(ev, reduced);
+  }
+  const notes = boardNotes(snap.chat || [], tasks, H.store.board);
   const g = gardenState(H.store, H.world.courtyard?.beds.length);
-  const sk = [tk, snap.agents.map((a) => `${a.id}:${a.color}:${a.name}`).join(','), H.light.phase, layoutKey, g.stages.join(''), g.wilt, Object.keys(H.store.trophies).join(), JSON.stringify(Object.values(H.store.ai).map((x) => Object.keys(x.ach).length)), JSON.stringify(notes)].join('#');
+  const sk = [tk, snap.agents.map((a) => `${a.id}:${a.color}:${a.name}`).join(','), H.light.phase, layoutKey, g.stages.join(''), g.wilt, Object.keys(H.store.trophies).join(), JSON.stringify(Object.values(H.store.ai).map((x) => Object.keys(x.ach).length)), JSON.stringify(notes), JSON.stringify(Object.values(H.store.ai).map((x) => [x.plate, x.rug, x.lamp])), H.store.relief].join('#');
   if (rebuild || sk !== H.staticKey || !H.staticLayer) {
+    H.lamps = lampList(H.world, H.store);
     H.staticKey = sk;
     H.th = readTheme();
     H.th.night = H.light.lamps;
@@ -695,7 +756,7 @@ function tick(t) {
   const reduced = Boolean(H.snap.reduced);
   const taken = new Set([...H.actors.values()].filter((a) => a.goal === 'coffee' && a.dest).map((a) => a.dest));
   for (const a of H.actors.values()) {
-    stepActor(H.world, a, H.behs[a.id], dt, { reduced, closed, social: true, speed: MOOD_SPEED[H.moods[a.id]] || 1, taken });
+    stepActor(H.world, a, H.behs[a.id], dt, { reduced, closed, social: true, speed: MOOD_SPEED[H.moods[a.id]] || 1, taken, now: Date.now() });
     if (a.goal === 'coffee' && a.dest) taken.add(a.dest);
     if (a.delivered) {
       const p = deskPaperSpot(a.delivered.deskOf, 6);
@@ -766,6 +827,7 @@ const MOOD_TEXT = { tired: 'Looks a little tired (repeated test failures or hand
 function tipHtml(hit) {
   const st = H.store;
   if (hit.kind === 'pet') return `<b>${esc(st.pet.name || 'Your critter')}</b><div>${H.pet?.pose === 'nap' ? 'Napping on the warmest rug' : busiestAi(Object.values(H.agents)) ? `Keeping ${esc(H.agents[busiestAi(Object.values(H.agents))]?.name)} company` : 'Strolling about'}</div><div class="faint">Click to ${st.pet.name ? 'rename' : 'name'} it</div>`;
+  if (hit.kind === 'note' && hit.note.kind === 'pin') return `<b>Note from ${esc(H.agents[hit.note.who]?.name || hit.note.who)}</b><div>${esc(hit.note.text)}</div><div class="faint">Pinned with HABITAT: note · Habitat options can clear the board</div>`;
   if (hit.kind === 'note') return `<b>${hit.note.kind === 'chat' ? `Team chat · ${esc(H.agents[hit.note.who]?.name || hit.note.who)}` : `Task T-${esc(hit.note.id)}`}</b><div>${esc(hit.note.text.slice(0, 140))}</div><div class="faint">Click to open</div>`;
   if (hit.kind === 'shelf') return `<b>Trophy shelf</b>${TROPHIES.map((tr) => `<div>${st.trophies[tr.id] ? '★' : '·'} ${esc(tr.label)}${st.trophies[tr.id] ? ` <span class="faint">${esc(new Date(st.trophies[tr.id]).toLocaleDateString())}</span>` : ''}</div>`).join('')}`;
   if (hit.kind === 'garden') { const g = gardenState(st, H.world.courtyard.beds.length); return `<b>Garden courtyard</b><div>${st.finished} task${st.finished === 1 ? '' : 's'} finished · grows one stage per finished task</div>${g.wilt ? `<div>Wilting a little: ${st.failStreak} failed test or CI results in a row</div>` : ''}${H.weather !== 'clear' ? `<div class="faint">Light ${H.weather} today</div>` : ''}`; }
@@ -774,7 +836,7 @@ function tipHtml(hit) {
     const a = H.agents[hit.id]; const ai = st.ai[hit.id];
     const ach = ACHIEVEMENTS.filter((x) => ai?.ach?.[x.id]).map((x) => x.label);
     const done = ai?.done || 0; const next = (unlockedCount(done) + 1) * UNLOCK_EVERY;
-    return `<b class="hab-name"><i style="background:${esc(a?.color)}"></i>${esc(a?.name)}’s room</b><div>${done} task${done === 1 ? '' : 's'} done${ach.length ? ` · ${esc(ach.join(', '))}` : ''}</div><div class="faint">${unlockedCount(done) < 8 ? `Next prop at ${next} tasks · ` : ''}Click to rearrange</div>`;
+    return `<b class="hab-name"><i style="background:${esc(a?.color)}"></i>${esc(a?.name)}’s room</b><div>${done} task${done === 1 ? '' : 's'} done${ach.length ? ` · ${esc(ach.join(', '))}` : ''}</div>${isLocked(st, hit.id) ? '<div>Locked: the AI can’t rearrange it</div>' : ''}${(st.journal[hit.id] || []).length ? `<div class="faint">Latest: ${esc(st.journal[hit.id].slice(-1)[0].text)}</div>` : ''}<div class="faint">${unlockedCount(done) < 8 ? `Next prop at ${next} tasks · ` : ''}Click for its journal, to rearrange or lock</div>`;
   }
   const a = H.agents[hit.id]; const beh = H.behs[hit.id];
   if (!a || !beh) return '';
@@ -827,14 +889,17 @@ function onClick(ev) {
     const pi = props.findIndex((p) => p.x === sel.lx && p.y === sel.ly && p.kind === sel.kind);
     const l = roomLocal(room, { x: hit.x, y: hit.y });
     if (pi < 0 || !canPlace(room, props, pi, l.x, l.y)) { H.rearrange.msg = 'That tile is taken or would block the way. Try another.'; return renderPop(); }
-    props[pi] = { kind: props[pi].kind, x: l.x, y: l.y };
+    // The owner's own placement wins: the AI can't move this prop until he frees it.
+    props[pi] = { kind: props[pi].kind, x: l.x, y: l.y, owner: true };
     H.rearrange.sel = null; H.rearrange.msg = 'Moved and saved.';
+    H.opts.audit?.(`Owner moved ${H.agents[room.id]?.name || room.id}’s ${props[pi].kind}`, `to ${l.x},${l.y}`);
     saveStore();
     poll();
     return renderPop();
   }
   if (!hit) return;
   if (hit.kind === 'pet') return openPop({ kind: 'pet', draft: H.store.pet.name });
+  if (hit.kind === 'note' && hit.note.kind === 'pin') return;
   if (hit.kind === 'note') return hit.note.kind === 'task' ? H.opts.openTask(hit.note.id) : H.opts.openChat?.(hit.note.id);
   if (hit.kind === 'room') return openPop({ kind: 'room', id: hit.id });
   if (['shelf', 'garden', 'kitchen'].includes(hit.kind)) return;
@@ -857,14 +922,28 @@ function renderPop() {
     return;
   }
   if (!p) { el.hidden = true; el.innerHTML = ''; return; }
-  if (p.kind === 'room') el.innerHTML = `<b>${esc(H.agents[p.id]?.name || p.id)}’s room</b><div class="faint">Move its unlocked props on the room grid. Saved, and they never move by themselves.</div><div class="hab-row"><button class="btn small primary" data-hab="rearrange">Rearrange</button><button class="btn small" data-hab="close">Cancel</button></div>`;
+  if (p.kind === 'room') {
+    const st = H.store; const name = esc(H.agents[p.id]?.name || p.id);
+    const j = (st.journal[p.id] || []).slice(-12).reverse();
+    const ownerProps = (st.ai[p.id]?.props || []).filter((x) => x.owner).length;
+    const undo = st.life?.undo?.[p.id];
+    el.innerHTML = `<b>${name}’s room</b><div class="faint">Move its unlocked props on the room grid. Saved, and they never move by themselves.</div>
+      <div class="hab-row"><button class="btn small primary" data-hab="rearrange">Rearrange</button><button class="btn small" data-hab="lock">${isLocked(st, p.id) ? 'Unlock room' : 'Lock room'}</button><button class="btn small" data-hab="close">Close</button></div>
+      ${st.lockAll ? '<div class="faint">All rooms are locked from Habitat options.</div>' : ''}
+      ${ownerProps ? `<div class="hab-row"><span class="faint">${ownerProps} prop${ownerProps > 1 ? 's' : ''} placed by you (the AI can’t move them)</span><button class="btn small" data-hab="freeprops">Let ${name} move them</button></div>` : ''}
+      ${undo && !undo.undone ? `<div class="hab-row"><span class="faint">Last change: ${esc(undo.label)}</span><button class="btn small" data-hab="undo">Undo</button></div>` : ''}
+      <div><b>Journal</b>${j.length ? `<div class="hab-journal">${j.map((e) => `<div><span class="faint">${esc(relDay(e.at, clock().getTime()))}</span> ${esc(e.text)}</div>`).join('')}</div>` : '<div class="faint">Nothing yet. HABITAT: actions, unlocks and medals are written here.</div>'}</div>
+      ${j.length ? (p.confirmClear ? `<div class="hab-row"><span>Clear ${name}’s journal?</span><button class="btn small danger" data-hab="clearjournal">Clear</button><button class="btn small" data-hab="keepjournal">Keep</button></div>` : '<div class="hab-row"><button class="btn small" data-hab="askclearjournal">Clear journal…</button></div>') : ''}`;
+  }
   else if (p.kind === 'pet') el.innerHTML = `<b>Name your critter</b><div class="hab-row"><input class="hab-input" maxlength="24" placeholder="e.g. Ember" value="${esc(p.draft || '')}"><button class="btn small primary" data-hab="savepet">Save</button><button class="btn small" data-hab="close">Cancel</button></div>`;
-  else if (p.kind === 'menu') el.innerHTML = `<b>Habitat options</b><div class="hab-col"><button class="btn small" data-hab="namepet">Name the pet…</button><button class="btn small danger" data-hab="askreset">Reset Habitat progress…</button><button class="btn small" data-hab="close">Close</button></div>`;
-  else if (p.kind === 'reset') el.innerHTML = `<b>Reset Habitat progress?</b><div>This clears the garden, trophies, achievements, unlocked props and their layout, and the pet’s name. Your tasks and chat are not touched.</div><div class="hab-row"><button class="btn small danger" data-hab="reset">Reset</button><button class="btn small" data-hab="close">Cancel</button></div>`;
+  else if (p.kind === 'menu') el.innerHTML = `<b>Habitat options</b><div class="hab-col"><button class="btn small" data-hab="namepet">Name the pet…</button><button class="btn small" data-hab="lockall">${H.store.lockAll ? 'Unlock all rooms' : 'Lock all rooms'}</button>${Object.keys(H.store.board || {}).length ? '<button class="btn small" data-hab="clearboard">Clear the AIs’ board notes</button>' : ''}${Object.entries(H.store.life?.undo || {}).filter(([, u]) => !u.undone).map(([id, u]) => `<button class="btn small" data-hab="undo:${esc(id)}">Undo ${esc(H.agents[id]?.name || id)}: ${esc(u.label)}</button>`).join('')}<button class="btn small danger" data-hab="askreset">Reset Habitat progress…</button><button class="btn small" data-hab="close">Close</button></div>`;
+  else if (p.kind === 'reset') el.innerHTML = `<b>Reset Habitat progress?</b><div>This clears the garden, trophies, achievements, unlocked props and their layout, room locks, board notes, every AI’s Habitat journal, and the pet’s name. Your tasks and chat are not touched.</div><div class="hab-row"><button class="btn small danger" data-hab="reset">Reset</button><button class="btn small" data-hab="close">Cancel</button></div>`;
   el.hidden = false;
   const input = el.querySelector('.hab-input');
   if (input) { input.addEventListener('input', () => { p.draft = input.value; }); input.addEventListener('keydown', (e) => { if (e.key === 'Enter') popAction('savepet'); if (e.key === 'Escape') popAction('close'); }); setTimeout(() => input.focus(), 0); }
 }
+// Save a store an owner tool already gave a new revision.
+function saveStoreAs() { H.store.rev -= 1; saveStore(); H.layoutKey = `${H.layoutKey}*`; poll(); }
 function popAction(act) {
   if (act === 'close') { H.pop = null; }
   else if (act === 'done') { H.rearrange = null; }
@@ -874,6 +953,18 @@ function popAction(act) {
   else if (act === 'askreset') { H.pop = { kind: 'reset' }; }
   else if (act === 'reset') { H.store = resetStore(H.snap.tasks || [], clock().getTime()); saveStore(); H.pop = null; H.rearrange = null; H.layoutKey = null; poll(); }
   else if (act === 'menu') { H.pop = H.pop?.kind === 'menu' ? null : { kind: 'menu' }; }
+  else if (act === 'lock' && H.pop?.id) { const on = !isLocked(H.store, H.pop.id); H.store = setLock(H.store, H.pop.id, on); saveStoreAs(); H.opts.audit?.(`Owner ${on ? 'locked' : 'unlocked'} ${H.agents[H.pop.id]?.name || H.pop.id}’s Habitat room`); }
+  else if (act === 'lockall') { const on = !H.store.lockAll; H.store = setLock(H.store, '*', on); saveStoreAs(); H.opts.audit?.(`Owner ${on ? 'locked' : 'unlocked'} all Habitat rooms`); }
+  else if (act === 'freeprops' && H.pop?.id) { H.store = freeOwnerProps(H.store, H.pop.id); saveStoreAs(); H.opts.audit?.(`Owner let ${H.agents[H.pop.id]?.name || H.pop.id} move the props he placed`); }
+  else if (act === 'clearboard') { H.store = clearBoard(H.store); saveStoreAs(); H.opts.audit?.('Owner cleared the Habitat board notes'); }
+  else if (act === 'askclearjournal') { H.pop.confirmClear = true; }
+  else if (act === 'keepjournal') { H.pop.confirmClear = false; }
+  else if (act === 'clearjournal' && H.pop?.id) { H.store = clearJournal(H.store, H.pop.id); H.pop.confirmClear = false; saveStoreAs(); H.opts.audit?.(`Owner cleared ${H.agents[H.pop.id]?.name || H.pop.id}’s Habitat journal`); }
+  else if (act === 'undo' || act.startsWith('undo:')) {
+    const id = act === 'undo' ? H.pop?.id : act.slice(5);
+    const r = undoLast(H.store, id, clock().getTime(), Object.fromEntries(Object.entries(H.agents).map(([k, v]) => [k, v.name])));
+    if (r.ok) { H.store = r.store; saveStoreAs(); H.opts.audit?.(`Owner undid: ${r.label}`); }
+  }
   renderPop();
   draw(performance.now());
 }
@@ -886,7 +977,7 @@ export function viewHabitat() {
 
 export function mountHabitat(el, opts) {
   if (!el) return stopHabitat();
-  if (!H) H = { actors: new Map(), behs: {}, agents: {}, snap: { agents: [] }, effects: [], visits: [], moods: {}, lights: {}, lamps: [], light: lightAt(new Date()), weather: 'clear', store: null, pop: null, rearrange: null, clockAt: null };
+  if (!H) H = { actors: new Map(), behs: {}, agents: {}, snap: { agents: [] }, effects: [], visits: [], moods: {}, lights: {}, lamps: [], light: lightAt(new Date()), weather: 'clear', store: null, pop: null, rearrange: null, clockAt: null, lifeSeen: new Set(), lifePlayed: [] };
   H.ro?.disconnect();
   H.el = el; H.opts = opts; H.canvas = el.querySelector('canvas'); H.ctx = H.canvas.getContext('2d');
   H.canvas.addEventListener('mousemove', onMove);
@@ -914,6 +1005,9 @@ export function mountHabitat(el, opts) {
     // Send idle AIs on a coffee break now (the same walk they take on their own).
     breakFor: (ids) => { for (const id of ids) { const a = H.actors.get(id); if (a && H.behs[id]?.mode === 'idle') { a.coffeeNext = true; a.mode = null; } } },
     kitchenIds: () => { const k = H.world.kitchen; return [...H.actors.values()].filter((a) => a.x >= k.x0 && a.x < k.x0 + k.w && a.y >= k.y0 && a.y < k.y0 + k.h).map((a) => a.id); },
+    life: () => H.lifePlayed.map((e) => ({ ...e })),
+    lifeFx: () => H.effects.filter((e) => LIFE_FX.has(e.kind)).map((e) => e.kind),
+    journal: (id) => (H.store.journal[id] || []).map((e) => ({ ...e })),
     roomRect: (id) => { const r = roomOf(H.world, id); return r ? { x0: r.x0, y0: r.y0, side: r.side } : null; },
   };
   poll();

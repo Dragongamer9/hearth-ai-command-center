@@ -353,3 +353,8 @@ tr.open td { background: var(--accent-soft); }
 .hab-pop .hab-row { display: flex; gap: 6px; align-items: center; }
 .hab-pop .hab-col { display: grid; gap: 6px; }
 .hab-pop .hab-input { flex: 1; min-width: 0; }
+.hab-pop .hab-journal { max-height: 150px; overflow: auto; font-size: 11.5px; display: grid; gap: 2px; margin-top: 4px; }
+.hab-results { margin-top: 6px; display: grid; gap: 2px; font-size: 11.5px; }
+.hab-results .ok span:first-child { color: var(--good, #4fd47a); }
+.hab-results .no span:first-child { color: var(--bad, #ff5a5a); }
+.hab-results .mono { font-family: var(--mono); font-size: 11px; }

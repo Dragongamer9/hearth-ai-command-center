@@ -143,6 +143,9 @@ export const ICONS2 = {
   stamp: ['.ooooo.', 'orrrrro', 'orwrwro', 'orrrrro', 'orwwwro', 'orrrrro', '.ooooo.'],
   trophy: ['ooooooo', 'oyyyyyo', '.oyyyo.', '..oyo..', '..oyo..', '.ooooo.'],
   medal: ['o...o', '.o.o.', '.ooo.', 'oyyyo', 'oyyyo', '.ooo.'],
+  heart: ['.oo.oo.', 'orrorro', 'orrrrro', '.orrro.', '..oro..', '...o...'],
+  smile: ['.ooooo.', 'oyoyoyo', 'oyyyyyo', 'oyoooyo', '.ooooo.'],
+  drop: ['.b.', 'bbb', '.b.'],
 };
 
 // 3x5 pixel font for name plates and task ids (A-Z, 0-9, - . space).

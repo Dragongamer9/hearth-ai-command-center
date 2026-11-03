@@ -25,7 +25,7 @@ export function hashStr(s) {
   for (const ch of String(s)) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619); }
   return h >>> 0;
 }
-const dayKey = (d) => `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
+export const dayKey = (d) => `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
 
 // One cosmetic shower a day at most, seeded by the date: same day, same weather.
 export function weatherFor(date = new Date()) {
@@ -71,14 +71,53 @@ const int = (v, lo = 0, hi = 1e9) => (Number.isFinite(Number(v)) ? Math.max(lo, 
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const iso = (v) => (typeof v === 'string' && !Number.isNaN(Date.parse(v)) ? v : null);
 
+export const JOURNAL_MAX = 50; // entries kept per AI
+export const RUG_STYLES = ['stripes', 'round', 'diamond'];
+export const RELIEF_CAP = 2; // watering eases wilting by at most this many steps
+
 export function emptyStore() {
-  return { v: STORE_V, finished: 0, growth: 0, counted: [], merged: false, failStreak: 0, seen: {}, trophies: {}, ai: {}, pet: { name: '' }, cleanSince: null };
+  return {
+    v: STORE_V, rev: 0, finished: 0, growth: 0, counted: [], merged: false, failStreak: 0, relief: 0, seen: {}, trophies: {}, ai: {}, pet: { name: '' }, cleanSince: null,
+    locks: {}, lockAll: false, board: {}, journal: {}, life: emptyLife(),
+  };
+}
+export function emptyLife() { return { rate: {}, watered: {}, look: {}, undo: {}, events: [], jnotes: {} }; }
+// Short printable text: no markup, no control characters, one line.
+export function cleanText(s, n = 200) {
+  const t = String(s ?? '').replace(/<[^>]*>/g, ' ').replace(/[\u0000-\u001f\u007f<>`*_#|\[\]{}\\]/g, ' ').replace(/\s+/g, ' ').trim();
+  return t.length > n ? `${t.slice(0, n - 1).trimEnd()}…` : t;
 }
 function normAi(a) {
   const o = isObj(a) ? a : {};
-  const props = Array.isArray(o.props) ? o.props.filter((p) => isObj(p) && PROP_POOL.includes(p.kind)).map((p) => ({ kind: p.kind, x: int(p.x, 0, 5), y: int(p.y, 0, 3) })) : [];
+  const props = Array.isArray(o.props) ? o.props.filter((p) => isObj(p) && PROP_POOL.includes(p.kind)).map((p) => ({ kind: p.kind, x: int(p.x, 0, 5), y: int(p.y, 0, 3), ...(p.owner === true ? { owner: true } : {}) })) : [];
+  const used = new Set(props.map((p) => p.kind));
+  const stored = Array.isArray(o.stored) ? [...new Set(o.stored.filter((k) => PROP_POOL.includes(k) && !used.has(k)))] : [];
   const ach = isObj(o.ach) ? Object.fromEntries(Object.entries(o.ach).filter(([k, v]) => ACHIEVEMENTS.some((x) => x.id === k) && iso(v))) : {};
-  return { done: int(o.done), fails: int(o.fails), handoffs: int(o.handoffs), approvals: int(o.approvals), lastApproval: iso(o.lastApproval), props, ach };
+  const out = { done: int(o.done), fails: int(o.fails), handoffs: int(o.handoffs), approvals: int(o.approvals), lastApproval: iso(o.lastApproval), props, stored, ach };
+  if (typeof o.plate === 'string' && cleanText(o.plate, 24)) out.plate = cleanText(o.plate, 24);
+  if (Number.isInteger(o.rug) && o.rug >= 0 && o.rug < RUG_STYLES.length) out.rug = o.rug;
+  if (o.lamp === 'on' || o.lamp === 'off') out.lamp = o.lamp;
+  return out;
+}
+export const blankAi = () => normAi({});
+function normLife(l) {
+  const o = isObj(l) ? l : {};
+  const map = (v, f) => (isObj(v) ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, f(x)]).filter(([, x]) => x != null)) : {});
+  return {
+    rate: map(o.rate, (v) => (Array.isArray(v) ? v.filter((n) => Number.isFinite(n)).slice(-60) : null)),
+    watered: map(o.watered, (v) => (typeof v === 'string' ? v : null)),
+    look: map(o.look, (v) => (v === true ? true : null)),
+    undo: map(o.undo, (v) => (isObj(v) && isObj(v.before) ? { label: String(v.label || ''), at: iso(v.at), before: v.before, undone: v.undone === true } : null)),
+    events: Array.isArray(o.events) ? o.events.filter((e) => isObj(e) && typeof e.id === 'string' && Number.isFinite(e.at)).slice(-30) : [],
+    jnotes: map(o.jnotes, (v) => (isObj(v) && typeof v.day === 'string' ? { day: v.day, n: int(v.n, 0, 99) } : null)),
+  };
+}
+// One dated line in an AI's Habitat journal (newest last, capped).
+export function addJournal(s, id, text, at = Date.now()) {
+  if (!id || !text) return;
+  const list = (s.journal[id] ||= []);
+  list.push({ at: new Date(at).toISOString(), text: cleanText(text, 220) });
+  if (list.length > JOURNAL_MAX) list.splice(0, list.length - JOURNAL_MAX);
 }
 // Missing or older saves become a clean, valid store; known fields keep their values.
 export function migrateStore(raw) {
@@ -94,6 +133,13 @@ export function migrateStore(raw) {
   s.ai = isObj(raw.ai) ? Object.fromEntries(Object.entries(raw.ai).map(([k, v]) => [k, normAi(v)])) : {};
   s.pet = { name: typeof raw.pet?.name === 'string' ? raw.pet.name.slice(0, 24) : '' };
   s.cleanSince = iso(raw.cleanSince);
+  s.rev = int(raw.rev);
+  s.relief = int(raw.relief, 0, Math.min(RELIEF_CAP, s.failStreak));
+  s.locks = isObj(raw.locks) ? Object.fromEntries(Object.entries(raw.locks).filter(([, v]) => v === true)) : {};
+  s.lockAll = raw.lockAll === true;
+  s.board = isObj(raw.board) ? Object.fromEntries(Object.entries(raw.board).filter(([, v]) => isObj(v) && cleanText(v.text, 120)).map(([k, v]) => [k, { text: cleanText(v.text, 120), at: iso(v.at) || new Date(0).toISOString() }])) : {};
+  s.journal = isObj(raw.journal) ? Object.fromEntries(Object.entries(raw.journal).filter(([, v]) => Array.isArray(v)).map(([k, v]) => [k, v.filter((e) => isObj(e) && iso(e.at) && typeof e.text === 'string').map((e) => ({ at: e.at, text: cleanText(e.text, 220) })).slice(-JOURNAL_MAX)])) : {};
+  s.life = normLife(raw.life);
   return s;
 }
 const aiOf = (s, id) => (s.ai[id] ||= normAi({}));
@@ -145,7 +191,7 @@ export function reconcile(store, tasks = [], now = Date.now()) {
         const v = val || '';
         if (v === prev[field] || !v) continue;
         if (v === 'failed') { s.failStreak = Math.min(99, s.failStreak + 1); s.cleanSince = nowIso; if (who) aiOf(s, who).fails += 1; }
-        if (v === 'passed') { s.failStreak = 0; if (who) aiOf(s, who).fails = 0; }
+        if (v === 'passed') { s.failStreak = 0; s.relief = 0; if (who) aiOf(s, who).fails = 0; }
       }
       if (prev.a && who && prev.a !== who && t.stage !== 'approved') {
         const last = [...(t.runs || [])].reverse().find((r) => r.a === prev.a);
@@ -163,7 +209,7 @@ export function reconcile(store, tasks = [], now = Date.now()) {
     for (const k of drop) delete s.seen[k];
   }
   for (const tr of TROPHIES) if (!s.trophies[tr.id] && tr.test(s, now)) s.trophies[tr.id] = nowIso;
-  for (const a of Object.values(s.ai)) for (const x of ACHIEVEMENTS) if (!a.ach[x.id] && x.test(a)) a.ach[x.id] = nowIso;
+  for (const [id, a] of Object.entries(s.ai)) for (const x of ACHIEVEMENTS) if (!a.ach[x.id] && x.test(a)) { a.ach[x.id] = nowIso; addJournal(s, id, `earned medal: ${x.label}`, now); }
   return { store: s, changed: JSON.stringify(s) !== before };
 }
 
@@ -175,7 +221,7 @@ export const gardenCap = () => GARDEN_PLANTS * GARDEN_STAGES;
 export function gardenState(store, plants = GARDEN_PLANTS) {
   const g = Math.min(int(store?.growth), plants * GARDEN_STAGES);
   const stages = Array.from({ length: plants }, (_, i) => Math.min(GARDEN_STAGES, Math.floor(g / plants) + (i < g % plants ? 1 : 0)));
-  const streak = int(store?.failStreak);
+  const streak = Math.max(0, int(store?.failStreak) - int(store?.relief));
   return { stages, wilt: streak >= 4 ? 2 : streak >= 2 ? 1 : 0 };
 }
 
@@ -232,14 +278,15 @@ export function applyUnlocks(store, world) {
     const a = s.ai[room.id];
     if (!a) continue;
     const want = unlockedCount(a.done);
-    while (a.props.length < want) {
-      const used = new Set(a.props.map((p) => p.kind));
+    while (a.props.length + a.stored.length < want) {
+      const used = new Set([...a.props.map((p) => p.kind), ...a.stored]);
       const start = hashStr(room.id) % PROP_POOL.length;
       let kind = null;
       for (let i = 0; i < PROP_POOL.length && !kind; i++) { const k = PROP_POOL[(start + i) % PROP_POOL.length]; if (!used.has(k)) kind = k; }
       const at = kind && defaultSlot(room, a.props);
       if (!at) break;
       a.props.push({ kind, ...at });
+      addJournal(s, room.id, `unlocked ${kind} for ${(a.props.length + a.stored.length) * UNLOCK_EVERY} tasks`);
       changed = true;
     }
   }
@@ -339,8 +386,9 @@ export function petGoal(world, { busiest = null, lamps = false, closed = new Set
 
 // ---------- message board ----------
 const clean = (s) => String(s || '').replace(/[`*_#>]/g, '').replace(/\s+/g, ' ').trim();
-export function boardNotes(chat = [], tasks = []) {
-  const notes = [];
+// pins: { [aiId]: { text, at } } notes the AIs pinned (HABITAT: note), shown first.
+export function boardNotes(chat = [], tasks = [], pins = {}) {
+  const notes = Object.entries(pins || {}).sort((a, b) => String(b[1].at).localeCompare(String(a[1].at))).slice(0, 3).map(([who, p]) => ({ kind: 'pin', id: `pin-${who}`, who, text: p.text }));
   for (const m of [...chat].reverse()) {
     if (notes.length >= 3) break;
     const text = clean(m?.text).split(/(?<=[.!?])\s/)[0];

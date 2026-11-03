@@ -227,11 +227,20 @@ export function closedDoors(behs = {}) {
 // opts.social lets idle AIs take coffee breaks; opts.speed scales the walk (mood);
 // opts.taken holds kitchen spots other AIs are using. actor.errand = { to, task }
 // walks it somewhere (a visit) and sets actor.delivered on arrival.
-export function stepActor(world, actor, beh, dt, { rng = Math.random, reduced = false, closed = new Set(), social = false, speed: speedK = 1, taken = new Set() } = {}) {
+// actor.visit = { to, until } (HABITAT: go / coffee) walks an idle AI there and
+// keeps it there until `until` (ms, opts.now); work always wins over a visit.
+export function stepActor(world, actor, beh, dt, { rng = Math.random, reduced = false, closed = new Set(), social = false, speed: speedK = 1, taken = new Set(), now = Date.now() } = {}) {
   const opts = { closed, who: actor.id };
   const room = roomOf(world, actor.id);
   const free = beh.mode === 'idle';
   if (actor.errand && (reduced || !free)) { actor.delivered = actor.errand; actor.errand = null; }
+  if (actor.visit && (!free || now >= actor.visit.until)) { actor.visit = null; if (actor.goal === 'visit') { actor.goal = 'rest'; actor.wait = 0; } }
+  if (reduced && actor.visit) {
+    // Reduced motion: it is simply there, no walking.
+    actor.x = actor.visit.to.x; actor.y = actor.visit.to.y; actor.path = []; actor.mode = beh.mode; actor.goal = 'visit'; actor.dest = key(actor.visit.to.x, actor.visit.to.y);
+    actor.pose = 'stand'; actor.dir = 'down';
+    return actor;
+  }
   if (reduced) {
     const s = restSpot(world, actor.id, beh);
     if (s) { actor.x = s.x; actor.y = s.y; }
@@ -254,6 +263,7 @@ export function stepActor(world, actor, beh, dt, { rng = Math.random, reduced = 
     if (!actor.path.length) { const s = restSpot(world, actor.id, beh); if (s) { actor.x = s.x; actor.y = s.y; } }
   }
   if (free && actor.errand && actor.goal !== 'errand') { go(actor.errand.to, 'errand'); if (actor.goal !== 'errand') return actor; }
+  if (free && actor.visit && !actor.errand && actor.goal !== 'visit') { go(actor.visit.to, 'visit'); return actor; }
   if (actor.path.length) {
     const speed = (actor.mode === 'idle' || actor.mode === 'locked' ? 1.6 : 3.2) * (actor.goal === 'errand' || actor.goal === 'coffee' ? 1.5 : 1) * speedK;
     let left = speed * dt;
@@ -271,11 +281,12 @@ export function stepActor(world, actor, beh, dt, { rng = Math.random, reduced = 
   // Resting at the spot.
   if (actor.mode === 'desk') { actor.pose = 'sit'; actor.dir = 'up'; return actor; }
   if (actor.mode === 'sleep') { actor.pose = 'sleep'; actor.dir = 'down'; return actor; }
+  if (actor.goal === 'visit' && actor.visit) return actor;
   // Idle or locked in: wander slowly in its own room, sometimes sit on the rug,
   // and (idle only) now and then walk to the break room for a coffee.
   actor.wait -= dt;
   if (actor.wait > 0 || !room) return actor;
-  if (actor.goal === 'coffee' || actor.goal === 'errand') { go(room.rugSpot, 'rest'); return actor; }
+  if (actor.goal === 'coffee' || actor.goal === 'errand' || actor.goal === 'visit') { go(room.rugSpot, 'rest'); return actor; }
   if (free && social && world.kitchen && rng() < 0.12) { go(kitchenSpot(world, taken), 'coffee'); return actor; }
   const toRug = rng() < 0.3;
   go(toRug ? room.rugSpot : room.spots[Math.floor(rng() * room.spots.length)], toRug ? 'rug' : 'wander');
@@ -293,6 +304,7 @@ function arrive(actor, rng) {
   if (actor.mode === 'desk') { actor.pose = 'sit'; actor.dir = 'up'; return; }
   if (actor.mode === 'sleep') { actor.pose = 'sleep'; actor.dir = 'down'; return; }
   if (actor.goal === 'errand') { actor.delivered = actor.errand; actor.errand = null; actor.pose = 'stand'; actor.dir = 'up'; actor.wait = 1.5; return; }
+  if (actor.goal === 'visit') { actor.pose = 'stand'; actor.dir = actor.x % 2 ? 'right' : 'left'; return; }
   if (actor.goal === 'coffee') { actor.pose = 'stand'; actor.dir = actor.x % 2 ? 'right' : 'left'; actor.wait = 8 + rng() * 6; return; }
   if (actor.goal === 'rug' || actor.goal === 'rest') { actor.pose = 'sit'; actor.dir = 'down'; actor.wait = 6 + rng() * 6; } else { actor.pose = 'stand'; actor.wait = 2 + rng() * 3; }
 }
