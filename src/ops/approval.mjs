@@ -93,6 +93,24 @@ export function splitAsks(asks = [], levels = current) {
 // What the lead (switch on) may answer: major categories except secrets, boot and
 // "other"; pushes only to hearth/ or release/ branches, with no main, tags or force.
 export const LEAD_NEVER = ['secrets', 'boot', 'other'];
+export const VERSION_RE = /^\d{1,4}\.\d{1,4}(\.\d{1,6})?$/;
+// The owner's lead switches (off by default) and the owner-set Next version. Set from
+// Settings and the Project page only; no AI line, card or lead action changes them.
+let powers = { merge: false, release: false, tag: false, nextVersion: '' };
+export function setLeadPowers(p = {}) {
+  powers = { merge: p.merge === true, release: p.release === true, tag: p.tag === true, nextVersion: typeof p.nextVersion === 'string' && VERSION_RE.test(p.nextVersion) ? p.nextVersion : '' };
+  return powers;
+}
+export const getLeadPowers = () => powers;
+// RELEASE: v<x> / TAG: v<x> from the lead: only with the switch on and only the owner's Next version.
+export function leadVersionCheck(kind, version, p = powers) {
+  const v = String(version || '').replace(/^v/, '');
+  if (kind === 'release' && !p.release) return { ok: false, reason: 'publishing releases is the Owner\'s unless "Lead may publish releases" is on' };
+  if (kind === 'tag' && !p.tag) return { ok: false, reason: 'creating tags is the Owner\'s unless "Lead may create tags" is on' };
+  if (!p.nextVersion) return { ok: false, reason: 'the Owner has not set a Next version' };
+  if (!VERSION_RE.test(v) || v !== p.nextVersion) return { ok: false, reason: `only v${p.nextVersion} (the Owner's Next version) is allowed, not ${version}` };
+  return { ok: true, version: v };
+}
 const BRANCHES = /(?<![\w:/.-])[A-Za-z0-9._-]+\/[A-Za-z0-9._/-]*[A-Za-z0-9_-]/g;
 export function pushTargetsOk(what) {
   const text = String(what || '');
@@ -107,6 +125,7 @@ export function leadMayApprove(request, levels = current) {
   if (!request) return { ok: false, reason: 'no request' };
   const kind = CATEGORIES[request.kind] ? request.kind : 'other';
   const lv = levelOf(kind, levels);
+  if (kind === 'merge' && powers.merge) return { ok: true, note: 'merge to main through the approved-commit path' };
   if (lv === 'owner' || LEAD_NEVER.includes(kind)) return { ok: false, reason: `${kind} requests stay with the Owner` };
   if (kind === 'push') return pushTargetsOk(request.what);
   if (DANGEROUS_PUSH.test(String(request.what || '')) && /\bpush\b/i.test(String(request.what || ''))) return { ok: false, reason: `${kind} requests that push to main, tags or with force stay with the Owner` };

@@ -19,6 +19,8 @@ const { createPhone } = require('./phone.cjs');
 const media = require('./media.cjs');
 const { createJobs } = require('./jobs.cjs');
 const { spawn } = require('node:child_process');
+const identity = require('./identity.cjs');
+const release = require('./release.cjs');
 
 function exec(file, args, { cwd, timeoutMs = 60000, env, maxBuffer = 16 * 1024 * 1024 } = {}) {
   return new Promise((resolve) => {
@@ -52,6 +54,147 @@ function register(d) {
   const projectDir = () => readSettings().project;
   const memFile = (dir = projectDir()) => (dir ? path.join(dir, memory.MEMORY_REL) : null);
   const readMemory = () => { try { return fs.readFileSync(memFile(), 'utf8'); } catch { return ''; } };
+  // ---- the owner's identity on every commit ----
+  const ownerId = () => readSettings().ownerIdentity || null;
+  // Every git operation the app runs (and every AI CLI it starts) inherits this env.
+  const applyIdentity = () => {
+    const id = ownerId();
+    for (const k of ['GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL']) delete process.env[k];
+    Object.assign(process.env, identity.gitEnv(id));
+    return id;
+  };
+  applyIdentity();
+  handle('ops:identityDefault', async () => {
+    const dir = projectDir() || os.homedir();
+    const [n, e] = await Promise.all([workspace.git(dir, ['config', 'user.name']), workspace.git(dir, ['config', 'user.email'])]);
+    return { saved: ownerId(), suggested: identity.cleanIdentity({ name: n.out, email: e.out }) };
+  });
+  handle('ops:identityApply', () => applyIdentity());
+  const range = async (dir, from, to) => (await workspace.git(dir, ['log', identity.LOG_FORMAT, `${from}..${to}`, '-n', '500'])).out;
+  const baseOf = async (dir) => {
+    const def = await gitops.defaultBranch(dir);
+    return (await workspace.git(dir, ['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${def}`])).ok ? `origin/${def}` : def;
+  };
+  // The guard before any push, merge to main, release or tag.
+  async function guard(dir, from, to, what) {
+    const id = applyIdentity();
+    const r = identity.scanCommits(identity.parseLog(await range(dir, from, to)), id);
+    if (r.ok) return null;
+    return { ok: false, guard: r.problems, message: `Not ${what}: ${r.problems.slice(0, 3).join('; ')}${r.problems.length > 3 ? ` (+${r.problems.length - 3} more)` : ''}. Every commit must be yours only. Use "Rewrite authorship on this task branch" if it hasn't been pushed yet.` };
+  }
+  const wrap = (obj, name, fn) => { const orig = obj[name]; if (typeof orig === 'function' && !orig.hearthWrapped) { obj[name] = async (...a) => fn(orig, ...a); obj[name].hearthWrapped = true; } };
+  wrap(gitops, 'pushBranch', async (orig, dir, branch) => (await guard(dir, await baseOf(dir), branch, 'pushed')) || orig(dir, branch));
+  wrap(gitops, 'leadPush', async (orig, dir, branch) => (await guard(dir, await baseOf(dir), branch, 'pushed')) || orig(dir, branch));
+  wrap(gitops, 'mergeApproved', async (orig, dir, branch, sha) => (await guard(dir, await baseOf(dir), sha || branch, 'merged')) || orig(dir, branch, sha));
+  wrap(gitops, 'prMerge', async (orig, dir, n, sha) => (sha && (await guard(dir, await baseOf(dir), sha, 'merged'))) || orig(dir, n, sha));
+  wrap(gitops, 'integrateIntoRelease', async (orig, dir, rel, branch) => (await guard(dir, await baseOf(dir), branch, 'combined')) || orig(dir, rel, branch));
+  wrap(gitops, 'releaseBranch', async (orig, dir, name, branches) => {
+    for (const b of branches || []) { const g = await guard(dir, await baseOf(dir), typeof b === 'object' ? b.sha : b, 'combined'); if (g) return g; }
+    return orig(dir, name, branches);
+  });
+  wrap(gitops, 'releaseCreate', async (orig, dir, o) => {
+    const last = (await workspace.git(dir, ['describe', '--tags', '--abbrev=0', o.target])).out;
+    return (await guard(dir, last || `${o.target}~50`, o.target, 'released')) || orig(dir, o);
+  });
+  wrap(gitops, 'updateFromMain', async (orig, ...a) => { applyIdentity(); return orig(...a); });
+  wrap(workspace, 'checkpoint', async (orig, ...a) => { applyIdentity(); return orig(...a); });
+  // New task worktrees: the owner as local user, and hooks that strip AI attribution.
+  wrap(workspace, 'ensureWorktree', async (orig, o) => {
+    const id = applyIdentity();
+    const r = await orig(o);
+    try {
+      if (id) { await workspace.git(r.dir, ['config', 'user.name', id.name]); await workspace.git(r.dir, ['config', 'user.email', id.email]); }
+      const common = (await workspace.git(r.dir, ['rev-parse', '--git-common-dir'])).out;
+      if (common) identity.installHooks(path.join(path.resolve(r.dir, common), 'hooks'));
+    } catch {}
+    return r;
+  });
+  handle('ops:checkTask', async (taskId) => {
+    const dir = taskDir(String(taskId));
+    if (!fs.existsSync(dir)) return { ok: true, problems: [] };
+    const r = identity.scanCommits(identity.parseLog(await range(dir, await baseOf(dir), 'HEAD')), applyIdentity());
+    return { ok: r.ok, problems: r.problems };
+  });
+  // "Rewrite authorship on this task branch": only unpublished hearth/ branches.
+  handle('ops:rewriteTask', async (taskId, byLead) => {
+    const s = readSettings();
+    const id = applyIdentity();
+    if (!id) return { ok: false, message: 'Set your owner identity in Settings first.' };
+    const dir = taskDir(String(taskId));
+    if (!fs.existsSync(dir)) return { ok: false, message: 'No workspace.' };
+    const branch = (await workspace.git(dir, ['branch', '--show-current'])).out;
+    const base = await baseOf(dir);
+    const commits = identity.parseLog(await range(dir, base, 'HEAD'));
+    if (!commits.length) return { ok: false, message: 'Nothing to rewrite.' };
+    const oldest = commits[commits.length - 1].sha;
+    const remotes = (await workspace.git(dir, ['branch', '-r', '--contains', oldest])).out.split('\n').map((x) => x.trim()).filter(Boolean);
+    const allowed = identity.rewriteAllowed({ branch, remoteBranchesContaining: remotes });
+    if (!allowed.ok) return { ok: false, message: allowed.reason };
+    if (byLead === true) { if (s.leadActions !== true || s.leadMerge !== true) return { ok: false, message: 'Only the Owner can confirm this (lead merge is off).' }; }
+    else if (dialog.showMessageBoxSync(getWindow(), { type: 'warning', message: `Rewrite ${commits.length} commit(s) on ${branch} as ${id.name}?`, detail: 'Only this task branch changes; nothing has been pushed from it. AI attribution lines are removed.', buttons: ['Rewrite', 'Cancel'], defaultId: 1, cancelId: 1 }) !== 0) return { ok: false, message: 'Cancelled.' };
+    const hook = path.join(dataDir(), 'strip-attribution.sh');
+    fs.writeFileSync(hook, identity.hookScript(), { mode: 0o700 });
+    const msg = path.join(os.tmpdir(), `hearth-msg-${crypto.randomBytes(4).toString('hex')}`);
+    const exe = `git log -1 --format=%B > '${msg}' && sh '${hook}' '${msg}' && git commit --amend -q --no-verify --reset-author -F '${msg}'`;
+    const r = await workspace.git(dir, ['rebase', '-q', '--exec', exe, base], { timeoutMs: 300000 });
+    try { fs.rmSync(msg, { force: true }); } catch {}
+    if (!r.ok) { await workspace.git(dir, ['rebase', '--abort']); return { ok: false, message: `Rewrite stopped: ${r.err.split('\n')[0]}` }; }
+    const head = (await workspace.git(dir, ['rev-parse', 'HEAD'])).out;
+    return { ok: true, head, count: commits.length, message: `Rewrote ${commits.length} commit(s) on ${branch} as ${id.name} <${id.email}>.` };
+  });
+
+  // ---- releases and tags by the lead (owner switches; only the owner's Next version) ----
+  const ghRepo = async () => {
+    const r = await workspace.git(projectDir(), ['remote', 'get-url', 'origin']);
+    return r.ok ? ci.parseRemote(r.out) : null;
+  };
+  handle('ops:leadRelease', async (kind, version) => {
+    const s = readSettings();
+    const dir = projectDir();
+    if (!dir) return { ok: false, message: 'Pick a project first.' };
+    const k = kind === 'tag' ? 'tag' : 'release';
+    const ps = active().settings;
+    await workspace.git(dir, ['fetch', '--quiet', '--no-tags', 'origin']);
+    const def = await gitops.defaultBranch(dir);
+    const ref = (await workspace.git(dir, ['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${def}`])).ok ? `origin/${def}` : def;
+    const ver = String(version || '').replace(/^v/, '');
+    const file = (await workspace.git(dir, ['show', `${ref}:${ps.versionFile}`])).out;
+    const repo = await ghRepo();
+    let exists = false;
+    if (k === 'tag') exists = Boolean((await workspace.git(dir, ['ls-remote', '--tags', 'origin', `refs/tags/v${ver}`])).out) || (await workspace.git(dir, ['rev-parse', '--verify', '--quiet', `refs/tags/v${ver}`])).ok;
+    else if (repo) exists = (await ghApi([`repos/${repo.owner}/${repo.repo}/releases/tags/v${ver}`])).ok;
+    const c = release.checkLead({ kind: k, leadActions: s.leadActions, switchOn: k === 'tag' ? s.leadTag : s.leadRelease, requested: version, next: ps.nextVersion, fileVer: release.fileVersion(ps.versionFile, file), exists });
+    if (!c.ok) return { ok: false, message: c.reason };
+    const sha = (await workspace.git(dir, ['rev-parse', ref])).out;
+    const g = await guard(dir, (await workspace.git(dir, ['describe', '--tags', '--abbrev=0', sha])).out || `${sha}~50`, sha, k === 'tag' ? 'tagged' : 'released');
+    if (g) return g;
+    if (k === 'tag') {
+      const t = await workspace.git(dir, release.tagArgs(c.version, sha));
+      if (!t.ok) return { ok: false, message: `Tag failed: ${t.err.split('\n')[0]}` };
+      const p = await workspace.git(dir, release.pushTagArgs(c.version), { timeoutMs: 120000 });
+      return p.ok ? { ok: true, message: `Tagged ${sha.slice(0, 7)} as v${c.version} and pushed the tag.`, sha } : { ok: false, message: `Tag v${c.version} created locally, but the push failed: ${p.err.split('\n')[0]}` };
+    }
+    if (ps.releaseCommand) {
+      const r = await exec('/bin/sh', ['-c', ps.releaseCommand], { cwd: dir, timeoutMs: 30 * 60000, env: { ...process.env, HEARTH_RELEASE_VERSION: c.version } });
+      return r.ok ? { ok: true, message: `Release command finished for v${c.version}.`, log: redact(r.out).slice(-4000) } : { ok: false, message: `Release command failed: ${redact(r.err).split('\n').slice(-2).join(' ')}` };
+    }
+    if (!(await workspace.git(dir, ['cat-file', '-e', `${ref}:.github/workflows/release.yml`])).ok || !repo) return { ok: false, message: 'This project has no release path (no .github/workflows/release.yml and no release command on the Project page).' };
+    const d = await ghApi(['-X', 'POST', `repos/${repo.owner}/${repo.repo}/actions/workflows/release.yml/dispatches`, '-f', `ref=${def}`]);
+    return d.ok ? { ok: true, dispatched: true, message: `Started the release workflow for v${c.version} on ${def}. Progress is shown here as it runs.`, url: `https://github.com/${repo.owner}/${repo.repo}/actions/workflows/release.yml` } : { ok: false, message: `Couldn't start the release workflow: ${d.err.split('\n')[0]}` };
+  });
+  handle('ops:releaseStatus', async (version) => {
+    const repo = await ghRepo();
+    if (!repo) return { ok: false };
+    const ver = String(version || '').replace(/^v/, '');
+    const runs = await ghApi(['-X', 'GET', `repos/${repo.owner}/${repo.repo}/actions/workflows/release.yml/runs`, '-f', 'per_page=1']);
+    let run = null;
+    try { const j = JSON.parse(runs.out).workflow_runs?.[0]; if (j) run = { status: j.status, conclusion: j.conclusion, url: j.html_url }; } catch {}
+    const rel = await ghApi([`repos/${repo.owner}/${repo.repo}/releases/tags/v${ver}`]);
+    let url = null;
+    try { url = rel.ok ? JSON.parse(rel.out).html_url : null; } catch {}
+    return { ok: true, run, released: rel.ok, url };
+  });
+
   // HEARTH_AI_ASSETS: <workspace>/.hearth-ai/assets/<agent>/, one folder per AI so names never clash.
   const assetsEnv = (agent, cwd) => {
     if (!cwd || !/^[a-z]+$/.test(String(agent))) return undefined;
@@ -62,7 +205,8 @@ function register(d) {
       const ex = path.join(cwd, '.git', 'info', 'exclude');
       if (fs.existsSync(path.dirname(ex)) && !(fs.existsSync(ex) && /^\.hearth-ai\/$/m.test(fs.readFileSync(ex, 'utf8')))) fs.appendFileSync(ex, '\n.hearth-ai/\n');
     } catch {}
-    return { HEARTH_AI_ASSETS: dir };
+    // ...and every AI commits as the owner (GIT_AUTHOR_*/GIT_COMMITTER_*).
+    return { HEARTH_AI_ASSETS: dir, ...identity.gitEnv(applyIdentity()) };
   };
 
   // ---- projects ----

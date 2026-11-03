@@ -194,6 +194,7 @@ export function extrasRules(agent) {
     `- Save images or other files you generate in $HEARTH_AI_ASSETS (your own folder: .hearth-ai/assets/${agent}/ in your workspace) and post them with ATTACH: .hearth-ai/assets/${agent}/<file>. That folder is never committed.`,
     '- Progress notes go on lines starting with PROGRESS: (shown folded); the rest of your reply is the answer.',
     '- If you need an image but have no image tools, write: IMAGE REQUEST: <prompt> | size: <WxH> | for: <task or purpose>. The app asks a teammate with image tools; the image comes back as an attachment.',
+    '- Commits are made as the Owner automatically (the app sets the git author and committer for you). Never add Co-authored-by, Claude-Session or "Generated with" lines; they are removed, and branches with them are not published.',
     '- For long work that should keep running in the background (image generation, deep research), write: BACKGROUND: <what to do>. It runs as a job and its result is posted when done.',
   ].join('\n');
 }

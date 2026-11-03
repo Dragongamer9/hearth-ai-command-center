@@ -56,7 +56,7 @@ test('review rules by Local AI model size', () => {
   assert.equal(localMayReview(code, { model: 'qwen2.5-coder:32b', allowCode: true }).ok, true);
   assert.equal(localMayReview(code, { model: 'qwen2.5-coder:3b', allowCode: true }).ok, false);
   assert.equal(paramsOf('mistral-nemo:12b'), 12);
-  const on = { lead: 'anthropic', enabled: true };
+  const on = { lead: 'anthropic', enabled: true, powers: { merge: true } };
   const t = (action) => ({ id: 'ABC123', title: 'x', stage: 'approval', assignee: 'openai', reviewer: 'ollama', action, policy: { ok: true, block: [], warn: [] }, runs: [], ws: { branch: 'hearth/abc123' }, reviewVerdict: { verdict: 'approve', by: 'ollama', sha: 'b'.repeat(40) } });
   setLocalConfig({ model: 'qwen2.5-coder:3b' });
   assert.equal(leadDecision({ kind: 'approve', id: 'ABC123' }, { ...on, task: t('docs') }).ok, false);

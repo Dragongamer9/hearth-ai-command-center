@@ -67,7 +67,7 @@ const keyTests = {};
 // Team ops (src/ops/): summary, budget, strengths, stats, tests, CI, logs, projects, phone, voice.
 const ops = createOps({
   api, esc: (s) => esc(s), NAMES, AGENTS, AGENT_IDS, EDITORS, HEADLESS, roleKinds, taskNeed, requestChanges,
-  state: () => state, ui: () => ui, settings: () => settings, setSettings: (s) => { settings = s; setApprovalLevels(s.approvalLevels); },
+  state: () => state, ui: () => ui, settings: () => settings, setSettings: (s) => { settings = s; setApprovalLevels(s.approvalLevels); ops.syncPowers(); },
   save: () => save(), render: () => render(), audit: (...a) => audit(...a), post: (m) => post(m), toast: (m) => toast(m),
   now: () => now(), uid: () => uid(), time: (x) => time(x), ago: (x) => ago(x), agentChip: (a) => agentChip(a), connected: (a) => connected(a),
   canRun: (a) => canRun(a), isFree: (a) => isFree(a), roleMap: () => roleMap(), moveWaiting: (a, id) => moveWaiting(a, id), assignTask: (t, a, why) => assignTask(t, a, why),
@@ -341,14 +341,14 @@ function doneBadge(t) {
 }
 
 // ---------- the lead acting for the owner ----------
-const leadCtx = () => ({ lead: state.lead, enabled: settings.leadActions === true, tasks: state.tasks });
+const leadCtx = () => ({ lead: state.lead, enabled: settings.leadActions === true, tasks: state.tasks, powers: ops.syncPowers() });
 
 // START / APPROVE R- / DENY R- / ADD TASK lines from the lead (switch on only).
 function handleLeadLines(agent, text) {
   ops.leadLines(agent, text); // MEMORY: proposals become owner-approved cards
   if (!leadOn({ enabled: settings.leadActions === true, agent, lead: state.lead })) {
     // No silent no-ops: say why each board line was ignored.
-    for (const cmd of parseLeadLines(text)) ops.actionResult(agent, cmd.kind === 'add' ? `ADD TASK: ${cmd.title}` : `${{ start: 'START', allow: 'APPROVE', deny: 'DENY' }[cmd.kind]}: ${cmd.kind === 'start' ? 'T' : 'R'}-${cmd.id}`, false, agent !== state.lead ? `only the lead (${NAMES[state.lead]}) can do that` : 'ignored because the lead switch is off');
+    for (const cmd of parseLeadLines(text)) ops.actionResult(agent, cmd.kind === 'add' ? `ADD TASK: ${cmd.title}` : cmd.version ? `${cmd.kind.toUpperCase()}: ${cmd.version}` : `${{ start: 'START', allow: 'APPROVE', deny: 'DENY' }[cmd.kind] || cmd.kind.toUpperCase()}: ${['allow', 'deny'].includes(cmd.kind) ? 'R' : 'T'}-${cmd.id}`, false, agent !== state.lead ? `only the lead (${NAMES[state.lead]}) can do that` : 'ignored because the lead switch is off');
     return;
   }
   if (!leadOn({ enabled: settings.leadActions === true, agent, lead: state.lead })) return;
@@ -375,7 +375,7 @@ function leadRecord(action, ref, detail, undo = null) {
 async function leadAct(cmd, dec, t = null, request = null) {
   const lead = state.lead;
   if (dec.ignored) return;
-  const ref = cmd.id ? `${cmd.kind === 'allow' || cmd.kind === 'deny' ? 'R' : 'T'}-${cmd.id}` : `“${cmd.title}”`;
+  const ref = cmd.version ? `v${String(cmd.version).replace(/^v/, '')}` : cmd.id ? `${cmd.kind === 'allow' || cmd.kind === 'deny' ? 'R' : 'T'}-${cmd.id}` : `“${cmd.title}”`;
   if (!dec.ok) {
     audit(`${NAMES[lead]} (lead) was refused`, t?.id || null, `${ref}: ${dec.reason}`, lead);
     state.leadRefusals = [...(state.leadRefusals || []), { ref, reason: dec.reason, at: now() }].slice(-8);
@@ -387,6 +387,18 @@ async function leadAct(cmd, dec, t = null, request = null) {
   }
   const title = t ? ` “${t.title}”` : '';
   ops.actionResult(lead, `${({ allow: 'APPROVE', deny: 'DENY', add: 'ADD TASK' })[cmd.kind] || cmd.kind.toUpperCase()}: ${ref}`, true, `done (${dec.action})`, t?.id || null);
+  if (dec.action === 'release' || dec.action === 'tag' || dec.action === 'rewrite') {
+    // The main process re-checks the switch, the owner's Next version, the version file and the guard.
+    const r = dec.action === 'rewrite'
+      ? await api.opsRewriteTask(t.id, true).catch((err) => ({ ok: false, message: cleanErr(err.message) }))
+      : await api.opsLeadRelease(dec.action, dec.version).catch((err) => ({ ok: false, message: cleanErr(err.message) }));
+    if (!r?.ok) return leadAct(cmd, { ok: false, reason: r?.message || 'not available' }, t);
+    leadRecord(dec.action, ref, `— ${r.message}${dec.action === 'rewrite' ? '' : ' This can\'t be undone.'}`);
+    if (r.dispatched) ops.watchRelease(dec.version);
+    save();
+    render();
+    return;
+  }
   if (dec.action === 'merge') {
     if (await recheckApprovals([t])) return leadAct(cmd, { ok: false, reason: `T-${t.id} changed after its review, so it went back to review` }, t);
     const pr = ui.prs.byTask[t.id];
@@ -402,7 +414,7 @@ async function leadAct(cmd, dec, t = null, request = null) {
     t.notes.push({ at: now(), who: `${NAMES[lead]} (lead)`, text: r.message });
     t.stage = 'approved';
     t.updatedAt = now();
-    leadRecord('merge', `T-${t.id}`, `${title} — ${r.message}`);
+    leadRecord('merge', `T-${t.id}`, `${title} — ${r.message} This can't be undone.`);
     await refreshGit().catch(() => {});
   } else if (dec.action === 'approve') {
     t.decision = 'approved';

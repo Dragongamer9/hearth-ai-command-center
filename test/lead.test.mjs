@@ -7,7 +7,7 @@ import { chatRules, buildPrompt, buildDelta } from '../src/chat.mjs';
 
 const ok = { ok: true, block: [], warn: [] };
 const mk = (o = {}) => ({ id: 'ABC123', title: 'Status panel', stage: 'approval', assignee: 'openai', reviewer: 'google', action: 'code', policy: ok, runs: [], ws: { branch: 'hearth/abc123' }, reviewVerdict: { verdict: 'approve', by: 'google', sha: 'b'.repeat(40) }, ...o });
-const on = { lead: 'anthropic', enabled: true };
+const on = { lead: 'anthropic', enabled: true, powers: { merge: true } }; // "Lead may merge to main" on (off is tested in lead-powers.test.mjs)
 
 test('switch off: lead lines are ignored', () => {
   assert.equal(leadOn({ enabled: false, agent: 'anthropic', lead: 'anthropic' }), false);

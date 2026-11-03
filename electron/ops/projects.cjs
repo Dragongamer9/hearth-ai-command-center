@@ -17,6 +17,9 @@ function defaultSettings() {
     ciWatch: true,
     logsOn: false,
     logsRepo: '',
+    nextVersion: '', // set by the owner only; the lead may release/tag only this version
+    versionFile: 'package.json',
+    releaseCommand: '', // '' = dispatch .github/workflows/release.yml on main
   };
 }
 
@@ -31,6 +34,9 @@ function cleanSettings(s = {}) {
     ciWatch: s.ciWatch === undefined ? d.ciWatch : s.ciWatch === true,
     logsOn: s.logsOn === true,
     logsRepo: typeof s.logsRepo === 'string' && REPO_RE.test(s.logsRepo.trim()) ? s.logsRepo.trim() : '',
+    nextVersion: typeof s.nextVersion === 'string' && /^\d{1,4}\.\d{1,4}(\.\d{1,6})?$/.test(s.nextVersion.trim()) ? s.nextVersion.trim() : '',
+    versionFile: typeof s.versionFile === 'string' && /^[A-Za-z0-9._/-]{1,120}$/.test(s.versionFile) && !s.versionFile.includes('..') ? s.versionFile : 'package.json',
+    releaseCommand: typeof s.releaseCommand === 'string' ? s.releaseCommand.replace(/[\r\n\0]/g, ' ').trim().slice(0, 300) : '',
   };
 }
 

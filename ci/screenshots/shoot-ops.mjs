@@ -92,6 +92,8 @@ function stub() {
     opsPhoneEnable: () => { phone = { ...phone, enabled: true, running: true, urls: ['http://192.168.1.42:8787/'] }; return ok(phone); },
     opsPhoneNewCode: () => { phone = { ...phone, pairing: { code: '482913', expires: Date.now() + 300000 } }; return ok(phone); },
     opsPhonePush: () => ok(true),
+    opsIdentityDefault: () => ok({ saved: null, suggested: { name: 'Dragongamer9', email: 'Dragongamer9@users.noreply.github.com' } }),
+    opsCheckTask: () => ok({ ok: false, problems: ['f00dbab is authored by Claude <noreply@anthropic.com>', 'f00dbab has an AI attribution line'] }),
     opsHardware: () => ok({ ramGb: 32, vramGb: 12, discrete: true, gpu: 'NVIDIA' }),
     opsUpscaleTools: () => ok({ esrgan: null, ffmpeg: '/usr/bin/ffmpeg' }),
     opsJobs: () => ok([{ id: 'J1A2B3C4D', base: null, kind: 'image', agent: 'google', title: 'Image for Mistral: a cozy hearth icon', taskId: 'DC0004', requestId: 'IR1', startedAt: ago(6), status: 'running', finishedAt: null, text: null, error: null }, { id: 'J9F8E7D6C', base: null, kind: 'background', agent: 'openai', title: 'Research GRUB theme formats', taskId: null, requestId: null, startedAt: ago(90), status: 'lost', finishedAt: null, text: null, error: { kind: 'lost', message: 'The job stopped without a result.' } }]),
@@ -196,10 +198,21 @@ check((await text()).includes('Hand-off limit reached') && (await text()).includ
 await shot('approvals-cards');
 await nav('settings');
 check((await text()).includes('Approval levels') && (await text()).includes('Owner-only'), 'approval levels in Settings');
+check((await text()).includes('Settings stay yours so no AI can give itself more power'), 'settings explanation');
+check((await text()).includes('Lead may merge to main') && (await text()).includes('Lead may publish releases (only the version you set)') && (await text()).includes('Lead may create tags (only the version you set)'), 'lead switches');
+check(await page.locator('[data-opslead]:checked').count() === 0, 'lead switches are off by default');
+check((await page.inputValue('#ops-identity')).includes('Dragongamer9 <Dragongamer9@users.noreply.github.com>'), 'owner identity suggested from git config');
 await page.click('[data-ops="level"][data-arg="install"][data-val="routine"]'); await page.waitForTimeout(300);
 check(await page.locator('[data-ops="level"][data-arg="install"][data-val="routine"].on').count() === 1, 'moving a category is saved');
 await page.click('[data-ops="level"][data-arg="install"][data-val="major"]'); await page.waitForTimeout(300);
-await shot('settings-approval-levels');
+await shot('settings-approval-levels', { full: true });
+await nav('project');
+check(await page.locator('[data-opsset="nextVersion"]').count() === 1, 'Next version field on the Project page');
+await nav('board'); await page.click('[data-open="ST0002"]'); await page.waitForTimeout(300);
+await page.click('[data-ops="checkauthor"]'); await page.waitForTimeout(300);
+check((await page.textContent('.drawer')).includes('Rewrite authorship on this task branch'), 'authorship guard offers the rewrite');
+await shot('authorship-guard-rewrite');
+await page.keyboard.press('Escape');
 
 // Team requests: action results, progress block, attachment size flag, checkpoint report, unknown @name.
 await nav('chat');

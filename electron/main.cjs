@@ -22,6 +22,7 @@ const theme = require('./theme.cjs');
 const web = require('./webapps.cjs');
 const { LIVE_PROVIDERS } = require('./validate.cjs');
 const { cleanSavedLevels } = require('./ops/approval.cjs');
+const { cleanIdentity } = require('./ops/identity.cjs');
 const ops = require('./ops/index.cjs');
 
 // No Hearth OS version pin: the app never changes, bumps, publishes or deploys
@@ -74,6 +75,12 @@ function readSettings() {
     approvalLevels: cleanSavedLevels(s.approvalLevels),
     // Local AI may review code (with a 7B or larger model). Off unless the owner turns it on.
     localReviewCode: s.localReviewCode === true,
+    // The lead's extra powers: each off unless the owner turns it on.
+    leadMerge: s.leadMerge === true,
+    leadRelease: s.leadRelease === true,
+    leadTag: s.leadTag === true,
+    // Every commit is made as this identity (set once by the owner).
+    ownerIdentity: cleanIdentity(s.ownerIdentity),
   };
 }
 function useProject(dir) {
@@ -287,6 +294,8 @@ function registerIpc() {
     if ('reduceMotion' in patch) s.reduceMotion = patch.reduceMotion === true;
     if ('approvalLevels' in patch) s.approvalLevels = cleanSavedLevels(patch.approvalLevels);
     if ('localReviewCode' in patch) s.localReviewCode = patch.localReviewCode === true;
+    for (const k of ['leadMerge', 'leadRelease', 'leadTag']) if (k in patch) s[k] = patch[k] === true;
+    if ('ownerIdentity' in patch) s.ownerIdentity = cleanIdentity(patch.ownerIdentity);
     writeSettings(s);
     return s;
   });
@@ -602,6 +611,7 @@ function registerIpc() {
     // single Approve-to-merge step, without the owner's confirmation box. Never a release.
     if (opts?.byLead === true) {
       if (s.leadActions !== true) return { ok: false, message: 'The lead switch is off.' };
+      if (s.leadMerge !== true) return { ok: false, message: 'Lead may merge to main is off.' };
       if (!sha) return { ok: false, message: 'No approved commit recorded; the lead cannot merge it.' };
       return gitops.mergeApproved(s.project, branch, sha);
     }
@@ -691,6 +701,7 @@ function registerIpc() {
     const sha = typeof opts?.sha === 'string' ? opts.sha : null;
     if (opts?.byLead === true) {
       if (s.leadActions !== true) return { ok: false, message: 'The lead switch is off.' };
+      if (s.leadMerge !== true) return { ok: false, message: 'Lead may merge to main is off.' };
       if (!sha) return { ok: false, message: 'No approved commit recorded; the lead cannot merge it.' };
       return gitops.prMerge(s.project, n, sha);
     }

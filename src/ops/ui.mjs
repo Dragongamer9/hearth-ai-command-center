@@ -10,11 +10,11 @@ import { taskStats, agentTotals, fmtMs } from './stats.mjs';
 import { decideHandoff, askCard, REASON, MAX_HANDOFFS } from './handoff.mjs';
 import { ciBranches, applyCi, ciChangesText, CI_LABEL } from './ci.mjs';
 import { parseMemoryLines, memoryCard, logTask, phoneSnapshot, phoneAction, opsSnapshot as snapshotOf } from './feeds.mjs';
-import { CATEGORIES, MOVABLE, OWNER_ONLY, cleanLevels, levelPatch, setLevels } from './approval.mjs';
+import { CATEGORIES, MOVABLE, OWNER_ONLY, cleanLevels, levelPatch, setLevels, setLeadPowers } from './approval.mjs';
 import { LOCAL_PRESETS, fitCheck, resolveLocalModel, validTag, paramsOf, localMayReview, setLocalConfig, unknownMentions, capabilities, canSeeImages, splitProgress, requestedSize, belowRequested, fmtBytes, parseImageRequests, pickImageAI, checkpointReport, result as mkResult, CAPS } from './extras.mjs';
 
 let C = null; // the ctx main.js passed in
-const local = { hw: null, jobs: [], tools: null, turn: {}, projects: { active: 'default', list: [] }, phone: null, voice: null, usage: {}, memory: null, memoryDirty: false, testing: {}, rec: null, suggestTouched: false, projectMsg: '' };
+const local = { guard: {}, identity: null, release: null, hw: null, jobs: [], tools: null, turn: {}, projects: { active: 'default', list: [] }, phone: null, voice: null, usage: {}, memory: null, memoryDirty: false, testing: {}, rec: null, suggestTouched: false, projectMsg: '' };
 
 const call = (name, ...a) => (typeof C?.api?.[name] === 'function' ? C.api[name](...a).catch((e) => ({ ok: false, message: String(e?.message || e) })) : Promise.resolve(null));
 const S = () => C.state();
@@ -261,6 +261,10 @@ function drawerPanel(t) {
   if (last) parts.push(`<details class="ops-log"><summary><span class="badge ${{ passed: 'good', failed: 'bad' }[last.appTests] || ''}">App tests: ${esc(last.appTests || 'not run')}</span> <span class="mono faint">${esc(last.testCommand || 'no test command')} · ${esc(short(last.head))}</span>${last.claimedTests && last.claimedTests !== last.appTests ? ` <span class="faint">(the AI said ${esc(last.claimedTests)})</span>` : ''}</summary><pre>${esc(last.testLog || '')}</pre></details>`);
   if (t.ci && t.ci.state !== 'none') parts.push(`<div class="row">${ciBadge(t)}<span class="mono faint">${esc(short(t.ci.sha))}</span>${t.ci.url?.startsWith('https://github.com/') ? `<a class="btn small link" href="${esc(t.ci.url)}" target="_blank">Open run ↗</a>` : ''}</div>${t.ci.log ? `<details class="ops-log"><summary>CI log tail</summary><pre>${esc(t.ci.log)}</pre></details>` : ''}`);
   if (t.handoffs?.length) parts.push(`<div class="faint ops-note">Hand-offs: ${t.handoffs.map((h) => `${esc(N(h.from))} → ${esc(N(h.to))} (${esc(REASON[h.kind] || h.kind)})`).join(' · ')}</div>`);
+  if (t.ws) {
+    const g = local.guard[t.id];
+    parts.push(g && !g.ok ? `<div class="policy warn">Not yours only: ${esc((g.problems || []).slice(0, 3).join('; '))}<div class="row" style="margin-top:6px"><button class="btn small" data-ops="rewrite" data-arg="${esc(t.id)}">Rewrite authorship on this task branch</button></div></div>` : `<div class="row faint ops-note">${g ? 'Every commit on this branch is yours.' : ''}<button class="btn small link" data-ops="checkauthor" data-arg="${esc(t.id)}">Check authorship</button></div>`);
+  }
   if (t.log?.file) parts.push(`<div class="faint ops-note">Log ${esc(t.log.code)} saved at <span class="mono">${esc(t.log.file)}</span></div>`);
   return parts.length ? `<div class="ops-drawer">${parts.join('')}</div>` : '';
 }
@@ -301,7 +305,10 @@ function viewProject() {
       <label class="ops-check"><input type="checkbox" data-opsset="ciWatch" ${s.ciWatch ? 'checked' : ''}> Watch GitHub Actions for task and release branches (uses your gh sign-in)</label>
       <label class="ops-check"><input type="checkbox" data-opsset="logsOn" ${s.logsOn ? 'checked' : ''}> Hearth logs straight in: each new log in a GitHub repo becomes a “Look at log” task</label>
       <label class="ops-field"><span>Logs repo (layout logs/&lt;date&gt;/&lt;code&gt;.txt)</span><input type="text" data-opsset="logsRepo" value="${esc(s.logsRepo || '')}" placeholder="owner/repo, e.g. Dragongamer9/hearth-logs"></label>
-      <div class="faint ops-note">Saved for this project and never changed by the app.</div></div>
+      <label class="ops-field"><span>Next version (only you set it; the lead may release or tag only this one)</span><input type="text" data-opsset="nextVersion" value="${esc(s.nextVersion || '')}" placeholder="e.g. 0.9.0"></label>
+      <label class="ops-field"><span>Version file</span><input type="text" data-opsset="versionFile" value="${esc(s.versionFile || 'package.json')}"></label>
+      <label class="ops-field"><span>Release command (blank = run .github/workflows/release.yml on main)</span><input type="text" data-opsset="releaseCommand" value="${esc(s.releaseCommand || '')}" placeholder="blank"></label>
+      <div class="faint ops-note">Saved for this project and never changed by the app or any AI.</div></div>
   </div>
   <div class="grid two">
     <div class="card"><h3>Project memory <span class="mono faint">.hearth-ai/PROJECT.md</span></h3>
@@ -316,8 +323,8 @@ function approvalSettings() {
   const item = (k) => `<div class="row ops-lv"><span style="flex:1">${esc(CATEGORIES[k].label)}</span>${OWNER_ONLY.includes(k) ? '<span class="badge warn">Owner-only</span>'
     : `<button class="chip ${lv[k] === 'routine' ? 'on' : ''}" data-ops="level" data-arg="${k}" data-val="routine">Routine</button><button class="chip ${lv[k] === 'major' ? 'on' : ''}" data-ops="level" data-arg="${k}" data-val="major">Major</button>`}</div>`;
   return `<div class="card mb ops-levels"><h3>Approval levels</h3>
-    <p class="muted ops-note">Routine actions never ask (they are still recorded in the Audit log). Major ones ask you, or the lead while “lead acts for me” is on (never for boot-critical changes or anything touching main, tags or force-pushes). Owner-only ones always need you. Every AI is told this policy.</p>
-    <div class="grid two"><div><div class="sect">Routine or major (you choose)</div>${MOVABLE.map(item).join('')}</div><div><div class="sect">Always yours</div>${OWNER_ONLY.map(item).join('')}</div></div></div>`;
+    <p class="muted ops-note">Routine actions never ask (they are still recorded in the Audit log). Major ones ask you, or the lead while “lead acts for me” is on (never for boot-critical changes or anything touching main, tags or force-pushes). Owner-only ones always need you, except merges, releases and tags when you turn on the lead's switch below. Settings stay yours so no AI can give itself more power. Every AI is told this policy.</p>
+    <div class="grid two"><div><div class="sect">Routine or major (you choose)</div>${MOVABLE.map(item).join('')}</div><div><div class="sect">Always yours</div>${OWNER_ONLY.map(item).join('')}</div></div></div>${leadPowersCard()}${identityCard()}`;
 }
 
 function voiceButton() {
@@ -621,12 +628,71 @@ function localModels() {
     <div class="faint ops-note">With a 7B or larger model the Local AI may review docs tasks${C.settings().localReviewCode ? ' and code' : ''}${paramsOf(r.use) !== null ? ` (now: ${esc(r.use)}, ${paramsOf(r.use)}B)` : ''}. Downloads run in a terminal you can see.</div></div>`;
 }
 
+// ---------- lead powers, Next version, owner identity ----------
+function syncPowers() {
+  const s = C.settings();
+  const p = local.projects.list.find((x) => x.id === local.projects.active);
+  return setLeadPowers({ merge: s.leadMerge === true, release: s.leadRelease === true, tag: s.leadTag === true, nextVersion: p?.settings?.nextVersion || '' });
+}
+function watchRelease(version) {
+  local.release = { version, last: '' };
+  const tick = async () => {
+    if (!local.release || local.release.version !== version) return;
+    const r = await call('opsReleaseStatus', version);
+    if (!r?.ok) return;
+    const now = r.released ? 'released' : r.run ? `${r.run.status}${r.run.conclusion ? ` (${r.run.conclusion})` : ''}` : 'waiting';
+    if (now !== local.release.last) {
+      local.release.last = now;
+      C.post({ who: 'system', text: r.released ? `Release v${version} is published${r.url ? `: ${r.url}` : ''}.` : `Release v${version}: workflow ${now}${r.run?.url ? ` — ${r.run.url}` : ''}.` });
+      C.audit('Release progress', null, `v${version}: ${now}`);
+      await C.save();
+      C.render();
+    }
+    if (r.released || r.run?.conclusion) { local.release = null; return; }
+    setTimeout(tick, 30000);
+  };
+  setTimeout(tick, 15000);
+}
+const idText = (id) => (id ? `${id.name} <${id.email}>` : '');
+function identityCard() {
+  const s = C.settings();
+  const saved = s.ownerIdentity;
+  const sug = local.identity?.suggested;
+  return `<div class="card mb ops-identity"><h3>Owner identity for every commit</h3>
+    <p class="muted ops-note">Every commit the app or any AI makes (checkpoints, AI commits in task branches, merges, releases and tags) is made as you. AI attribution lines are stripped, and nothing is pushed, merged, released or tagged if a commit has another author or such a line.</p>
+    ${saved ? '' : `<div class="policy warn">Set your identity once${sug ? `; your git config says ${esc(idText(sug))}` : ''}.</div>`}
+    <div class="row"><input type="text" id="ops-identity" style="flex:1" value="${esc(idText(saved) || idText(sug))}" placeholder="Name <email>, e.g. Dragongamer9 <Dragongamer9@users.noreply.github.com>"><button class="btn small primary" data-ops="identity">Save</button></div></div>`;
+}
+function leadPowersCard() {
+  const s = C.settings();
+  const p = syncPowers();
+  const sw = (k, label) => `<label class="ops-check"><input type="checkbox" data-opslead="${k}" ${s[k] === true ? 'checked' : ''}> ${label}</label>`;
+  return `<div class="card mb"><h3>What the lead may do on its own</h3>
+    ${sw('leadMerge', 'Lead may merge to main')}${sw('leadRelease', 'Lead may publish releases (only the version you set)')}${sw('leadTag', 'Lead may create tags (only the version you set)')}
+    <div class="faint ops-note">Off by default; only you change them. Merges still need another AI's approving review and the exact approved commit. Releases and tags only for your Next version (${p.nextVersion ? `v${esc(p.nextVersion)}` : 'not set: Project page'}), and only when the version file on main already says it; the lead never edits version numbers. Merges, releases and tags can't be undone. Also needs “lead acts for me”.</div></div>`;
+}
+
 // ---------- events ----------
 async function onClick(e) {
   const el = e.target.closest('[data-ops]');
   if (!el) return;
   const { ops: op, arg, val } = el.dataset;
   if (op === 'card') return answerCard(arg, val);
+  if (op === 'identity') {
+    const raw = document.getElementById('ops-identity')?.value || '';
+    const m = raw.match(/^\s*([^<>]+?)\s*<([^<>\s]+@[^<>\s]+\.[^<>\s]+)>\s*$/);
+    if (!m) return C.toast('Write it as Name <email>.');
+    const s2 = await call('setSettings', { ownerIdentity: { name: m[1], email: m[2] } });
+    if (s2 && !s2.message) { C.setSettings(s2); await call('opsIdentityApply'); C.audit('Owner identity set', null, `${m[1]} <${m[2]}>`); await C.save(); C.toast('Saved. Every commit is made as you.'); }
+    return C.render();
+  }
+  if (op === 'checkauthor') { local.guard[arg] = await call('opsCheckTask', arg); return C.render(); }
+  if (op === 'rewrite') {
+    const r = await call('opsRewriteTask', arg, false);
+    C.toast(r?.message || 'Rewrite failed.');
+    if (r?.ok) { C.audit('Owner rewrote task authorship', arg, r.message); local.guard[arg] = await call('opsCheckTask', arg); await C.save(); }
+    return C.render();
+  }
   if (op === 'upscale') return upscale(arg, val);
   if (op === 'jobcancel') { const r = await call('opsJobCancel', arg); if (r?.ok) { C.audit('Owner cancelled a job', r.job?.taskId || null, arg); await pollJobs(); } return C.render(); }
   if (op === 'esrgan') { C.toast('Downloading Real-ESRGAN from its GitHub release…'); const r = await call('opsEsrganInstall'); C.toast(r?.message || 'Install failed.'); if (r?.ok) C.audit('Real-ESRGAN installed', null, r.message); local.tools = await call('opsUpscaleTools'); return C.render(); }
@@ -699,6 +765,13 @@ async function onChange(e) {
   if (el.matches?.('[data-opsproject]')) { fakeSwitch(el.value); return; }
   if (el.matches?.('[data-opslocal]')) { S().models.ollama = el.value; C.audit('Local AI model chosen', null, el.value); syncLocal(); await C.save(); return C.render(); }
   if (el.dataset?.opslocalon) { const st = S(); st.opsLocal = st.opsLocal || { enabled: {} }; st.opsLocal.enabled = { ...(st.opsLocal.enabled || {}), [el.dataset.opslocalon]: el.checked }; C.audit('Local AI preset turned ' + (el.checked ? 'on' : 'off'), null, el.dataset.opslocalon); await C.save(); return C.render(); }
+  if (el.dataset?.opslead) {
+    const k = el.dataset.opslead;
+    if (el.checked && !confirm({ leadMerge: 'Let the lead merge approved, independently reviewed work into main on its own?', leadRelease: 'Let the lead publish releases (only the Next version you set)?', leadTag: 'Let the lead create tags (only v<Next version>)?' }[k])) { el.checked = false; return; }
+    const s2 = await call('setSettings', { [k]: el.checked });
+    if (s2 && !s2.message) { C.setSettings(s2); C.audit(`${{ leadMerge: 'Lead may merge to main', leadRelease: 'Lead may publish releases', leadTag: 'Lead may create tags' }[k]} turned ${el.checked ? 'on' : 'off'}`); await C.save(); }
+    return C.render();
+  }
   if (el.matches?.('[data-opslocalcode]')) { const s2 = await call('setSettings', { localReviewCode: el.checked }); if (s2 && !s2.message) { C.setSettings(s2); C.audit(`Local AI code reviews turned ${el.checked ? 'on' : 'off'}`); syncLocal(); await C.save(); } return C.render(); }
   const k = el.dataset?.opsset;
   if (!k) return;
@@ -708,7 +781,7 @@ async function onChange(e) {
   else if (k === 'testCommand') patch = { testCommand: el.value.trim() ? el.value.trim() : null };
   else patch = { [k]: el.type === 'number' ? Number(el.value) : el.value.trim() };
   const r = await call('opsProjectSettings', patch);
-  if (r?.list) { local.projects = r; C.audit('Project setting changed', null, Object.entries(patch).map(([a, b]) => `${a}: ${b === null ? 'automatic' : b}`).join(', ')); await C.save(); }
+  if (r?.list) { local.projects = r; syncPowers(); C.audit('Project setting changed', null, Object.entries(patch).map(([a, b]) => `${a}: ${b === null ? 'automatic' : b}`).join(', ')); await C.save(); }
   else if (r?.message) C.toast(r.message);
   C.render();
 }
@@ -748,7 +821,7 @@ export function createOps(ctx) {
     summaryCard, approvalCards, approvalSettings, projectSwitcher, ciBadge, drawerPanel, voiceButton, suggestHint,
     afterRun, checkDone, handoff, recordVerdict, leadLines, auditRoutine, beforeStart, routeQueued,
     snapshot: opsSnapshot,
-    actionResult, turnBegin, turnEnd, resultsHtml, bodyHtml, mentionNotes, imageNotice, attMeta, checkpointLine, handleLines, localModels, localMayReview: localMayReviewTask, syncLocal,
+    syncPowers, watchRelease, actionResult, turnBegin, turnEnd, resultsHtml, bodyHtml, mentionNotes, imageNotice, attMeta, checkpointLine, handleLines, localModels, localMayReview: localMayReviewTask, syncLocal,
     async boot() {
       setLevels(C.settings().approvalLevels);
       document.addEventListener('click', onClick);
@@ -761,6 +834,8 @@ export function createOps(ctx) {
       document.addEventListener('click', (e) => { if (e.target.closest?.('[data-new]')) local.suggestTouched = false; }, true);
       C.api?.onOpsPhoneAction?.((a) => onPhone(a));
       await refreshProjects();
+      syncPowers();
+      local.identity = await call('opsIdentityDefault');
       local.phone = await call('opsPhoneStatus');
       C.render();
       call('opsHardware').then((h) => { if (h) local.hw = h; });
