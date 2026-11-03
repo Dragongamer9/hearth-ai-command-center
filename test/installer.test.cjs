@@ -7,9 +7,10 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { spawnSync, execFileSync } = require('node:child_process');
 
-// Hermetic home: everything the installer touches lives under a temp HOME.
+// Isolate user tools: use a temp HOME and only system commands on PATH.
 const HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'hearth-inst-home-'));
 process.env.HOME = HOME;
+process.env.PATH = '/usr/bin:/bin';
 delete process.env.XDG_DATA_HOME;
 const installer = require('../electron/installer.cjs');
 const agents = require('../electron/agents.cjs');
