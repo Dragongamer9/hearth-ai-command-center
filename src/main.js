@@ -1,7 +1,13 @@
 import './styles.css';
 import { policyCheck } from './policy.mjs';
-import { recipients, buildPrompt, buildDelta, parseProposals, parseDirectives, applyEdit, applyRetract, makeRequest, decideRequest, blockedAgents, mentions, NAMES, PERMISSION_KINDS } from './chat.mjs';
-import { buildTaskBrief, nextAgent, parseStatus, taskRunState, recoverInterrupted, RUN_STATES } from './team.mjs';
+import { recipients, buildPrompt, buildDelta, parseProposals, parseDirectives, applyEdit, applyRetract, makeRequest, decideRequest, blockedAgents, mentions, NAMES, PERMISSION_KINDS, HOLD_BADGES, authProblem, makeHold, holdLifted } from './chat.mjs';
+import { buildTaskBrief, nextAgent, parseStatus, taskRunState, recoverInterrupted, RUN_STATES, roleKinds, taskNeed, inQueue, queueOf, nextQueued, placeNext, placeLast, startLabel, redistribute } from './team.mjs';
+import { parseVerdicts, applyVerdict, ownerAction, REVIEWABLE, requestChanges, reviewBaseline, checkDoneAfterReview, testResult, TEST_LABEL, clearStaleApproval, doneLine } from './owner.mjs';
+import { panelState, holdStatus, keyTestLine } from './presence.mjs';
+import { findDuplicate } from './dupes.mjs';
+import { parseAttachLines, mediaFor } from './media.mjs';
+import { chatPlan, canOwnerSend, newRound, ownerInterrupt, stopRound, cameAfterOwner } from './room.mjs';
+import { leadOn, parseLeadLines, leadDecision, leadLabel, leadUndoable } from './lead.mjs';
 import { AGENTS, AGENT_IDS, WEB_ONLY, HEADLESS, EDITORS, API_CAPABLE, DEFAULT_ROLES, BILLING, ACCESS_NOTE, OLLAMA_NOTE } from './registry.mjs';
 import { HEARTH_OS, RED_FLAGS } from './hearth.mjs';
 import { tokensToCss, pickMode } from './theme.mjs';
@@ -42,7 +48,7 @@ const MAX_HOPS = 6;
 
 // ---------- state ----------
 let state = { version: 1, tasks: [], audit: [], models: {}, chat: [], agentStatus: {}, autoHandoff: true, roles: {}, lead: 'anthropic', disabled: {}, permissions: [], chatSessions: {} };
-let ui = { view: 'overview', selected: null, modal: null, busy: {}, draft: '', target: 'all', typing: null, running: {}, saving: {}, changes: {}, expanded: null, side: 'anthropic', signin: {}, installOllama: false, editing: null, showHist: {}, hist: { q: '', provider: 'all', source: 'all', list: [], sel: null, stats: null, kind: 'auto', scanning: false }, prs: { list: [], loaded: false, msg: '', byTask: {} }, release: { version: '', confirm: '', target: '', notes: '', draft: true } };
+let ui = { view: 'overview', selected: null, modal: null, busy: {}, draft: '', target: 'all', typing: null, running: {}, saving: {}, changes: {}, expanded: null, side: 'anthropic', signin: {}, installOllama: false, editing: null, showHist: {}, typingSet: new Set(), attach: [], lightbox: null, hist: { q: '', provider: 'all', source: 'all', list: [], sel: null, stats: null, kind: 'auto', scanning: false }, prs: { list: [], loaded: false, msg: '', byTask: {} }, release: { version: '', confirm: '', target: '', notes: '', draft: true } };
 let backups = { recoveredFrom: null, backups: [] };
 let settings = { project: null, projects: [], connection: { anthropic: 'cli', openai: 'cli', xai: 'cli', mistral: 'cli', perplexity: 'api', deepseek: 'api' }, bins: {}, access: 'standard', extraDirs: [], autoPush: true, chatEdits: true, chatResume: true, theme: 'hearth' };
 let gh = { git: null, gh: null, ghUser: null };
@@ -53,6 +59,7 @@ let prov = { encryption: false, weakEncryption: false, defaults: {}, keys: {} };
 let upd = { enabled: false, reason: '', status: { state: 'idle' } };
 let hearthTheme = { found: false, tokens: {}, css: '', dir: '~/.config/hearth' };
 let consoleOut = {};
+const keyTests = {};
 
 const uid = () => Math.random().toString(36).slice(2, 8).toUpperCase();
 const now = () => new Date().toISOString();
@@ -132,7 +139,9 @@ function outInfo(a) {
   return st;
 }
 const blocked = () => blockedAgents(state.permissions);
-const canRun = (a) => Boolean(AGENTS[a]?.headless) && connected(a) && !outInfo(a);
+// A saved sign-in hold (a refused login or key) keeps the AI out until it changes.
+const authHold = (a) => state.agentStatus?.[a]?.hold || null;
+const canRun = (a) => Boolean(AGENTS[a]?.headless) && connected(a) && !outInfo(a) && !authHold(a);
 const liveAgents = () => HEADLESS.filter(canRun);
 const liveEditors = () => EDITORS.filter((a) => canRun(a) && method(a) !== 'api');
 const busyOn = (a) => Object.entries(ui.running).find(([, r]) => r.agent === a);
@@ -144,8 +153,10 @@ function statusOf(a) {
   if (outInfo(a)) return { text: 'out of usage', cls: 'bad' };
   const b = busyOn(a);
   if (b) return { text: b[0].startsWith('CHAT') ? 'working in team chat' : `working on T-${b[0]}`, cls: 'accent', live: true };
-  if (ui.typing === a) return { text: 'replying in team chat', cls: 'accent', live: true };
+  if (isTyping(a)) return { text: 'replying in team chat', cls: 'accent', live: true };
   if (blocked().includes(a)) return { text: 'waiting for your answer', cls: 'warn' };
+  const held = holdStatus(authHold(a), Boolean(prov.keys[a]));
+  if (held) return held;
   if (method(a) === 'api') return prov.keys[a] ? { text: 'linked (API key)', cls: 'good' } : { text: 'needs API key', cls: 'warn' };
   if (a === 'ollama') return c.installed ? (c.models?.length ? { text: 'running', cls: 'good' } : { text: 'no models yet', cls: 'warn' }) : { text: 'not running', cls: 'warn' };
   if (!c.installed) return { text: 'not installed', cls: 'warn' };
@@ -174,6 +185,267 @@ function stageBadge(t) {
 const pendingAsks = () => state.permissions.filter((p) => p.status === 'pending');
 const openTasks = () => state.tasks.filter((t) => !['approved', 'rejected'].includes(t.stage));
 
+// ---------- queue: one task at a time per AI ----------
+function queueText(t) {
+  if (!inQueue(t)) return '';
+  const q = queueOf(state.tasks, t.assignee);
+  const i = q.findIndex((x) => x.id === t.id);
+  if (t.startNext) return 'next up';
+  return q.length > 1 && i >= 0 ? `queue ${i + 1} of ${q.length}` : '';
+}
+function queueBadge(t) {
+  const q = queueText(t);
+  return q ? `<span class="badge ${t.startNext ? 'accent' : ''}" title="${esc(NAMES[t.assignee])} works one task at a time">${esc(q === 'next up' ? 'Next up' : q[0].toUpperCase() + q.slice(1))}</span>` : '';
+}
+function assignTask(t, agent, why) {
+  if (!t || t.assignee === agent) return;
+  const prev = t.assignee;
+  t.assignee = agent;
+  if (t.reviewer === agent) t.reviewer = HEADLESS.find((a) => a !== agent && canRun(a)) || HEADLESS.find((a) => a !== agent) || 'none';
+  audit(`Handed off to ${NAMES[agent]}`, t.id, why || `from ${NAMES[prev] || 'unassigned'}`);
+}
+const roleMap = () => Object.fromEntries(AGENT_IDS.map((a) => [a, state.roles[a] || DEFAULT_ROLES[a]]));
+const isFree = (a) => canRun(a) && !busyOn(a) && !isTyping(a) && !blocked().includes(a);
+
+// Start now, or, if that AI is busy, queue it as Start next (several run oldest-first).
+function startOrQueue(t, a) {
+  if (!t) return null;
+  const b = busyOn(a);
+  if ((b && b[0] !== t.id) || isTyping(a)) {
+    if (t.startNext && t.assignee === a) { toast(`T-${t.id} is already next for ${NAMES[a]}.`); return 'queued'; }
+    assignTask(t, a, `queued behind ${b ? `T-${b[0]}` : 'team chat'}`);
+    t.queuedAt = placeNext(state.tasks.filter((x) => x.id !== t.id), a, now());
+    t.startNext = true;
+    save();
+    render();
+    toast(`${NAMES[a]} is busy. T-${t.id} starts as soon as they finish.`);
+    return 'queued';
+  }
+  return runTask(t, a);
+}
+
+// Each free AI starts its next Start-next task.
+async function pumpQueues() {
+  if (!settings.project) return;
+  const starts = [];
+  for (const a of EDITORS) {
+    if (!isFree(a)) continue;
+    const next = nextQueued(state.tasks, a);
+    if (next?.startNext) starts.push(runTask(next, a));
+  }
+  await Promise.all(starts);
+}
+
+// An AI ran out of usage: its waiting tasks go to free AIs with the same kind of role.
+function moveWaiting(agent, currentId) {
+  if (!state.autoHandoff) return '';
+  const moves = redistribute({ tasks: state.tasks, agent, currentId, available: EDITORS.filter((a) => canRun(a)), roles: roleMap(), lead: state.lead });
+  for (const m of moves) {
+    const t = state.tasks.find((x) => x.id === m.id);
+    assignTask(t, m.to, `${NAMES[agent]} ran out of usage`);
+    t.queuedAt = placeLast(state.tasks.filter((x) => x.id !== t.id), m.to, now());
+  }
+  return moves.length ? ` Waiting tasks moved: ${moves.map((m) => `T-${m.id} → ${NAMES[m.to]}`).join(', ')}.` : '';
+}
+
+// ---------- owner actions ----------
+const actionFor = (t) => ownerAction(t, { permissions: state.permissions, running: Boolean(ui.running[t.id]), saving: Boolean(ui.saving?.[t.id]), canRun, free: liveEditors() });
+function ownerButton(t) {
+  const a = actionFor(t);
+  return a ? `<div class="owner-act"><button class="btn primary small" data-owneract="${t.id}">${esc(a.label)}</button><span class="why">${esc(a.reason)}</span></div>` : '';
+}
+
+// Reviewer lines (APPROVE:/CHANGES: T-…) in a reply. Only the assigned reviewer
+// counts; with the lead switch on, the lead's lines act for the owner (lead.mjs).
+async function handleVerdicts(agent, text) {
+  const restart = [];
+  const leading = leadOn({ enabled: settings.leadActions === true, agent, lead: state.lead });
+  for (const v of parseVerdicts(text)) {
+    const t = state.tasks.find((x) => x.id === v.taskId);
+    if (!t) continue; // e.g. a quoted example
+    if (leading) {
+      const dec = leadDecision({ kind: v.verdict, id: v.taskId, reason: v.reason }, { ...leadCtx(), task: t, resumable: actionFor(t)?.kind === 'resume' });
+      if (!dec.skip) { await leadAct({ kind: v.verdict, id: v.taskId, reason: v.reason }, dec, t); continue; }
+    }
+    const sha = v.verdict === 'approve' && t.ws ? await api.workspaceHead(t.id).catch(() => null) : null;
+    const r = applyVerdict(t, { by: agent, verdict: v.verdict, reason: v.reason, at: now(), sha });
+    if (!r.ok) { post({ who: 'system', text: `${NAMES[agent]} wrote ${v.verdict === 'approve' ? 'APPROVE' : 'CHANGES'} for T-${v.taskId}, but ${r.reason}.` }); continue; }
+    if (v.verdict === 'approve') {
+      audit('Reviewer approved', t.id, `${NAMES[agent]}${sha ? ` at ${sha}` : ''}${v.reason ? `: ${v.reason}` : ''}`, agent);
+      post({ who: 'system', text: `${NAMES[agent]} approved T-${t.id} “${t.title}”${sha ? ` at ${sha}` : ''}. It's in Approvals, waiting for you.` });
+    } else {
+      audit('Reviewer requested changes', t.id, `${NAMES[agent]}: ${v.reason}`, agent);
+      post({ who: 'system', text: `${NAMES[agent]} sent T-${t.id} “${t.title}” back to ${NAMES[t.assignee] || 'its implementer'}: ${v.reason}` });
+      if (EDITORS.includes(t.assignee) && canRun(t.assignee)) restart.push(t);
+    }
+  }
+  save();
+  render();
+  for (const t of restart) startOrQueue(t, t.assignee);
+}
+
+// An approval covers the exact commit it was given for. If a task branch has moved
+// since, the approval is cleared and the task goes back to review.
+async function recheckApprovals(list = state.tasks.filter((t) => t.stage === 'approval' && t.ws && t.reviewVerdict?.sha)) {
+  let changed = false;
+  for (const t of list) {
+    const head = await api.workspaceHead(t.id).catch(() => null);
+    const was = t.reviewVerdict;
+    if (clearStaleApproval(t, head, now())) {
+      changed = true;
+      audit('Approval cleared: branch changed', t.id, `${was.sha} → ${head}`);
+      post({ who: 'system', text: `T-${t.id} “${t.title}” changed after ${NAMES[was.by]} approved ${was.sha} (now ${head}). The approval was cleared and it's back in review.` });
+    }
+  }
+  if (changed) { save(); render(); }
+  return changed;
+}
+
+// Short commit + test result for a reported-done task (board and Approvals).
+function doneBadge(t) {
+  if (!t.done) return '';
+  const cls = { passed: 'good', failed: 'bad' }[t.done.tests] || '';
+  return `${t.done.sha ? `<span class="badge mono" title="Reported done at this commit">${esc(t.done.sha)}</span>` : ''}<span class="badge ${cls}">${esc(TEST_LABEL[t.done.tests] || 'tests not run')}</span>`;
+}
+
+// ---------- the lead acting for the owner ----------
+const leadCtx = () => ({ lead: state.lead, enabled: settings.leadActions === true, tasks: state.tasks });
+
+// START / APPROVE R- / DENY R- / ADD TASK lines from the lead (switch on only).
+function handleLeadLines(agent, text) {
+  if (!leadOn({ enabled: settings.leadActions === true, agent, lead: state.lead })) return;
+  for (const cmd of parseLeadLines(text)) {
+    const t = cmd.id ? state.tasks.find((x) => x.id === cmd.id) : null;
+    const request = cmd.id ? state.permissions.find((p) => p.id === cmd.id) : null;
+    leadAct(cmd, leadDecision(cmd, { ...leadCtx(), task: t, request }), t, request);
+  }
+}
+
+function leadRecord(action, ref, detail, undo = null) {
+  const lead = state.lead;
+  const label = leadLabel(lead, action, ref, detail);
+  state.leadLog = state.leadLog || [];
+  const entry = { id: uid(), at: now(), lead, action, ref, undo: leadUndoable(action) ? undo : null };
+  state.leadLog.unshift(entry);
+  state.leadLog = state.leadLog.slice(0, 200);
+  audit(label, ref.startsWith('T-') ? ref.slice(2) : null, '', lead);
+  post({ who: 'system', text: label, leadUndo: entry.undo ? entry.id : undefined });
+  return entry;
+}
+
+// Carries out an allowed lead action with the same steps as the owner's buttons.
+async function leadAct(cmd, dec, t = null, request = null) {
+  const lead = state.lead;
+  if (dec.ignored) return;
+  const ref = cmd.id ? `${cmd.kind === 'allow' || cmd.kind === 'deny' ? 'R' : 'T'}-${cmd.id}` : `“${cmd.title}”`;
+  if (!dec.ok) {
+    audit(`${NAMES[lead]} (lead) was refused`, t?.id || null, `${ref}: ${dec.reason}`, lead);
+    post({ who: 'system', text: `${NAMES[lead]} (lead) can't act on ${ref}: ${dec.reason}.${dec.duplicate ? ` Open T-${dec.duplicate} instead.` : ''}` });
+    save();
+    render();
+    return;
+  }
+  const title = t ? ` “${t.title}”` : '';
+  if (dec.action === 'merge') {
+    if (await recheckApprovals([t])) return leadAct(cmd, { ok: false, reason: `T-${t.id} changed after its review, so it went back to review` }, t);
+    const pr = ui.prs.byTask[t.id];
+    let r;
+    if (pr && pr.state === 'OPEN') {
+      if (pr.checks?.failed) return leadAct(cmd, { ok: false, reason: `PR #${pr.number} has failing checks` }, t);
+      r = await api.gitPrMerge(pr.number, { byLead: true }).catch((err) => ({ ok: false, message: cleanErr(err.message) }));
+    } else {
+      r = await api.gitMergeApproved(t.id, { byLead: true }).catch((err) => ({ ok: false, message: cleanErr(err.message) }));
+    }
+    if (!r.ok) return leadAct(cmd, { ok: false, reason: `the merge stopped: ${r.message}` }, t);
+    t.decision = 'approved';
+    t.notes.push({ at: now(), who: `${NAMES[lead]} (lead)`, text: r.message });
+    t.stage = 'approved';
+    t.updatedAt = now();
+    leadRecord('merge', `T-${t.id}`, `${title} — ${r.message}`);
+    await refreshGit().catch(() => {});
+  } else if (dec.action === 'approve') {
+    t.decision = 'approved';
+    t.stage = 'approved';
+    t.updatedAt = now();
+    leadRecord('approve', `T-${t.id}`, `${title} (nothing merged into main or released)`, { kind: 'stage', id: t.id, stage: 'approval' });
+    save();
+    await leadIntegrate(t);
+  } else if (dec.action === 'changes') {
+    const prev = t.stage;
+    t.stage = 'implementing';
+    t.updatedAt = now();
+    t.notes.push({ at: now(), who: `${NAMES[lead]} (lead)`, text: `CHANGES REQUESTED: ${cmd.reason}` });
+    requestChanges(t, { by: lead, reason: cmd.reason, at: now() });
+    leadRecord('changes', `T-${t.id}`, `${title}: ${cmd.reason}`, { kind: 'stage', id: t.id, stage: prev });
+  } else if (dec.action === 'start' || dec.action === 'resume') {
+    leadRecord(dec.action, `T-${t.id}`, title, { kind: 'start', id: t.id });
+    save();
+    render();
+    await startOrQueue(t, dec.action === 'resume' ? (actionFor(t)?.agent || t.assignee) : t.assignee);
+    return;
+  } else if (dec.action === 'allowperm' || dec.action === 'denyperm') {
+    leadRecord(dec.action, `R-${request.id}`, `(${NAMES[request.agent]}: ${request.what})${cmd.reason ? ` — ${cmd.reason}` : ''}`, { kind: 'perm', id: request.id });
+    return decide(request.id, dec.action === 'allowperm' ? 'approved' : 'denied', `${NAMES[lead]} (lead)`);
+  } else if (dec.action === 'add') {
+    const assignee = aliasOrNone(cmd.implementer, EDITORS) || (liveEditors().find((a) => a !== lead) || lead);
+    const reviewer = aliasOrNone(cmd.reviewer, HEADLESS) || HEADLESS.find((a) => a !== assignee && canRun(a)) || 'none';
+    const nt = makeTask({ title: cmd.title, description: cmd.details, assignee, reviewer, action: ['code', 'docs'].includes(cmd.action) ? cmd.action : 'code' }, `${NAMES[lead]} (lead)`);
+    if (!nt) return;
+    leadRecord('add', `T-${nt.id}`, `“${nt.title}”`, { kind: 'add', id: nt.id });
+  }
+  save();
+  render();
+}
+
+function aliasOrNone(word, allowed) {
+  const a = AGENT_IDS.find((id) => AGENTS[id].mention.includes(String(word || '').toLowerCase()));
+  return a && allowed.includes(a) ? a : null;
+}
+
+// Files an AI named with ATTACH lines: copied into the attachments folder (only from
+// inside the workspace), then posted with its message.
+async function agentAttachments(parsed, base, agent) {
+  const atts = [];
+  for (const f of parsed.files) {
+    const r = await api.attachFromAgent(f.path, base).catch((e) => ({ ok: false, message: cleanErr(e.message) }));
+    if (r?.ok) atts.push(r.att);
+    else post({ who: 'system', text: `${NAMES[agent]} tried to attach ${f.path}: ${r?.message || 'failed'}` });
+  }
+  return { atts, text: parsed.text };
+}
+
+// Owner presses Undo on a lead action.
+async function undoLead(id) {
+  const e = (state.leadLog || []).find((x) => x.id === id);
+  if (!e || !e.undo || e.undone) return toast('That can no longer be undone.');
+  const u = e.undo;
+  const t = u.id ? state.tasks.find((x) => x.id === u.id) : null;
+  if (u.kind === 'perm') {
+    const p = state.permissions.find((x) => x.id === u.id);
+    if (!p || p.status !== 'denied') return toast('That request has changed since; nothing to undo.');
+    p.status = 'pending';
+    delete p.decidedAt;
+  } else if (u.kind === 'add') {
+    if (!t || (t.runs || []).length) return toast('Work on that task has started; remove it from the board instead.');
+    state.tasks = state.tasks.filter((x) => x.id !== t.id);
+  } else if (u.kind === 'start') {
+    if (!t) return;
+    const r = ui.running[t.id];
+    if (r) await api.cancelRun(r.runId).catch(() => {});
+    delete t.startNext;
+  } else if (u.kind === 'stage') {
+    if (!t || (t.stage === 'approved' && t.decision === 'approved' && u.stage !== 'approval')) return;
+    t.stage = u.stage;
+    if (u.stage === 'approval') delete t.decision;
+    delete t.changesSince;
+  }
+  e.undone = true;
+  audit(`Owner undid: ${leadLabel(e.lead, e.action, e.ref)}`, t?.id || null);
+  post({ who: 'system', text: `You undid: ${leadLabel(e.lead, e.action, e.ref)}.` });
+  save();
+  render();
+}
+
 // ---------- views ----------
 function viewOverview() {
   const open = openTasks();
@@ -200,7 +472,7 @@ function viewOverview() {
           const t = b ? state.tasks.find((x) => x.id === b[0]) : null;
           const assigned = state.tasks.filter((x) => x.assignee === a && !['approved', 'rejected'].includes(x.stage)).length;
           const last = [...state.chat].reverse().find((m) => m.who === a);
-          const what = t ? `T-${t.id} ${t.title}` : ui.typing === a ? 'replying in team chat' : last ? `said: ${last.text.replace(/\s+/g, ' ').slice(0, 80)}` : assigned ? `${assigned} task${assigned > 1 ? 's' : ''} assigned` : 'idle';
+          const what = t ? `T-${t.id} ${t.title}` : isTyping(a) ? 'replying in team chat' : last ? `said: ${last.text.replace(/\s+/g, ' ').slice(0, 80)}` : assigned ? `${assigned} task${assigned > 1 ? 's' : ''} assigned` : 'idle';
           return `<div class="w">${avatar(a)}<div style="min-width:90px"><b style="color:var(--strong)">${esc(AGENTS[a].name)}</b>${a === state.lead ? ' <span class="faint">★</span>' : ''}<div>${statusBadge(a)}</div></div><span class="what" title="${esc(what)}">${esc(what)}</span><div class="load" title="${assigned} assigned"><div style="width:${Math.min(100, assigned * 25)}%"></div></div></div>`;
         }).join('')}</div>
       </div>
@@ -277,9 +549,50 @@ function chatId() {
 const chatCanEdit = () => Boolean(settings.chatEdits && settings.project && gh.git);
 
 // After a checkpoint, back the branch up to GitHub (never main).
+// Lead handles GitHub: on by default only when GitHub is already set up.
+const leadGitHubOn = () => (typeof settings.leadGitHub === 'boolean' ? settings.leadGitHub : Boolean(gh.ghUser && repo.remote));
+
 async function autoPush(taskId) {
+  if (leadGitHubOn() && repo.remote) {
+    const r = await api.gitLeadSync('push', taskId).catch((e) => ({ ok: false, message: cleanErr(e.message) }));
+    leadGitNote(r.ok ? `pushed ${r.branch} (${r.sha})` : `couldn't push ${r.branch || `T-${taskId}`}: ${r.message}`, taskId);
+    return r;
+  }
   if (!settings.autoPush || !gh.ghUser || !repo.remote) return null;
   return api.gitPushTask(taskId).catch((e) => ({ ok: false, message: cleanErr(e.message) }));
+}
+
+// Every push and pull the lead does shows in Team chat and the Audit log.
+function leadGitNote(what, taskId = null) {
+  const text = `${NAMES[state.lead]} (lead) ${what}`;
+  audit(text, taskId && /^[A-Z0-9]{4,12}$/.test(taskId) ? taskId : null, '', state.lead);
+  post({ who: 'system', text });
+}
+
+async function leadFetch() {
+  if (!leadGitHubOn() || !repo.remote) return null;
+  const r = await api.gitLeadSync('fetch').catch((e) => ({ ok: false, message: cleanErr(e.message) }));
+  if (r.ok && state.lastFetch !== `${r.branch}@${r.sha}`) { state.lastFetch = `${r.branch}@${r.sha}`; leadGitNote(`pulled from GitHub: ${r.branch} is at ${r.sha}`); save(); }
+  else if (!r.ok) leadGitNote(`couldn't pull from GitHub: ${r.message}`);
+  return r;
+}
+
+// An approved task goes to the lead, who merges it onto release/next and pushes it.
+async function leadIntegrate(t) {
+  if (!leadGitHubOn() || !t?.ws) return;
+  await leadFetch();
+  const r = await api.gitLeadSync('integrate', t.id).catch((e) => ({ ok: false, message: cleanErr(e.message) }));
+  t.notes.push({ at: now(), who: `${NAMES[state.lead]} (lead)`, text: r.message });
+  if (r.ok) leadGitNote(`merged T-${t.id} onto ${r.release} (${r.sha})${r.pushed ? ` and pushed ${r.release}` : ''}`, t.id);
+  else {
+    leadGitNote(`couldn't merge T-${t.id} onto release/next: ${r.message}`, t.id);
+    if (r.conflicts?.length) {
+      const fix = makeTask({ title: `Resolve release/next conflicts with T-${t.id}`, description: `T-${t.id} “${t.title}” conflicts with release/next in: ${r.conflicts.join(', ')}.\nIn this workspace: git fetch origin, git merge origin/release/next and ${t.ws.branch}, resolve the conflicts keeping both sides' behaviour, run the tests, report TESTS: and STATUS: DONE.`, assignee: EDITORS.includes(state.lead) ? state.lead : t.assignee, reviewer: t.assignee, action: 'code' }, `${NAMES[state.lead]} (lead)`);
+      if (fix) post({ who: 'system', text: `Added T-${fix.id} for ${NAMES[fix.assignee]} to resolve it.` });
+    }
+  }
+  save();
+  render();
 }
 
 async function refreshGit() {
@@ -303,13 +616,14 @@ function chatCtx() {
     extraDirs: settings.extraDirs,
     pending: pendingAsks(),
     roster: AGENT_IDS.map((id) => ({ id, role: state.roles[id] || DEFAULT_ROLES[id], status: statusText(id) })),
-    board: openTasks().map((t) => ({ id: t.id, title: t.title, stage: STAGES[t.stage], assignee: t.assignee, state: RUN_STATES[taskRunState(t, { running: Boolean(ui.running[t.id]) })] })),
+    board: openTasks().map((t) => ({ id: t.id, title: t.title, stage: STAGES[t.stage], assignee: t.assignee, reviewer: t.reviewer, state: RUN_STATES[taskRunState(t, { running: Boolean(ui.running[t.id]) })], queue: queueText(t) })),
+    leadActions: settings.leadActions === true,
   };
 }
 
 function markOut(a, err) {
   // Unknown reset time: assume an hour; you can mark it available any time.
-  state.agentStatus[a] = { outUntil: new Date(Date.now() + 60 * 60 * 1000).toISOString(), reason: err?.reset || 'usage limit reached' };
+  state.agentStatus[a] = { ...(state.agentStatus[a] || {}), outUntil: new Date(Date.now() + 60 * 60 * 1000).toISOString(), reason: err?.reset || 'usage limit reached' };
   audit(`${NAMES[a]} ran out of usage`, null, err?.reset || '');
 }
 
@@ -322,13 +636,68 @@ async function callAgent(agent, prompt, opts = {}) {
     res = { ok: false, error: { kind: 'error', message: cleanErr(e.message) } };
   }
   if (!res.ok && res.error.kind === 'limit') markOut(agent, res.error);
+  // A refused sign-in or key becomes a saved hold and a badge, shown once.
+  if (!res.ok) {
+    const problem = authProblem(res.error, { method: method(agent) });
+    if (problem) { setHold(agent, problem); res.quiet = true; save(); }
+  }
+  updatePanel();
   return res;
+}
+
+function setHold(agent, problem) {
+  state.agentStatus = state.agentStatus || {};
+  const prev = authHold(agent);
+  const hold = makeHold(problem, { signedIn: cli[agent]?.signedIn, hasKey: prov.keys?.[agent], at: now() }, prev);
+  state.agentStatus[agent] = { ...(state.agentStatus[agent] || {}), hold };
+  if (hold !== prev) audit(`${NAMES[agent]}: ${holdStatus(hold, Boolean(prov.keys?.[agent])).text}`, null, hold.message, agent);
+}
+function clearHold(a) {
+  const st = state.agentStatus?.[a];
+  if (!st?.hold) return false;
+  delete st.hold;
+  if (!Object.keys(st).length) delete state.agentStatus[a];
+  return true;
+}
+// After a status check: lift a hold only when sign-in or the key really changed.
+function liftHolds() {
+  let changed = false;
+  for (const a of AGENT_IDS) {
+    const h = authHold(a);
+    if (!h) continue;
+    const c = cli[a] || {};
+    if (method(a) !== 'api' && typeof c.signedIn !== 'boolean') continue; // a failed check proves nothing
+    if (holdLifted(h, { method: method(a), signedIn: Boolean(c.signedIn), hasKey: Boolean(prov.keys?.[a]) })) changed = clearHold(a) || changed;
+  }
+  return changed;
 }
 
 async function refreshAgents() {
   try { settings = await api.settings(); } catch {}
   const list = await Promise.all(AGENT_IDS.map((a) => api.agentStatus(a).catch(() => ({}))));
   cli = Object.fromEntries(AGENT_IDS.map((a, i) => [a, list[i] || {}]));
+  if (liftHolds()) save();
+}
+
+function attachmentsHtml(m) {
+  if (!m.attachments?.length) return '';
+  return `<div class="atts">${m.attachments.map((a, i) => a.kind === 'video'
+    ? `<figure><video controls preload="metadata" src="${esc(a.url || '')}"></video><figcaption>${esc(a.name)}${a.duration ? ` · ${Math.round(a.duration)}s` : ''}${a.note ? ` · ${esc(a.note)}` : ''}</figcaption></figure>`
+    : `<figure><img src="${esc(a.url || '')}" alt="${esc(a.name)}" data-lightbox="${esc(m.id)}:${i}" title="Click to enlarge"><figcaption>${esc(a.name)}</figcaption></figure>`).join('')}</div>`;
+}
+
+// ---------- team status panel ----------
+function renderPanel() {
+  return AGENT_IDS.filter((a) => connected(a) || authHold(a) || outInfo(a) || a === state.lead).map((a) => {
+    const st = panelState(statusOf(a), outInfo(a));
+    const hold = authHold(a);
+    return `<div class="team-member">${agentChip(a)}<span class="badge ${st.cls}"${hold?.message ? ` title="${esc(hold.message)}"` : ''}>${st.live ? '<span class="dot pulse"></span>' : ''}${esc(st.text)}</span>${st.detail ? `<small>${esc(st.detail)}</small>` : ''}</div>`;
+  }).join('') || '<span class="faint">No AIs linked yet.</span>';
+}
+// Redraw only the panel (keeps the chat draft and scroll).
+function updatePanel() {
+  const el = document.getElementById('team-panel');
+  if (el) el.innerHTML = renderPanel();
 }
 
 // ---------- team chat ----------
@@ -349,7 +718,8 @@ function chatMessage(m) {
   const chip = m.who === 'owner' ? '<b style="color:var(--strong)">You</b>' : m.who === 'system' ? '' : agentChip(m.who) + (m.relayed ? '<span>relayed by you</span>' : '');
   const props = (m.proposals || []).map((p, i) => `<div class="prop">
       <div style="flex:1"><div>${esc(p.title)}</div><div class="meta row" style="margin-top:4px">${agentChip(p.assignee)}<span class="faint" style="font-size:11px">review</span>${agentChip(p.reviewer)}<span class="badge">${esc(ACTIONS[p.action])}</span></div></div>
-      ${p.taskId ? `<button class="btn small ghost" data-open="${p.taskId}">On board ✓</button>` : `<button class="btn small" data-addprop="${m.id}:${i}">Add</button>${EDITORS.includes(p.assignee) ? `<button class="btn small primary" data-startprop="${m.id}:${i}" ${canRun(p.assignee) && settings.project ? '' : 'disabled'}>Add & start</button>` : ''}`}
+      ${!p.taskId && p.dupOf && state.tasks.some((x) => x.id === p.dupOf) ? `<span class="badge warn" title="Similar to an open task">Looks like T-${esc(p.dupOf)}</span><button class="btn small primary" data-opendup="${esc(p.dupOf)}">Open T-${esc(p.dupOf)}</button><button class="btn small" data-adddup="${m.id}:${i}">Add anyway</button>` : ''}
+      ${p.taskId ? `<button class="btn small ghost" data-open="${p.taskId}">On board ✓</button>` : p.dupOf && state.tasks.some((x) => x.id === p.dupOf) ? '' : `<button class="btn small" data-addprop="${m.id}:${i}">Add</button>${EDITORS.includes(p.assignee) ? `<button class="btn small primary" data-startprop="${m.id}:${i}" ${canRun(p.assignee) && settings.project ? '' : 'disabled'}>Add & start</button>` : ''}`}
     </div>`).join('');
   const pending = (m.proposals || []).filter((p) => !p.taskId).length;
   const asks = (m.asks || []).map((id) => state.permissions.find((p) => p.id === id)).filter(Boolean).map(askCard).join('');
@@ -362,9 +732,10 @@ function chatMessage(m) {
   const tools = m.who !== 'system' && !editing ? `<div class="tools"><button data-editmsg="${m.id}" title="Edit (you can edit any message)">Edit</button><button data-delmsg="${m.id}" title="Delete">Delete</button></div>` : '';
   return `<div class="msg ${cls} ${m.err ? 'err' : ''} ${m.retracted ? 'retracted' : ''}">
     ${tools}
-    ${chip ? `<div class="who">${chip}<span>${esc(time(m.at))}${m.model ? ` · ${esc(m.model)}` : ''}${m.auto ? ' · posted on its own' : ''}</span><span class="mid">#${esc(m.id)}</span></div>` : ''}
-    ${body}${hist}
+    ${chip ? `<div class="who">${chip}<span>${esc(time(m.at))}${m.model ? ` · ${esc(m.model)}` : ''}${m.auto ? ' · posted on its own' : ''}${m.parallel ? ' · answered in parallel, independently' : ''}${m.beforeOwner ? ' · written before your newest message' : ''}</span><span class="mid">#${esc(m.id)}</span></div>` : ''}
+    ${body}${attachmentsHtml(m)}${hist}
     ${asks}
+    ${m.leadUndo ? (() => { const e = (state.leadLog || []).find((x) => x.id === m.leadUndo); return e ? `<div class="row" style="margin-top:6px">${e.undone ? '<span class="badge">Undone</span>' : `<button class="btn small" data-leadundo="${esc(e.id)}">Undo</button>`}</div>` : ''; })() : ''}
     ${props ? `<div class="props">${props}${pending > 1 ? `<button class="btn small primary" data-addall="${m.id}" style="margin-top:4px;align-self:flex-start">Add all ${pending}</button>` : ''}</div>` : ''}
   </div>`;
 }
@@ -373,25 +744,27 @@ function viewChat() {
   const live = liveAgents();
   const target = (id, label) => `<button class="chip ${ui.target === id ? 'on' : ''}" data-target="${id}" ${id !== 'all' && !live.includes(id) ? 'disabled' : ''}>${label}</button>`;
   if (ui.target !== 'all' && ui.target !== 'relay' && !live.includes(ui.target)) ui.target = 'all';
-  const presence = AGENT_IDS.filter((a) => connected(a) || a === state.lead).map((a) => `<span class="agent ${AGENTS[a].cls}" title="${esc(state.roles[a] || DEFAULT_ROLES[a])} — ${esc(statusText(a))}"><i style="${live.includes(a) ? '' : 'opacity:.3'}"></i>${AGENTS[a].name}${a === state.lead ? ' ★' : ''}</span>`).join('');
   const asks = pendingAsks().length;
   return `<div class="chat">
-    <div class="chat-top"><div class="row" style="gap:10px">${presence}</div><span style="flex:1"></span>
+    <section class="team-status" aria-label="Team status"><div class="row"><b>Team status</b><span style="flex:1"></span><button class="btn small ghost" data-recheck>Re-check</button><button class="btn small link" data-nav="agents">Agents →</button></div><div class="team-panel" id="team-panel">${renderPanel()}</div></section>
+    <div class="chat-top"><span style="flex:1"></span>
       ${asks ? `<span class="badge warn">${asks} waiting for your answer</span>` : ''}
       <span class="faint" style="font-size:11.5px" title="Each AI keeps one session for this room in its own CLI, so you can resume it there (Chat history → Resume).">${settings.chatResume ? 'Saved in each AI’s own CLI' : ''}</span>
-      <button class="btn small ghost" data-checkin ${live.length && !ui.typing ? '' : 'disabled'}>Team check-in</button>
+      ${round ? '<button class="btn small danger" data-stopround title="End this chat round: nobody else starts, and the AIs typing now are cancelled">Stop</button>' : ''}<button class="btn small ghost" data-checkin ${live.length && !round ? '' : 'disabled'}>Team check-in</button>
       ${state.chat.length ? '<button class="btn small ghost" data-clearchat>Clear</button>' : ''}</div>
     <div class="chat-log" id="chat-log">
       ${state.chat.map(chatMessage).join('') || `<div class="empty" style="padding:28px;line-height:1.6">Say hi, or try: <i>"Here's the plan for Hearth's Settings › Storage page — split it into tasks between you."</i><br><br>
         Everyone sees every message. ${esc(AGENTS[state.lead].name)} ★ leads and answers first. AIs can mention and hand off to each other, post updates on their own, fix or retract their own messages, and must ask you before risky actions (pushes, merges, releases, deleting files, boot-critical changes, commands outside the workspace). You can edit or delete any message.
         ${live.length ? '' : '<br><br><span style="color:var(--warn)">No agents are linked yet — sign in on the Agents page.</span>'}</div>`}
-      ${ui.typing ? `<div class="msg typing">${agentChip(ui.typing)} <span class="muted">is replying…</span></div>` : ''}
+      ${typingNow() ? `<div class="msg typing">${[...ui.typingSet].map(agentChip).join('')} <span class="muted">${ui.typingSet.size > 1 ? 'are replying (in parallel)…' : 'is replying…'}</span></div>` : ''}
     </div>
     <div class="chat-input">
-      <div class="row" style="margin-bottom:7px"><span class="faint" style="font-size:12px">Send to</span>${target('all', 'Everyone')}${HEADLESS.filter((a) => connected(a)).map((a) => target(a, AGENTS[a].name)).join('')}<span style="flex:1"></span><button class="chip ${ui.target === 'relay' ? 'on' : ''}" data-target="relay" title="Paste what FreeBuff said so everyone can see it">Post as FreeBuff</button></div>
+      ${ui.attach.length ? `<div class="row att-pending" style="margin-bottom:7px">${ui.attach.map((a, i) => `<span class="badge">${a.kind === 'video' ? '🎬' : '🖼'} ${esc(a.name)}<button class="btn small link" data-unattach="${i}" title="Remove">✕</button></span>`).join('')}</div>` : ''}
+      <div class="row" style="margin-bottom:7px"><span class="faint" style="font-size:12px">Send to</span>${target('all', 'Team (lead first)')}${HEADLESS.filter((a) => connected(a)).map((a) => target(a, AGENTS[a].name)).join('')}<span style="flex:1"></span><button class="chip ${ui.target === 'relay' ? 'on' : ''}" data-target="relay" title="Paste what FreeBuff said so everyone can see it">Post as FreeBuff</button></div>
       <div class="row" style="align-items:flex-end">
+        <button class="btn ghost" data-attach title="Attach images or videos (or paste / drag them in)">📎</button>
         <textarea id="chat-text" placeholder="Message the team…  (Enter to send, Shift+Enter for a new line, @name to address one AI)" style="flex:1;min-height:48px">${esc(ui.draft)}</textarea>
-        <button class="btn primary" data-sendchat ${ui.typing ? 'disabled' : ''}>Send</button>
+        <button class="btn primary" data-sendchat>Send</button>
       </div>
     </div>
   </div>`;
@@ -406,7 +779,8 @@ function post(msg) {
 
 async function sendChat() {
   const text = ui.draft.trim();
-  if (!text || ui.typing) return;
+  // Never blocked by AI activity: only an empty box stops it.
+  if (!canOwnerSend(text) && !ui.attach.length) return;
   if (ui.target === 'relay') {
     post({ who: 'freebuff', text: text.slice(0, 8000), relayed: true, proposals: parseProposals(text) });
     ui.draft = '';
@@ -414,23 +788,77 @@ async function sendChat() {
     return render();
   }
   const live = liveAgents();
-  const who = recipients(text, live, ui.target, state.lead);
-  post({ who: 'owner', text: text.slice(0, 8000) });
+  const plan = chatPlan(text, live, ui.target, state.lead);
+  const who = plan.queue;
+  post({ who: 'owner', text: text.slice(0, 8000), attachments: ui.attach.length ? ui.attach : undefined });
   ui.draft = '';
+  ui.attach = [];
   if (/@freebuff/i.test(text)) post({ who: 'system', text: 'FreeBuff only runs interactively, so it can’t answer in chat by itself. Open it from a task, then use “Post as FreeBuff” to share what it says.' });
-  if (!who.length) post({ who: 'system', text: live.length ? 'That AI isn’t available right now (not linked or out of usage).' : 'No AIs are available yet. Sign in on the Agents page.' });
+  if (!who.length) {
+    const mentioned = mentions(text);
+    const asked = mentioned.length ? mentioned : (ui.target !== 'all' && ui.target !== 'relay' ? [ui.target] : []);
+    // The status panel already shows their sign-in hold; don't add another line.
+    const covered = asked.length > 0 && asked.every((a) => authHold(a));
+    if (!covered) post({ who: 'system', text: live.length ? 'That AI isn’t available right now (not linked or out of usage).' : 'No AIs are available yet. Sign in on the Agents page.' });
+  }
+  const job = { queue: who, opts: { trigger: text, parallel: plan.parallel } };
+  if (round) {
+    // A round is running: cancel the AIs that haven't started, let the typing ones
+    // finish, then restart with this message as the newest.
+    const { cancelled } = ownerInterrupt(round, job);
+    if (cancelled.length) post({ who: 'system', text: `${cancelled.map((a) => NAMES[a]).join(' and ')} won't answer the earlier message; the round restarts with yours.` });
+    save();
+    render();
+    return;
+  }
   save();
   render();
-  await runRoom(who, { trigger: text });
+  if (who.length) await runRoom(job.queue, job.opts);
 }
 
-// The room: each queued AI answers in turn. AIs can mention or hand off to each
-// other (bounded by MAX_HOPS), edit/retract their own messages and raise
-// permission requests, which block them until the owner answers.
-async function runRoom(queue, { trigger = '', allow = [], hops = 0 } = {}) {
+// The room. By default AIs answer one after another (lead first; teammates join when
+// mentioned or handed off), each seeing every reply posted before its turn. When the
+// owner asks several AIs at once they answer in parallel, independently. The owner can
+// always write: his message cancels the AIs that haven't started yet in this round,
+// lets the ones already typing finish, and restarts the round with his message.
+let round = null;
+const isTyping = (a) => ui.typingSet.has(a);
+const typingNow = () => ui.typingSet.size > 0;
+
+async function runRoom(queue, opts = {}) {
+  if (round) { round.next.push({ queue, opts }); return; }
+  round = newRound(uid());
+  try {
+    let job = { queue, opts };
+    while (job) {
+      round.stop = false;
+      round.started = [];
+      await roomPass(job.queue, job.opts);
+      job = round.next.shift() || null;
+    }
+  } finally {
+    round = null;
+    ui.typingSet.clear();
+    ui.typing = null;
+    render();
+    await pumpQueues();
+  }
+}
+
+// Owner pressed Stop: nothing else starts, and the AIs typing now are cancelled.
+async function stopChatRound() {
+  if (!round) return;
+  const { cancelled } = stopRound(round);
+  for (const runId of Object.values(round.runs)) api.cancelRun(runId).catch(() => {});
+  post({ who: 'system', text: `You stopped this round.${cancelled.length ? ` ${cancelled.map((a) => NAMES[a]).join(' and ')} won't answer.` : ''}` });
+  save();
+  render();
+}
+
+async function roomPass(queue, { trigger = '', allow = [], hops = 0, parallel = false } = {}) {
   queue = [...queue];
   const answered = [];
-  const canEdit = chatCanEdit();
+  const canEdit = chatCanEdit() && !parallel; // parallel answers are read-only so they can't clash
   if (canEdit && queue.length) {
     try {
       state.chatWs = state.chatWs?.id === chatId() ? state.chatWs : { ...(await api.ensureWorkspace(chatId(), 'team chat')), id: chatId() };
@@ -438,89 +866,135 @@ async function runRoom(queue, { trigger = '', allow = [], hops = 0 } = {}) {
       post({ who: 'system', text: `Chat can't edit files right now: ${cleanErr(e.message)} — answering read-only.` });
     }
   }
-  while (queue.length) {
-    const agent = queue.shift();
-    if (!canRun(agent)) continue;
+  const eligible = (agent) => {
+    if (!canRun(agent)) return false;
     if (blocked().includes(agent) && !allow.includes(agent)) {
       const p = pendingAsks().find((x) => x.agent === agent);
       post({ who: 'system', text: `${NAMES[agent]} is waiting for your answer on R-${p.id} before it continues.` });
-      continue;
+      return false;
     }
-    ui.typing = agent;
-    render();
-    const edit = canEdit && state.chatWs && EDITORS.includes(agent) && method(agent) !== 'api';
-    const full = buildPrompt(agent, state.chat, { ...chatCtx(), chatEdits: Boolean(edit) });
-    const skey = `${chatId()}:${agent}`;
-    const sess = settings.chatResume && method(agent) !== 'api' ? state.chatSessions?.[skey] : null;
-    let prompt = full;
-    if (sess?.sessionId) {
-      const idx = state.chat.findIndex((m) => m.id === sess.lastMsgId);
-      prompt = buildDelta(agent, idx >= 0 ? state.chat.slice(idx + 1).filter((m) => m.who !== agent) : state.chat.slice(-10), chatCtx());
+    return true;
+  };
+  if (parallel) {
+    const group = queue.filter(eligible);
+    round.waiting = [...group];
+    const snapshot = state.chat.slice();
+    const results = await Promise.all(group.map((agent) => chatTurn(agent, { trigger, canEdit: false, snapshot, parallel: true, answered })));
+    queue = [];
+    if (!round.stop && hops < MAX_HOPS) {
+      for (const r of results) for (const next of r.followups) if (!group.includes(next) && !queue.includes(next) && canRun(next)) { queue.push(next); hops++; }
     }
-    const lastOwner = [...state.chat].reverse().find((m) => m.who === 'owner');
-    const res = await callAgent(agent, prompt, {
-      ...(edit ? { mode: 'edit', taskId: chatId() } : { mode: 'read', taskId: state.chatWs ? chatId() : undefined }),
-      resumeId: sess?.sessionId || undefined,
-      fallbackPrompt: sess?.sessionId ? full : undefined,
-      thread: `chat-${chatId()}-${agent}`,
-      title: `Team chat — ${settings.project ? settings.project.split('/').pop() : 'Hearth AI'}`,
-      historyText: lastOwner?.text || trigger,
-    });
-    if (res.ok) {
-      answered.push(agent);
-      const d = parseDirectives(res.text);
-      for (const e of d.edits) {
-        const r = applyEdit(state.chat, { id: e.id, by: agent, text: e.text });
-        if (r.ok) audit(`${NAMES[agent]} edited its message #${e.id}`, null, '', agent);
-        else post({ who: 'system', text: `${NAMES[agent]} tried to edit #${e.id}: ${r.reason}.` });
-      }
-      for (const id of d.retracts) {
-        const r = applyRetract(state.chat, { id, by: agent });
-        if (r.ok) audit(`${NAMES[agent]} retracted its message #${id}`, null, '', agent);
-        else post({ who: 'system', text: `${NAMES[agent]} tried to retract #${id}: ${r.reason}.` });
-      }
-      let m = null;
-      if (!d.pass && (d.text || d.asks.length || d.handoffs.length)) {
-        const handoffNote = d.handoffs.map((h) => `→ handing off to ${NAMES[h.to]}${h.note ? `: ${h.note}` : ''}`).join('\n');
-        m = post({ who: agent, text: [d.text, handoffNote].filter(Boolean).join('\n\n') || `${NAMES[agent]} needs your permission:`, model: res.via, proposals: parseProposals(d.text) });
-        m.asks = d.asks.map((a) => {
-          const req = makeRequest({ id: uid(), agent, kind: a.kind, what: a.what, why: a.why, context: 'chat', msgId: m.id });
-          state.permissions.push(req);
-          audit('Permission requested', null, `${NAMES[agent]} · ${PERMISSION_KINDS[req.kind]}: ${req.what}`, agent);
-          return req.id;
-        });
-      }
-      if (res.sessionId && settings.chatResume) {
-        state.chatSessions = state.chatSessions || {};
-        state.chatSessions[skey] = { sessionId: res.sessionId, lastMsgId: (m || state.chat[state.chat.length - 1])?.id, at: now() };
-      }
-      if (res.resumeReset) post({ who: 'system', text: `${NAMES[agent]}'s saved CLI session couldn't continue, so it started a new one (also saved in its CLI).` });
-      if (edit) {
-        const cp = await api.checkpoint(chatId(), NAMES[agent], `Team chat: ${(lastOwner?.text || trigger || 'update').slice(0, 80)}`).catch(() => null);
-        if (cp) {
-          const pushed = await autoPush(chatId());
-          post({ who: 'system', text: `${NAMES[agent]} changed files — saved as commit ${cp.sha} (${cp.stat}) on ${state.chatWs.branch}${pushed?.ok ? ', pushed to GitHub' : pushed ? `; push failed: ${pushed.message}` : ''}.` });
-        }
-      }
-      // Mentions and handoffs bring teammates in after this reply.
-      if (m && hops < MAX_HOPS) {
-        for (const next of [...d.handoffs.map((h) => h.to), ...mentions(d.text)]) {
-          if (next !== agent && !queue.includes(next) && canRun(next)) { queue.push(next); hops++; }
-        }
-      }
-    } else if (res.error.kind === 'limit') {
-      const sub = liveAgents().find((x) => ![...answered, ...queue, agent].includes(x)) || null;
-      const still = queue.filter(canRun);
-      const after = sub ? ` ${NAMES[sub]} is picking up its turn.` : still.length ? ` ${still.map((x) => NAMES[x]).join(' and ')} will carry on.` : ' No other agent is free right now.';
-      post({ who: 'system', text: `${NAMES[agent]} is out of usage${res.error.reset ? ` (${res.error.reset})` : ''}.${after}` });
-      if (sub) queue.push(sub);
-    } else {
-      post({ who: agent, text: `${res.error.kind}: ${res.error.message}`, err: true });
-    }
-    save();
   }
-  ui.typing = null;
+  round.waiting = [...queue];
+  while (queue.length && !round.stop) {
+    const agent = queue.shift();
+    if (!eligible(agent)) continue;
+    const r = await chatTurn(agent, { trigger, canEdit, answered, queue });
+    if (r.sub) queue.push(r.sub);
+    if (hops < MAX_HOPS) {
+      for (const next of r.followups) {
+        if (next !== agent && !queue.includes(next) && canRun(next)) { queue.push(next); hops++; }
+      }
+    }
+    round.waiting = [...queue];
+  }
+}
+
+// One AI's turn in the room. Returns teammates it brought in and any substitute.
+async function chatTurn(agent, { trigger = '', canEdit = false, snapshot = null, parallel = false, answered = [], queue = [] } = {}) {
+  const out = { followups: [], sub: null };
+  round.started.push(agent);
+  ui.typingSet.add(agent);
+  ui.typing = agent;
   render();
+  const startedAt = now();
+  const chat = snapshot || state.chat;
+  const edit = canEdit && state.chatWs && EDITORS.includes(agent) && method(agent) !== 'api';
+  const full = buildPrompt(agent, chat, { ...chatCtx(), chatEdits: Boolean(edit) });
+  const skey = `${chatId()}:${agent}`;
+  const sess = settings.chatResume && method(agent) !== 'api' ? state.chatSessions?.[skey] : null;
+  let prompt = full;
+  if (sess?.sessionId) {
+    const idx = chat.findIndex((m) => m.id === sess.lastMsgId);
+    prompt = buildDelta(agent, idx >= 0 ? chat.slice(idx + 1).filter((m) => m.who !== agent) : chat.slice(-10), chatCtx());
+  }
+  // Images (and video frames) posted by the owner or other AIs since this AI's last turn.
+  const media = mediaFor(agent, chat, NAMES);
+  if (media.note) prompt += media.note;
+  const lastOwner = [...chat].reverse().find((m) => m.who === 'owner');
+  const runId = uid() + uid();
+  round.runs[agent] = runId;
+  const res = await callAgent(agent, prompt, {
+    ...(edit ? { mode: 'edit', taskId: chatId() } : { mode: 'read', taskId: state.chatWs ? chatId() : undefined }),
+    runId,
+    images: media.images,
+    resumeId: sess?.sessionId || undefined,
+    fallbackPrompt: sess?.sessionId ? full : undefined,
+    thread: `chat-${chatId()}-${agent}`,
+    title: `Team chat — ${settings.project ? settings.project.split('/').pop() : 'Hearth AI'}`,
+    historyText: lastOwner?.text || trigger,
+  });
+  delete round.runs[agent];
+  ui.typingSet.delete(agent);
+  ui.typing = [...ui.typingSet][0] || null;
+  const late = cameAfterOwner(state.chat, startedAt);
+  if (res.ok) {
+    answered.push(agent);
+    const d = parseDirectives(res.text);
+    for (const e of d.edits) {
+      const r = applyEdit(state.chat, { id: e.id, by: agent, text: e.text });
+      if (r.ok) audit(`${NAMES[agent]} edited its message #${e.id}`, null, '', agent);
+      else post({ who: 'system', text: `${NAMES[agent]} tried to edit #${e.id}: ${r.reason}.` });
+    }
+    for (const id of d.retracts) {
+      const r = applyRetract(state.chat, { id, by: agent });
+      if (r.ok) audit(`${NAMES[agent]} retracted its message #${id}`, null, '', agent);
+      else post({ who: 'system', text: `${NAMES[agent]} tried to retract #${id}: ${r.reason}.` });
+    }
+    let m = null;
+    const posted = await agentAttachments(parseAttachLines(d.text), chatId(), agent);
+    if (!d.pass && (d.text || d.asks.length || d.handoffs.length || posted.atts.length)) {
+      const handoffNote = d.handoffs.map((h) => `→ handing off to ${NAMES[h.to]}${h.note ? `: ${h.note}` : ''}`).join('\n');
+      m = post({ who: agent, attachments: posted.atts.length ? posted.atts : undefined, text: [posted.text, handoffNote].filter(Boolean).join('\n\n') || (posted.atts.length ? '' : `${NAMES[agent]} needs your permission:`), model: res.via, proposals: parseProposals(d.text), parallel: parallel || undefined, beforeOwner: late || undefined });
+      m.asks = d.asks.map((a) => {
+        const req = makeRequest({ id: uid(), agent, kind: a.kind, what: a.what, why: a.why, context: 'chat', msgId: m.id });
+        state.permissions.push(req);
+        audit('Permission requested', null, `${NAMES[agent]} · ${PERMISSION_KINDS[req.kind]}: ${req.what}`, agent);
+        return req.id;
+      });
+    }
+    await handleVerdicts(agent, d.text);
+    handleLeadLines(agent, d.text);
+    if (res.sessionId && settings.chatResume) {
+      state.chatSessions = state.chatSessions || {};
+      state.chatSessions[skey] = { sessionId: res.sessionId, lastMsgId: (m || state.chat[state.chat.length - 1])?.id, at: now() };
+    }
+    if (res.resumeReset) post({ who: 'system', text: `${NAMES[agent]}'s saved CLI session couldn't continue, so it started a new one (also saved in its CLI).` });
+    if (edit) {
+      const cp = await api.checkpoint(chatId(), NAMES[agent], `Team chat: ${(lastOwner?.text || trigger || 'update').slice(0, 80)}`).catch(() => null);
+      if (cp) {
+        const pushed = await autoPush(chatId());
+        post({ who: 'system', text: `${NAMES[agent]} changed files — saved as commit ${cp.sha} (${cp.stat}) on ${state.chatWs.branch}${pushed?.ok ? ', pushed to GitHub' : pushed ? `; push failed: ${pushed.message}` : ''}.` });
+      }
+    }
+    // Mentions and handoffs bring teammates in after this reply.
+    if (m) out.followups = [...d.handoffs.map((h) => h.to), ...mentions(d.text)];
+  } else if (round.stoppedByOwner && ['cancelled', 'error', 'failed'].includes(res.error.kind)) {
+    // Stopped by the owner: nothing to report.
+  } else if (res.error.kind === 'limit') {
+    const sub = parallel ? null : liveAgents().find((x) => ![...answered, ...queue, agent].includes(x)) || null;
+    const still = queue.filter(canRun);
+    const after = sub ? ` ${NAMES[sub]} is picking up its turn.` : still.length ? ` ${still.map((x) => NAMES[x]).join(' and ')} will carry on.` : ' No other agent is free right now.';
+    const moved = moveWaiting(agent, null);
+    post({ who: 'system', text: `${NAMES[agent]} is out of usage${res.error.reset ? ` (${res.error.reset})` : ''}.${after}${moved}` });
+    out.sub = sub;
+  } else if (!res.quiet) {
+    // Sign-in and key problems are quiet: the status panel shows the hold instead.
+    post({ who: agent, text: `${res.error.kind}: ${res.error.message}`, err: true });
+  }
+  save();
+  render();
+  return out;
 }
 
 function trimChat() {
@@ -528,7 +1002,7 @@ function trimChat() {
 }
 
 // Owner answers a permission request. Approve/Deny unblock the AI; Ask why lets it explain.
-async function decide(id, decision) {
+async function decide(id, decision, by = 'Owner') {
   const r = decideRequest(state.permissions, id, decision);
   if (!r.ok) return toast(r.reason);
   const p = r.request;
@@ -540,30 +1014,34 @@ async function decide(id, decision) {
     render();
     return runRoom([p.agent], { allow: [p.agent] });
   }
-  audit(decision === 'approved' ? 'Permission approved' : 'Permission denied', p.context === 'chat' ? null : p.context, `R-${p.id} · ${NAMES[p.agent]} · ${label}: ${p.what}`);
+  audit(decision === 'approved' ? 'Permission approved' : 'Permission denied', p.context === 'chat' ? null : p.context, `R-${p.id} · ${NAMES[p.agent]} · ${label}: ${p.what}${by !== 'Owner' ? ` · by ${by}` : ''}`, by === 'Owner' ? 'owner' : state.lead);
   if (p.context !== 'chat') {
     const t = state.tasks.find((x) => x.id === p.context);
     if (t) {
-      t.notes.push({ at: now(), who: 'Owner', text: `${decision === 'approved' ? 'APPROVED' : 'DENIED'} permission R-${p.id} (${label}): ${p.what}${decision === 'approved' ? ' — go ahead with exactly that.' : ' — do not do it; find another way or stop.'}` });
-      post({ who: 'system', text: `You ${decision} R-${p.id} for T-${t.id}.` });
+      t.notes.push({ at: now(), who: by, text: `${decision === 'approved' ? 'APPROVED' : 'DENIED'} permission R-${p.id} (${label}): ${p.what}${decision === 'approved' ? ' — go ahead with exactly that.' : ' — do not do it; find another way or stop.'}` });
+      post({ who: 'system', text: `${by === 'Owner' ? 'You' : by} ${decision} R-${p.id} for T-${t.id}.` });
       save();
       render();
       if (decision === 'approved' && canRun(p.agent) && !blocked().includes(p.agent)) return runTask(t, p.agent);
       return;
     }
   }
-  post({ who: 'owner', auto: true, text: decision === 'approved'
+  post({ who: by === 'Owner' ? 'owner' : 'system', auto: true, text: (by === 'Owner' ? '' : `${by}: `) + (decision === 'approved'
     ? `@${AGENTS[p.agent].mention[0]} Approved R-${p.id} (${label}): ${p.what}. Go ahead with exactly that, then report back.`
-    : `@${AGENTS[p.agent].mention[0]} Denied R-${p.id} (${label}): ${p.what}. Don't do it; suggest another way if there is one.` });
+    : `@${AGENTS[p.agent].mention[0]} Denied R-${p.id} (${label}): ${p.what}. Don't do it; suggest another way if there is one.`) });
   save();
   render();
   if (!blocked().includes(p.agent)) return runRoom([p.agent], { trigger: 'permission answer' });
 }
 
-function addProposal(msgId, i) {
+function addProposal(msgId, i, force = false) {
   const m = state.chat.find((x) => x.id === msgId);
   const p = m?.proposals?.[i];
   if (!p || p.taskId) return null;
+  if (!force) {
+    const dup = findDuplicate(p, state.tasks);
+    if (dup) { p.dupOf = dup.task.id; toast(`That looks like T-${dup.task.id}. Open it, or press Add anyway.`); return null; }
+  }
   // Carry the chat that produced it, so whoever works on it has the context.
   const context = state.chat.slice(-8).filter((x) => x.who !== 'system' && !x.deleted).map((x) => `${NAMES[x.who]}: ${x.text}`).join('\n\n').slice(-3000);
   const t = makeTask({ ...p, description: `Proposed by ${NAMES[m.who]} in Team chat.\n\nChat context:\n${context}` }, m.who === 'owner' ? 'Owner' : NAMES[m.who]);
@@ -579,7 +1057,8 @@ function viewBoard() {
     return `<div class="col"><div class="col-h">${esc(c.title)}<span class="n">${items.length}</span></div>
       ${items.map((t) => `<div class="task ${ui.selected === t.id ? 'sel' : ''}" data-open="${t.id}">
         <div class="t">${esc(t.title)}</div>
-        <div class="meta">${stageBadge(t)}${runBadge(t)}${agentChip(t.assignee)}${t.pr ? `<span class="badge accent">PR #${esc(t.pr.number || '')}</span>` : ''}</div>
+        <div class="meta">${actionFor(t) ? '<span class="badge warn">Waiting for you</span>' : ''}${stageBadge(t)}${runBadge(t)}${queueBadge(t)}${agentChip(t.assignee)}${t.pr ? `<span class="badge accent">PR #${esc(t.pr.number || '')}</span>` : ''}${doneBadge(t)}</div>
+        ${ownerButton(t)}
       </div>`).join('') || `<div class="empty">${{ Intake: 'New tasks land here after the policy check.', 'In progress': 'Nothing being built.', Verify: 'Nothing waiting for tests or review.', 'Owner approval': 'Nothing waiting for you.', Closed: 'No decisions yet.' }[c.title]}</div>`}
     </div>`;
   }).join('')}</div>
@@ -613,12 +1092,16 @@ function viewApprovals() {
     </div>
     <div class="card mb">
       <h3>Awaiting owner approval</h3>
+      ${waiting.filter((t) => t.ws).length >= 2 ? `<div class="row" style="margin-bottom:10px"><button class="btn small" data-releasebranch ${ui.busy.release ? 'disabled' : ''}>${ui.busy.release ? 'Combining…' : `Combine ${waiting.filter((t) => t.ws).length} tasks into a release branch`}</button><span class="faint" style="font-size:12px">Merges them together on a new release/… branch (not main) and lists any conflicts.</span></div>` : ''}
+      ${ui.releaseResult ? `<div class="policy ${ui.releaseResult.conflicts?.length || !ui.releaseResult.ok ? 'warn' : 'ok'}" style="margin-bottom:10px">${esc(ui.releaseResult.message)}</div>` : ''}
       ${waiting.map((t) => `<div class="task" style="cursor:default">
         <div class="t">${esc(t.title)}</div>
-        <div class="meta" style="margin-bottom:8px">${agentChip(t.assignee)}<span class="faint" style="font-size:12px">reviewed by</span>${agentChip(t.reviewer)}<span class="badge">${esc(ACTIONS[t.action])}</span>${t.pr ? `<a class="badge accent" href="${esc(t.pr.url)}" target="_blank">PR #${esc(t.pr.number)}</a>` : ''}</div>
+        <div class="meta" style="margin-bottom:8px">${agentChip(t.assignee)}<span class="faint" style="font-size:12px">reviewed by</span>${agentChip(t.reviewer)}<span class="badge">${esc(ACTIONS[t.action])}</span>${t.pr ? `<a class="badge accent" href="${esc(t.pr.url)}" target="_blank">PR #${esc(t.pr.number)}</a>` : ''}${doneBadge(t)}</div>
+        ${t.reviewVerdict?.verdict === 'approve' ? `<div class="policy ok">${esc(NAMES[t.reviewVerdict.by])} approved ${t.reviewVerdict.sha ? `commit <span class="mono">${esc(t.reviewVerdict.sha)}</span>` : 'the review'}${t.reviewVerdict.reason ? `: ${esc(t.reviewVerdict.reason)}` : '.'}</div>` : ''}
         ${t.policy.warn.length ? `<div class="policy warn">${t.policy.warn.map(esc).join('<br>')}</div>` : ''}
         <div class="row">${approveButtons(t)}
           <button class="btn small" data-changes="${t.id}">Request changes</button>
+          ${t.ws ? `<button class="btn small ghost" data-updatemain="${t.id}" ${ui.busy[t.id] ? 'disabled' : ''} title="Merge the latest main into this task's branch first, so Approve & merge won't stop on a conflict">${ui.busy[t.id] === 'update' ? 'Updating…' : 'Update from main'}</button>` : ''}
           <button class="btn danger small" data-reject="${t.id}">Reject</button>
           <button class="btn ghost small" data-open="${t.id}">Details</button>
         </div></div>`).join('') || '<div class="empty">Nothing to approve.</div>'}
@@ -705,8 +1188,9 @@ function agentDetail(a) {
     <div class="billing">${esc(m === 'api' && !API_ONLY.includes(a) ? BILLING.api : BILLING[a])}</div>
     ${ag.kind !== 'local' && ag.kind !== 'web' ? signinSteps(a) : ''}
     ${m === 'api' ? `<div class="row"><input type="password" id="key-${a}" placeholder="${prov.keys[a] ? '•••••••• saved — paste to replace' : `Paste your ${esc(ag.vendor)} API key`}" autocomplete="off" style="flex:1">
-        <button class="btn small" data-savekey="${a}">Save</button>${prov.keys[a] ? `<button class="btn danger small" data-rmkey="${a}">Remove</button>` : ''}</div>
-        <p style="margin-top:6px">The key is encrypted with your OS keyring and never shown again. ${ag.edits ? 'API-linked AIs can chat, plan and review but not edit files.' : 'Chat, plan, research and review — no file edits.'}</p>`
+        <button class="btn small" data-savekey="${a}">Save</button><button class="btn small" id="testkey-${a}" data-testkey="${a}" ${prov.keys[a] && !keyTests[a]?.busy ? '' : 'disabled'} title="Sends a one-word prompt with the saved key (may use a little API credit)">${keyTests[a]?.busy ? 'Testing…' : 'Test'}</button>${prov.keys[a] ? `<button class="btn danger small" data-rmkey="${a}">Remove</button>` : ''}</div>
+        <p style="margin-top:6px">The key is encrypted with your OS keyring and never shown again. Test checks the saved key. ${ag.edits ? 'API-linked AIs can chat, plan and review but not edit files.' : 'Chat, plan, research and review — no file edits.'}</p>
+        <div id="keytest-${a}" role="status">${keyTestLine(keyTests[a], esc)}</div>`
     : a === 'ollama' ? `<p>Runs models on your own computer — free, private, offline. ${c.installed ? (c.models?.length ? `Models: ${esc(c.models.join(', '))}` : 'Download a model: <span class="mono">ollama pull llama3.2</span>') : `Install runs ${esc(ag.install)} in a terminal you can see. ${esc(ag.installNote)} Then download a model: <span class="mono">ollama pull llama3.2</span>.`}</p>`
     : `<p>Signs in through ${esc(ag.tool)}’s own official sign-in (it opens ${esc(ag.vendor)}’s page in your browser) with ${esc(ag.plan)}. This app never sees your password; ${esc(ag.tool)} keeps its own login token where it always does.</p>
       ${c.installed ? `<div class="kv" style="margin:4px 0"><span class="k">Program</span><span class="mono" style="font-size:11px;word-break:break-all">${esc(c.path)}</span></div>` : `<p class="faint">Install runs <span class="mono">${esc(ag.install)}</span> in a terminal you can see. ${esc(ag.installNote || '')}${ag.kind === 'cli' ? ' Sign-in starts by itself when it finishes.' : ''}</p>`}
@@ -720,7 +1204,7 @@ function agentDetail(a) {
       ${ag.web ? `<button class="btn small ghost" data-openweb="${a}">Open ${esc(ag.name)} web chat</button>` : ''}
       <button class="btn small ghost" data-recheck>Re-check</button>
       ${ag.kind === 'cli' || a === 'freebuff' ? `<button class="btn small ghost" data-locate="${a}">Locate program…</button>` : ''}
-      ${out ? `<button class="btn small" data-available="${a}">Mark available</button>` : ''}
+      ${out || authHold(a) ? `<button class="btn small" data-available="${a}">Mark available</button>` : ''}
     </div>`;
   const right = ag.headless ? `
       <div class="sect" style="margin-top:0">Quick test</div>
@@ -979,6 +1463,10 @@ function viewSettings() {
       <div class="sep"></div>
       ${check('chatEdits', 'AIs can work (edit, run, use git) right from Team chat')}
       ${check('chatResume', 'Keep one CLI session per AI for Team chat (resumable in each AI’s own CLI)')}
+      <label style="display:flex;gap:10px;align-items:center;margin:4px 0;cursor:pointer;color:var(--text)"><input type="checkbox" data-toggleleadgh ${leadGitHubOn() ? 'checked' : ''}> Lead handles GitHub (pull, combine, push branches)</label>
+      <p class="faint" style="margin:0 0 6px 26px;font-size:12px">${esc(NAMES[state.lead])} pulls from GitHub, pushes task branches and merges approved tasks onto release/next with your own git/gh sign-in. Main, tags and releases stay yours.${typeof settings.leadGitHub === 'boolean' ? '' : gh.ghUser && repo.remote ? ' (On by default because GitHub is set up.)' : ' (Off until GitHub is set up.)'}</p>
+      ${check('leadActions', `Let the lead AI (${esc(NAMES[state.lead])}) approve, deny, start and add tasks`)}
+      <p class="faint" style="margin:0 0 6px 26px;font-size:12px">Off by default. ${esc(NAMES[state.lead])} can't approve its own work; releases, version numbers and tags stay yours. Every action shows in Team chat and the Audit log, with Undo where possible.</p>
       ${check('autoPush', 'Back up every checkpoint to its own branch on GitHub')}
       <p class="faint" style="font-size:12px;margin:6px 0">Whatever the setting, AIs must ask you (a permission card) before pushes, merges, releases, deleting files, boot-critical changes and commands outside the workspace.</p>
       <div class="sep"></div>
@@ -1022,13 +1510,14 @@ function workControls(t) {
   const others = EDITORS.filter((a) => a !== t.assignee && connected(a));
   const ws = t.ws ? `<div class="kv"><span class="k">Workspace</span><span><span class="mono" style="font-size:11.5px">${esc(t.ws.branch)}</span> <button class="btn small link" data-openws="${t.id}">Open folder</button></span></div>` : '';
   return `${ws}<div class="row" style="margin:8px 0">
-      ${EDITORS.includes(t.assignee) ? `<button class="btn primary small" data-run="${t.id}:${t.assignee}" ${canRun(t.assignee) ? '' : 'disabled'}>${t.runs?.length ? 'Continue' : 'Start'} with ${esc(AGENTS[t.assignee].name)}</button>` : ''}
+      ${EDITORS.includes(t.assignee) ? (() => { const b = busyOn(t.assignee); const busy = Boolean((b && b[0] !== t.id) || isTyping(t.assignee)); return `<button class="btn primary small" data-run="${t.id}:${t.assignee}" ${canRun(t.assignee) ? '' : 'disabled'}${busy ? ` title="${esc(AGENTS[t.assignee].name)} is busy: this starts T-${esc(t.id)} as soon as they finish"` : ''}>${esc(startLabel(t, busy, AGENTS[t.assignee].name))}</button>`; })() : ''}
       ${others.map((a) => `<button class="btn small" data-run="${t.id}:${a}" ${canRun(a) ? '' : 'disabled'}>Hand off to ${esc(AGENTS[a].name)}</button>`).join('')}
       <button class="btn small" data-freebuff="${t.id}">Continue in FreeBuff</button>
       ${t.freebuffOpen ? `<button class="btn small primary" data-fbdone="${t.id}">FreeBuff finished — checkpoint</button>` : ''}
     </div>
     <div class="row">
       ${t.ws && gh.ghUser && repo.remote && !t.pr ? `<button class="btn small ghost" data-openpr="${t.id}">Open pull request</button>` : ''}
+      ${t.ws ? `<button class="btn small ghost" data-updatemain="${t.id}" ${ui.busy[t.id] || ui.running[t.id] ? 'disabled' : ''}>${ui.busy[t.id] === 'update' ? 'Updating…' : 'Update from main'}</button>` : ''}
       ${t.ws ? `<button class="btn small ghost" data-showchanges="${t.id}">${ui.changes[t.id] ? 'Refresh changes' : 'Show changes'}</button>` : ''}
       ${HEADLESS.includes(t.reviewer) ? `<button class="btn small ghost" data-opinion="${t.id}" ${canRun(t.reviewer) && !ui.busy[t.id] ? '' : 'disabled'}>${ui.busy[t.id] === 'opinion' ? 'Reviewing…' : `Independent review by ${esc(AGENTS[t.reviewer].name)}`}</button>` : ''}
       ${!settings.project ? '<span class="faint" style="font-size:12px">Set a project folder in Settings to start work.</span>' : ''}
@@ -1048,9 +1537,10 @@ function drawer() {
   return `<div class="drawer">
     <div class="row"><span class="mono faint">T-${esc(t.id)}</span><span style="flex:1"></span><button class="btn ghost small" data-close>Close ✕</button></div>
     <h2>${esc(t.title)}</h2>
-    <div class="row">${stageBadge(t)}${runBadge(t)}<span class="badge">${esc(ACTIONS[t.action])}</span></div>
+    <div class="row">${stageBadge(t)}${runBadge(t)}${queueBadge(t)}${doneBadge(t)}<span class="badge">${esc(ACTIONS[t.action])}</span></div>
     ${pol}
     ${asks.map(askCard).join('')}
+    ${['resume', 'start', 'signin'].includes(actionFor(t)?.kind) ? ownerButton(t) : ''}
     <div class="kv">
       <span class="k">Stage</span><span>${esc(STAGES[t.stage])}</span>
       <span class="k">Implementer</span><span>${agentChip(t.assignee)}</span>
@@ -1075,7 +1565,13 @@ function drawer() {
   </div>`;
 }
 
+function lightbox() {
+  if (!ui.lightbox) return '';
+  return `<div class="modal-bg lightbox" data-closelightbox><img src="${esc(ui.lightbox.url)}" alt="${esc(ui.lightbox.name)}"></div>`;
+}
+
 function modal() {
+  if (ui.lightbox) return lightbox();
   if (ui.modal !== 'new') return '';
   const opt = (sel, ids) => ids.map((k) => `<option value="${k}" ${k === sel ? 'selected' : ''}>${esc(AGENTS[k].name)}${k !== 'none' && !connected(k) ? ' (not linked)' : ''}</option>`).join('');
   const firstEditor = liveEditors()[0] || state.lead;
@@ -1089,6 +1585,7 @@ function modal() {
       <div><label>Independent reviewer</label><select id="f-reviewer">${opt(firstReviewer, [...HEADLESS, 'none'])}</select></div>
     </div>
     <label>Action type</label><select id="f-action">${Object.entries(ACTIONS).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join('')}</select>
+    <div id="f-dup"></div>
     <div class="row" style="margin-top:16px;justify-content:flex-end"><button class="btn ghost" data-cancel>Cancel</button><button class="btn primary" data-create>Create task</button></div>
   </div></div>`;
 }
@@ -1126,7 +1623,7 @@ function render() {
   <div class="shell">
     <aside class="side">
       <div class="brand"><img src="./icon.png" alt=""><div><b>Hearth AI</b><span>Command Center</span></div></div>
-      ${NAV.map(([id, ico, label]) => `<button class="nav ${ui.view === id ? 'on' : ''}" data-nav="${id}"><span class="ico">${ico}</span>${label}${id === 'approvals' && waiting ? `<span class="count warn">${waiting}</span>` : ''}${id === 'chat' && ui.typing ? '<span class="count">…</span>' : ''}</button>`).join('')}
+      ${NAV.map(([id, ico, label]) => `<button class="nav ${ui.view === id ? 'on' : ''}" data-nav="${id}"><span class="ico">${ico}</span>${label}${id === 'approvals' && waiting ? `<span class="count warn">${waiting}</span>` : ''}${id === 'chat' && typingNow() ? '<span class="count">…</span>' : ''}</button>`).join('')}
       <div class="spacer"></div>
       <div class="pin">Working on <b>Hearth OS ${esc(HEARTH_OS.line)}</b><br>Debian · Mantel · Steam Game Mode<br><span class="faint">App v${esc(info.appVersion)} · standalone</span></div>
     </aside>
@@ -1183,10 +1680,21 @@ function makeTask({ title, description = '', assignee, reviewer, action }, sourc
   return t;
 }
 
-function createTask() {
+function dupWarning(t, addBtn) {
+  return `<div class="policy warn" style="margin-top:10px">This looks like T-${esc(t.id)} “${esc(t.title)}” (${esc(STAGES[t.stage] || t.stage)}). <div class="row" style="margin-top:6px"><button class="btn small primary" data-opendup="${esc(t.id)}">Open T-${esc(t.id)}</button>${addBtn}</div></div>`;
+}
+
+function createTask(force = false) {
   const v = (id) => document.getElementById(id).value;
   const title = v('f-title').trim();
   if (!title) return toast('Give the task a title.');
+  // Looks like an open task? Say so (without redrawing the form) and offer it.
+  const dup = force ? null : findDuplicate({ title, description: v('f-desc') }, state.tasks);
+  if (dup) {
+    const box = document.getElementById('f-dup');
+    if (box) box.innerHTML = dupWarning(dup.task, '<button class="btn small" data-adddup="form">Add anyway</button>');
+    return;
+  }
   const t = makeTask({ title, description: v('f-desc'), assignee: v('f-assignee'), reviewer: v('f-reviewer'), action: v('f-action') });
   if (!t) return;
   ui.modal = null;
@@ -1199,7 +1707,7 @@ async function askForTask(t, kind) {
   const who = t.reviewer;
   let summary = '';
   if (t.ws) summary = await api.workspaceSummary(t.id, t.ws.baseSha).catch(() => '');
-  const prompt = `You are an independent reviewer (${NAMES[who]}) in the Hearth AI Command Center. Look at the task's workspace (your current directory) and the shared progress below. List concerns, missing tests, and whether the owner should approve. Be concise. Do not modify files.\n\n${buildTaskBrief({ task: t, agent: who, summary })}`;
+  const prompt = `You are an independent reviewer (${NAMES[who]}) in the Hearth AI Command Center. Look at the task's workspace (your current directory) and the shared progress below. List concerns, missing tests, and whether the owner should approve. Be concise. Do not modify files. End with exactly one line: "APPROVE: T-${t.id}" if it is ready for the owner, or "CHANGES: T-${t.id} <what must be fixed>" to send it back.\n\n${buildTaskBrief({ task: t, agent: who, summary })}`;
   ui.busy[t.id] = kind;
   render();
   const res = await callAgent(who, prompt, { mode: 'read', taskId: t.ws ? t.id : undefined, title: `Review: ${t.title}`, thread: `review-${t.id}`, historyText: `Independent review of T-${t.id}: ${t.title}` });
@@ -1209,13 +1717,17 @@ async function askForTask(t, kind) {
   audit(res.ok ? `${name} reviewed` : `${name} review failed`, t.id, '', who);
   save();
   render();
+  if (res.ok) await handleVerdicts(who, res.text);
 }
 
 // Run (or continue) a task with an agent in the shared workspace. Progress is
 // checkpointed after every run; if the agent runs out of usage the next free
 // agent picks up from the checkpoint automatically.
 async function runTask(t, agent, handoff = null, depth = 0) {
-  if (ui.running[t.id] || !canRun(agent)) return;
+  if (!t || ui.running[t.id] || !canRun(agent)) return;
+  const other = busyOn(agent);
+  if (other && other[0] !== t.id) return startOrQueue(t, agent);
+  delete t.startNext;
   const waitingOn = pendingAsks().find((p) => p.agent === agent);
   if (waitingOn) return toast(`${NAMES[agent]} is waiting for your answer on R-${waitingOn.id} first.`);
   try {
@@ -1223,12 +1735,7 @@ async function runTask(t, agent, handoff = null, depth = 0) {
   } catch (e) {
     return toast(cleanErr(e.message));
   }
-  if (t.assignee !== agent) {
-    const prev = t.assignee;
-    t.assignee = agent;
-    if (t.reviewer === agent) t.reviewer = HEADLESS.find((a) => a !== agent && canRun(a)) || HEADLESS.find((a) => a !== agent) || 'none';
-    audit(`Handed off to ${NAMES[agent]}`, t.id, handoff ? `${NAMES[handoff.from]}: ${handoff.reason}` : `from ${NAMES[prev] || 'unassigned'}`);
-  }
+  assignTask(t, agent, handoff ? `${NAMES[handoff.from]}: ${handoff.reason}` : undefined);
   if (t.stage === 'intake') { t.stage = 'implementing'; audit('Work started', t.id, NAMES[agent]); }
   const summary = await api.workspaceSummary(t.id, t.ws.baseSha).catch(() => '');
   const prompt = buildTaskBrief({ task: t, agent, summary, handoffFrom: handoff?.from, reason: handoff?.reason });
@@ -1238,6 +1745,7 @@ async function runTask(t, agent, handoff = null, depth = 0) {
   ui.saving[t.id] = true;
   render();
   try { await api.checkpoint(t.id, 'owner', `Snapshot before next run: ${t.title}`); } catch {}
+  if (t.changesSince && !t.changesSince.sha) reviewBaseline(t, await api.workspaceHead(t.id).catch(() => null));
   const run = { id: runId, agent, at: now(), status: 'running', brief: prompt.slice(0, 20000) };
   t.runs = t.runs || [];
   t.runs.push(run);
@@ -1262,6 +1770,24 @@ async function runTask(t, agent, handoff = null, depth = 0) {
   run.sessionId = res.sessionId || null;
   run.output = res.ok ? res.text : `${res.error.message}${res.partial ? `\n\nLast output:\n${res.partial}` : ''}`;
   run.checkpoint = cp?.sha || null;
+  // A "done" after a review only counts with a new commit since that review.
+  let refused = null;
+  if (res.ok) {
+    run.head = await api.workspaceHead(t.id).catch(() => null);
+    run.tests = testResult(res.text);
+  }
+  if (res.ok) {
+    const verdict = checkDoneAfterReview(t, { head: run.head, status: run.status, text: res.text });
+    if (!verdict.ok) {
+      refused = verdict.note;
+      run.status = 'continue';
+      run.refused = true;
+      t.notes.push({ at: now(), who: 'System', text: refused });
+      audit('Done report refused', t.id, verdict.note, agent);
+    } else if (run.status === 'done') {
+      t.done = { sha: run.head, tests: run.tests, at: now(), by: agent };
+    }
+  }
   if (cp) {
     const pushed = await autoPush(t.id);
     if (pushed) run.pushed = pushed.ok ? 'pushed to GitHub' : `push failed: ${pushed.message}`;
@@ -1274,7 +1800,9 @@ async function runTask(t, agent, handoff = null, depth = 0) {
   }
   // The AI posts its own update to Team chat, with any permission it needs.
   if (res.ok) {
-    const m = post({ who: agent, auto: true, model: res.via, text: `T-${t.id} “${t.title}”: ${(d.text || res.text).replace(/STATUS:.*$/is, '').trim().slice(0, 400) || 'finished a run.'}${run.status === 'done' ? '\n(Reported done — ready for review.)' : ''}` });
+    const media = await agentAttachments(parseAttachLines(d.text || res.text), t.id, agent);
+    const m = post({ who: agent, auto: true, model: res.via, attachments: media.atts.length ? media.atts : undefined, text: `T-${t.id} “${t.title}”: ${(media.text || d.text || res.text).replace(/STATUS:.*$/is, '').trim().slice(0, 400) || 'finished a run.'}${run.status === 'done' ? `\n(${doneLine(run)})` : ''}` });
+    if (refused) post({ who: 'system', text: `T-${t.id}: ${NAMES[agent]} reported done, but it wasn't accepted. The task stays with ${NAMES[agent]} (Ready to Resume): ${refused}` });
     m.asks = d.asks.map((a) => {
       const req = makeRequest({ id: uid(), agent, kind: a.kind, what: a.what, why: a.why, context: t.id, msgId: m.id });
       state.permissions.push(req);
@@ -1293,15 +1821,32 @@ async function runTask(t, agent, handoff = null, depth = 0) {
     render();
   }
   if (!res.ok && res.error.kind === 'limit') {
-    const next = nextAgent(liveEditors(), [agent], state.lead);
+    // Its waiting tasks go to free AIs with the same kind of role; this one continues
+    // with such an AI now, or is next in line if that AI is busy.
+    const moved = moveWaiting(agent, t.id);
+    const need = taskNeed(t) || 'code';
+    const fit = EDITORS.filter((a) => a !== agent && a !== t.reviewer && canRun(a) && roleKinds(roleMap()[a]).includes(need));
+    const next = fit.find(isFree) || fit[0] || null;
     if (next && state.autoHandoff && depth < 3) {
-      toast(`${NAMES[agent]} ran out of usage — ${NAMES[next]} is continuing from the checkpoint.`);
-      return runTask(t, next, { from: agent, reason: 'ran out of usage' }, depth + 1);
+      post({ who: 'system', text: `${NAMES[agent]} ran out of usage on T-${t.id}. ${NAMES[next]} ${isFree(next) ? 'is continuing it' : 'continues it when free'}.${moved}` });
+      await save();
+      if (isFree(next)) await runTask(t, next, { from: agent, reason: 'ran out of usage' }, depth + 1);
+      else startOrQueue(t, next);
+    } else {
+      t.notes.push({ at: now(), who: 'System', text: `${NAMES[agent]} ran out of usage. Progress is saved${cp ? ` (checkpoint ${cp.sha})` : ''}. ${next ? `Hand it to ${NAMES[next]}` : 'No AI with the same role is free'} — or continue in FreeBuff.${moved}` });
+      if (moved) post({ who: 'system', text: `${NAMES[agent]} ran out of usage.${moved}` });
+      save();
+      render();
     }
-    t.notes.push({ at: now(), who: 'System', text: `${NAMES[agent]} ran out of usage. Progress is saved${cp ? ` (checkpoint ${cp.sha})` : ''}. ${next ? `Hand it to ${NAMES[next]}` : 'No other agent is free'} — or continue in FreeBuff.` });
-    save();
-    render();
   }
+  // Nothing waits at Checkpoint: a done report goes straight to the reviewer.
+  if (res.ok && t.stage === 'checkpoint' && HEADLESS.includes(t.reviewer) && canRun(t.reviewer) && !ui.busy[t.id]) {
+    t.stage = 'review';
+    audit('Sent for review', t.id, NAMES[t.reviewer]);
+    save();
+    askForTask(t, 'opinion');
+  }
+  await pumpQueues();
 }
 
 async function openInFreebuff(t) {
@@ -1403,6 +1948,7 @@ function watchSignin(a) {
       toast(ui.signin[a].msg);
     } else if (s.state === 'waiting' && (st.signedIn || (a === 'mistral' && st.signedIn !== false))) {
       clearInterval(signinTimers[a]);
+      clearHold(a);
       ui.signin[a] = { state: 'linked', at: Date.now() };
       audit(`${AGENTS[a].name} linked`, null, `signed in with your own account via ${AGENTS[a].tool}`);
       save();
@@ -1418,7 +1964,7 @@ function watchSignin(a) {
 
 async function teamCheckin() {
   const live = liveAgents();
-  if (!live.length || ui.typing) return;
+  if (!live.length || round) return;
   post({ who: 'owner', auto: true, text: 'Team check-in: anything to report, propose or ask? Reply PASS if not.' });
   save();
   render();
@@ -1435,7 +1981,7 @@ async function syncHistory(quiet = false) {
   if (ui.view === 'history') render();
 }
 
-const CLICK = '[data-nav],[data-new],[data-open],[data-close],[data-cancel],[data-create],[data-advance],[data-approve],[data-reject],[data-changes],[data-note],[data-delete],[data-savekey],[data-rmkey],[data-ask],[data-export],[data-reset],[data-upd],[data-opinion],[data-modalbg],[data-sendchat],[data-target],[data-addprop],[data-addall],[data-clearchat],[data-method],[data-login],[data-recheck],[data-locate],[data-available],[data-run],[data-stop],[data-freebuff],[data-fbdone],[data-openws],[data-pickproject],[data-autohandoff],[data-restore],[data-install],[data-installall],[data-installollama],[data-startprop],[data-showchanges],[data-dismisssetup],[data-signin],[data-disconnect],[data-toggleagent],[data-ghlogin],[data-gitrefresh],[data-useproject],[data-clone],[data-gitpull],[data-pushbranch],[data-openpr],[data-approvemerge],[data-approvepr],[data-access],[data-togglesetting],[data-adddir],[data-removedir],[data-expand],[data-opensignin],[data-openweb],[data-openexport],[data-makelead],[data-decide],[data-editmsg],[data-delmsg],[data-saveedit],[data-canceledit],[data-togglehist],[data-checkin],[data-histscan],[data-histimport],[data-histopen],[data-histresume],[data-histweb],[data-histwebin],[data-histremove],[data-prlist],[data-prrefresh],[data-release],[data-theme]';
+const CLICK = '[data-owneract],[data-updatemain],[data-releasebranch],[data-leadundo],[data-opendup],[data-adddup],[data-stopround],[data-toggleleadgh],[data-attach],[data-unattach],[data-lightbox],[data-closelightbox],[data-testkey],[data-nav],[data-new],[data-open],[data-close],[data-cancel],[data-create],[data-advance],[data-approve],[data-reject],[data-changes],[data-note],[data-delete],[data-savekey],[data-rmkey],[data-ask],[data-export],[data-reset],[data-upd],[data-opinion],[data-modalbg],[data-sendchat],[data-target],[data-addprop],[data-addall],[data-clearchat],[data-method],[data-login],[data-recheck],[data-locate],[data-available],[data-run],[data-stop],[data-freebuff],[data-fbdone],[data-openws],[data-pickproject],[data-autohandoff],[data-restore],[data-install],[data-installall],[data-installollama],[data-startprop],[data-showchanges],[data-dismisssetup],[data-signin],[data-disconnect],[data-toggleagent],[data-ghlogin],[data-gitrefresh],[data-useproject],[data-clone],[data-gitpull],[data-pushbranch],[data-openpr],[data-approvemerge],[data-approvepr],[data-access],[data-togglesetting],[data-adddir],[data-removedir],[data-expand],[data-opensignin],[data-openweb],[data-openexport],[data-makelead],[data-decide],[data-editmsg],[data-delmsg],[data-saveedit],[data-canceledit],[data-togglehist],[data-checkin],[data-histscan],[data-histimport],[data-histopen],[data-histresume],[data-histweb],[data-histwebin],[data-histremove],[data-prlist],[data-prrefresh],[data-release],[data-theme]';
 
 document.addEventListener('click', async (e) => {
   const el = e.target.closest(CLICK);
@@ -1448,6 +1994,8 @@ document.addEventListener('click', async (e) => {
     ui.view = d.nav; ui.selected = null;
     if (d.nav === 'settings') backups = await api.backups().catch(() => backups);
     if (d.nav === 'github') { await refreshGit(); await refreshPrs(); }
+    if (d.nav === 'approvals' || d.nav === 'board') recheckApprovals();
+    if (d.nav === 'approvals' && Date.now() - (ui.lastFetchAt || 0) > 10 * 60000) { ui.lastFetchAt = Date.now(); leadFetch().then(() => { if (ui.view === 'approvals') render(); }); }
     if (d.nav === 'history') await refreshHistory();
     return render();
   }
@@ -1459,6 +2007,44 @@ document.addEventListener('click', async (e) => {
     return render();
   }
   if (d.sendchat !== undefined) return sendChat();
+  if (d.stopround !== undefined) return stopChatRound();
+  if (d.leadundo) return undoLead(d.leadundo);
+  if (d.toggleleadgh !== undefined) { settings = await api.setSettings({ leadGitHub: !leadGitHubOn() }); audit(`Lead handles GitHub turned ${leadGitHubOn() ? 'on' : 'off'}`); save(); return render(); }
+  if (d.attach !== undefined) {
+    const list = await api.attachPick().catch((err) => [{ ok: false, message: cleanErr(err.message) }]);
+    for (const r of list || []) { if (r.ok) ui.attach.push(r.att); else toast(r.message); }
+    return render();
+  }
+  if (d.unattach !== undefined) { ui.attach.splice(Number(d.unattach), 1); return render(); }
+  if (d.lightbox) {
+    const [mid, i] = d.lightbox.split(':');
+    const a = state.chat.find((x) => x.id === mid)?.attachments?.[Number(i)];
+    if (a) { ui.lightbox = a; render(); }
+    return;
+  }
+  if (d.closelightbox !== undefined) { ui.lightbox = null; return render(); }
+  if (d.opendup) { ui.modal = null; ui.view = 'board'; ui.selected = d.opendup; return render(); }
+  if (d.adddup) {
+    if (d.adddup === 'form') return createTask(true);
+    const [id, i] = d.adddup.split(':');
+    const t = addProposal(id, Number(i), true);
+    save();
+    render();
+    if (t) toast('Added to the board anyway.');
+    return;
+  }
+  if (d.owneract) {
+    const t = task(d.owneract);
+    const a = t && actionFor(t);
+    if (!a) return render();
+    if (a.kind === 'resume' || a.kind === 'start') {
+      audit(a.kind === 'resume' ? 'Owner approved resume' : 'Owner started task', t.id, NAMES[a.agent]);
+      return startOrQueue(t, a.agent);
+    }
+    if (a.kind === 'signin') { ui.view = 'agents'; ui.side = a.agent; ui.selected = null; return render(); }
+    ui.selected = t.id; // approve / permission / policy: decide in the task panel
+    return render();
+  }
   if (d.checkin !== undefined) return teamCheckin();
   if (d.decide) { const [id, dec] = d.decide.split(':'); return decide(id, dec); }
   if (d.editmsg) { ui.editing = d.editmsg; return render(); }
@@ -1534,6 +2120,7 @@ document.addEventListener('click', async (e) => {
     const t = task(d.approvepr);
     const pr = ui.prs.byTask[t.id];
     if (!pr) return;
+    if (await recheckApprovals([t])) return toast(`T-${t.id} changed after its review, so it went back to review.`);
     const r = await api.gitPrMerge(pr.number).catch((err) => ({ ok: false, message: cleanErr(err.message) }));
     if (!r.ok) { if (r.message !== 'Cancelled.') toast(r.message); return; }
     t.decision = 'approved';
@@ -1543,8 +2130,39 @@ document.addEventListener('click', async (e) => {
     await refreshGit();
     return setStage(t, 'approved', 'Owner approved and merged PR', r.message);
   }
+  if (d.updatemain) {
+    const t = task(d.updatemain);
+    if (!t?.ws || ui.busy[t.id]) return;
+    ui.busy[t.id] = 'update';
+    render();
+    try { await api.checkpoint(t.id, 'owner', `Snapshot before updating from main: ${t.title}`); } catch {}
+    const r = await api.gitUpdateFromMain(t.id).catch((err) => ({ ok: false, message: cleanErr(err.message) }));
+    delete ui.busy[t.id];
+    t.notes.push({ at: now(), who: 'System', text: r.message });
+    audit(r.ok ? 'Task branch updated from main' : 'Update from main stopped', t.id, r.message);
+    if (!r.ok && r.conflicts?.length) post({ who: 'system', text: `T-${t.id} “${t.title}” conflicts with main in ${r.conflicts.join(', ')}. Nothing was changed. ${NAMES[t.assignee] || 'The implementer'} needs to resolve it before it can be merged.` });
+    save();
+    toast(r.message);
+    return render();
+  }
+  if (d.releasebranch !== undefined) {
+    const list = state.tasks.filter((t) => t.stage === 'approval' && t.ws);
+    if (list.length < 2 || ui.busy.release) return;
+    ui.busy.release = true;
+    render();
+    for (const t of list) { try { await api.checkpoint(t.id, 'owner', `Snapshot before release branch: ${t.title}`); } catch {} }
+    const r = await api.gitReleaseBranch(list.map((t) => t.id)).catch((err) => ({ ok: false, message: cleanErr(err.message) }));
+    delete ui.busy.release;
+    ui.releaseResult = r;
+    audit(r.ok ? 'Release branch created' : 'Release branch failed', null, r.message);
+    post({ who: 'system', text: `Release branch: ${r.message}` });
+    save();
+    toast(r.ok ? `Created ${r.branch}.` : r.message);
+    return render();
+  }
   if (d.approvemerge) {
     const t = task(d.approvemerge);
+    if (await recheckApprovals([t])) return toast(`T-${t.id} changed after its review, so it went back to review.`);
     const r = await api.gitMergeApproved(t.id).catch((err) => ({ ok: false, message: cleanErr(err.message) }));
     if (!r.ok) { if (r.message !== 'Cancelled.') toast(r.message); return; }
     t.decision = 'approved';
@@ -1609,7 +2227,7 @@ document.addEventListener('click', async (e) => {
     const t = addProposal(id, Number(i));
     await save();
     render();
-    if (t && t.policy.ok) return runTask(t, t.assignee);
+    if (t && t.policy.ok) return startOrQueue(t, t.assignee);
     if (t) toast('Added, but the policy check blocked it — open it to see why.');
     return;
   }
@@ -1622,6 +2240,7 @@ document.addEventListener('click', async (e) => {
   if (d.method) {
     const [a, m] = d.method.split(':');
     settings = await api.setConnection(a, m);
+    if (clearHold(a)) save();
     return render();
   }
   if (d.login) {
@@ -1631,8 +2250,8 @@ document.addEventListener('click', async (e) => {
   }
   if (d.recheck !== undefined) { await refreshAgents(); await refreshProviders(); toast('Agent status refreshed.'); ui.keepScroll = true; return render(); }
   if (d.locate) { settings = await api.pickBinary(d.locate); await refreshAgents(); return render(); }
-  if (d.available) { delete state.agentStatus[d.available]; audit(`${NAMES[d.available]} marked available`); save(); return render(); }
-  if (d.run) { const [id, a] = d.run.split(':'); return runTask(task(id), a); }
+  if (d.available) { delete state.agentStatus[d.available]; audit(`${NAMES[d.available]} marked available`); save(); render(); return pumpQueues(); }
+  if (d.run) { const [id, a] = d.run.split(':'); return startOrQueue(task(id), a); }
   if (d.stop) { const r = ui.running[d.stop]; if (r) await api.cancelRun(r.runId); return; }
   if (d.freebuff) return openInFreebuff(task(d.freebuff));
   if (d.fbdone) return freebuffDone(task(d.fbdone));
@@ -1645,10 +2264,11 @@ document.addEventListener('click', async (e) => {
   if (d.target) { ui.target = d.target; render(); return document.getElementById('chat-text')?.focus(); }
   if (d.addprop) {
     const [id, i] = d.addprop.split(':');
-    addProposal(id, Number(i));
+    const added = addProposal(id, Number(i));
     save();
     render();
-    return toast('Added to the board — it starts at Intake with a policy check.');
+    if (added) toast('Added to the board — it starts at Intake with a policy check.');
+    return;
   }
   if (d.addall) {
     const m = state.chat.find((x) => x.id === d.addall);
@@ -1701,14 +2321,19 @@ document.addEventListener('click', async (e) => {
   if (d.approve) {
     const t = task(d.approve);
     t.decision = 'approved';
-    return setStage(t, 'approved', 'Owner approved', `${ACTIONS[t.action]} authorized (decision only; nothing merged or released).`);
+    setStage(t, 'approved', 'Owner approved', `${ACTIONS[t.action]} authorized (nothing merged into main or released).`);
+    return leadIntegrate(t);
   }
   if (d.reject) {
     const t = task(d.reject);
     t.decision = 'rejected';
     return setStage(t, 'rejected', 'Owner rejected', 'Branch kept; decision recorded.');
   }
-  if (d.changes) return setStage(task(d.changes), 'implementing', 'Changes requested', 'Sent back to implementer');
+  if (d.changes) {
+    const t = task(d.changes);
+    requestChanges(t, { by: 'owner', reason: 'requested from Approvals', at: now() });
+    return setStage(t, 'implementing', 'Changes requested', 'Sent back to implementer');
+  }
   if (d.open !== undefined) {
     e.preventDefault();
     if (!d.open) return;
@@ -1744,6 +2369,8 @@ document.addEventListener('click', async (e) => {
     try {
       await api.setKey(d.savekey, input.value);
       input.value = '';
+      clearHold(d.savekey);
+      delete keyTests[d.savekey];
       audit('API key saved', null, AGENTS[d.savekey].name);
       save();
       toast(`${AGENTS[d.savekey].name} key saved securely.`);
@@ -1753,8 +2380,34 @@ document.addEventListener('click', async (e) => {
     await refreshProviders();
     return render();
   }
+  if (d.testkey) {
+    const p = d.testkey;
+    if (keyTests[p]?.busy || !prov.keys[p]) return;
+    const test = { busy: true };
+    keyTests[p] = test;
+    // Only the button and its result line change. A full redraw would wipe a key
+    // pasted into the field but not saved yet.
+    const show = () => {
+      const btn = document.getElementById(`testkey-${p}`);
+      if (btn) { btn.disabled = Boolean(test.busy); btn.textContent = test.busy ? 'Testing…' : 'Test'; }
+      const line = document.getElementById(`keytest-${p}`);
+      if (line) line.innerHTML = keyTestLine(test, esc);
+    };
+    show();
+    try {
+      test.result = await api.testKey(p, state.models[p] || '');
+      if (test.result?.ok && clearHold(p)) { save(); updatePanel(); }
+    } catch {
+      test.result = { ok: false, error: { message: 'The test could not run. Try again.' } };
+    }
+    test.busy = false;
+    show();
+    return;
+  }
   if (d.rmkey) {
     await api.removeKey(d.rmkey);
+    clearHold(d.rmkey);
+    delete keyTests[d.rmkey];
     audit('API key removed', null, AGENTS[d.rmkey].name);
     save();
     await refreshProviders();
@@ -1829,6 +2482,30 @@ document.addEventListener('change', async (e) => {
 });
 
 let histTimer;
+// Paste or drop images / videos into Team chat.
+async function addFiles(files) {
+  for (const f of [...(files || [])].slice(0, 10)) {
+    if (!/^(image|video)\//.test(f.type) && !/\.(png|jpe?g|webp|gif|mp4|webm|mov)$/i.test(f.name)) continue;
+    if (f.size > 200 * 1024 * 1024) { toast(`${f.name} is ${(f.size / 1048576).toFixed(0)} MB; attachments can be up to 200 MB.`); continue; }
+    const ext = (f.type.split('/')[1] || 'png').replace('jpeg', 'jpg').replace('quicktime', 'mov');
+    const name = f.name && /\.\w+$/.test(f.name) ? f.name : `pasted-${Date.now()}.${ext}`;
+    const r = await api.attachSave(name, await f.arrayBuffer()).catch((err) => ({ ok: false, message: cleanErr(err.message) }));
+    if (r.ok) ui.attach.push(r.att); else toast(r.message);
+  }
+  if (ui.view === 'chat') render();
+}
+document.addEventListener('paste', (e) => {
+  if (ui.view !== 'chat' || !e.clipboardData?.files?.length) return;
+  e.preventDefault();
+  addFiles(e.clipboardData.files);
+});
+document.addEventListener('dragover', (e) => { if (ui.view === 'chat') e.preventDefault(); });
+document.addEventListener('drop', (e) => {
+  if (ui.view !== 'chat' || !e.dataTransfer?.files?.length) return;
+  e.preventDefault();
+  addFiles(e.dataTransfer.files);
+});
+
 document.addEventListener('input', (e) => {
   if (e.target.id === 'chat-text') ui.draft = e.target.value;
   if (e.target.id === 'hist-q') {
@@ -1918,6 +2595,8 @@ async function boot() {
     toast(`Startup problem: ${e.message}`);
   }
   render();
+  // Update only the status panel, so a usage pause can expire without touching the draft.
+  setInterval(updatePanel, 15000);
   // In the background: pick up CLI sessions started outside the app, and PR status.
   setTimeout(() => { syncHistory(true); refreshPrs().then(() => { if (ui.view === 'overview') render(); }); }, 800);
 }

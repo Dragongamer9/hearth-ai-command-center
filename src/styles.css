@@ -312,3 +312,25 @@ tr.open td { background: var(--accent-soft); }
 .install-all-text { flex: 1; min-width: 260px; font-size: 13px; }
 .install-all-text .faint { font-size: 12px; margin-top: 3px; line-height: 1.45; }
 .install-all-opt { display: flex; gap: 8px; align-items: center; margin: 8px 0 0; font-size: 12.5px; cursor: pointer; text-transform: none; letter-spacing: 0; }
+
+/* Team status panel above the chat */
+.team-status { padding: 9px 14px; border-bottom: 1px solid var(--line); flex-shrink: 0; max-height: 34vh; overflow-y: auto; }
+.team-status > .row { margin-bottom: 8px; }
+.team-panel { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 7px; }
+.team-member { display: flex; align-items: center; flex-wrap: wrap; gap: 5px 8px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 7px; }
+.team-member small { flex-basis: 100%; color: var(--muted); overflow-wrap: anywhere; }
+
+/* A task waiting for the owner: one clear button and the reason */
+.owner-act { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--line); }
+.owner-act .why { font-size: 11.5px; color: var(--muted); line-height: 1.4; }
+.drawer .owner-act { border-top: 0; padding-top: 0; }
+
+/* Chat attachments */
+.atts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.atts figure { margin: 0; max-width: 340px; }
+.atts img, .atts video { max-width: 340px; max-height: 240px; border-radius: 6px; border: 1px solid var(--line); display: block; }
+.atts img { cursor: zoom-in; }
+.atts figcaption { font-size: 11.5px; color: var(--muted); margin-top: 3px; overflow-wrap: anywhere; }
+.att-pending { flex-wrap: wrap; gap: 6px; }
+.lightbox { display: flex; align-items: center; justify-content: center; cursor: zoom-out; }
+.lightbox img { max-width: 92vw; max-height: 92vh; border-radius: 6px; }

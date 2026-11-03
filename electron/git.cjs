@@ -137,6 +137,162 @@ async function mergeApproved(dir, branch) {
   return { ok: true, sha, branch: def, pushed, message: `Merged into ${def} (${sha}). ${pushMsg}` };
 }
 
+const conflictFiles = async (dir) => (await git(dir, ['diff', '--name-only', '--diff-filter=U'])).out.split('\n').filter(Boolean);
+async function idArgs(dir) {
+  const id = await ownerIdentity(dir);
+  return ['-c', `user.name=${id.name}`, '-c', `user.email=${id.email}`];
+}
+// The newest default branch: origin's copy when there is a remote, else the local one.
+async function freshBase(dir, def) {
+  if ((await git(dir, ['remote', 'get-url', 'origin'])).ok) {
+    const f = await git(dir, ['fetch', 'origin', `refs/heads/${def}:refs/remotes/origin/${def}`], 180000);
+    if (f.ok) return `origin/${def}`;
+  }
+  return def;
+}
+
+// Owner-pressed: bring one task branch up to date with the default branch, inside
+// the task's own worktree. Main itself is never touched. On a conflict nothing changes
+// and the conflicting files are listed.
+async function updateFromMain(project, taskDir) {
+  const branch = (await git(taskDir, ['branch', '--show-current'])).out;
+  if (!branch || !BRANCH_RE.test(branch)) return { ok: false, message: 'This task has no branch to update.' };
+  const def = await defaultBranch(project);
+  if (PROTECTED(branch, def)) return { ok: false, message: 'That is the main branch.' };
+  if ((await git(taskDir, ['status', '--porcelain'])).out) return { ok: false, message: 'The task workspace has unsaved changes. Save a checkpoint first.' };
+  const base = await freshBase(project, def);
+  const behind = (await git(taskDir, ['rev-list', '--count', `HEAD..${base}`])).out;
+  if (behind === '0') return { ok: true, changed: false, branch, message: `${branch} is already up to date with ${def}.` };
+  const r = await git(taskDir, [...(await idArgs(project)), 'merge', '--no-ff', '--no-edit', '-m', `Bring ${branch} up to date with ${def}`, base], 180000);
+  if (!r.ok) {
+    const conflicts = await conflictFiles(taskDir);
+    await git(taskDir, ['merge', '--abort']);
+    return { ok: false, conflicts, branch, message: conflicts.length ? `Conflicts with ${def} in ${conflicts.join(', ')}. Nothing was changed; the implementer needs to resolve these.` : lastLine(r) };
+  }
+  const sha = (await git(taskDir, ['rev-parse', '--short', 'HEAD'])).out;
+  return { ok: true, changed: true, branch, sha, message: `${branch} now includes the latest ${def} (${sha}).` };
+}
+
+// Owner-pressed: one release branch (never main) that merges several approved task
+// branches at once. A branch that conflicts is skipped and reported with its files;
+// the rest still go in. Built in a temporary worktree so your checkout is untouched.
+async function releaseBranch(project, name, branches = []) {
+  if (!/^release\/[A-Za-z0-9._-]{1,80}$/.test(name || '')) return { ok: false, message: 'Bad release branch name.' };
+  const list = [...new Set(branches)].filter((b) => BRANCH_RE.test(b || ''));
+  if (!list.length) return { ok: false, message: 'No task branches to combine.' };
+  if ((await git(project, ['rev-parse', '--verify', '--quiet', `refs/heads/${name}`])).ok) return { ok: false, message: `${name} already exists.` };
+  const def = await defaultBranch(project);
+  if (list.some((b) => PROTECTED(b, def))) return { ok: false, message: 'The main branch cannot be combined into a release branch.' };
+  const base = await freshBase(project, def);
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hearth-release-'));
+  const wt = path.join(tmp, 'wt');
+  const add = await git(project, ['worktree', 'add', '-b', name, wt, base]);
+  if (!add.ok) { fs.rmSync(tmp, { recursive: true, force: true }); return { ok: false, message: lastLine(add) }; }
+  const ids = await idArgs(project);
+  const merged = [];
+  const conflicts = [];
+  try {
+    for (const b of list) {
+      const r = await git(wt, [...ids, 'merge', '--no-ff', '--no-edit', '-m', `Merge ${b} into ${name}`, b], 180000);
+      if (r.ok) { merged.push(b); continue; }
+      const files = await conflictFiles(wt);
+      await git(wt, ['merge', '--abort']);
+      conflicts.push({ branch: b, files, message: files.length ? '' : lastLine(r) });
+    }
+  } finally {
+    await git(project, ['worktree', 'remove', '--force', wt]);
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+  let pushed = false;
+  let pushMsg = 'Local only (no GitHub remote).';
+  if (merged.length && (await git(project, ['remote', 'get-url', 'origin'])).ok) {
+    const p = await git(project, ['push', '-u', 'origin', `refs/heads/${name}:refs/heads/${name}`], 180000);
+    pushed = p.ok;
+    pushMsg = p.ok ? `Pushed ${name} to GitHub.` : `Push failed: ${lastLine(p)}`;
+  }
+  const sha = (await git(project, ['rev-parse', '--short', name])).out;
+  const lines = [
+    `${name} (${sha}) from ${def}: ${merged.length} of ${list.length} task branches merged.`,
+    ...conflicts.map((c) => `Conflict: ${c.branch}${c.files.length ? ` in ${c.files.join(', ')}` : ` (${c.message})`} — skipped.`),
+    pushMsg,
+    'Main was not changed. Merge the release branch when you are ready.',
+  ];
+  return { ok: merged.length > 0, branch: name, sha, merged, conflicts, pushed, message: lines.join(' ') };
+}
+
+// ---- the lead as integrator (owner's Settings toggle) ----
+// The lead may fetch/pull and push task branches (hearth/…) and release branches
+// (release/…). Main/master, tags and releases are never the lead's: merging into
+// main only happens through mergeApproved() after an approval.
+const LEAD_PUSH = /^(hearth|release)\/[A-Za-z0-9._\/-]{1,110}$/;
+function leadGitAllowed(op, branch = '', def = 'main') {
+  if (op === 'fetch' || op === 'pull') return { ok: true };
+  if (op === 'push' || op === 'integrate') {
+    if (!branch || PROTECTED(branch, def) || !LEAD_PUSH.test(branch) || branch.includes('..')) return { ok: false, reason: `${branch || 'that branch'} is not a task or release branch; main stays protected` };
+    return { ok: true };
+  }
+  return { ok: false, reason: `${op} stays with the Owner (tags, releases and version numbers are never the lead's)` };
+}
+
+// Fetch from GitHub with your own git sign-in; never tags.
+async function leadFetch(dir) {
+  if (!(await git(dir, ['remote', 'get-url', 'origin'])).ok) return { ok: false, message: 'No GitHub remote.' };
+  const r = await git(dir, ['fetch', '--no-tags', '--prune', 'origin'], 180000);
+  if (!r.ok) return { ok: false, message: lastLine(r) };
+  const def = await defaultBranch(dir);
+  const sha = (await git(dir, ['rev-parse', '--short', `origin/${def}`])).out;
+  return { ok: true, branch: def, sha, message: `Fetched origin: ${def} is at ${sha}.` };
+}
+
+// Push one task or release branch (never main, never tags).
+async function leadPush(dir, branch) {
+  const def = await defaultBranch(dir);
+  const allowed = leadGitAllowed('push', branch, def);
+  if (!allowed.ok) return { ok: false, message: allowed.reason };
+  if (!(await git(dir, ['remote', 'get-url', 'origin'])).ok) return { ok: false, message: 'No GitHub remote.' };
+  const r = await git(dir, ['push', '--no-follow-tags', '-u', 'origin', `refs/heads/${branch}:refs/heads/${branch}`], 180000);
+  const sha = (await git(dir, ['rev-parse', '--short', `refs/heads/${branch}`])).out;
+  return r.ok ? { ok: true, branch, sha, message: `Pushed ${branch} (${sha}).` } : { ok: false, branch, message: lastLine(r) };
+}
+
+// Merge one approved task branch onto the release branch (created from the newest
+// main the first time), in a temporary worktree, then push it. Conflicts change
+// nothing and list the files.
+async function integrateIntoRelease(project, release, branch) {
+  const def = await defaultBranch(project);
+  for (const b of [release, branch]) {
+    const ok = leadGitAllowed('integrate', b, def);
+    if (!ok.ok) return { ok: false, message: ok.reason };
+  }
+  const hasRemote = (await git(project, ['remote', 'get-url', 'origin'])).ok;
+  if (hasRemote) await git(project, ['fetch', '--no-tags', 'origin'], 180000);
+  const local = (await git(project, ['rev-parse', '--verify', '--quiet', `refs/heads/${release}`])).ok;
+  const remote = hasRemote && (await git(project, ['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${release}`])).ok;
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hearth-integrate-'));
+  const wt = path.join(tmp, 'wt');
+  const add = local ? await git(project, ['worktree', 'add', wt, release])
+    : await git(project, ['worktree', 'add', '-b', release, wt, remote ? `origin/${release}` : await freshBase(project, def)]);
+  if (!add.ok) { fs.rmSync(tmp, { recursive: true, force: true }); return { ok: false, message: lastLine(add) }; }
+  let result;
+  try {
+    if (local && remote) await git(wt, ['merge', '--ff-only', `origin/${release}`]);
+    const r = await git(wt, [...(await idArgs(project)), 'merge', '--no-ff', '--no-edit', '-m', `Merge ${branch} into ${release}`, branch], 180000);
+    if (!r.ok) {
+      const conflicts = await conflictFiles(wt);
+      await git(wt, ['merge', '--abort']);
+      result = { ok: false, conflicts, release, message: conflicts.length ? `${branch} conflicts with ${release} in ${conflicts.join(', ')}. Nothing was changed.` : lastLine(r) };
+    } else {
+      result = { ok: true, release, sha: (await git(wt, ['rev-parse', '--short', 'HEAD'])).out };
+    }
+  } finally {
+    await git(project, ['worktree', 'remove', '--force', wt]);
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+  if (!result.ok) return result;
+  const pushed = hasRemote ? await leadPush(project, release) : { ok: false, message: 'No GitHub remote, kept locally.' };
+  return { ...result, pushed: pushed.ok, message: `Merged ${branch} onto ${release} (${result.sha}). ${pushed.ok ? `Pushed ${release}.` : pushed.message}` };
+}
+
 async function openPr(dir, branch, title, body) {
   const gh = find('gh');
   if (!gh) return { ok: false, message: 'GitHub CLI (gh) is not installed.' };
@@ -278,4 +434,4 @@ async function releaseCreate(dir, { version, target, notes = '', draft = true })
   return { ok: true, tag, draft, url: r.out.split('\n').filter((l) => l.startsWith('https://')).pop() || '', message: `${draft ? 'Draft release' : 'Release'} ${tag} created${draft ? ' — press Publish on GitHub when ready' : ''}.` };
 }
 
-module.exports = { summarizePr, prView, prList, prMerge, releaseCreate, ownerIdentity, tools, setupGitAuth, isRepo, status, pull, pushBranch, mergeApproved, openPr, clone, initRepo, parseRepo, defaultBranch, find };
+module.exports = { leadGitAllowed, leadFetch, leadPush, integrateIntoRelease, updateFromMain, releaseBranch, summarizePr, prView, prList, prMerge, releaseCreate, ownerIdentity, tools, setupGitAuth, isRepo, status, pull, pushBranch, mergeApproved, openPr, clone, initRepo, parseRepo, defaultBranch, find };
