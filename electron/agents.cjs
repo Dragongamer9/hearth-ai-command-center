@@ -121,6 +121,8 @@ function run(file, args, { cwd, input, timeoutMs = 60000, signal } = {}) {
     child.stderr.on('data', (d) => { if (err.length < 2e5) err += d; });
     child.on('error', (e) => finish({ code: null, out, err: String(e.message), spawnError: true }));
     child.on('close', (code) => finish({ code, out, err }));
+    // A tool that exits before reading its prompt must not crash the app (EPIPE).
+    child.stdin.on('error', () => {});
     if (input != null) child.stdin.end(input);
     else child.stdin.end();
   });
