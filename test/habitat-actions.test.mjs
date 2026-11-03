@@ -326,3 +326,12 @@ test('closed-Habitat look covers every saved destination and live positions over
   assert.match(text, /ChatGPT: ChatGPT’s room/);
   assert.match(text, /Grok: Grok’s room/);
 });
+
+test('closed-Habitat watering presence ends at the visit boundary', () => {
+  const result = run(base().s, 'HABITAT: water garden');
+  assert.equal(result.results[0].ok, true);
+  const opts = { ids: IDS, names: NAMES, agents: AGENTS };
+  assert.match(describeRoom(result.store, 'anthropic', { ...opts, now: NOW + 14999 }), /Claude: garden courtyard/);
+  assert.match(describeRoom(result.store, 'anthropic', { ...opts, now: NOW + 15000 }), /Claude: Claude’s room/);
+  assert.match(describeRoom(result.store, 'anthropic', { ...opts, now: NOW - 1 }), /Claude: Claude’s room/);
+});
