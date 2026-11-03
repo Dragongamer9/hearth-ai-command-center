@@ -2,21 +2,29 @@
 // - Never downloads or installs without the user clicking a button.
 // - Disabled in development / unpackaged runs and when not running as an AppImage.
 // - Only published (non-draft, non-prerelease) GitHub Releases are offered.
+const path = require('node:path');
+const os = require('node:os');
+const debUp = require('./updater-deb.cjs');
+
 function createUpdater({ app, send }) {
   let autoUpdater = null;
   let status = { state: 'idle', version: null, percent: 0, message: null };
 
-  const enabled = app.isPackaged && Boolean(process.env.APPIMAGE);
+  // How the app was installed: AppImage (electron-updater, unchanged), .deb (updater-deb.cjs), or other.
+  const install = app.isPackaged ? debUp.detectInstall({ dpkgOwns: debUp.dpkgOwnsSync }) : 'dev';
+  const enabled = install === 'appimage' || install === 'deb';
   const reason = !app.isPackaged
     ? 'Updates are disabled in development builds.'
-    : !process.env.APPIMAGE
-      ? 'Updates only work when running the .AppImage file.'
+    : !enabled
+      ? 'Download the new version from the release page.'
       : null;
+  const link = install === 'other' ? debUp.RELEASES_PAGE : null;
 
   function emit(patch) {
     status = { ...status, ...patch };
     send('updater:status', status);
   }
+  const deb = install === 'deb' ? debUp.createDebUpdater({ app, emit, tmpDir: path.join(os.tmpdir(), `hearth-update-${process.getuid?.() ?? 'u'}`) }) : null;
 
   function init() {
     if (!enabled || autoUpdater) return;
@@ -44,9 +52,10 @@ function createUpdater({ app, send }) {
   }
 
   return {
-    info: () => ({ enabled, reason, status }),
+    info: () => ({ enabled, reason, status, install, link }),
     async check() {
       if (!enabled) return { ok: false, message: reason };
+      if (deb) return deb.check();
       init();
       try {
         await autoUpdater.checkForUpdates();
@@ -58,6 +67,7 @@ function createUpdater({ app, send }) {
     },
     async download() {
       if (!enabled || status.state !== 'available') return { ok: false, message: 'No update to download.' };
+      if (deb) return deb.download();
       try {
         emit({ state: 'downloading', percent: 0 });
         await autoUpdater.downloadUpdate();
@@ -69,8 +79,15 @@ function createUpdater({ app, send }) {
     },
     install() {
       if (!enabled || status.state !== 'ready') return { ok: false, message: 'No downloaded update to install.' };
+      if (deb) return deb.install();
       // User explicitly chose to restart now.
       setImmediate(() => autoUpdater.quitAndInstall(false, true));
+      return { ok: true };
+    },
+    // After a .deb install: the owner presses Restart now.
+    restart() {
+      if (status.state !== 'installed') return { ok: false, message: 'Nothing to restart for.' };
+      setImmediate(() => { app.relaunch(); app.exit(0); });
       return { ok: true };
     },
   };

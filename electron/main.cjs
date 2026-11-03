@@ -761,6 +761,7 @@ function registerIpc() {
   handle('updater:check', () => updater.check());
   handle('updater:download', () => updater.download());
   handle('updater:install', () => updater.install());
+  handle('updater:restart', () => updater.restart());
   registerOps();
 }
 

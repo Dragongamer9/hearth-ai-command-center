@@ -78,6 +78,7 @@ contextBridge.exposeInMainWorld('hearth', {
   checkForUpdates: () => ipcRenderer.invoke('updater:check'),
   downloadUpdate: () => ipcRenderer.invoke('updater:download'),
   installUpdate: () => ipcRenderer.invoke('updater:install'),
+  restartApp: () => ipcRenderer.invoke('updater:restart'),
   // Team ops (electron/ops/)
   opsProjects: () => ipcRenderer.invoke('ops:projects'),
   opsProjectAdd: (kind, input) => ipcRenderer.invoke('ops:projectAdd', kind, input),

@@ -1566,14 +1566,16 @@ function viewAudit() {
 
 function updateBlock() {
   const s = upd.status || {};
-  if (!upd.enabled) return `<p class="muted">${esc(upd.reason || 'Updates unavailable.')}</p>`;
+  if (!upd.enabled) return `<p class="muted">${esc(upd.reason || 'Updates unavailable.')}${upd.link?.startsWith('https://github.com/') ? ` <a href="${esc(upd.link)}" target="_blank">Open the release page</a>` : ''}</p>`;
   const msg = {
     idle: 'Not checked yet.',
     checking: 'Checking GitHub Releases…',
     none: s.message || 'You are on the latest version.',
     available: `Version ${s.version} is available.`,
     downloading: `Downloading… ${s.percent || 0}%`,
-    ready: `Version ${s.version} downloaded. Restart when you're ready.`,
+    ready: s.deb ? `Version ${s.version} downloaded and its checksum checked. Installing asks for your computer password.` : `Version ${s.version} downloaded. Restart when you're ready.`,
+    installing: s.message || 'Installing…',
+    installed: s.message || 'Installed. Restart to use the new version.',
     error: s.message || 'Update failed.',
   }[s.state] || '';
   return `
@@ -1581,8 +1583,9 @@ function updateBlock() {
     ${s.state === 'downloading' ? `<div class="progress"><div style="width:${s.percent || 0}%"></div></div>` : ''}
     <div class="row">
       <button class="btn small" data-upd="check" ${['checking', 'downloading'].includes(s.state) ? 'disabled' : ''}>Check for updates</button>
-      ${s.state === 'available' ? '<button class="btn primary small" data-upd="download">Download update</button>' : ''}
-      ${s.state === 'ready' ? '<button class="btn primary small" data-upd="install">Restart & install</button>' : ''}
+      ${s.state === 'available' ? `<button class="btn primary small" data-upd="download">${upd.install === 'deb' ? 'Download and install' : 'Download update'}</button>` : ''}
+      ${s.state === 'ready' ? `<button class="btn primary small" data-upd="install">${s.deb ? 'Install (asks for your password)' : 'Restart & install'}</button>` : ''}
+      ${s.state === 'installed' ? '<button class="btn primary small" data-upd="restart">Restart now</button>' : ''}
     </div>`;
 }
 
@@ -2653,7 +2656,7 @@ document.addEventListener('click', async (e) => {
     return render();
   }
   if (d.upd) {
-    const fn = { check: api.checkForUpdates, download: api.downloadUpdate, install: api.installUpdate }[d.upd];
+    const fn = { check: api.checkForUpdates, download: api.downloadUpdate, install: api.installUpdate, restart: api.restartApp }[d.upd];
     const res = await fn();
     if (res && !res.ok && res.message) toast(res.message);
   }

@@ -425,10 +425,10 @@ await session('habitat-light', { scenario: 'populated', theme: 'light', habitat:
 await session('habitat-actions', { scenario: 'populated', theme: 'dark', habitat: true, habitatActions: true }, async ({ page, shot, nav }) => {
   await nav('chat');
   await page.fill('#chat-text', '@claude take a short break in the Habitat'); await page.keyboard.press('Enter');
-  await page.waitForFunction(() => document.querySelectorAll('.hab-results .ok').length >= 4, null, { timeout: 15000 }).catch(() => {});
-  check(await page.locator('.hab-results .ok').count() === 4, `four Habitat lines got a ✓ in chat (${await page.locator('.hab-results .ok').count()})`);
+  await page.waitForFunction(() => document.querySelectorAll('.ops-results .ok').length >= 4, null, { timeout: 15000 }).catch(() => {});
+  check(await page.locator('.ops-results .ok').count() >= 4, `four Habitat lines got a ✓ in chat (${await page.locator('.ops-results .ok').count()})`);
   check(!(await page.textContent('#chat-log')).includes('break before the next Storage task.\nHABITAT'), 'HABITAT lines are shown as results, not as reply text');
-  await page.locator('.hab-results').last().scrollIntoViewIfNeeded();
+  await page.locator('.ops-results').last().scrollIntoViewIfNeeded();
   await shot('chat-habitat-lines-checked');
   await nav('audit');
   check((await page.textContent('.main')).includes('Claude placed a lantern in its room'), 'audit log: Claude placed a lantern in its room');
