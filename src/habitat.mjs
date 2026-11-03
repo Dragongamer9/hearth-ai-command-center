@@ -259,9 +259,16 @@ function drawActor(ctx, a, agent, beh, th, t, reduced) {
     px(ctx, x + 4, y + 15, 8, 1, alpha('#000000', 0.18));
     drawMap(ctx, rows, x, y + bob, pal, { mirror: a.dir === 'left' });
   }
-  const top = a.pose === 'sleep' ? y - 2 : a.pose === 'sit' && a.mode === 'desk' ? y - 6 : y - 1;
-  if (beh.icon && beh.icon !== 'lock') drawIcon(ctx, beh.icon, x + 8, top, th, t, reduced);
-  if (beh.star) drawMap(ctx, ICONS.star, x + (beh.icon && beh.icon !== 'lock' ? 13 : 4), top - (beh.icon && beh.icon !== 'lock' ? 4 : 7), ICON_PAL(th));
+  const icon = beh.icon && beh.icon !== 'lock' ? beh.icon : null;
+  if (a.pose === 'sit' && a.mode === 'desk') {
+    // Beside the head, so the task id on the desk stays readable.
+    if (icon) drawIcon(ctx, icon, x + 21, y + 4, th, t, reduced);
+    if (beh.star) drawMap(ctx, ICONS.star, x - 7, y - 1, ICON_PAL(th));
+    return;
+  }
+  const top = a.pose === 'sleep' ? y - 2 : y - 1;
+  if (icon) drawIcon(ctx, icon, x + 8, top, th, t, reduced);
+  if (beh.star) drawMap(ctx, ICONS.star, x + (icon ? 13 : 4), top - (icon ? 4 : 7), ICON_PAL(th));
 }
 
 function drawDoor(ctx, room, th) {
