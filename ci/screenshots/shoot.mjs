@@ -235,7 +235,7 @@ await session('070', { scenario: 'populated', theme: 'dark', flows: true }, asyn
   await nav('chat');
   await page.fill('#chat-text', '@perplexity quick check'); await page.keyboard.press('Enter'); await page.waitForTimeout(800);
   await page.click('.team-status [data-recheck]'); await page.waitForTimeout(800);
-  check((await page.textContent('#team-presence')).includes('API key rejected'), 'status panel keeps the rejected key after Re-check');
+  check((await page.textContent('#team-panel')).includes('API key rejected'), 'status panel keeps the rejected key after Re-check');
   // Owner input while an AI is typing
   await page.fill('#chat-text', '@claude plan the Storage page'); await page.keyboard.press('Enter'); await page.waitForTimeout(600);
   check(await page.locator('.msg.typing').count() === 1, 'Claude is typing');
