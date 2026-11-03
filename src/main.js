@@ -1,4 +1,5 @@
 import './styles.css';
+import { teamPresence } from './presence.mjs';
 import { policyCheck } from './policy.mjs';
 import { recipients, buildPrompt, buildDelta, parseProposals, parseDirectives, applyEdit, applyRetract, makeRequest, decideRequest, blockedAgents, mentions, NAMES, PERMISSION_KINDS } from './chat.mjs';
 import { buildTaskBrief, nextAgent, parseStatus, taskRunState, recoverInterrupted, RUN_STATES } from './team.mjs';
@@ -53,6 +54,7 @@ let prov = { encryption: false, weakEncryption: false, defaults: {}, keys: {} };
 let upd = { enabled: false, reason: '', status: { state: 'idle' } };
 let hearthTheme = { found: false, tokens: {}, css: '', dir: '~/.config/hearth' };
 let consoleOut = {};
+const activeCalls = new Map();
 
 const uid = () => Math.random().toString(36).slice(2, 8).toUpperCase();
 const now = () => new Date().toISOString();
@@ -145,7 +147,9 @@ function statusOf(a) {
   const b = busyOn(a);
   if (b) return { text: b[0].startsWith('CHAT') ? 'working in team chat' : `working on T-${b[0]}`, cls: 'accent', live: true };
   if (ui.typing === a) return { text: 'replying in team chat', cls: 'accent', live: true };
+  if (activeCalls.has(a)) return { text: 'responding to a request', cls: 'accent', live: true };
   if (blocked().includes(a)) return { text: 'waiting for your answer', cls: 'warn' };
+  if (c.authFailed) return { text: method(a) === 'api' ? 'API key rejected' : 'needs sign-in', cls: 'warn' };
   if (method(a) === 'api') return prov.keys[a] ? { text: 'linked (API key)', cls: 'good' } : { text: 'needs API key', cls: 'warn' };
   if (a === 'ollama') return c.installed ? (c.models?.length ? { text: 'running', cls: 'good' } : { text: 'no models yet', cls: 'warn' }) : { text: 'not running', cls: 'warn' };
   if (!c.installed) return { text: 'not installed', cls: 'warn' };
@@ -316,12 +320,20 @@ function markOut(a, err) {
 // One way to talk to any agent, whatever it's linked by. Marks agents that run out.
 async function callAgent(agent, prompt, opts = {}) {
   let res;
+  activeCalls.set(agent, (activeCalls.get(agent) || 0) + 1);
+  updatePresence();
   try {
     res = await api.run({ agent, prompt, model: state.models[agent] || undefined, ...opts });
   } catch (e) {
     res = { ok: false, error: { kind: 'error', message: cleanErr(e.message) } };
   }
+  const remaining = activeCalls.get(agent) - 1;
+  if (remaining) activeCalls.set(agent, remaining);
+  else activeCalls.delete(agent);
   if (!res.ok && res.error.kind === 'limit') markOut(agent, res.error);
+  if (!res.ok && res.error.kind === 'auth') cli[agent] = { ...cli[agent], signedIn: false, authFailed: true };
+  if (res.ok && cli[agent]?.authFailed) cli[agent] = { ...cli[agent], signedIn: true, authFailed: false };
+  updatePresence();
   return res;
 }
 
@@ -369,14 +381,27 @@ function chatMessage(m) {
   </div>`;
 }
 
+function updatePresence() {
+  const panel = document.getElementById('team-presence');
+  if (panel) panel.innerHTML = renderPresence();
+}
+
+function renderPresence() {
+  return AGENT_IDS.map((a) => {
+    const status = teamPresence(statusOf(a), outInfo(a));
+    return `<div class="team-member">${agentChip(a)}<span class="badge ${status.cls}">${status.live ? '<span class="dot pulse"></span>' : ''}${esc(status.text)}</span>${status.detail ? `<small>${esc(status.detail)}</small>` : ''}</div>`;
+  }).join('');
+}
+
 function viewChat() {
   const live = liveAgents();
   const target = (id, label) => `<button class="chip ${ui.target === id ? 'on' : ''}" data-target="${id}" ${id !== 'all' && !live.includes(id) ? 'disabled' : ''}>${label}</button>`;
   if (ui.target !== 'all' && ui.target !== 'relay' && !live.includes(ui.target)) ui.target = 'all';
-  const presence = AGENT_IDS.filter((a) => connected(a) || a === state.lead).map((a) => `<span class="agent ${AGENTS[a].cls}" title="${esc(state.roles[a] || DEFAULT_ROLES[a])} — ${esc(statusText(a))}"><i style="${live.includes(a) ? '' : 'opacity:.3'}"></i>${AGENTS[a].name}${a === state.lead ? ' ★' : ''}</span>`).join('');
+
   const asks = pendingAsks().length;
   return `<div class="chat">
-    <div class="chat-top"><div class="row" style="gap:10px">${presence}</div><span style="flex:1"></span>
+    <section class="team-status" aria-label="Team availability"><div class="row"><b>Team status</b><span class="grow"></span><button class="btn small ghost" data-recheck>Re-check</button><button class="btn small link" data-nav="agents">Manage agents →</button></div><div class="team-presence" id="team-presence">${renderPresence()}</div></section>
+    <div class="chat-top"><span style="flex:1"></span>
       ${asks ? `<span class="badge warn">${asks} waiting for your answer</span>` : ''}
       <span class="faint" style="font-size:11.5px" title="Each AI keeps one session for this room in its own CLI, so you can resume it there (Chat history → Resume).">${settings.chatResume ? 'Saved in each AI’s own CLI' : ''}</span>
       <button class="btn small ghost" data-checkin ${live.length && !ui.typing ? '' : 'disabled'}>Team check-in</button>
@@ -1918,6 +1943,8 @@ async function boot() {
     toast(`Startup problem: ${e.message}`);
   }
   render();
+  // Update only the panel so a usage pause can expire without replacing the draft or chat log.
+  setInterval(updatePresence, 15000);
   // In the background: pick up CLI sessions started outside the app, and PR status.
   setTimeout(() => { syncHistory(true); refreshPrs().then(() => { if (ui.view === 'overview') render(); }); }, 800);
 }
