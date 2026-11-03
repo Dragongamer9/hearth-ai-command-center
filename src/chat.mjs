@@ -53,7 +53,7 @@ export function teamContext({ agent, roster = [], lead = 'anthropic', board = []
     ...roster.map((r) => `- ${NAMES[r.id]}${r.id === agent ? ' (you)' : ''}${r.id === lead ? ' [LEAD]' : ''}: ${roleOf(r)} — ${r.status}`),
     '',
     board.length ? 'OPEN TASKS ON THE BOARD:' : 'The task board is empty.',
-    ...board.slice(0, 15).map((t) => `- T-${t.id} "${t.title}" — ${t.stage}, implementer ${NAMES[t.assignee] || 'none'}${t.state ? `, ${t.state}` : ''}`),
+    ...board.slice(0, 15).map((t) => `- T-${t.id} "${t.title}" — ${t.stage}, implementer ${NAMES[t.assignee] || 'none'}, reviewer ${NAMES[t.reviewer] || 'none'}${t.state ? `, ${t.state}` : ''}`),
     pending.length ? '\nPERMISSION REQUESTS WAITING FOR THE OWNER:' : '',
     ...pending.map((p) => `- R-${p.id} by ${NAMES[p.agent]}: ${PERMISSION_KINDS[p.kind] || p.kind} — ${p.what}`),
   ].filter((l) => l !== '').join('\n');
@@ -72,6 +72,7 @@ export function chatRules(agent, lead) {
     '- To put work on the board, write one line per task in exactly this format (the Owner gets Add / Add & start buttons):',
     `TASK: <title> | implementer: ${editors} | reviewer: ${editors}|local | action: code|docs|merge|release|deploy`,
     '- The reviewer must differ from the implementer. The local AI cannot implement (it can only review).',
+    '- If you are the REVIEWER named on a task and its work is finished, sign it off with one line, at the start of a line: APPROVE: T-<id> <short summary of your review> (it moves to Owner approval with your review attached), or CHANGES: T-<id> <what must change> (it goes back to its implementer). Only the task\'s own reviewer can do this; the Owner still decides on merging.',
     '- To fix one of YOUR OWN earlier messages, write a line: EDIT #<message id>: <the corrected full text>',
     '- To take back one of YOUR OWN earlier messages, write a line: RETRACT #<message id>',
     '- To hand the conversation to a teammate, write a line: HANDOFF: @<name> <what they should do>',
@@ -150,7 +151,7 @@ export function parseProposals(text) {
 // Pull EDIT / RETRACT / HANDOFF / ASK / PASS lines out of an AI reply.
 // Returns the reply text without those lines plus the structured requests.
 export function parseDirectives(text) {
-  const out = { text: '', edits: [], retracts: [], handoffs: [], asks: [], pass: false };
+  const out = { text: '', edits: [], retracts: [], handoffs: [], asks: [], signoffs: parseSignoffs(text), pass: false };
   const keep = [];
   for (const raw of String(text).split('\n')) {
     const line = raw.replace(/^[\s*\-•`>]+/, '').replace(/[*`]+$/g, '').replace(/^\*+/, '');
@@ -173,9 +174,60 @@ export function parseDirectives(text) {
     keep.push(raw);
   }
   out.text = keep.join('\n').trim();
-  out.pass = /^PASS\.?$/i.test(out.text) && !out.edits.length && !out.retracts.length && !out.asks.length && !out.handoffs.length;
+  out.pass = /^PASS\.?$/i.test(out.text) && !out.edits.length && !out.retracts.length && !out.asks.length && !out.handoffs.length && !out.signoffs.length;
   if (out.pass) out.text = '';
   return out;
+}
+
+// ---- Reviewer sign-off: "APPROVE: T-ABC123 note" / "CHANGES: T-ABC123 reason" ----
+// The lines stay in the visible message; this only extracts them.
+// Placeholder ids like T-XXXXXX (used when explaining the format) are ignored.
+export function parseSignoffs(text) {
+  const out = [];
+  for (const raw of String(text).split('\n')) {
+    const line = raw.replace(/^[\s*\-•`>]+/, '').replace(/[*`]/g, '');
+    const m = line.match(/^(APPROVE|APPROVED|CHANGES)\s*:\s*T-?([A-Z0-9]{4,12})\b[\s:.,;—–-]*(.*)$/i);
+    if (!m) continue;
+    const id = m[2].toUpperCase();
+    if (/^X+$/.test(id)) continue;
+    const verdict = m[1].toUpperCase() === 'CHANGES' ? 'changes' : 'approve';
+    if (out.some((o) => o.id === id)) continue; // first verdict per task wins
+    out.push({ verdict, id, reason: m[3].trim().slice(0, 2000) });
+  }
+  return out;
+}
+
+// Stages a reviewer may sign off from. Approve needs finished work; changes can
+// also pull a task back out of Owner approval before the owner decides.
+const SIGNOFF_FROM = { approve: ['checkpoint', 'testing', 'review'], changes: ['checkpoint', 'testing', 'review', 'approval'] };
+
+// Apply one sign-off to the task list. Only the reviewer named on the task (and
+// never its implementer) can sign off. Moves the stage, attaches the review as a
+// note and records it on t.review. Merging is untouched: the owner still approves.
+export function applySignoff(tasks, { agent, verdict, id, reason = '', review = '', running = false, at = new Date().toISOString() }) {
+  const t = (tasks || []).find((x) => x.id === id);
+  if (!t) return { ok: false, reason: `there is no task T-${id}` };
+  if (!t.reviewer || t.reviewer === 'none' || t.reviewer !== agent) return { ok: false, task: t, reason: `only the reviewer named on T-${id} (${NAMES[t.reviewer] || 'none'}) can sign it off` };
+  if (t.assignee === agent) return { ok: false, task: t, reason: `the implementer can't review their own work` };
+  if (running) return { ok: false, task: t, reason: `T-${id} is still being worked on` };
+  if (t.policy && !t.policy.ok) return { ok: false, task: t, reason: `T-${id} is blocked by the policy check` };
+  if (verdict === 'approve' && t.stage === 'approval') return { ok: false, task: t, reason: `T-${id} is already waiting for the Owner's approval` };
+  if (!SIGNOFF_FROM[verdict]?.includes(t.stage)) {
+    const why = ['approved', 'rejected'].includes(t.stage) ? 'the Owner has already decided on it' : 'its work isn\'t finished yet';
+    return { ok: false, task: t, reason: `T-${id} can't be signed off now (${why})` };
+  }
+  if (verdict === 'changes' && !reason.trim()) return { ok: false, task: t, reason: `CHANGES: T-${id} needs a reason` };
+  const name = NAMES[agent] || agent;
+  const text = String(review || reason).trim().slice(0, 5000);
+  const from = t.stage;
+  t.stage = verdict === 'approve' ? 'approval' : 'implementing';
+  t.updatedAt = at;
+  t.review = { by: agent, verdict, reason: reason.trim(), text, at, from };
+  t.notes = t.notes || [];
+  t.notes.push(verdict === 'approve'
+    ? { at, who: `${name} (review)`, text: `APPROVED for Owner approval.${text ? `\n\n${text}` : ''}` }
+    : { at, who: `${name} (review)`, text: `CHANGES REQUESTED — back to the implementer: ${reason.trim()}${text && text !== reason.trim() ? `\n\n${text}` : ''}` });
+  return { ok: true, task: t, from };
 }
 
 // Edit a chat message. AIs may only edit their own messages; the owner may edit any.

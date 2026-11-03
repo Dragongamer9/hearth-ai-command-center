@@ -1,6 +1,6 @@
 import './styles.css';
 import { policyCheck } from './policy.mjs';
-import { recipients, buildPrompt, buildDelta, parseProposals, parseDirectives, applyEdit, applyRetract, makeRequest, decideRequest, blockedAgents, mentions, NAMES, PERMISSION_KINDS } from './chat.mjs';
+import { recipients, buildPrompt, buildDelta, parseProposals, parseDirectives, applySignoff, applyEdit, applyRetract, makeRequest, decideRequest, blockedAgents, mentions, NAMES, PERMISSION_KINDS } from './chat.mjs';
 import { buildTaskBrief, nextAgent, parseStatus, taskRunState, recoverInterrupted, RUN_STATES } from './team.mjs';
 import { AGENTS, AGENT_IDS, WEB_ONLY, HEADLESS, EDITORS, API_CAPABLE, DEFAULT_ROLES, BILLING, ACCESS_NOTE, OLLAMA_NOTE } from './registry.mjs';
 import { HEARTH_OS, RED_FLAGS } from './hearth.mjs';
@@ -303,7 +303,7 @@ function chatCtx() {
     extraDirs: settings.extraDirs,
     pending: pendingAsks(),
     roster: AGENT_IDS.map((id) => ({ id, role: state.roles[id] || DEFAULT_ROLES[id], status: statusText(id) })),
-    board: openTasks().map((t) => ({ id: t.id, title: t.title, stage: STAGES[t.stage], assignee: t.assignee, state: RUN_STATES[taskRunState(t, { running: Boolean(ui.running[t.id]) })] })),
+    board: openTasks().map((t) => ({ id: t.id, title: t.title, stage: STAGES[t.stage], assignee: t.assignee, reviewer: t.reviewer, state: RUN_STATES[taskRunState(t, { running: Boolean(ui.running[t.id]) })] })),
   };
 }
 
@@ -480,9 +480,10 @@ async function runRoom(queue, { trigger = '', allow = [], hops = 0 } = {}) {
         else post({ who: 'system', text: `${NAMES[agent]} tried to retract #${id}: ${r.reason}.` });
       }
       let m = null;
-      if (!d.pass && (d.text || d.asks.length || d.handoffs.length)) {
+      if (!d.pass && (d.text || d.asks.length || d.handoffs.length || d.signoffs.length)) {
         const handoffNote = d.handoffs.map((h) => `→ handing off to ${NAMES[h.to]}${h.note ? `: ${h.note}` : ''}`).join('\n');
         m = post({ who: agent, text: [d.text, handoffNote].filter(Boolean).join('\n\n') || `${NAMES[agent]} needs your permission:`, model: res.via, proposals: parseProposals(d.text) });
+        applySignoffs(agent, d.signoffs, d.text);
         m.asks = d.asks.map((a) => {
           const req = makeRequest({ id: uid(), agent, kind: a.kind, what: a.what, why: a.why, context: 'chat', msgId: m.id });
           state.permissions.push(req);
@@ -521,6 +522,31 @@ async function runRoom(queue, { trigger = '', allow = [], hops = 0 } = {}) {
   }
   ui.typing = null;
   render();
+}
+
+// Reviewer sign-off from chat (or from an independent review run): APPROVE moves
+// the task to Owner approval with the review attached, CHANGES sends it back to
+// its implementer. Only the task's named reviewer can; merging still needs the owner.
+// Returns how many sign-offs were applied.
+function applySignoffs(agent, signoffs, review = '') {
+  let applied = 0;
+  for (const s of signoffs) {
+    const r = applySignoff(state.tasks, { ...s, agent, review, running: Boolean(ui.running[s.id]) });
+    if (!r.ok) {
+      post({ who: 'system', text: `${NAMES[agent]} tried to sign off T-${s.id}: ${r.reason}.` });
+      continue;
+    }
+    const t = r.task;
+    applied++;
+    if (s.verdict === 'approve') {
+      audit(`${NAMES[agent]} approved in review`, t.id, `${STAGES[r.from]} → Owner approval${s.reason ? ` · ${s.reason.slice(0, 200)}` : ''}`, agent);
+      post({ who: 'system', text: `T-${t.id} “${t.title}” passed ${NAMES[agent]}’s review and is now in Approvals, waiting for you. Nothing is merged until you press Approve.` });
+    } else {
+      audit(`${NAMES[agent]} requested changes`, t.id, `${STAGES[r.from]} → Implementing · ${s.reason.slice(0, 200)}`, agent);
+      post({ who: 'system', text: `${NAMES[agent]} asked for changes on T-${t.id} “${t.title}”: ${s.reason.slice(0, 300)}\nIt’s back with ${NAMES[t.assignee] || 'its implementer'}; press Continue on the task to let them fix it.` });
+    }
+  }
+  return applied;
 }
 
 function trimChat() {
@@ -617,6 +643,7 @@ function viewApprovals() {
         <div class="t">${esc(t.title)}</div>
         <div class="meta" style="margin-bottom:8px">${agentChip(t.assignee)}<span class="faint" style="font-size:12px">reviewed by</span>${agentChip(t.reviewer)}<span class="badge">${esc(ACTIONS[t.action])}</span>${t.pr ? `<a class="badge accent" href="${esc(t.pr.url)}" target="_blank">PR #${esc(t.pr.number)}</a>` : ''}</div>
         ${t.policy.warn.length ? `<div class="policy warn">${t.policy.warn.map(esc).join('<br>')}</div>` : ''}
+        ${t.review?.verdict === 'approve' ? `<div class="note"><div class="who">${esc(NAMES[t.review.by])} signed off · ${esc(time(t.review.at))}</div>${esc(t.review.text.length > 1200 ? `${t.review.text.slice(0, 1200)}…` : t.review.text || t.review.reason || 'Approved.')}</div>` : ''}
         <div class="row">${approveButtons(t)}
           <button class="btn small" data-changes="${t.id}">Request changes</button>
           <button class="btn danger small" data-reject="${t.id}">Reject</button>
@@ -1199,13 +1226,16 @@ async function askForTask(t, kind) {
   const who = t.reviewer;
   let summary = '';
   if (t.ws) summary = await api.workspaceSummary(t.id, t.ws.baseSha).catch(() => '');
-  const prompt = `You are an independent reviewer (${NAMES[who]}) in the Hearth AI Command Center. Look at the task's workspace (your current directory) and the shared progress below. List concerns, missing tests, and whether the owner should approve. Be concise. Do not modify files.\n\n${buildTaskBrief({ task: t, agent: who, summary })}`;
+  const prompt = `You are an independent reviewer (${NAMES[who]}) in the Hearth AI Command Center. Look at the task's workspace (your current directory) and the shared progress below. List concerns, missing tests, and whether the owner should approve. Be concise. Do not modify files. End with exactly one sign-off line: "APPROVE: T-${t.id} <one-line summary>" if the work is ready for the owner, or "CHANGES: T-${t.id} <what must change>" if it is not.\n\n${buildTaskBrief({ task: t, agent: who, summary })}`;
   ui.busy[t.id] = kind;
   render();
   const res = await callAgent(who, prompt, { mode: 'read', taskId: t.ws ? t.id : undefined, title: `Review: ${t.title}`, thread: `review-${t.id}`, historyText: `Independent review of T-${t.id}: ${t.title}` });
   delete ui.busy[t.id];
   const name = AGENTS[who].name;
-  t.notes.push(res.ok ? { at: now(), who: `${name} (review)`, text: res.text } : { at: now(), who: name, text: `${res.error.kind}: ${res.error.message}`, err: true });
+  // A sign-off line attaches the review itself, so it isn't added twice.
+  const signoffs = res.ok && t.reviewer === who ? parseDirectives(res.text).signoffs.filter((x) => x.id === t.id) : [];
+  if (!res.ok) t.notes.push({ at: now(), who: name, text: `${res.error.kind}: ${res.error.message}`, err: true });
+  else if (!signoffs.length || !applySignoffs(who, signoffs, res.text)) t.notes.push({ at: now(), who: `${name} (review)`, text: res.text });
   audit(res.ok ? `${name} reviewed` : `${name} review failed`, t.id, '', who);
   save();
   render();
@@ -1708,7 +1738,11 @@ document.addEventListener('click', async (e) => {
     t.decision = 'rejected';
     return setStage(t, 'rejected', 'Owner rejected', 'Branch kept; decision recorded.');
   }
-  if (d.changes) return setStage(task(d.changes), 'implementing', 'Changes requested', 'Sent back to implementer');
+  if (d.changes) {
+    const t = task(d.changes);
+    delete t.review; // a later sign-off must come from a fresh review
+    return setStage(t, 'implementing', 'Changes requested', 'Sent back to implementer');
+  }
   if (d.open !== undefined) {
     e.preventDefault();
     if (!d.open) return;
