@@ -21,6 +21,8 @@ const { createJobs } = require('./jobs.cjs');
 const { spawn } = require('node:child_process');
 const identity = require('./identity.cjs');
 const release = require('./release.cjs');
+const wfgit = require('./workflow.cjs');
+const gate = require('./gate.cjs');
 
 function exec(file, args, { cwd, timeoutMs = 60000, env, maxBuffer = 16 * 1024 * 1024 } = {}) {
   return new Promise((resolve) => {
@@ -189,6 +191,10 @@ function register(d) {
     const c = release.checkLead({ kind: k, leadActions: s.leadActions, switchOn: k === 'tag' ? s.leadTag : s.leadRelease, requested: version, next: ps.nextVersion, fileVer: release.fileVersion(ps.versionFile, file), exists });
     if (!c.ok) return { ok: false, message: c.reason };
     const sha = (await workspace.git(dir, ['rev-parse', ref])).out;
+    // The release gate: the checklist passed for exactly this commit (or the Owner overrode it).
+    // (fetched above, so ref is GitHub's main right now)
+    const rg = releaseGateFor(c.version, sha);
+    if (!rg.ok) return { ok: false, message: `Not ${k === 'tag' ? 'tagged' : 'released'}: ${rg.reason}.` };
     const g = await guard(dir, await releaseFrom(dir, sha), sha, k === 'tag' ? 'tagged' : 'released');
     if (g) return g;
     if (k === 'tag') {
@@ -198,10 +204,19 @@ function register(d) {
       return p.ok ? { ok: true, message: `Tagged ${sha.slice(0, 7)} as v${c.version} and pushed the tag.`, sha } : { ok: false, message: `Tag v${c.version} created locally, but the push failed: ${p.err.split('\n')[0]}` };
     }
     if (ps.releaseCommand) {
-      const r = await exec('/bin/sh', ['-c', ps.releaseCommand], { cwd: dir, timeoutMs: 30 * 60000, env: { ...process.env, HEARTH_RELEASE_VERSION: c.version } });
-      return r.ok ? { ok: true, message: `Release command finished for v${c.version}.`, log: redact(r.out).slice(-4000) } : { ok: false, message: `Release command failed: ${redact(r.err).split('\n').slice(-2).join(' ')}` };
+      // Runs in a clean worktree at exactly the gated commit, never the local checkout.
+      const tmp = path.join(os.tmpdir(), `hearth-relcmd-${crypto.randomBytes(4).toString('hex')}`);
+      const add = await workspace.git(dir, ['worktree', 'add', '--detach', tmp, sha], { timeoutMs: 120000 });
+      if (!add.ok) return { ok: false, message: `Couldn't check out ${sha.slice(0, 7)} for the release command.` };
+      try {
+        const r = await exec('/bin/sh', ['-c', ps.releaseCommand], { cwd: tmp, timeoutMs: 30 * 60000, env: { ...process.env, HEARTH_RELEASE_VERSION: c.version, HEARTH_RELEASE_SHA: sha } });
+        return r.ok ? { ok: true, message: `Release command finished for v${c.version} at ${sha.slice(0, 7)}.`, log: redact(r.out).slice(-4000) } : { ok: false, message: `Release command failed: ${redact(r.err).split('\n').slice(-2).join(' ')}` };
+      } finally { await workspace.git(dir, ['worktree', 'remove', '--force', tmp]); }
     }
     if (!(await workspace.git(dir, ['cat-file', '-e', `${ref}:.github/workflows/release.yml`])).ok || !repo) return { ok: false, message: 'This project has no release path (no .github/workflows/release.yml and no release command on the Project page).' };
+    // The workflow builds main's head: re-check right before dispatch that it is still the gated commit.
+    const now = await ghApi([`repos/${repo.owner}/${repo.repo}/commits/${def}`, '--jq', '.sha']);
+    if (!now.ok || now.out.trim() !== sha) return { ok: false, message: `Not released: ${def} on GitHub is ${now.ok ? now.out.trim().slice(0, 7) : 'unreadable'}, not the gated ${sha.slice(0, 7)}. Run the release preview again.` };
     const d = await ghApi(['-X', 'POST', `repos/${repo.owner}/${repo.repo}/actions/workflows/release.yml/dispatches`, '-f', `ref=${def}`]);
     return d.ok ? { ok: true, dispatched: true, message: `Started the release workflow for v${c.version} on ${def}. Progress is shown here as it runs.`, url: `https://github.com/${repo.owner}/${repo.repo}/actions/workflows/release.yml` } : { ok: false, message: `Couldn't start the release workflow: ${d.err.split('\n')[0]}` };
   });
@@ -263,7 +278,10 @@ function register(d) {
     return { ok: true, ...listProjects() };
   });
   handle('ops:projectRename', (id, name) => { projects.rename(String(id), name); return listProjects(); });
-  handle('ops:projectSettings', (patch) => { projects.setSettings(active().id, patch); return listProjects(); });
+  handle('ops:projectSettings', (patch) => {
+    try { projects.setSettings(active().id, patch); } catch (e) { return { ok: false, message: String(e.message || e) }; }
+    return listProjects();
+  });
 
   // ---- project memory ----
   handle('ops:memoryGet', async (decisions) => {
@@ -587,6 +605,144 @@ function register(d) {
     });
   });
 
+  handle('ops:jobRetry', (id) => jobs.retry(String(id)));
+
+  // ---- team workflow: truth card, verified start, run enforcement, sha lock, review packet ----
+  const g = (cwd, args, o) => workspace.git(cwd, args, o);
+  const taskWs = (id) => { const d = taskDir(String(id || '')); return fs.existsSync(d) ? d : null; };
+  const defOf = async () => (projectDir() ? gitops.defaultBranch(projectDir()) : 'main');
+  const shaOk = (x) => typeof x === 'string' && /^[0-9a-f]{7,40}$/.test(x);
+  handle('ops:truth', async (ids) => {
+    const out = {};
+    const def = await defOf();
+    for (const id of (Array.isArray(ids) ? ids : []).slice(0, 60)) { const d = taskWs(id); if (d) out[id] = await wfgit.truthFacts({ git: g, dir: d, def }); }
+    return out;
+  });
+  const nodeVersion = () => { try { return execFileSync(gitops.find('node') || 'node', ['--version'], { encoding: 'utf8', timeout: 10000 }).trim().replace(/^v/, ''); } catch { return null; } };
+  // Before each task run: fetch, fast-forward local main, merge main into the task branch
+  // (or stop with a conflict report), and check the runtime the project needs.
+  handle('ops:prepareRun', async (taskId) => {
+    const d = taskWs(taskId);
+    if (!d || !projectDir()) return { ok: false, reason: 'no task workspace' };
+    const def = await defOf();
+    const sync = await wfgit.syncMain({ git: g, project: projectDir(), def });
+    const merge = await wfgit.mergeMain({ git: g, dir: d, def, why: 'before the next run' });
+    const blockers = wfgit.runtimeCheck(d, { nodeVersion: nodeVersion(), has: (b) => Boolean(gitops.find(b)) });
+    if (!merge.ok && merge.conflict) blockers.unshift({ kind: 'conflict', title: 'Merge conflict with main', detail: merge.reason, next: 'Resolve the conflict in the task workspace (or ask the implementer to), then start the run again.' });
+    return { ok: merge.ok || !merge.conflict, sync, merge, blockers, facts: await wfgit.truthFacts({ git: g, dir: d, def }) };
+  });
+  handle('ops:snapshot', async (taskId) => { const d = taskWs(taskId); return d ? wfgit.snapshot({ git: g, dir: d }) : null; });
+  handle('ops:enforceVerify', async (taskId, before) => {
+    const d = taskWs(taskId);
+    if (!d || !before || !shaOk(before.head)) return { ok: true, commits: [], files: [] };
+    return wfgit.enforceVerify({ git: g, dir: d, taskId: String(taskId), before: { head: before.head, status: String(before.status || ''), stash: shaOk(before.stash) ? before.stash : null, tree: shaOk(before.tree) ? before.tree : null, untracked: Array.isArray(before.untracked) ? before.untracked.map(String) : [] } });
+  });
+  handle('ops:enforceDocs', async (taskId, startSha) => {
+    const d = taskWs(taskId);
+    if (!d || !shaOk(startSha)) return { ok: true, discarded: [], kept: [] };
+    const globs = String(active().settings.docsPaths || '').split(',').map((x) => x.trim()).filter(Boolean);
+    return wfgit.enforceDocs({ git: g, dir: d, startSha, globs });
+  });
+  handle('ops:splitFollowup', async (taskId, approved) => {
+    const d = taskWs(taskId);
+    if (!d) return { ok: false, reason: 'no task workspace' };
+    // Never while a run is working in that workspace.
+    if (activeCwds.has(d)) return { ok: false, busy: true, reason: 'a run is in progress in that workspace' };
+    return wfgit.splitFollowup({ git: g, dir: d, approved: String(approved || '') });
+  });
+  handle('ops:reviewData', async (taskId, from, changes) => {
+    const d = taskWs(taskId);
+    if (!d) return { ok: false };
+    const r = await wfgit.reviewData({ git: g, dir: d, from: shaOk(from) ? from : null, def: await defOf(), changes: Array.isArray(changes) ? changes.filter(shaOk) : [] });
+    if (r.ok) { r.diff = redact(r.diff); r.log = redact(r.log); }
+    return r;
+  });
+  // The lead's standing permissions (Routine, audited by the window, undoable): bring main
+  // into a hearth/ task branch, or revert one task-branch commit. Checked here, not trusted
+  // from the page: only while the lead switch is on, never main, tags or releases.
+  handle('ops:leadTaskGit', async (op, taskId, arg) => {
+    if (readSettings().leadActions !== true) return { ok: false, reason: 'the lead switch is off' };
+    const d = taskWs(taskId);
+    if (!d) return { ok: false, reason: `T-${taskId} has no task branch` };
+    if (activeCwds.has(d)) return { ok: false, reason: `T-${taskId} has a run in progress` };
+    const def = await defOf();
+    if (op === 'mergemain') return wfgit.mergeMain({ git: g, dir: d, def, why: 'lead: MERGE MAIN' });
+    if (op === 'revert') return wfgit.revertOnTask({ git: g, dir: d, sha: String(arg || ''), def });
+    if (op === 'undomerge') return wfgit.undoMergeMain({ git: g, dir: d, merge: String(arg?.merge || ''), before: String(arg?.before || '') });
+    return { ok: false, reason: 'unknown operation' };
+  });
+  // K. New images and videos after a run become attachments; workspace files move into the AI's assets folder.
+  handle('ops:collectAssets', async (taskId, agent, text, sinceMs) => {
+    const d = taskWs(taskId);
+    if (!d || !/^[a-z]+$/.test(String(agent))) return [];
+    const assetsDir = path.join(d, '.hearth-ai', 'assets', String(agent));
+    const found = await wfgit.scanAssets({ git: g, dir: d, assetsDir, text: String(text || '').slice(0, 20000), sinceMs: Number(sinceMs) || 0 });
+    // Copied into the assets folder, never moved: the workspace file may be part of the project.
+    return found.map((f) => { try { return f.source === 'workspace' ? { ...f, from: f.rel, rel: wfgit.copyIntoAssets(d, f.rel, assetsDir), copied: true } : f; } catch { return f; } });
+  });
+
+  // ---- I. the release gate (enforced here before any tag or release) ----
+  let gateState = null; // { version, sha, list, at, override }
+  handle('ops:releasePreview', async (version) => {
+    const dir = projectDir();
+    if (!dir) return { ok: false, message: 'Pick a project first.' };
+    const ps = active().settings;
+    const ver = String(version || ps.nextVersion || '').replace(/^v/, '');
+    await workspace.git(dir, ['fetch', '--quiet', '--tags', 'origin'], { timeoutMs: 90000 });
+    const ref = await baseOf(dir);
+    const f = await wfgit.releaseFacts({ git: g, dir, ref, version: ver, versionFile: ps.versionFile });
+    if (!f.ok) return { ok: false, message: f.reason };
+    // The full test suite at exactly that commit, in a temporary worktree.
+    let testsR = { status: 'not run', reason: 'no test command', command: null };
+    const command = tests.resolveTestCommand(ps.testCommand, dir, (await workspace.git(dir, ['show', `${f.sha}:package.json`])).out || '');
+    if (command) {
+      const tmp = path.join(os.tmpdir(), `hearth-release-${crypto.randomBytes(4).toString('hex')}`);
+      const add = await workspace.git(dir, ['worktree', 'add', '--detach', tmp, f.sha], { timeoutMs: 120000 });
+      if (add.ok) {
+        try {
+          if (tests.needsDeps(command, tmp)) testsR = { status: 'not run', reason: 'no dependencies installed (set the test command to e.g. "npm ci && npm test")', command };
+          else { const r = await tests.runTests({ command, cwd: tmp, timeoutMs: ps.testTimeoutMin * 60000 }); testsR = { status: r.status, command, log: tests.redactTokens(redact(r.log)).slice(-4000) }; }
+        } finally { await workspace.git(dir, ['worktree', 'remove', '--force', tmp]); }
+      } else testsR = { status: 'not run', reason: `couldn't check out ${f.sha.slice(0, 7)}`, command };
+    }
+    const auth = identity.scanCommits(identity.parseLog(await range(dir, f.lastTag, f.sha)), applyIdentity());
+    const list = gate.releaseChecklist({ version: ver, next: ps.nextVersion, fileVersion: release.fileVersion(ps.versionFile, f.versionText), sha: f.sha, notes: f.notes, commits: f.commits, tasks: f.tasks, tests: testsR, authorship: auth });
+    gateState = { version: ver, sha: f.sha, list, at: Date.now(), override: null };
+    return { ok: true, version: ver, sha: f.sha, ref, lastTag: f.lastTag, tasks: f.tasks, commits: f.commits.slice(0, 80), notesRel: f.notesRel, notes: f.notes, tests: testsR, list, gate: gate.releaseGate(list) };
+  });
+  // Only the owner can override, with a reason, in a native dialog (never the lead).
+  handle('ops:releaseOverride', async (version, reason) => {
+    const ver = String(version || '').replace(/^v/, '');
+    if (!gateState || gateState.version !== ver) return { ok: false, message: 'Run the release preview first.' };
+    const why = String(reason || '').trim().slice(0, 300);
+    if (!why) return { ok: false, message: 'Write why you are overriding the checklist.' };
+    const failed = gateState.list.filter((c) => !c.ok).map((c) => c.label);
+    if (dialog.showMessageBoxSync(getWindow(), { type: 'warning', message: `Override the release checklist for v${ver}?`, detail: `Failing: ${failed.join('; ') || 'nothing'}.\nYour reason: ${why}`, buttons: ['Override', 'Cancel'], defaultId: 1, cancelId: 1 }) !== 0) return { ok: false, message: 'Cancelled.' };
+    gateState.override = { by: 'owner', reason: why, at: Date.now() };
+    return { ok: true, gate: gate.releaseGate(gateState.list, gateState.override) };
+  });
+  // The gate for a tag or release of `version` at commit `sha`.
+  const releaseGateFor = (version, sha) => {
+    const ver = String(version || '').replace(/^v/, '');
+    if (!gateState || gateState.version !== ver) return { ok: false, reason: `run the release preview for v${ver} first (Release gate page)` };
+    if (sha && gateState.sha !== sha) return { ok: false, reason: `main moved since the release preview (${gateState.sha.slice(0, 7)}→${String(sha).slice(0, 7)}); run the preview again` };
+    if (Date.now() - gateState.at > 6 * 3600e3) return { ok: false, reason: 'the release preview is older than 6 hours; run it again' };
+    return gate.releaseGate(gateState.list, gateState.override);
+  };
+  // Tags and releases on GitHub (to warn about ones the app didn't make).
+  handle('ops:remoteTags', async () => {
+    const dir = projectDir();
+    if (!dir || !(await workspace.git(dir, ['remote', 'get-url', 'origin'])).ok) return { ok: false, tags: [] };
+    const r = await workspace.git(dir, ['ls-remote', '--tags', 'origin'], { timeoutMs: 60000 });
+    const tags = r.ok ? wfgit.parseLsRemote(r.out) : [];
+    const repo = await ghRepo();
+    if (repo) {
+      const rel = await ghApi(['-X', 'GET', `repos/${repo.owner}/${repo.repo}/releases`, '-f', 'per_page=20']);
+      try { for (const x of JSON.parse(rel.out)) if (x?.tag_name && !tags.some((t) => t.name === x.tag_name)) tags.push({ name: x.tag_name, sha: null, release: true }); } catch {}
+    }
+    return { ok: r.ok, tags };
+  });
+
   // ---- settings or projects file edited outside the app: the owner keeps or discards it ----
   const diskNotified = { settings: false, projects: false };
   setInterval(() => {
@@ -620,6 +776,17 @@ function register(d) {
       return { ...useProject(dir), projectSwitched: true };
     },
     assetsEnv: (agent, cwd) => assetsEnv(agent, cwd),
+    // The owner's release form (git:release) goes through the same gate.
+    async releaseGate(version, target) {
+      const dir = projectDir();
+      if (!dir) return { ok: false, reason: 'no project' };
+      const t = String(target || '');
+      await workspace.git(dir, ['fetch', '--quiet', '--no-tags', 'origin'], { timeoutMs: 90000 });
+      const ref = (await workspace.git(dir, ['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${t}`])).ok ? `origin/${t}` : t;
+      const sha = (await workspace.git(dir, ['rev-parse', '--verify', '--quiet', ref])).out || null;
+      // The release is created at exactly this commit (gh release create --target <sha>).
+      return { ...releaseGateFor(version, sha), sha };
+    },
     imageInfo: (file) => media.imageInfo(file),
     withMemory: (prompt) => memory.withMemory(prompt, readMemory()),
     // Stall watchdog for an editing run in a task worktree.

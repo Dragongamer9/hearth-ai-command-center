@@ -9,6 +9,7 @@ const RULES = [
   '- Releases and version numbers are the owner\'s. Never pick, bump or apply a version number. Releases and tags only for the owner\'s Next version, and only with the owner\'s lead switches on.',
   '- Settings must be remembered and must never change by themselves.',
   '- Nothing reaches main without the owner\'s approval.',
+  '- RED FLAG: the app must always be updatable from within the app (AppImage and .deb). Never break or bypass the in-app updater.',
 ];
 
 function seed({ name = 'this project', layout = [], decisions = [], at = new Date().toISOString() } = {}) {

@@ -66,7 +66,7 @@ export function teamContext({ agent, roster = [], lead = 'anthropic', board = []
     ...roster.map((r) => `- ${NAMES[r.id]}${r.id === agent ? ' (you)' : ''}${r.id === lead ? ' [LEAD]' : ''}: ${roleOf(r)} — ${r.status}`),
     '',
     board.length ? 'OPEN TASKS ON THE BOARD:' : 'The task board is empty.',
-    ...board.slice(0, 15).map((t) => `- T-${t.id} "${t.title}" — ${t.stage}, implementer ${NAMES[t.assignee] || 'none'}${t.reviewer && t.reviewer !== 'none' ? `, reviewer ${NAMES[t.reviewer] || t.reviewer}` : ''}${t.state ? `, ${t.state}` : ''}${t.queue ? `, ${t.queue}` : ''}`),
+    ...board.slice(0, 15).map((t) => `- T-${t.id} "${t.title}" — ${t.stage}, implementer ${NAMES[t.assignee] || 'none'}${t.reviewer && t.reviewer !== 'none' ? `, reviewer ${NAMES[t.reviewer] || t.reviewer}` : ''}${t.state ? `, ${t.state}` : ''}${t.queue ? `, ${t.queue}` : ''}${t.truth && (agent === lead || agent === t.reviewer) ? `\n  truth (from git): ${t.truth}` : ''}`),
     pending.length ? (leadActions ? '\nPERMISSION REQUESTS WAITING FOR THE OWNER OR THE LEAD:' : '\nPERMISSION REQUESTS WAITING FOR THE OWNER:') : '',
     ...pending.map((p) => `- R-${p.id} by ${NAMES[p.agent]}: ${PERMISSION_KINDS[p.kind] || p.kind} — ${p.what}`),
   ].filter((l) => l !== '').join('\n');
@@ -86,7 +86,7 @@ export function chatRules(agent, lead, { leadActions = false } = {}) {
     '- To put work on the board, write one line per task in exactly this format (the Owner gets Add / Add & start buttons):',
     `TASK: <title> | implementer: ${editors} | reviewer: ${editors}|local | action: code|docs|merge|release|deploy`,
     '- The reviewer must differ from the implementer. The local AI cannot implement (it can only review).',
-    '- If you are the assigned REVIEWER of a task: when it is ready for the Owner write APPROVE: T-<task id> <short note>; to send it back write CHANGES: T-<task id> <what must be fixed>. Only the assigned reviewer counts, and APPROVE only moves it to Owner approval.',
+    '- If you are the assigned REVIEWER of a task: when it is ready for the Owner write APPROVE: T-<task id> @<commit you reviewed> <short note> (an APPROVE without the commit is refused); to send it back write CHANGES: T-<task id> <what must be fixed>. Only the assigned reviewer counts, and APPROVE only moves it to Owner approval.',
     ...(leadActions ? ['- With the lead switch on, APPROVE moves the task to the approval stage, where the lead (if allowed) or the Owner approves it.'] : []),
     ...(agent === 'ollama' ? [] : [ATTACH_RULE, extrasRules(agent)]),
     '- To fix one of YOUR OWN earlier messages, write a line: EDIT #<message id>: <the corrected full text>',

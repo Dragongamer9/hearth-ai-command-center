@@ -96,7 +96,14 @@ function readSettings() {
     leadTag: s.leadTag === true,
     // Every commit is made as this identity (set once by the owner).
     ownerIdentity: cleanIdentity(s.ownerIdentity),
+    // The Habitat 3D view's owner settings (view mode, Lighter 3D, walk view, avatar, study decor, notes).
+    view3d: cleanView3d(s.view3d),
   };
+}
+// Plain JSON only, small; the window normalises the fields (src/habitat3d/map.mjs normPrefs).
+function cleanView3d(v) {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+  try { const t = JSON.stringify(v); return t.length <= 20000 ? JSON.parse(t) : null; } catch { return null; }
 }
 function useProject(dir) {
   const s = readSettings();
@@ -111,6 +118,8 @@ function writeSettings(s) {
   const data = JSON.stringify(s, null, 2);
   const tmp = `${settingsFile()}.tmp-${process.pid}`;
   fs.writeFileSync(tmp, data, { mode: 0o600 });
+  // Keep the previous settings as .bak, then swap in the new file atomically.
+  try { if (fs.existsSync(settingsFile())) fs.copyFileSync(settingsFile(), `${settingsFile()}.bak`); } catch {}
   fs.renameSync(tmp, settingsFile());
   settingsMem = JSON.parse(data);
   settingsHash = hashText(data);
@@ -324,6 +333,7 @@ function registerIpc() {
     if ('localReviewCode' in patch) s.localReviewCode = patch.localReviewCode === true;
     for (const k of ['leadMerge', 'leadRelease', 'leadTag']) if (k in patch) s[k] = patch[k] === true;
     if ('ownerIdentity' in patch) s.ownerIdentity = cleanIdentity(patch.ownerIdentity);
+    if ('view3d' in patch) s.view3d = cleanView3d(patch.view3d);
     writeSettings(s);
     mainWindow.webContents.setZoomFactor(s.textSize / 100);
     return s;
@@ -547,7 +557,7 @@ function registerIpc() {
     const att = { ...r.att, url: pathToFileURL(r.att.path).href, ...(r.att.kind === 'image' && opsApi ? opsApi.imageInfo(r.att.path) : {}) };
     if (att.kind === 'video') {
       const f = await attachments.extractFrames(att.path, { ffmpeg: gitops.find('ffmpeg'), count: 4 });
-      Object.assign(att, { frames: f.frames, duration: f.duration, note: f.note });
+      Object.assign(att, { frames: f.frames, duration: f.duration, note: f.note, ...(f.width ? { width: f.width, height: f.height } : {}) });
     }
     return { ok: true, att };
   };
@@ -750,6 +760,13 @@ function registerIpc() {
     const s = readSettings();
     if (!s.project) return { ok: false, message: 'Pick a project first.' };
     if (!o || typeof o.version !== 'string' || o.version !== o.confirmVersion) return { ok: false, message: 'The two version fields must match exactly.' };
+    let gatedSha = null;
+    // The release gate: the checklist must pass for the commit being released (or the Owner overrides it).
+    if (opsApi) {
+      const rg = await opsApi.releaseGate(o.version, String(o.target || ''));
+      if (!rg.ok) return { ok: false, message: `Not released: ${rg.reason}.` };
+      gatedSha = rg.sha;
+    }
     const confirm = dialog.showMessageBoxSync(mainWindow, {
       type: 'warning',
       message: `Create release v${o.version} from ${o.target}?`,
@@ -759,7 +776,8 @@ function registerIpc() {
       cancelId: 1,
     });
     if (confirm !== 0) return { ok: false, message: 'Cancelled.' };
-    return gitops.releaseCreate(s.project, { version: o.version, target: String(o.target || ''), notes: redact(String(o.notes || '')), draft: o.draft !== false });
+    // Tag exactly the commit the gate checked, not whatever the branch is by then.
+    return gitops.releaseCreate(s.project, { version: o.version, target: gatedSha || String(o.target || ''), notes: redact(String(o.notes || '')), draft: o.draft !== false });
   });
   handle('git:clone', async (input) => {
     if (!gitops.find('git')) return { ok: false, message: 'git is not installed.' };
