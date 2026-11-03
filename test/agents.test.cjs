@@ -33,11 +33,21 @@ test('status of fake signed-in CLIs', async () => {
   assert.equal((await agents.status('openai', path.join(FIX, 'codex'))).signedIn, true);
 });
 
-test('shared workspace: Claude runs out, ChatGPT continues on the same branch, nothing lost', async () => {
-  // Hermetic: ignore this machine's global git identity.
-  const oldGlobal = process.env.GIT_CONFIG_GLOBAL;
+test('shared workspace: Claude runs out, ChatGPT continues on the same branch, nothing lost', async (t) => {
+  // Hermetic: config and GIT_AUTHOR_*/GIT_COMMITTER_* on this machine must not decide the commit email.
+  const saved = {};
+  const drop = ['GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL'];
+  const keys = ['GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM', ...drop];
+  for (const k of keys) saved[k] = process.env[k];
   process.env.GIT_CONFIG_GLOBAL = '/dev/null';
-  test.after?.(() => { if (oldGlobal === undefined) delete process.env.GIT_CONFIG_GLOBAL; else process.env.GIT_CONFIG_GLOBAL = oldGlobal; });
+  process.env.GIT_CONFIG_NOSYSTEM = '1';
+  for (const k of drop) delete process.env[k];
+  t.after(() => {
+    for (const k of keys) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  });
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hearth-test-'));
   const project = path.join(tmp, 'project');
   fs.mkdirSync(project);

@@ -104,6 +104,42 @@ test('go and coffee: idle only; work always wins', () => {
   assert.equal(a.visit, null, 'a task cancels the visit');
 });
 
+test('coffee is logged once when two AIs pick each other', () => {
+  const lines = (s, id, text) => (s.journal[id] || []).filter((e) => e.text === text).length;
+  const first = run(base().s, 'HABITAT: coffee with @gemini');
+  assert.equal(first.results[0].ok, true);
+  assert.equal(first.events.filter((e) => e.kind === 'coffee').length, 1);
+  assert.equal(lines(first.store, 'anthropic', 'had coffee with Gemini'), 1);
+  assert.equal(lines(first.store, 'google', 'had coffee with Claude'), 1);
+
+  // Saved and loaded between turns, as team chat does.
+  const saved = migrateStore(JSON.parse(JSON.stringify(first.store)));
+  const back = applyHabitatLines(saved, { agent: 'google', text: 'HABITAT: coffee with @claude', ids: IDS, agents: AGENTS, names: NAMES, now: NOW + 42000 });
+  assert.equal(back.results[0].ok, true);
+  assert.match(back.results[0].reason, /logged once/);
+  assert.equal(back.events.length, 0);
+  assert.equal(lines(back.store, 'anthropic', 'had coffee with Gemini'), 1);
+  assert.equal(lines(back.store, 'google', 'had coffee with Claude'), 1);
+  assert.equal(back.audits[0].event, 'Gemini joined Claude for coffee');
+
+  // The first AI picking them again in that hour is still the same coffee.
+  const retry = run(back.store, 'HABITAT: coffee with @gemini', { now: NOW + 60000 });
+  assert.equal(retry.events.length, 0);
+  assert.equal(lines(retry.store, 'anthropic', 'had coffee with Gemini'), 1);
+
+  // A different teammate is a different coffee.
+  const other = run(back.store, 'HABITAT: coffee with @grok', { now: NOW + 60000 });
+  assert.equal(other.events.length, 1);
+  assert.equal(lines(other.store, 'anthropic', 'had coffee with Grok'), 1);
+  assert.equal(lines(other.store, 'xai', 'had coffee with Claude'), 1);
+
+  // After the hour it is a new coffee, one new line in each journal.
+  const later = applyHabitatLines(back.store, { agent: 'google', text: 'HABITAT: coffee with @claude', ids: IDS, agents: AGENTS, names: NAMES, now: NOW + 3600e3 + 1 });
+  assert.equal(later.events.length, 1);
+  assert.equal(lines(later.store, 'google', 'had coffee with Claude'), 2);
+  assert.equal(lines(later.store, 'anthropic', 'had coffee with Gemini'), 2);
+});
+
 test('reduced motion: actions apply instantly, no walking', () => {
   const r = run(base().s, 'HABITAT: go hall', { reduced: true });
   assert.equal(r.events[0].instant, true);

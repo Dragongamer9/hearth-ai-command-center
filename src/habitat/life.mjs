@@ -81,7 +81,7 @@ export function emptyStore() {
     locks: {}, lockAll: false, board: {}, journal: {}, life: emptyLife(),
   };
 }
-export function emptyLife() { return { rate: {}, watered: {}, look: {}, undo: {}, events: [], jnotes: {} }; }
+export function emptyLife() { return { rate: {}, watered: {}, look: {}, undo: {}, events: [], jnotes: {}, coffees: [] }; }
 // Short printable text: no markup, no control characters, one line.
 export function cleanText(s, n = 200) {
   const t = String(s ?? '').replace(/<[^>]*>/g, ' ').replace(/[\u0000-\u001f\u007f<>`*_#|\[\]{}\\]/g, ' ').replace(/\s+/g, ' ').trim();
@@ -110,6 +110,8 @@ function normLife(l) {
     undo: map(o.undo, (v) => (isObj(v) && isObj(v.before) ? { label: String(v.label || ''), at: iso(v.at), before: v.before, undone: v.undone === true } : null)),
     events: Array.isArray(o.events) ? o.events.filter((e) => isObj(e) && typeof e.id === 'string' && Number.isFinite(e.at)).slice(-30) : [],
     jnotes: map(o.jnotes, (v) => (isObj(v) && typeof v.day === 'string' ? { day: v.day, n: int(v.n, 0, 99) } : null)),
+    // One open coffee per pair: who asked first, and whether the other AI has joined.
+    coffees: Array.isArray(o.coffees) ? o.coffees.filter((c) => isObj(c) && typeof c.key === 'string' && /^[^|]+\|[^|]+$/.test(c.key) && Number.isFinite(Number(c.at)) && typeof c.init === 'string' && c.key.split('|').includes(c.init)).slice(-24).map((c) => ({ key: c.key, at: Number(c.at), init: c.init, ...(c.joined === true ? { joined: true } : {}) })) : [],
   };
 }
 // One dated line in an AI's Habitat journal (newest last, capped).

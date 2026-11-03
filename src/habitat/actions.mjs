@@ -25,6 +25,21 @@ const propKind = (w) => { const k = String(w || '').toLowerCase().replace(/^(a|a
 const xy = (a, b) => ({ x: Number(a), y: Number(b) });
 const nameOf = (names, id) => names?.[id] || id;
 const article = (k) => (/^[aeiou]/.test(k) ? `an ${k}` : `a ${k}`);
+const pairKey = (a, b) => [a, b].sort().join('|');
+// A coffee these two started within the last hour, or null. The hour is one meeting.
+function openCoffee(s, agent, other, now) {
+  const rec = (s.life.coffees || []).find((c) => c.key === pairKey(agent, other));
+  if (!rec || !Number.isFinite(rec.at) || rec.at > now || now - rec.at >= HOUR) return null;
+  return rec;
+}
+function rememberCoffee(s, agent, other, now) {
+  const key = pairKey(agent, other);
+  const list = (s.life.coffees ||= []);
+  const rec = { key, at: now, init: agent };
+  const i = list.findIndex((c) => c.key === key);
+  if (i >= 0) list[i] = rec; else list.push(rec);
+  if (list.length > 24) list.splice(0, list.length - 24);
+}
 
 // ---------- parsing ----------
 // One entry per HABITAT: line, in order. Unknown commands come back as { cmd: 'unknown' }.
@@ -187,7 +202,16 @@ function act(s, c, { agent, who, room, me, ids, agents, names, now, world }) {
       if (other === agent) return no('coffee needs someone else');
       if (me?.task || me?.reviewing || (me && me.status !== 'idle')) return no('busy right now');
       if (!isIdle(agents.find((x) => x.id === other))) return no(`${nameOf(names, other)} isn’t free right now`);
-      return { ok: true, reason: `meeting ${nameOf(names, other)} in the break room`, label: `had coffee with ${nameOf(names, other)}`, journal: `had coffee with ${nameOf(names, other)}`, partnerJournal: [other, `had coffee with ${who}`], event: { kind: 'coffee', with: other } };
+      const name = nameOf(names, other);
+      // The first AI logs the coffee in both journals. The other AI picking them
+      // back in the same hour joins that coffee and does not log it again.
+      const open = openCoffee(s, agent, other, now);
+      if (open && (open.init !== agent || open.joined)) {
+        open.joined = true;
+        return { ok: true, reason: `already having coffee with ${name} — logged once`, label: `joined ${name} for coffee` };
+      }
+      rememberCoffee(s, agent, other, now);
+      return { ok: true, reason: `meeting ${name} in the break room`, label: `had coffee with ${name}`, journal: `had coffee with ${name}`, partnerJournal: [other, `had coffee with ${who}`], event: { kind: 'coffee', with: other } };
     }
     case 'water': {
       const day = dayKey(new Date(now));
