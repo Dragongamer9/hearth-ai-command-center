@@ -84,3 +84,53 @@ test('each CLI gets images the way it supports', () => {
   assert.deepEqual(agents.imageInputs('openai', ['/no/such/file.png']).args, [], 'missing files are dropped');
   assert.deepEqual(agents.imageInputs('openai', ['relative.png']).args, []);
 });
+
+test('images reach the CLIs from a data folder with spaces in its path', () => {
+  const spaced = path.join(tmp, 'config', 'Hearth AI Command Center', 'workspaces');
+  const img = att.saveBuffer(spaced, 'shot one.png', Buffer.from('png')).att.path;
+  assert.match(img, / /);
+  assert.deepEqual(agents.imageInputs('openai', [img]).args, ['--image', img], 'one argv entry per flag value, spaces intact');
+  const claude = agents.imageInputs('anthropic', [img]);
+  assert.ok(claude.prompt.split('\n').includes(img), 'Claude gets the whole path on its own line');
+  assert.deepEqual(claude.dirs, [path.dirname(img)]);
+  const escaped = img.replace(/ /g, '\\ ');
+  assert.ok(agents.imageInputs('google', [img], { agy: true }).prompt.includes(`@${escaped}`), 'agy @path has escaped spaces');
+  assert.ok(agents.imageInputs('qwen', [img]).pArg.includes(`@${escaped}`));
+});
+
+test("ATTACH paths: no absolute paths or '..', and a symlink is judged by what it points to", () => {
+  assert.equal(att.agentPath(project, '/etc/passwd').ok, false);
+  assert.equal(att.agentPath(project, '../outside.png').ok, false);
+  assert.equal(att.agentPath(project, 'shots/../../x.png').ok, false);
+  assert.equal(att.agentPath(project, 'shots/ui.png').file, path.join(project, 'shots', 'ui.png'));
+  fs.writeFileSync(path.join(tmp, '.env'), 'SECRET=1');
+  fs.symlinkSync('../.env', path.join(project, 'shot.png'));
+  const r = att.saveFromPath(root, path.join(project, 'shot.png'), { roots: [project, root] });
+  assert.equal(r.ok, false, 'shot.png -> ../.env is refused');
+  const inner = path.join(project, 'real.png');
+  fs.writeFileSync(inner, 'png');
+  fs.symlinkSync('real.png', path.join(project, 'alias.png'));
+  const ok = att.saveFromPath(root, path.join(project, 'alias.png'), { roots: [project, root] });
+  assert.equal(ok.ok, true);
+  assert.equal(fs.readFileSync(ok.att.path, 'utf8'), 'png', 'the real file is copied');
+});
+
+test('ffmpeg reads only the one local file with a fixed format', async () => {
+  const ff = path.join(tmp, 'ffmpeg-log');
+  const log = path.join(tmp, 'ff-args.log');
+  fs.writeFileSync(ff, `#!/usr/bin/env node
+const a = process.argv.slice(2);
+require('fs').appendFileSync(${JSON.stringify(log)}, JSON.stringify(a) + '\\n');
+if (!a.includes('-frames:v')) { console.error('Duration: 00:00:06.00'); process.exit(1); }
+require('fs').writeFileSync(a[a.length - 1], 'jpg');
+`, { mode: 0o755 });
+  const video = att.saveBuffer(root, 'clip.webm', Buffer.from('v')).att.path;
+  await att.extractFrames(video, { ffmpeg: ff, count: 3 });
+  const calls = fs.readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  assert.equal(calls.length, 4);
+  for (const a of calls) {
+    assert.equal(a[a.indexOf('-protocol_whitelist') + 1], 'file');
+    assert.equal(a[a.indexOf('-f') + 1], 'matroska');
+    assert.equal(a[a.indexOf('-i') + 1], `file:${video}`);
+  }
+});

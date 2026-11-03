@@ -127,14 +127,18 @@ function capArgPrompt(prompt, limit = ARG_PROMPT_LIMIT) {
 //   Codex        -i/--image <file>
 //   agy / Gemini CLI / Qwen Code  @path references in the prompt
 // Other tools get a note that an image was attached but they can't view it here.
+const atPath = (f) => f.replace(/([\\ ])/g, '\\$1');
 function imageInputs(agent, images = [], { agy = false } = {}) {
-  const files = images.filter((f) => typeof f === 'string' && path.isAbsolute(f) && !/\s/.test(f) && fs.existsSync(f)).slice(0, 8);
+  // Paths may contain spaces (the app's data folder is "~/.config/Hearth AI Command Center").
+  const files = images.filter((f) => typeof f === 'string' && path.isAbsolute(f) && !/[\n\r\0]/.test(f) && fs.existsSync(f)).slice(0, 8);
   const none = { args: [], prompt: '', pArg: '', dirs: [] };
   if (!files.length) return none;
-  if (agent === 'anthropic') return { ...none, prompt: `\n\nAttached images (open and look at these files): ${files.join(' ')}`, dirs: [...new Set(files.map((f) => path.dirname(f)))] };
+  // Claude Code: one full path per line, so spaces need no quoting.
+  if (agent === 'anthropic') return { ...none, prompt: `\n\nAttached images (open and look at these files, one path per line):\n${files.join('\n')}`, dirs: [...new Set(files.map((f) => path.dirname(f)))] };
   if (agent === 'openai') return { ...none, args: files.flatMap((f) => ['--image', f]) };
   if (agent === 'google' || agent === 'qwen') {
-    const refs = files.map((f) => `@${f}`).join(' ');
+    // Gemini CLI / agy / Qwen @path references: spaces are escaped with a backslash.
+    const refs = files.map((f) => `@${atPath(f)}`).join(' ');
     return agy ? { ...none, prompt: `\n\nAttached images: ${refs}` } : { ...none, pArg: ` Attached images: ${refs}`, dirs: [...new Set(files.map((f) => path.dirname(f)))] };
   }
   return { ...none, prompt: `\n\n(${files.length} image${files.length > 1 ? 's were' : ' was'} attached in chat, but this tool can't view images here: ${files.map((f) => path.basename(f)).join(', ')}.)` };

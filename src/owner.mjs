@@ -4,6 +4,8 @@ import { NAMES, PERMISSION_KINDS } from './chat.mjs';
 import { taskRunState } from './team.mjs';
 
 const CLOSED = ['approved', 'rejected'];
+// Commits are stored in full and shown short.
+export const short = (sha) => (sha ? String(sha).slice(0, 7) : '');
 // Stages where the implementer has handed the work over (Checkpoint included, so
 // finished work never sits there: the reviewer can move it on).
 export const REVIEWABLE = ['checkpoint', 'testing', 'review'];
@@ -53,10 +55,14 @@ export function ownerAction(task, { permissions = [], running = false, saving = 
   if (task.stage === 'approval') {
     const label = task.action === 'release' ? 'Approve release' : task.action === 'deploy' ? 'Approve deploy' : task.ws || task.pr || task.action === 'merge' ? 'Approve to merge' : 'Approve';
     const v = task.reviewVerdict?.verdict === 'approve' ? task.reviewVerdict : null;
-    return { kind: 'approve', label, reason: v ? `${NAMES[v.by]} approved${v.sha ? ` ${v.sha}` : ''}${v.reason ? `: ${v.reason}` : '.'}` : 'Ready for your sign-off.' };
+    return { kind: 'approve', label, reason: v ? `${NAMES[v.by]} approved${v.sha ? ` ${short(v.sha)}` : ''}${v.reason ? `: ${v.reason}` : '.'}` : 'Ready for your sign-off.' };
   }
   if (task.policy && !task.policy.ok) return { kind: 'policy', label: 'Fix policy issue', reason: task.policy.block?.[0] || 'Blocked by the policy check.' };
   if (running || saving) return null;
+  // Queued with Start next: it starts by itself when its AI is free. Nothing to press.
+  if (task.startNext) return { kind: 'queued', passive: true, label: `Queued for ${NAMES[task.assignee]}`, reason: `Starts as soon as ${NAMES[task.assignee]} finishes the current task.` };
+  // Done, but its reviewer can't run right now: it waits in review, or the owner picks another.
+  if (task.stage === 'review' && task.reviewWaiting) return { kind: 'pickreviewer', label: 'Pick reviewer', reason: `Waiting for ${NAMES[task.reviewer] || 'a reviewer'}${task.reviewer && task.reviewer !== 'none' ? ' (sent when they are free)' : ''}.` };
   const st = taskRunState(task, { running, saving });
   const last = (task.runs || []).slice(-1)[0];
   const who = last?.agent || task.assignee;
@@ -93,7 +99,7 @@ export function claimsDone(status, text = '') {
 // { ok: true } to accept the report, or { ok: false, note } to send the task back.
 export function checkDoneAfterReview(task, { head = null, status = '', text = '' } = {}) {
   if (claimsDone(status, text) && testResult(text) === 'failed') {
-    return { ok: false, note: `Not accepted: you reported this done${head ? ` at ${head}` : ''}, but the run's test output shows failures. Fix the failing tests, then report STATUS: DONE with TESTS: PASSED.` };
+    return { ok: false, note: `Not accepted: you reported this done${head ? ` at ${short(head)}` : ''}, but the run's test output shows failures. Fix the failing tests, then report STATUS: DONE with TESTS: PASSED.` };
   }
   const since = task?.changesSince;
   if (!since || !claimsDone(status, text)) return { ok: true };
@@ -102,7 +108,7 @@ export function checkDoneAfterReview(task, { head = null, status = '', text = ''
     return { ok: true };
   }
   const who = since.by === 'owner' ? 'the Owner' : `${NAMES[since.by] || since.by}'s review`;
-  return { ok: false, note: `Not accepted: you reported this done, but the task branch has no new commit since ${who} asked for changes (still at ${since.sha}). Make the requested fixes in this workspace first${since.reason ? `: ${since.reason}` : ''}. Then report STATUS: DONE.` };
+  return { ok: false, note: `Not accepted: you reported this done, but the task branch has no new commit since ${who} asked for changes (still at ${short(since.sha)}). Make the requested fixes in this workspace first${since.reason ? `: ${since.reason}` : ''}. Then report STATUS: DONE.` };
 }
 
 // "passed" / "failed" / "not run" from a run's output: the TESTS: line the brief asks
@@ -131,7 +137,7 @@ export function clearStaleApproval(task, head, at = new Date().toISOString()) {
   task.stage = 'review';
   delete task.reviewVerdict;
   task.notes = task.notes || [];
-  task.notes.push({ at, who: 'System', text: `The branch changed after ${NAMES[v.by] || v.by} approved ${v.sha} (now ${head}), so that approval was cleared and the task is back in review.` });
+  task.notes.push({ at, who: 'System', text: `The branch changed after ${NAMES[v.by] || v.by} approved ${short(v.sha)} (now ${short(head)}), so that approval was cleared and the task is back in review.` });
   task.updatedAt = at;
   return true;
 }
@@ -140,5 +146,5 @@ export function clearStaleApproval(task, head, at = new Date().toISOString()) {
 // Pushing is separate (the lead's job), so it is never implied here.
 export function doneLine(run) {
   const tests = TEST_LABEL[run?.tests] || 'tests not run';
-  return `Reported done: implemented${run?.tests === 'passed' ? ' and tested' : ''} at ${run?.head || 'the latest checkpoint'} (${tests}). Not pushed by this report; pushing is done by the lead.`;
+  return `Reported done: implemented${run?.tests === 'passed' ? ' and tested' : ''} at ${short(run?.head) || 'the latest checkpoint'} (${tests}). Not pushed by this report; pushing is done by the lead.`;
 }

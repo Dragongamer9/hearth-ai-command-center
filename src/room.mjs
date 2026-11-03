@@ -1,9 +1,10 @@
 // How a team-chat round runs. Pure functions (unit tested).
 import { mentions } from './chat.mjs';
 
-// "@everyone", "@all", "@team" or addressing "everyone" in plain words.
+// Only an explicit "@everyone" (or "@all" / "@team"). Plain words like "thanks
+// everyone" are an ordinary message and keep the normal turn-taking.
 export function asksEveryone(text) {
-  return /(^|\s)@(everyone|all|team)\b/i.test(String(text || '')) || /\beveryone\b/i.test(String(text || ''));
+  return /(^|\s)@(everyone|all|team)\b/i.test(String(text || ''));
 }
 
 // Who answers the owner's message, and whether they answer one after another or
@@ -39,7 +40,9 @@ export function ownerInterrupt(round, job) {
   const cancelled = round.waiting.filter((a) => !round.started.includes(a));
   round.stop = true;
   round.waiting = [];
-  round.next = [job];
+  // The owner's newest message goes first; follow-up rounds already queued (e.g. an AI
+  // answering a permission decision) are kept. An older owner message is replaced.
+  round.next = [{ ...job, fromOwner: true }, ...round.next.filter((j) => !j.fromOwner)];
   return { cancelled, restart: true };
 }
 
@@ -57,4 +60,11 @@ export function stopRound(round) {
 // A reply whose turn started before the owner's newest message is marked so.
 export function cameAfterOwner(chat = [], turnStartedAt = '') {
   return chat.some((m) => m.who === 'owner' && !m.auto && String(m.at) > String(turnStartedAt));
+}
+
+// Start the next pass of a round: clear the stop flags from the pass before.
+export function beginPass(round) {
+  round.stop = false;
+  round.stoppedByOwner = false;
+  round.started = [];
 }

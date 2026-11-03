@@ -24,7 +24,7 @@ function stub(opts) {
   if (flows) {
     // 0.7.0 flows: builder -> reviewer APPROVE -> Approve to merge, and the queue's Start next.
     tasks.unshift(
-      { id: 'RV0700', title: 'Team status panel above the chat', description: 'Shows who is ready, busy or out of usage.', assignee: 'openai', reviewer: 'google', action: 'code', stage: 'review', notes: [], runs: [{ agent: 'openai', status: 'done', head: 'c0ffee1', tests: 'passed', output: 'Panel added.\nTESTS: PASSED\nSTATUS: DONE', at: ago(9) }], done: { sha: 'c0ffee1', tests: 'passed', at: ago(9), by: 'openai' }, ws: { branch: 'hearth/rv0700-team-status', baseSha: 'abc1234' }, policy: pol(), createdAt: ago(60), updatedAt: ago(9) },
+      { id: 'RV0700', title: 'Team status panel above the chat', description: 'Shows who is ready, busy or out of usage.', assignee: 'openai', reviewer: 'google', action: 'code', stage: 'review', notes: [], runs: [{ agent: 'openai', status: 'done', head: 'c0ffee15d9a3b2e4f60718293a4b5c6d7e8f9012', tests: 'passed', output: 'Panel added.\nTESTS: PASSED\nSTATUS: DONE', at: ago(9) }], done: { sha: 'c0ffee15d9a3b2e4f60718293a4b5c6d7e8f9012', tests: 'passed', at: ago(9), by: 'openai' }, ws: { branch: 'hearth/rv0700-team-status', baseSha: 'abc1234' }, policy: pol(), createdAt: ago(60), updatedAt: ago(9) },
       { id: 'QA0701', title: 'Rework the Storage page layout', description: '', assignee: 'anthropic', reviewer: 'google', action: 'code', stage: 'intake', notes: [], runs: [], policy: pol(), createdAt: ago(50), updatedAt: ago(50) },
       { id: 'QB0702', title: 'Add drive health to the Storage page', description: '', assignee: 'anthropic', reviewer: 'google', action: 'code', stage: 'intake', notes: [], runs: [], policy: pol(), createdAt: ago(40), updatedAt: ago(40) },
       { id: 'QC0703', title: 'Only added, never started: drive icons', description: '', assignee: 'anthropic', reviewer: 'google', action: 'code', stage: 'intake', notes: [], runs: [], policy: pol(), createdAt: ago(45), updatedAt: ago(45) },
@@ -102,7 +102,7 @@ function stub(opts) {
     gitTools: () => ok(populated ? { git: '/usr/bin/git', gh: '/usr/bin/gh', ghUser: 'Dragongamer9' } : { git: '/usr/bin/git', gh: null, ghUser: null }),
     gitLogin: () => ok({ ok: false }), gitStatus: () => ok(git), gitPull: () => ok({ ok: false, message: 'CI preview' }), gitPushTask: () => ok({ ok: false }), gitPushBranch: () => ok({ ok: false }), gitMergeApproved: () => ok(flows ? { ok: true, sha: 'abc9999', branch: 'main', pushed: true, message: 'Merged into main (abc9999). Pushed main to GitHub.' } : { ok: false, message: 'CI preview' }),
     gitUpdateFromMain: () => ok({ ok: true, changed: false, message: 'Already up to date with main.' }), gitReleaseBranch: () => ok({ ok: false, message: 'CI preview' }),
-    workspaceHead: () => ok('c0ffee1'),
+    workspaceHead: () => ok('c0ffee15d9a3b2e4f60718293a4b5c6d7e8f9012'),
     gitLeadSync: () => ok({ ok: false, message: 'CI preview' }),
     attachSave: (name) => ok({ ok: true, att: { id: 'p1', kind: 'image', name, url: IMG, path: '/tmp/x/' + name, size: 100 } }),
     attachPick: () => ok([{ ok: true, att: { id: 'p2', kind: 'image', name: 'owner-photo.png', url: IMG, path: '/tmp/x/owner-photo.png', size: 100 } }]),
@@ -256,6 +256,8 @@ await session('070', { scenario: 'populated', theme: 'dark', flows: true }, asyn
   await shot('queue-start-next');
   await btn.click(); await page.waitForTimeout(400);
   await shot('queue-start-next-queued');
+  await page.keyboard.press('Escape'); await nav('board');
+  check((await page.textContent('[data-open="QB0702"]')).includes('Queued for Claude'), 'a Start-next task reads "Queued for Claude"');
   check(!(await page.textContent('.main')).includes('QC0703') || (await page.locator('[data-open="QC0703"] .badge', { hasText: 'Running' }).count()) === 0, 'a task that was only added did not start');
   // Images in team chat: an AI's screenshot shows inline, and the owner can attach one.
   await nav('chat');

@@ -94,3 +94,20 @@ test('a done report says "implemented and tested at commit X", separate from pus
   assert.equal(doneLine({ head: 'c0ffee1', tests: 'passed' }), 'Reported done: implemented and tested at c0ffee1 (tests passed). Not pushed by this report; pushing is done by the lead.');
   assert.match(doneLine({ head: 'c0ffee1', tests: 'not run' }), /implemented at c0ffee1 \(tests not run\)/);
 });
+
+test('a done task whose reviewer is not available waits in review with "Pick reviewer"', () => {
+  const a = ownerAction(mk({ stage: 'review', reviewWaiting: true }));
+  assert.equal(a.kind, 'pickreviewer');
+  assert.equal(a.label, 'Pick reviewer');
+  assert.match(a.reason, /Waiting for Grok \(sent when they are free\)/);
+  assert.match(ownerAction(mk({ stage: 'review', reviewWaiting: true, reviewer: 'none' })).reason, /Waiting for/);
+  assert.equal(ownerAction(mk({ stage: 'review' })), null, 'a review in progress needs nothing from the owner');
+});
+
+test('a task queued with Start next reads "Queued for <AI>", not "Approve to start"', () => {
+  const a = ownerAction(mk({ stage: 'intake', startNext: true }));
+  assert.equal(a.kind, 'queued');
+  assert.equal(a.passive, true);
+  assert.equal(a.label, 'Queued for Claude');
+  assert.equal(ownerAction(mk({ stage: 'intake' })).label, 'Approve to start');
+});

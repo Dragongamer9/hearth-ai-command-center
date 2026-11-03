@@ -79,3 +79,12 @@ test('agy is preferred over the old gemini when both are on the search path', ()
   process.env.PATH = `${path.join(__dirname, 'fixtures')}:${dir}:${old}`;
   try { assert.equal(agents.findBinary('google'), bin); } finally { process.env.PATH = old; }
 });
+
+test('an image under a folder with spaces reaches agy as an escaped @path', async () => {
+  const spaced = path.join(dir, 'Hearth AI Command Center', '.hearth-ai', 'attachments');
+  fs.mkdirSync(spaced, { recursive: true });
+  const img = path.join(spaced, 'ab12-screen shot.png');
+  fs.writeFileSync(img, 'png');
+  const { args } = await runArgs({ mode: 'read', images: [img] });
+  assert.ok(args[args.indexOf('-p') + 1].includes(`@${img.replace(/ /g, '\\ ')}`));
+});

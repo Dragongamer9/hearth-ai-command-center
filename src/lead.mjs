@@ -9,7 +9,8 @@ const CLOSED = ['approved', 'rejected'];
 const REVIEWABLE = ['checkpoint', 'testing', 'review'];
 // Always the owner's: releases and deploys, and the AIs' own merge/release/boot requests.
 const OWNER_ONLY_ACTIONS = ['release', 'deploy'];
-const OWNER_ONLY_PERMISSIONS = ['release', 'merge', 'boot'];
+// push, command and outside too: otherwise the lead could approve `git push origin main --tags`.
+const OWNER_ONLY_PERMISSIONS = ['release', 'merge', 'boot', 'push', 'command', 'outside'];
 
 export const leadOn = ({ enabled = false, agent, lead } = {}) => enabled === true && Boolean(agent) && agent === lead;
 
@@ -55,8 +56,15 @@ export function leadDecision(cmd, { lead, enabled = false, task = null, request 
     if (OWNER_ONLY_ACTIONS.includes(task.action)) return { ok: false, reason: `${task.action === 'release' ? 'releases' : 'deploys'} stay with the Owner` };
     if (task.policy && !task.policy.ok) return { ok: false, reason: `T-${task.id} is blocked by the policy check` };
     if (task.stage === 'approval') {
-      const review = task.reviewVerdict?.verdict === 'approve' && task.reviewVerdict.by !== lead ? task.reviewVerdict : null;
-      if (leadBuilt(task, lead) && !review) return { ok: false, reason: `${who} built T-${task.id}, so it needs another AI's review first (or the Owner's approval). It can't approve its own work` };
+      // A lead approval always needs an independent review: never the lead's own word,
+      // and the local model (no tools, can't look at the code) doesn't count for code.
+      const v = task.reviewVerdict?.verdict === 'approve' ? task.reviewVerdict : null;
+      const independent = v && v.by !== lead && !(v.by === 'ollama' && task.action !== 'docs');
+      if (!independent) {
+        if (leadBuilt(task, lead)) return { ok: false, reason: `${who} built T-${task.id}, so it needs another AI's review first (or the Owner's approval). It can't approve its own work` };
+        if (v?.by === lead) return { ok: false, reason: `${who} reviewed T-${task.id} itself, so it can't also merge it on its own word; the Owner approves this one` };
+        return { ok: false, reason: `T-${task.id} needs an approving review from an AI that can read the code (not the local model) before the lead can approve it` };
+      }
       return { ok: true, action: task.ws || task.pr ? 'merge' : 'approve' };
     }
     if (resumable) return { ok: true, action: 'resume' };
@@ -113,4 +121,12 @@ export function leadRules(lead) {
     '  ADD TASK: <title> — <details> | implementer: <name> | reviewer: <name> | action: code|docs',
     '- Limits that always hold: you cannot approve your own work (a task you built needs another AI\'s review first, or the Owner) or your own permission requests; releases, deploys, version numbers, tags and merge/release/boot permission requests stay with the Owner; new tasks go through the duplicate check. Everything you do is shown to the Owner, who can undo it.',
   ].join('\n');
+}
+
+// Who reviews a task: never the implementer, and preferably not the lead (who approves)
+// or the local model (no tools). `requested` wins when it's allowed.
+export function pickReviewer(implementer, { requested = null, candidates = [], lead = 'anthropic' } = {}) {
+  if (requested && requested !== implementer && candidates.includes(requested)) return requested;
+  const ok = candidates.filter((a) => a !== implementer);
+  return ok.find((a) => a !== lead && a !== 'ollama') || ok.find((a) => a !== lead) || ok[0] || 'none';
 }

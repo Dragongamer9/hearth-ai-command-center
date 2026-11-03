@@ -2,12 +2,12 @@ import './styles.css';
 import { policyCheck } from './policy.mjs';
 import { recipients, buildPrompt, buildDelta, parseProposals, parseDirectives, applyEdit, applyRetract, makeRequest, decideRequest, blockedAgents, mentions, NAMES, PERMISSION_KINDS, HOLD_BADGES, authProblem, makeHold, holdLifted } from './chat.mjs';
 import { buildTaskBrief, nextAgent, parseStatus, taskRunState, recoverInterrupted, RUN_STATES, roleKinds, taskNeed, inQueue, queueOf, nextQueued, placeNext, placeLast, startLabel, redistribute } from './team.mjs';
-import { parseVerdicts, applyVerdict, ownerAction, REVIEWABLE, requestChanges, reviewBaseline, checkDoneAfterReview, testResult, TEST_LABEL, clearStaleApproval, doneLine } from './owner.mjs';
+import { short, parseVerdicts, applyVerdict, ownerAction, REVIEWABLE, requestChanges, reviewBaseline, checkDoneAfterReview, testResult, TEST_LABEL, clearStaleApproval, doneLine } from './owner.mjs';
 import { panelState, holdStatus, keyTestLine } from './presence.mjs';
 import { findDuplicate } from './dupes.mjs';
 import { parseAttachLines, mediaFor } from './media.mjs';
-import { chatPlan, canOwnerSend, newRound, ownerInterrupt, stopRound, cameAfterOwner } from './room.mjs';
-import { leadOn, parseLeadLines, leadDecision, leadLabel, leadUndoable } from './lead.mjs';
+import { chatPlan, canOwnerSend, newRound, ownerInterrupt, stopRound, cameAfterOwner, beginPass } from './room.mjs';
+import { leadOn, parseLeadLines, leadDecision, leadLabel, leadUndoable, pickReviewer } from './lead.mjs';
 import { AGENTS, AGENT_IDS, WEB_ONLY, HEADLESS, EDITORS, API_CAPABLE, DEFAULT_ROLES, BILLING, ACCESS_NOTE, OLLAMA_NOTE } from './registry.mjs';
 import { HEARTH_OS, RED_FLAGS } from './hearth.mjs';
 import { tokensToCss, pickMode } from './theme.mjs';
@@ -201,7 +201,7 @@ function assignTask(t, agent, why) {
   if (!t || t.assignee === agent) return;
   const prev = t.assignee;
   t.assignee = agent;
-  if (t.reviewer === agent) t.reviewer = HEADLESS.find((a) => a !== agent && canRun(a)) || HEADLESS.find((a) => a !== agent) || 'none';
+  if (t.reviewer === agent) t.reviewer = pickReviewer(agent, { candidates: [...HEADLESS.filter(canRun), ...HEADLESS.filter((a) => !canRun(a))], lead: state.lead });
   audit(`Handed off to ${NAMES[agent]}`, t.id, why || `from ${NAMES[prev] || 'unassigned'}`);
 }
 const roleMap = () => Object.fromEntries(AGENT_IDS.map((a) => [a, state.roles[a] || DEFAULT_ROLES[a]]));
@@ -233,6 +233,10 @@ async function pumpQueues() {
     const next = nextQueued(state.tasks, a);
     if (next?.startNext) starts.push(runTask(next, a));
   }
+  // Done tasks waiting for a reviewer who couldn't run: send them now if they can.
+  for (const t of state.tasks) {
+    if (t.stage === 'review' && t.reviewWaiting && HEADLESS.includes(t.reviewer) && isFree(t.reviewer) && !ui.busy[t.id]) starts.push(askForTask(t, 'opinion'));
+  }
   await Promise.all(starts);
 }
 
@@ -252,7 +256,10 @@ function moveWaiting(agent, currentId) {
 const actionFor = (t) => ownerAction(t, { permissions: state.permissions, running: Boolean(ui.running[t.id]), saving: Boolean(ui.saving?.[t.id]), canRun, free: liveEditors() });
 function ownerButton(t) {
   const a = actionFor(t);
-  return a ? `<div class="owner-act"><button class="btn primary small" data-owneract="${t.id}">${esc(a.label)}</button><span class="why">${esc(a.reason)}</span></div>` : '';
+  if (!a) return '';
+  // Passive states (queued with Start next) read as a label, not a button.
+  if (a.passive) return `<div class="owner-act"><span class="badge accent">${esc(a.label)}</span><span class="why">${esc(a.reason)}</span></div>`;
+  return `<div class="owner-act"><button class="btn primary small" data-owneract="${t.id}">${esc(a.label)}</button><span class="why">${esc(a.reason)}</span></div>`;
 }
 
 // Reviewer lines (APPROVE:/CHANGES: T-…) in a reply. Only the assigned reviewer
@@ -301,11 +308,14 @@ async function recheckApprovals(list = state.tasks.filter((t) => t.stage === 'ap
   return changed;
 }
 
+// The commit that was approved (or reported done): what a merge must use.
+const approvedSha = (t) => (t.reviewVerdict?.verdict === 'approve' && t.reviewVerdict.sha) || t.done?.sha || null;
+
 // Short commit + test result for a reported-done task (board and Approvals).
 function doneBadge(t) {
   if (!t.done) return '';
   const cls = { passed: 'good', failed: 'bad' }[t.done.tests] || '';
-  return `${t.done.sha ? `<span class="badge mono" title="Reported done at this commit">${esc(t.done.sha)}</span>` : ''}<span class="badge ${cls}">${esc(TEST_LABEL[t.done.tests] || 'tests not run')}</span>`;
+  return `${t.done.sha ? `<span class="badge mono" title="Reported done at this commit">${esc(short(t.done.sha))}</span>` : ''}<span class="badge ${cls}">${esc(TEST_LABEL[t.done.tests] || 'tests not run')}</span>`;
 }
 
 // ---------- the lead acting for the owner ----------
@@ -352,9 +362,9 @@ async function leadAct(cmd, dec, t = null, request = null) {
     let r;
     if (pr && pr.state === 'OPEN') {
       if (pr.checks?.failed) return leadAct(cmd, { ok: false, reason: `PR #${pr.number} has failing checks` }, t);
-      r = await api.gitPrMerge(pr.number, { byLead: true }).catch((err) => ({ ok: false, message: cleanErr(err.message) }));
+      r = await api.gitPrMerge(pr.number, { byLead: true, sha: approvedSha(t) }).catch((err) => ({ ok: false, message: cleanErr(err.message) }));
     } else {
-      r = await api.gitMergeApproved(t.id, { byLead: true }).catch((err) => ({ ok: false, message: cleanErr(err.message) }));
+      r = await api.gitMergeApproved(t.id, { byLead: true, sha: approvedSha(t) }).catch((err) => ({ ok: false, message: cleanErr(err.message) }));
     }
     if (!r.ok) return leadAct(cmd, { ok: false, reason: `the merge stopped: ${r.message}` }, t);
     t.decision = 'approved';
@@ -367,9 +377,11 @@ async function leadAct(cmd, dec, t = null, request = null) {
     t.decision = 'approved';
     t.stage = 'approved';
     t.updatedAt = now();
-    leadRecord('approve', `T-${t.id}`, `${title} (nothing merged into main or released)`, { kind: 'stage', id: t.id, stage: 'approval' });
+    const entry = leadRecord('approve', `T-${t.id}`, `${title} (nothing merged into main or released)`, { kind: 'stage', id: t.id, stage: 'approval' });
     save();
     await leadIntegrate(t);
+    // Once it is on the release branch, Undo would not take it back off: don't offer it.
+    if (t.integratedInto) { entry.undo = null; post({ who: 'system', text: `T-${t.id} is now on ${t.integratedInto}, so this approval can't be undone here; it stays on the release branch.` }); }
   } else if (dec.action === 'changes') {
     const prev = t.stage;
     t.stage = 'implementing';
@@ -388,7 +400,7 @@ async function leadAct(cmd, dec, t = null, request = null) {
     return decide(request.id, dec.action === 'allowperm' ? 'approved' : 'denied', `${NAMES[lead]} (lead)`);
   } else if (dec.action === 'add') {
     const assignee = aliasOrNone(cmd.implementer, EDITORS) || (liveEditors().find((a) => a !== lead) || lead);
-    const reviewer = aliasOrNone(cmd.reviewer, HEADLESS) || HEADLESS.find((a) => a !== assignee && canRun(a)) || 'none';
+    const reviewer = pickReviewer(assignee, { requested: aliasOrNone(cmd.reviewer, HEADLESS), candidates: HEADLESS.filter(canRun), lead });
     const nt = makeTask({ title: cmd.title, description: cmd.details, assignee, reviewer, action: ['code', 'docs'].includes(cmd.action) ? cmd.action : 'code' }, `${NAMES[lead]} (lead)`);
     if (!nt) return;
     leadRecord('add', `T-${nt.id}`, `“${nt.title}”`, { kind: 'add', id: nt.id });
@@ -435,6 +447,7 @@ async function undoLead(id) {
     delete t.startNext;
   } else if (u.kind === 'stage') {
     if (!t || (t.stage === 'approved' && t.decision === 'approved' && u.stage !== 'approval')) return;
+    if (t.integratedInto) return toast(`T-${t.id} is already on ${t.integratedInto}; it stays on the release branch.`);
     t.stage = u.stage;
     if (u.stage === 'approval') delete t.decision;
     delete t.changesSince;
@@ -550,12 +563,14 @@ const chatCanEdit = () => Boolean(settings.chatEdits && settings.project && gh.g
 
 // After a checkpoint, back the branch up to GitHub (never main).
 // Lead handles GitHub: on by default only when GitHub is already set up.
-const leadGitHubOn = () => (typeof settings.leadGitHub === 'boolean' ? settings.leadGitHub : Boolean(gh.ghUser && repo.remote));
+// Lead handles GitHub: only when the owner turned it on (settings never change by themselves).
+const leadGitHubOn = () => settings.leadGitHub === true;
 
 async function autoPush(taskId) {
+  if (settings.autoPush === false) return null; // the owner turned automatic pushes off
   if (leadGitHubOn() && repo.remote) {
     const r = await api.gitLeadSync('push', taskId).catch((e) => ({ ok: false, message: cleanErr(e.message) }));
-    leadGitNote(r.ok ? `pushed ${r.branch} (${r.sha})` : `couldn't push ${r.branch || `T-${taskId}`}: ${r.message}`, taskId);
+    leadGitNote(r.ok ? `pushed ${r.branch} (${short(r.sha)})` : `couldn't push ${r.branch || `T-${taskId}`}: ${r.message}`, taskId);
     return r;
   }
   if (!settings.autoPush || !gh.ghUser || !repo.remote) return null;
@@ -583,7 +598,8 @@ async function leadIntegrate(t) {
   await leadFetch();
   const r = await api.gitLeadSync('integrate', t.id).catch((e) => ({ ok: false, message: cleanErr(e.message) }));
   t.notes.push({ at: now(), who: `${NAMES[state.lead]} (lead)`, text: r.message });
-  if (r.ok) leadGitNote(`merged T-${t.id} onto ${r.release} (${r.sha})${r.pushed ? ` and pushed ${r.release}` : ''}`, t.id);
+  if (r.ok) t.integratedInto = r.release;
+  if (r.ok) leadGitNote(`merged T-${t.id} onto ${r.release} (${short(r.sha)})${r.pushed ? ` and pushed ${r.release}` : ''}`, t.id);
   else {
     leadGitNote(`couldn't merge T-${t.id} onto release/next: ${r.message}`, t.id);
     if (r.conflicts?.length) {
@@ -831,8 +847,7 @@ async function runRoom(queue, opts = {}) {
   try {
     let job = { queue, opts };
     while (job) {
-      round.stop = false;
-      round.started = [];
+      beginPass(round);
       await roomPass(job.queue, job.opts);
       job = round.next.shift() || null;
     }
@@ -1057,7 +1072,7 @@ function viewBoard() {
     return `<div class="col"><div class="col-h">${esc(c.title)}<span class="n">${items.length}</span></div>
       ${items.map((t) => `<div class="task ${ui.selected === t.id ? 'sel' : ''}" data-open="${t.id}">
         <div class="t">${esc(t.title)}</div>
-        <div class="meta">${actionFor(t) ? '<span class="badge warn">Waiting for you</span>' : ''}${stageBadge(t)}${runBadge(t)}${queueBadge(t)}${agentChip(t.assignee)}${t.pr ? `<span class="badge accent">PR #${esc(t.pr.number || '')}</span>` : ''}${doneBadge(t)}</div>
+        <div class="meta">${actionFor(t) && !actionFor(t).passive ? '<span class="badge warn">Waiting for you</span>' : ''}${t.stage === 'review' && t.reviewWaiting ? `<span class="badge">Waiting for ${esc(NAMES[t.reviewer] || 'a reviewer')}</span>` : ''}${stageBadge(t)}${runBadge(t)}${queueBadge(t)}${agentChip(t.assignee)}${t.pr ? `<span class="badge accent">PR #${esc(t.pr.number || '')}</span>` : ''}${doneBadge(t)}</div>
         ${ownerButton(t)}
       </div>`).join('') || `<div class="empty">${{ Intake: 'New tasks land here after the policy check.', 'In progress': 'Nothing being built.', Verify: 'Nothing waiting for tests or review.', 'Owner approval': 'Nothing waiting for you.', Closed: 'No decisions yet.' }[c.title]}</div>`}
     </div>`;
@@ -1097,7 +1112,7 @@ function viewApprovals() {
       ${waiting.map((t) => `<div class="task" style="cursor:default">
         <div class="t">${esc(t.title)}</div>
         <div class="meta" style="margin-bottom:8px">${agentChip(t.assignee)}<span class="faint" style="font-size:12px">reviewed by</span>${agentChip(t.reviewer)}<span class="badge">${esc(ACTIONS[t.action])}</span>${t.pr ? `<a class="badge accent" href="${esc(t.pr.url)}" target="_blank">PR #${esc(t.pr.number)}</a>` : ''}${doneBadge(t)}</div>
-        ${t.reviewVerdict?.verdict === 'approve' ? `<div class="policy ok">${esc(NAMES[t.reviewVerdict.by])} approved ${t.reviewVerdict.sha ? `commit <span class="mono">${esc(t.reviewVerdict.sha)}</span>` : 'the review'}${t.reviewVerdict.reason ? `: ${esc(t.reviewVerdict.reason)}` : '.'}</div>` : ''}
+        ${t.reviewVerdict?.verdict === 'approve' ? `<div class="policy ok">${esc(NAMES[t.reviewVerdict.by])} approved ${t.reviewVerdict.sha ? `commit <span class="mono">${esc(short(t.reviewVerdict.sha))}</span>` : 'the review'}${t.reviewVerdict.reason ? `: ${esc(t.reviewVerdict.reason)}` : '.'}</div>` : ''}
         ${t.policy.warn.length ? `<div class="policy warn">${t.policy.warn.map(esc).join('<br>')}</div>` : ''}
         <div class="row">${approveButtons(t)}
           <button class="btn small" data-changes="${t.id}">Request changes</button>
@@ -1464,7 +1479,7 @@ function viewSettings() {
       ${check('chatEdits', 'AIs can work (edit, run, use git) right from Team chat')}
       ${check('chatResume', 'Keep one CLI session per AI for Team chat (resumable in each AI’s own CLI)')}
       <label style="display:flex;gap:10px;align-items:center;margin:4px 0;cursor:pointer;color:var(--text)"><input type="checkbox" data-toggleleadgh ${leadGitHubOn() ? 'checked' : ''}> Lead handles GitHub (pull, combine, push branches)</label>
-      <p class="faint" style="margin:0 0 6px 26px;font-size:12px">${esc(NAMES[state.lead])} pulls from GitHub, pushes task branches and merges approved tasks onto release/next with your own git/gh sign-in. Main, tags and releases stay yours.${typeof settings.leadGitHub === 'boolean' ? '' : gh.ghUser && repo.remote ? ' (On by default because GitHub is set up.)' : ' (Off until GitHub is set up.)'}</p>
+      <p class="faint" style="margin:0 0 6px 26px;font-size:12px">${esc(NAMES[state.lead])} pulls from GitHub, pushes task branches and merges approved tasks onto release/next with your own git/gh sign-in. Main, tags and releases stay yours.${gh.ghUser && repo.remote ? '' : ' Needs GitHub set up first.'} Off until you turn it on.</p>
       ${check('leadActions', `Let the lead AI (${esc(NAMES[state.lead])}) approve, deny, start and add tasks`)}
       <p class="faint" style="margin:0 0 6px 26px;font-size:12px">Off by default. ${esc(NAMES[state.lead])} can't approve its own work; releases, version numbers and tags stay yours. Every action shows in Team chat and the Audit log, with Undo where possible.</p>
       ${check('autoPush', 'Back up every checkpoint to its own branch on GitHub')}
@@ -1544,13 +1559,13 @@ function drawer() {
     <div class="kv">
       <span class="k">Stage</span><span>${esc(STAGES[t.stage])}</span>
       <span class="k">Implementer</span><span>${agentChip(t.assignee)}</span>
-      <span class="k">Reviewer</span><span>${agentChip(t.reviewer)}</span>
+      <span class="k">Reviewer</span><span>${t.stage === 'review' && t.reviewWaiting ? `<select id="pickrev-${t.id}">${HEADLESS.filter((a) => a !== t.assignee).map((a) => `<option value="${a}" ${a === t.reviewer ? 'selected' : ''}>${esc(AGENTS[a].name)}${canRun(a) ? '' : ' (not available)'}</option>`).join('')}</select> <button class="btn small primary" data-sendreview="${t.id}">Send for review</button>` : agentChip(t.reviewer)}</span>
       <span class="k">Created</span><span>${esc(time(t.createdAt))}</span>
     </div>
     ${t.description ? `<div class="note">${esc(t.description)}</div>` : ''}
     ${t.pr ? `<div class="sect">Pull request</div>${pr ? prCard(pr, t) : `<div class="pr"><a href="${esc(t.pr.url)}" target="_blank">PR #${esc(t.pr.number || '')} ↗</a> <button class="btn small ghost" data-prrefresh="${t.id}">Load status</button></div>`}` : ''}
     ${!closed && t.policy.ok ? `<div class="row" style="margin:10px 0">
-      ${next ? `<button class="btn primary small" data-advance="${t.id}">${esc(next[1])}</button>` : ''}
+      ${next && !(t.stage === 'intake' && EDITORS.includes(t.assignee)) ? `<button class="btn primary small" data-advance="${t.id}">${esc(next[1])}</button>` : ''}
       ${t.stage === 'approval' ? `${approveButtons(t)}<button class="btn small" data-changes="${t.id}">Request changes</button><button class="btn danger small" data-reject="${t.id}">Reject</button>` : ''}
     </div>` : ''}
     ${t.policy.ok && !closed ? workControls(t) : ''}
@@ -1575,7 +1590,7 @@ function modal() {
   if (ui.modal !== 'new') return '';
   const opt = (sel, ids) => ids.map((k) => `<option value="${k}" ${k === sel ? 'selected' : ''}>${esc(AGENTS[k].name)}${k !== 'none' && !connected(k) ? ' (not linked)' : ''}</option>`).join('');
   const firstEditor = liveEditors()[0] || state.lead;
-  const firstReviewer = liveAgents().find((a) => a !== firstEditor) || HEADLESS.find((a) => a !== firstEditor);
+  const firstReviewer = pickReviewer(firstEditor, { candidates: [...liveAgents(), ...HEADLESS.filter((a) => !liveAgents().includes(a))], lead: state.lead });
   return `<div class="modal-bg" data-modalbg><div class="modal">
     <h2>New task</h2><div class="muted" style="font-size:12.5px">Runs a policy & scope check when created. If it needs a version number, write the exact one — only you pick versions.</div>
     <label>Title</label><input type="text" id="f-title" placeholder="e.g. Add Settings › Storage page to Mantel">
@@ -1705,6 +1720,7 @@ function createTask(force = false) {
 
 async function askForTask(t, kind) {
   const who = t.reviewer;
+  delete t.reviewWaiting;
   let summary = '';
   if (t.ws) summary = await api.workspaceSummary(t.id, t.ws.baseSha).catch(() => '');
   const prompt = `You are an independent reviewer (${NAMES[who]}) in the Hearth AI Command Center. Look at the task's workspace (your current directory) and the shared progress below. List concerns, missing tests, and whether the owner should approve. Be concise. Do not modify files. End with exactly one line: "APPROVE: T-${t.id}" if it is ready for the owner, or "CHANGES: T-${t.id} <what must be fixed>" to send it back.\n\n${buildTaskBrief({ task: t, agent: who, summary })}`;
@@ -1839,12 +1855,16 @@ async function runTask(t, agent, handoff = null, depth = 0) {
       render();
     }
   }
-  // Nothing waits at Checkpoint: a done report goes straight to the reviewer.
-  if (res.ok && t.stage === 'checkpoint' && HEADLESS.includes(t.reviewer) && canRun(t.reviewer) && !ui.busy[t.id]) {
+  // Nothing waits at Checkpoint: a done report always moves to review. It goes to the
+  // reviewer now, or waits for them ("Waiting for …", with Pick reviewer for the owner).
+  if (res.ok && t.stage === 'checkpoint') {
     t.stage = 'review';
-    audit('Sent for review', t.id, NAMES[t.reviewer]);
+    const canReview = HEADLESS.includes(t.reviewer) && isFree(t.reviewer) && !ui.busy[t.id];
+    t.reviewWaiting = !canReview;
+    audit(canReview ? 'Sent for review' : 'Waiting for reviewer', t.id, NAMES[t.reviewer] || 'no reviewer set');
     save();
-    askForTask(t, 'opinion');
+    render();
+    if (canReview) askForTask(t, 'opinion');
   }
   await pumpQueues();
 }
@@ -1981,7 +2001,7 @@ async function syncHistory(quiet = false) {
   if (ui.view === 'history') render();
 }
 
-const CLICK = '[data-owneract],[data-updatemain],[data-releasebranch],[data-leadundo],[data-opendup],[data-adddup],[data-stopround],[data-toggleleadgh],[data-attach],[data-unattach],[data-lightbox],[data-closelightbox],[data-testkey],[data-nav],[data-new],[data-open],[data-close],[data-cancel],[data-create],[data-advance],[data-approve],[data-reject],[data-changes],[data-note],[data-delete],[data-savekey],[data-rmkey],[data-ask],[data-export],[data-reset],[data-upd],[data-opinion],[data-modalbg],[data-sendchat],[data-target],[data-addprop],[data-addall],[data-clearchat],[data-method],[data-login],[data-recheck],[data-locate],[data-available],[data-run],[data-stop],[data-freebuff],[data-fbdone],[data-openws],[data-pickproject],[data-autohandoff],[data-restore],[data-install],[data-installall],[data-installollama],[data-startprop],[data-showchanges],[data-dismisssetup],[data-signin],[data-disconnect],[data-toggleagent],[data-ghlogin],[data-gitrefresh],[data-useproject],[data-clone],[data-gitpull],[data-pushbranch],[data-openpr],[data-approvemerge],[data-approvepr],[data-access],[data-togglesetting],[data-adddir],[data-removedir],[data-expand],[data-opensignin],[data-openweb],[data-openexport],[data-makelead],[data-decide],[data-editmsg],[data-delmsg],[data-saveedit],[data-canceledit],[data-togglehist],[data-checkin],[data-histscan],[data-histimport],[data-histopen],[data-histresume],[data-histweb],[data-histwebin],[data-histremove],[data-prlist],[data-prrefresh],[data-release],[data-theme]';
+const CLICK = '[data-sendreview],[data-owneract],[data-updatemain],[data-releasebranch],[data-leadundo],[data-opendup],[data-adddup],[data-stopround],[data-toggleleadgh],[data-attach],[data-unattach],[data-lightbox],[data-closelightbox],[data-testkey],[data-nav],[data-new],[data-open],[data-close],[data-cancel],[data-create],[data-advance],[data-approve],[data-reject],[data-changes],[data-note],[data-delete],[data-savekey],[data-rmkey],[data-ask],[data-export],[data-reset],[data-upd],[data-opinion],[data-modalbg],[data-sendchat],[data-target],[data-addprop],[data-addall],[data-clearchat],[data-method],[data-login],[data-recheck],[data-locate],[data-available],[data-run],[data-stop],[data-freebuff],[data-fbdone],[data-openws],[data-pickproject],[data-autohandoff],[data-restore],[data-install],[data-installall],[data-installollama],[data-startprop],[data-showchanges],[data-dismisssetup],[data-signin],[data-disconnect],[data-toggleagent],[data-ghlogin],[data-gitrefresh],[data-useproject],[data-clone],[data-gitpull],[data-pushbranch],[data-openpr],[data-approvemerge],[data-approvepr],[data-access],[data-togglesetting],[data-adddir],[data-removedir],[data-expand],[data-opensignin],[data-openweb],[data-openexport],[data-makelead],[data-decide],[data-editmsg],[data-delmsg],[data-saveedit],[data-canceledit],[data-togglehist],[data-checkin],[data-histscan],[data-histimport],[data-histopen],[data-histresume],[data-histweb],[data-histwebin],[data-histremove],[data-prlist],[data-prrefresh],[data-release],[data-theme]';
 
 document.addEventListener('click', async (e) => {
   const el = e.target.closest(CLICK);
@@ -2033,6 +2053,15 @@ document.addEventListener('click', async (e) => {
     if (t) toast('Added to the board anyway.');
     return;
   }
+  if (d.sendreview) {
+    const t = task(d.sendreview);
+    const who = document.getElementById(`pickrev-${t.id}`)?.value;
+    if (!t || !who || who === t.assignee) return;
+    if (who !== t.reviewer) { audit('Reviewer changed', t.id, `${NAMES[t.reviewer] || 'none'} → ${NAMES[who]}`); t.reviewer = who; }
+    if (!canRun(who) || !isFree(who)) { t.reviewWaiting = true; save(); render(); return toast(`${NAMES[who]} isn't free; T-${t.id} goes to them when they are.`); }
+    save();
+    return askForTask(t, 'opinion');
+  }
   if (d.owneract) {
     const t = task(d.owneract);
     const a = t && actionFor(t);
@@ -2042,6 +2071,7 @@ document.addEventListener('click', async (e) => {
       return startOrQueue(t, a.agent);
     }
     if (a.kind === 'signin') { ui.view = 'agents'; ui.side = a.agent; ui.selected = null; return render(); }
+    if (a.kind === 'pickreviewer') { ui.selected = t.id; render(); return document.getElementById(`pickrev-${t.id}`)?.focus(); }
     ui.selected = t.id; // approve / permission / policy: decide in the task panel
     return render();
   }
@@ -2121,7 +2151,7 @@ document.addEventListener('click', async (e) => {
     const pr = ui.prs.byTask[t.id];
     if (!pr) return;
     if (await recheckApprovals([t])) return toast(`T-${t.id} changed after its review, so it went back to review.`);
-    const r = await api.gitPrMerge(pr.number).catch((err) => ({ ok: false, message: cleanErr(err.message) }));
+    const r = await api.gitPrMerge(pr.number, { sha: approvedSha(t) }).catch((err) => ({ ok: false, message: cleanErr(err.message) }));
     if (!r.ok) { if (r.message !== 'Cancelled.') toast(r.message); return; }
     t.decision = 'approved';
     t.notes.push({ at: now(), who: 'System', text: r.message });
@@ -2133,9 +2163,9 @@ document.addEventListener('click', async (e) => {
   if (d.updatemain) {
     const t = task(d.updatemain);
     if (!t?.ws || ui.busy[t.id]) return;
+    if (ui.running[t.id]) return toast(`${NAMES[ui.running[t.id].agent]} is working on T-${t.id}. Update from main when the run has finished.`);
     ui.busy[t.id] = 'update';
     render();
-    try { await api.checkpoint(t.id, 'owner', `Snapshot before updating from main: ${t.title}`); } catch {}
     const r = await api.gitUpdateFromMain(t.id).catch((err) => ({ ok: false, message: cleanErr(err.message) }));
     delete ui.busy[t.id];
     t.notes.push({ at: now(), who: 'System', text: r.message });
@@ -2146,12 +2176,14 @@ document.addEventListener('click', async (e) => {
     return render();
   }
   if (d.releasebranch !== undefined) {
+    if (ui.busy.release) return;
+    await recheckApprovals();
     const list = state.tasks.filter((t) => t.stage === 'approval' && t.ws);
-    if (list.length < 2 || ui.busy.release) return;
+    if (list.length < 2) return render();
     ui.busy.release = true;
     render();
-    for (const t of list) { try { await api.checkpoint(t.id, 'owner', `Snapshot before release branch: ${t.title}`); } catch {} }
-    const r = await api.gitReleaseBranch(list.map((t) => t.id)).catch((err) => ({ ok: false, message: cleanErr(err.message) }));
+    // The approved commits are merged; a workspace with unsaved changes is refused.
+    const r = await api.gitReleaseBranch(list.map((t) => ({ id: t.id, sha: approvedSha(t) }))).catch((err) => ({ ok: false, message: cleanErr(err.message) }));
     delete ui.busy.release;
     ui.releaseResult = r;
     audit(r.ok ? 'Release branch created' : 'Release branch failed', null, r.message);
@@ -2163,7 +2195,7 @@ document.addEventListener('click', async (e) => {
   if (d.approvemerge) {
     const t = task(d.approvemerge);
     if (await recheckApprovals([t])) return toast(`T-${t.id} changed after its review, so it went back to review.`);
-    const r = await api.gitMergeApproved(t.id).catch((err) => ({ ok: false, message: cleanErr(err.message) }));
+    const r = await api.gitMergeApproved(t.id, { sha: approvedSha(t) }).catch((err) => ({ ok: false, message: cleanErr(err.message) }));
     if (!r.ok) { if (r.message !== 'Cancelled.') toast(r.message); return; }
     t.decision = 'approved';
     t.notes.push({ at: now(), who: 'System', text: r.message });
@@ -2320,6 +2352,7 @@ document.addEventListener('click', async (e) => {
   }
   if (d.approve) {
     const t = task(d.approve);
+    if (await recheckApprovals([t])) return toast(`T-${t.id} changed after its review, so it went back to review.`);
     t.decision = 'approved';
     setStage(t, 'approved', 'Owner approved', `${ACTIONS[t.action]} authorized (nothing merged into main or released).`);
     return leadIntegrate(t);
@@ -2397,6 +2430,9 @@ document.addEventListener('click', async (e) => {
     try {
       test.result = await api.testKey(p, state.models[p] || '');
       if (test.result?.ok && clearHold(p)) { save(); updatePanel(); }
+      // A refused key sets the same sign-in hold as a failed chat turn, so everything agrees.
+      const problem = test.result?.ok ? null : authProblem(test.result?.error, { method: 'api' });
+      if (problem) { setHold(p, problem); save(); updatePanel(); }
     } catch {
       test.result = { ok: false, error: { message: 'The test could not run. Try again.' } };
     }

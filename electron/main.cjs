@@ -63,8 +63,8 @@ function readSettings() {
     chatResume: s.chatResume !== false,
     // The lead AI may take the owner's Task board actions. Off unless the owner turns it on.
     leadActions: s.leadActions === true,
-    // Lead handles GitHub (pull, combine, push branches). null = follow whether GitHub is set up.
-    leadGitHub: typeof s.leadGitHub === 'boolean' ? s.leadGitHub : null,
+    // Lead handles GitHub (pull, combine, push branches). Off until the owner turns it on.
+    leadGitHub: s.leadGitHub === true,
     theme: THEMES.includes(s.theme) ? s.theme : 'hearth',
   };
 }
@@ -508,8 +508,10 @@ function registerIpc() {
     let base = s.project;
     try { if (baseTaskId && fs.existsSync(taskDir(String(baseTaskId)))) base = taskDir(String(baseTaskId)); } catch {}
     if (!base) return { ok: false, message: 'No workspace.' };
-    const file = path.resolve(base, String(rel || ''));
-    return withFrames(attachments.saveFromPath(worktreeRoot(), file, { roots: [s.project, worktreeRoot()] }));
+    // Only a plain relative path inside the workspace: no absolute paths, no "..".
+    const where = attachments.agentPath(base, rel);
+    if (!where.ok) return where;
+    return withFrames(attachments.saveFromPath(worktreeRoot(), where.file, { roots: [s.project, worktreeRoot()] }));
   });
   handle('workspace:checkpoint', (taskId, author, message) =>
     workspace.checkpoint(taskDir(taskId), { author: String(author).slice(0, 40), message: String(message).slice(0, 300) }));
@@ -573,9 +575,16 @@ function registerIpc() {
     const dir = taskDir(taskId);
     if (!s.project || !fs.existsSync(dir)) return { ok: false, message: 'This task has no workspace to merge.' };
     const branch = (await workspace.git(dir, ['branch', '--show-current'])).out;
-    // The lead's approval (only while the owner's switch is on) is the same single
-    // Approve-to-merge step, without the owner's confirmation box. Never a release.
-    if (opts?.byLead === true && s.leadActions === true) return gitops.mergeApproved(s.project, branch);
+    // Only the approved commit is merged: the task branch must still be exactly there.
+    const sha = typeof opts?.sha === 'string' ? opts.sha : null;
+    if (sha !== null && (await workspace.git(dir, ['rev-parse', 'HEAD'])).out !== sha) return { ok: false, message: 'The task branch changed after it was approved. Nothing was merged; review it again.' };
+    // The lead's approval (only while the owner's switch is on, checked here) is the same
+    // single Approve-to-merge step, without the owner's confirmation box. Never a release.
+    if (opts?.byLead === true) {
+      if (s.leadActions !== true) return { ok: false, message: 'The lead switch is off.' };
+      if (!sha) return { ok: false, message: 'No approved commit recorded; the lead cannot merge it.' };
+      return gitops.mergeApproved(s.project, branch, sha);
+    }
     const confirm = dialog.showMessageBoxSync(mainWindow, {
       type: 'warning',
       message: `Merge ${branch} into the main branch and push it to GitHub?`,
@@ -585,13 +594,15 @@ function registerIpc() {
       cancelId: 1,
     });
     if (confirm !== 0) return { ok: false, message: 'Cancelled.' };
-    return gitops.mergeApproved(s.project, branch);
+    return gitops.mergeApproved(s.project, branch, sha);
   });
   // The lead as integrator: fetch, push task/release branches, merge an approved task
   // onto the release branch. Uses your own git/gh sign-in; never main, tags or releases.
   handle('git:leadSync', async (op, arg) => {
     const s = readSettings();
     if (!s.project) return { ok: false, message: 'Pick a project first.' };
+    // Checked here, not trusted from the page: only while the owner's toggle is on.
+    if (s.leadGitHub !== true) return { ok: false, message: 'Lead handles GitHub is off.' };
     if (op === 'fetch') return gitops.leadFetch(s.project);
     const dir = taskDir(String(arg || ''));
     if (!fs.existsSync(dir)) return { ok: false, message: 'This task has no workspace.' };
@@ -612,13 +623,22 @@ function registerIpc() {
   handle('git:releaseBranch', async (taskIds) => {
     const s = readSettings();
     if (!s.project) return { ok: false, message: 'Pick a project first.' };
+    // Each entry: { id, sha } with the approved commit. Workspaces with unsaved changes or
+    // that moved past their approval are refused (nothing is snapshotted for you).
     const branches = [];
-    for (const id of (Array.isArray(taskIds) ? taskIds : []).slice(0, 30)) {
-      const dir = taskDir(String(id));
+    const problems = [];
+    for (const e of (Array.isArray(taskIds) ? taskIds : []).slice(0, 30)) {
+      const id = String(e && typeof e === 'object' ? e.id : e);
+      const sha = e && typeof e === 'object' && typeof e.sha === 'string' ? e.sha : null;
+      const dir = taskDir(id);
       if (!fs.existsSync(dir)) continue;
+      if ((await workspace.git(dir, ['status', '--porcelain'])).out) { problems.push(`T-${id} has unsaved changes`); continue; }
+      const head = (await workspace.git(dir, ['rev-parse', 'HEAD'])).out;
+      if (sha && head !== sha) { problems.push(`T-${id} changed after it was approved`); continue; }
       const b = (await workspace.git(dir, ['branch', '--show-current'])).out;
-      if (b) branches.push(b);
+      if (b) branches.push(sha ? { branch: b, sha } : b);
     }
+    if (problems.length) return { ok: false, message: `Not combined: ${problems.join('; ')}. Nothing was changed.` };
     const d = new Date();
     const pad = (n) => String(n).padStart(2, '0');
     const name = `release/tasks-${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
@@ -648,7 +668,12 @@ function registerIpc() {
     const s = readSettings();
     if (!s.project) return { ok: false, message: 'Pick a project first.' };
     const n = Number(number);
-    if (opts?.byLead === true && s.leadActions === true) return gitops.prMerge(s.project, n);
+    const sha = typeof opts?.sha === 'string' ? opts.sha : null;
+    if (opts?.byLead === true) {
+      if (s.leadActions !== true) return { ok: false, message: 'The lead switch is off.' };
+      if (!sha) return { ok: false, message: 'No approved commit recorded; the lead cannot merge it.' };
+      return gitops.prMerge(s.project, n, sha);
+    }
     const confirm = dialog.showMessageBoxSync(mainWindow, {
       type: 'warning',
       message: `Merge pull request #${n} on GitHub?`,
@@ -658,7 +683,7 @@ function registerIpc() {
       cancelId: 1,
     });
     if (confirm !== 0) return { ok: false, message: 'Cancelled.' };
-    return gitops.prMerge(s.project, n);
+    return gitops.prMerge(s.project, n, sha);
   });
   // Releases: separate explicit approval, version typed by the owner twice.
   handle('git:release', async (o) => {

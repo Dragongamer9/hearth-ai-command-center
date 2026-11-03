@@ -6,7 +6,7 @@ import { parseVerdicts } from '../src/owner.mjs';
 import { chatRules, buildPrompt, buildDelta } from '../src/chat.mjs';
 
 const ok = { ok: true, block: [], warn: [] };
-const mk = (o = {}) => ({ id: 'ABC123', title: 'Status panel', stage: 'approval', assignee: 'openai', reviewer: 'google', action: 'code', policy: ok, runs: [], ws: { branch: 'hearth/abc123' }, ...o });
+const mk = (o = {}) => ({ id: 'ABC123', title: 'Status panel', stage: 'approval', assignee: 'openai', reviewer: 'google', action: 'code', policy: ok, runs: [], ws: { branch: 'hearth/abc123' }, reviewVerdict: { verdict: 'approve', by: 'google', sha: 'b'.repeat(40) }, ...o });
 const on = { lead: 'anthropic', enabled: true };
 
 test('switch off: lead lines are ignored', () => {
@@ -39,11 +39,11 @@ test('the lead approves a reviewed task like "Approve to merge"', () => {
 });
 
 test('the lead can never approve its own work', () => {
-  const own = mk({ assignee: 'anthropic' });
+  const own = mk({ assignee: 'anthropic', reviewVerdict: undefined });
   const r = leadDecision({ kind: 'approve', id: own.id }, { ...on, task: own });
   assert.equal(r.ok, false);
   assert.match(r.reason, /can't approve its own work/);
-  const ranIt = mk({ runs: [{ agent: 'anthropic', status: 'done' }] });
+  const ranIt = mk({ runs: [{ agent: 'anthropic', status: 'done' }], reviewVerdict: undefined });
   assert.equal(leadBuilt(ranIt, 'anthropic'), true);
   assert.equal(leadDecision({ kind: 'approve', id: 'ABC123' }, { ...on, task: ranIt }).ok, false);
   // Its own approving review does not count either
@@ -115,4 +115,32 @@ test('the lead prompt mentions the ability only while the switch is on', () => {
   assert.doesNotMatch(buildPrompt('anthropic', [], { lead: 'anthropic' }), /ADD TASK:/);
   assert.match(buildDelta('anthropic', [], { lead: 'anthropic', leadActions: true }), /ADD TASK:/);
   assert.doesNotMatch(buildDelta('anthropic', [], { lead: 'anthropic' }), /ADD TASK:/);
+});
+
+import { pickReviewer } from '../src/lead.mjs';
+test('the lead cannot approve push, command or outside requests (e.g. git push origin main --tags)', () => {
+  for (const kind of ['push', 'command', 'outside']) {
+    const r = leadDecision({ kind: 'allow', id: 'R1' }, { ...on, request: { id: 'R1', agent: 'openai', kind, what: 'git push origin main --tags', status: 'pending' } });
+    assert.equal(r.ok, false, kind);
+    assert.match(r.reason, /stay with the Owner/);
+  }
+  assert.equal(leadDecision({ kind: 'allow', id: 'R1' }, { ...on, request: { id: 'R1', agent: 'openai', kind: 'delete', status: 'pending' } }).ok, true);
+});
+test('the lead never merges on its own word, and the local model is not a code reviewer', () => {
+  const selfReviewed = mk({ reviewer: 'anthropic', reviewVerdict: { verdict: 'approve', by: 'anthropic', sha: 'a'.repeat(40) } });
+  const r = leadDecision({ kind: 'approve', id: 'ABC123' }, { ...on, task: selfReviewed });
+  assert.equal(r.ok, false);
+  assert.match(r.reason, /reviewed T-ABC123 itself/);
+  const local = mk({ reviewer: 'ollama', reviewVerdict: { verdict: 'approve', by: 'ollama' } });
+  assert.equal(leadDecision({ kind: 'approve', id: 'ABC123' }, { ...on, task: local }).ok, false);
+  assert.equal(leadDecision({ kind: 'approve', id: 'ABC123' }, { ...on, task: mk({ reviewVerdict: undefined }) }).ok, false, 'no review: no lead merge');
+  assert.equal(leadDecision({ kind: 'approve', id: 'ABC123' }, { ...on, task: mk({ reviewVerdict: { verdict: 'approve', by: 'google' } }) }).ok, true);
+});
+test('reviewer is never the implementer, and preferably not the lead or the local model', () => {
+  const all = ['anthropic', 'openai', 'google', 'ollama'];
+  assert.equal(pickReviewer('openai', { candidates: all, lead: 'anthropic' }), 'google');
+  assert.equal(pickReviewer('openai', { requested: 'openai', candidates: all, lead: 'anthropic' }), 'google', 'a lead ADD TASK naming the implementer as reviewer is corrected');
+  assert.equal(pickReviewer('openai', { requested: 'anthropic', candidates: all }), 'anthropic', 'an explicit choice is kept');
+  assert.equal(pickReviewer('openai', { candidates: ['openai', 'anthropic'] }), 'anthropic');
+  assert.equal(pickReviewer('openai', { candidates: ['openai'] }), 'none');
 });

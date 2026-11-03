@@ -196,3 +196,68 @@ test('lead GitHub: only task and release branches, main protected, no tags', asy
   assert.equal(execFileSync('git', ['--git-dir', remote, 'rev-parse', 'main']).toString().trim(), mainBefore);
   assert.equal(remoteHas(remote, 'refs/tags/v9.9.9'), false, 'no tags are ever pushed');
 });
+
+test('merges use the approved commit: a branch that moved after approval is refused', async () => {
+  const { proj, remote, run } = setup();
+  branchWith(run, proj, 'hearth/m1-approved', 'm1.txt', 'approved\n');
+  const approved = run('rev-parse', 'hearth/m1-approved');
+  assert.equal(approved.length, 40);
+  run('checkout', '-q', 'hearth/m1-approved');
+  fs.writeFileSync(path.join(proj, 'm1.txt'), 'added after approval\n');
+  run(...ID, 'commit', '-qam', 'late change');
+  run('checkout', '-q', 'main');
+  const mainBefore = run('rev-parse', 'main');
+  const moved = await g.mergeApproved(proj, 'hearth/m1-approved', approved);
+  assert.equal(moved.ok, false);
+  assert.match(moved.message, /changed after it was approved/);
+  assert.equal(run('rev-parse', 'main'), mainBefore, 'nothing merged');
+  assert.equal((await g.mergeApproved(proj, 'hearth/m1-approved', 'abc1234')).ok, false, 'a short or bad sha is refused');
+  const now = run('rev-parse', 'hearth/m1-approved');
+  const ok = await g.mergeApproved(proj, 'hearth/m1-approved', now);
+  assert.ok(ok.ok, ok.message);
+  assert.equal(execFileSync('git', ['--git-dir', remote, 'show', 'main:m1.txt']).toString(), 'added after approval\n');
+});
+
+test('combine merges exactly the approved commits, not later ones', async () => {
+  const { proj, run } = setup();
+  branchWith(run, proj, 'hearth/r9-one', 'r9.txt', 'approved\n');
+  const approved = run('rev-parse', 'hearth/r9-one');
+  run('checkout', '-q', 'hearth/r9-one');
+  fs.writeFileSync(path.join(proj, 'r9.txt'), 'later\n');
+  run(...ID, 'commit', '-qam', 'later');
+  run('checkout', '-q', 'main');
+  branchWith(run, proj, 'hearth/r9-two', 'r9b.txt', 'two\n');
+  const r = await g.releaseBranch(proj, 'release/tasks-sha', [{ branch: 'hearth/r9-one', sha: approved }, 'hearth/r9-two']);
+  assert.ok(r.ok, r.message);
+  assert.equal(execFileSync('git', ['show', 'release/tasks-sha:r9.txt'], { cwd: proj }).toString(), 'approved\n');
+});
+
+test('gh pr merge is pinned to the approved commit with --match-head-commit', async () => {
+  const { tmp, proj } = setup();
+  const bin = path.join(tmp, 'bin');
+  fs.mkdirSync(bin);
+  const log = path.join(tmp, 'gh.log');
+  fs.writeFileSync(path.join(bin, 'gh'), `#!/bin/sh\nif [ "$1 $2" = "pr view" ]; then echo '{"number":7,"state":"OPEN","baseRefName":"main","headRefName":"hearth/x","statusCheckRollup":[]}'; exit 0; fi\necho "$@" >> '${log}'\n`, { mode: 0o755 });
+  const old = process.env.PATH;
+  process.env.PATH = `${bin}:${old}`;
+  try {
+    const sha = 'a'.repeat(40);
+    const r = await g.prMerge(proj, 7, sha);
+    assert.ok(r.ok, r.message);
+    assert.equal(fs.readFileSync(log, 'utf8').trim(), `pr merge 7 --merge --match-head-commit ${sha}`);
+    assert.equal((await g.prMerge(proj, 7, 'abc')).ok, false);
+  } finally { process.env.PATH = old; }
+});
+
+test('every push leaves tags behind (--no-follow-tags), including task branches and main merges', async () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'electron', 'git.cjs'), 'utf8');
+  const pushes = [...src.matchAll(/git\([^)]*\['push'[^\]]*\]/g)].map((m) => m[0]);
+  assert.ok(pushes.length >= 4, pushes.join('\n'));
+  for (const p of pushes) assert.match(p, /--no-follow-tags/, p);
+  const { proj, remote, run } = setup();
+  branchWith(run, proj, 'hearth/t9-tagged', 't9.txt', 't\n');
+  run(...ID, 'tag', '-a', 'v0.9.9', '-m', 'tag', 'hearth/t9-tagged');
+  assert.ok((await g.pushBranch(proj, 'hearth/t9-tagged')).ok);
+  assert.ok((await g.mergeApproved(proj, 'hearth/t9-tagged', run('rev-parse', 'hearth/t9-tagged'))).ok);
+  assert.equal(remoteHas(remote, 'refs/tags/v0.9.9'), false);
+});

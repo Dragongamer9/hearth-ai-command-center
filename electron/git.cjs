@@ -103,20 +103,28 @@ async function pushBranch(dir, branch) {
   if (!BRANCH_RE.test(branch || '')) return { ok: false, message: 'Bad branch name.' };
   const def = await defaultBranch(dir);
   if (PROTECTED(branch, def)) return { ok: false, message: `Pushing ${branch} directly isn't allowed. Approve a merge instead.` };
-  const r = await git(dir, ['push', '-u', 'origin', `refs/heads/${branch}:refs/heads/${branch}`], 180000);
+  const r = await git(dir, ['push', '--no-follow-tags', '-u', 'origin', `refs/heads/${branch}:refs/heads/${branch}`], 180000);
   return r.ok ? { ok: true, message: `Pushed ${branch}.` } : { ok: false, message: lastLine(r) };
 }
 
 // Owner-approved: merge a task branch into the default branch and push it.
-async function mergeApproved(dir, branch) {
+const SHA_RE = /^[0-9a-f]{40}$/;
+// `sha`: the approved commit. The branch must still be exactly there, and exactly that
+// commit is merged, so nothing added after the approval reaches main.
+async function mergeApproved(dir, branch, approved = null) {
   if (!BRANCH_RE.test(branch || '')) return { ok: false, message: 'Bad branch name.' };
+  if (approved !== null) {
+    if (!SHA_RE.test(String(approved))) return { ok: false, message: 'No approved commit recorded for this task; review it again.' };
+    const tip = (await git(dir, ['rev-parse', `refs/heads/${branch}`])).out;
+    if (tip !== approved) return { ok: false, message: `${branch} changed after it was approved (approved ${approved.slice(0, 7)}, now ${tip.slice(0, 7)}). Nothing was merged.` };
+  }
   const def = await defaultBranch(dir);
   if (PROTECTED(branch, def)) return { ok: false, message: 'Nothing to merge.' };
   if ((await git(dir, ['status', '--porcelain'])).out) return { ok: false, message: 'The project folder has uncommitted changes. Commit or stash them first.' };
   const before = (await git(dir, ['branch', '--show-current'])).out;
   const steps = [['checkout', def]];
   if ((await git(dir, ['remote', 'get-url', 'origin'])).ok) steps.push(['pull', '--ff-only']);
-  steps.push(['merge', '--no-ff', '--no-edit', '-m', `Merge ${branch} (approved in Hearth AI Command Center)`, branch]);
+  steps.push(['merge', '--no-ff', '--no-edit', '-m', `Merge ${branch} (approved in Hearth AI Command Center)`, approved || branch]);
   for (const s of steps) {
     const r = await git(dir, s, 180000);
     if (!r.ok) {
@@ -129,7 +137,7 @@ async function mergeApproved(dir, branch) {
   let pushed = false;
   let pushMsg = 'No GitHub remote, merged locally only.';
   if ((await git(dir, ['remote', 'get-url', 'origin'])).ok) {
-    const p = await git(dir, ['push', 'origin', `refs/heads/${def}:refs/heads/${def}`], 180000);
+    const p = await git(dir, ['push', '--no-follow-tags', 'origin', `refs/heads/${def}:refs/heads/${def}`], 180000);
     pushed = p.ok;
     pushMsg = p.ok ? `Pushed ${def} to GitHub.` : `Merged locally, but push failed: ${lastLine(p)}`;
   }
@@ -177,6 +185,9 @@ async function updateFromMain(project, taskDir) {
 // branches at once. A branch that conflicts is skipped and reported with its files;
 // the rest still go in. Built in a temporary worktree so your checkout is untouched.
 async function releaseBranch(project, name, branches = []) {
+  // Entries are branch names, or { branch, sha } to merge exactly the approved commit.
+  const shaOf = Object.fromEntries(branches.filter((b) => b && typeof b === 'object' && SHA_RE.test(String(b.sha || ''))).map((b) => [b.branch, b.sha]));
+  branches = branches.map((b) => (b && typeof b === 'object' ? b.branch : b));
   if (!/^release\/[A-Za-z0-9._-]{1,80}$/.test(name || '')) return { ok: false, message: 'Bad release branch name.' };
   const list = [...new Set(branches)].filter((b) => BRANCH_RE.test(b || ''));
   if (!list.length) return { ok: false, message: 'No task branches to combine.' };
@@ -193,7 +204,7 @@ async function releaseBranch(project, name, branches = []) {
   const conflicts = [];
   try {
     for (const b of list) {
-      const r = await git(wt, [...ids, 'merge', '--no-ff', '--no-edit', '-m', `Merge ${b} into ${name}`, b], 180000);
+      const r = await git(wt, [...ids, 'merge', '--no-ff', '--no-edit', '-m', `Merge ${b} into ${name}`, shaOf[b] || b], 180000);
       if (r.ok) { merged.push(b); continue; }
       const files = await conflictFiles(wt);
       await git(wt, ['merge', '--abort']);
@@ -206,7 +217,7 @@ async function releaseBranch(project, name, branches = []) {
   let pushed = false;
   let pushMsg = 'Local only (no GitHub remote).';
   if (merged.length && (await git(project, ['remote', 'get-url', 'origin'])).ok) {
-    const p = await git(project, ['push', '-u', 'origin', `refs/heads/${name}:refs/heads/${name}`], 180000);
+    const p = await git(project, ['push', '--no-follow-tags', '-u', 'origin', `refs/heads/${name}:refs/heads/${name}`], 180000);
     pushed = p.ok;
     pushMsg = p.ok ? `Pushed ${name} to GitHub.` : `Push failed: ${lastLine(p)}`;
   }
@@ -407,7 +418,7 @@ async function prList(dir) {
 
 // Owner-approved only (the UI calls this after Approve + a confirmation dialog).
 // A normal merge commit: never --admin (doesn't bypass branch protection), never --auto.
-async function prMerge(dir, number) {
+async function prMerge(dir, number, sha = null) {
   const gh = find('gh');
   if (!gh) return { ok: false, message: 'GitHub CLI (gh) is not installed.' };
   if (!/^\d{1,7}$/.test(String(number))) return { ok: false, message: 'Bad pull request number.' };
@@ -415,7 +426,9 @@ async function prMerge(dir, number) {
   if (!view.ok) return view;
   if (view.pr.state !== 'OPEN') return { ok: false, message: `Pull request #${number} is ${view.pr.state.toLowerCase()}.` };
   if (view.pr.checks.failed) return { ok: false, message: `Pull request #${number} has failing checks; nothing merged.` };
-  const r = await exec(gh, ['pr', 'merge', String(number), '--merge'], dir, 120000);
+  if (sha !== null && !SHA_RE.test(String(sha))) return { ok: false, message: 'No approved commit recorded for this pull request; review it again.' };
+  // --match-head-commit: GitHub refuses if the PR moved past the approved commit.
+  const r = await exec(gh, ['pr', 'merge', String(number), '--merge', ...(sha ? ['--match-head-commit', sha] : [])], dir, 120000);
   return r.ok ? { ok: true, message: `Merged pull request #${number} into ${view.pr.base}.` } : { ok: false, message: lastLine(r) };
 }
 

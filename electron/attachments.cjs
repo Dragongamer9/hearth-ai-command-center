@@ -54,15 +54,17 @@ function saveBuffer(root, name, data, { max = MAX_BYTES } = {}) {
 // only the project, the task workspaces or the attachments folder); null = any file
 // the owner picked himself.
 function saveFromPath(root, src, { roots = null, max = MAX_BYTES } = {}) {
-  const kind = kindOf(src);
-  if (!kind) return { ok: false, message: 'Only images (png, jpg, webp, gif) and videos (mp4, webm, mov) can be attached.' };
-  let st;
-  try { st = fs.statSync(src); } catch { return { ok: false, message: `File not found: ${path.basename(String(src))}` }; }
+  // Everything is decided on the real file a symlink points to, and that is what is copied.
+  let real;
+  try { real = fs.realpathSync(src); } catch { return { ok: false, message: `File not found: ${path.basename(String(src))}` }; }
+  const kind = kindOf(real);
+  if (!kind || !kindOf(src)) return { ok: false, message: 'Only images (png, jpg, webp, gif) and videos (mp4, webm, mov) can be attached.' };
+  const st = fs.statSync(real);
   if (!st.isFile()) return { ok: false, message: 'Not a file.' };
-  if (roots && !inside(src, roots)) return { ok: false, message: 'Only files inside the project workspace or the attachments folder can be posted.' };
+  if (roots && !inside(real, roots)) return { ok: false, message: 'Only files inside the project workspace or the attachments folder can be posted.' };
   if (st.size > max) return { ok: false, message: TOO_BIG(st.size, max) };
   const dest = newDest(root, src);
-  fs.copyFileSync(src, dest);
+  fs.copyFileSync(real, dest);
   return { ok: true, att: record(root, dest, src, kind, st.size) };
 }
 
@@ -74,7 +76,11 @@ function exec(file, args, timeoutMs = 60000) {
 async function extractFrames(file, { ffmpeg, count = 4, outDir } = {}) {
   if (!ffmpeg) return { ok: false, frames: [], duration: null, note: 'video attached (frames unavailable: install ffmpeg)' };
   const n = Math.min(6, Math.max(3, count));
-  const probe = await exec(ffmpeg, ['-hide_banner', '-i', file]);
+  // Read only this one local file, with a fixed container format: a crafted video or
+  // playlist can't make ffmpeg open other files or URLs.
+  const fmt = /\.webm$/i.test(file) ? 'matroska' : 'mov';
+  const input = ['-protocol_whitelist', 'file', '-f', fmt, '-i', `file:${path.resolve(file)}`];
+  const probe = await exec(ffmpeg, ['-hide_banner', ...input]);
   const m = `${probe.err}\n${probe.out}`.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
   const duration = m ? Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]) : null;
   const dir = outDir || path.dirname(file);
@@ -83,11 +89,20 @@ async function extractFrames(file, { ffmpeg, count = 4, outDir } = {}) {
   for (let i = 0; i < n; i++) {
     const at = duration ? ((i + 0.5) * duration) / n : i;
     const out = path.join(dir, `${stem}-frame${i + 1}.jpg`);
-    const r = await exec(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-y', '-ss', at.toFixed(2), '-i', file, '-frames:v', '1', '-vf', 'scale=960:-2', out]);
+    const r = await exec(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-y', '-ss', at.toFixed(2), ...input, '-frames:v', '1', '-vf', 'scale=960:-2', out]);
     if (r.ok && fs.existsSync(out)) frames.push(out);
   }
   if (!frames.length) return { ok: false, frames, duration, note: 'video attached (frames unavailable: ffmpeg could not read it)' };
   return { ok: true, frames, duration, note: '' };
 }
 
-module.exports = { TYPES, MAX_BYTES, kindOf, safeName, attachDir, inside, saveBuffer, saveFromPath, extractFrames };
+// An AI's ATTACH path: plain relative paths inside its workspace only.
+function agentPath(base, rel) {
+  const r = String(rel || '');
+  if (!r || path.isAbsolute(r) || r.split(/[\\/]+/).includes('..')) return { ok: false, message: 'Use a path relative to your workspace (no absolute paths or "..").' };
+  return { ok: true, file: path.resolve(base, r) };
+}
+
+const ffmpegInput = (file) => ['-protocol_whitelist', 'file', '-f', /\.webm$/i.test(file) ? 'matroska' : 'mov', '-i', `file:${path.resolve(file)}`];
+
+module.exports = { agentPath, ffmpegInput, TYPES, MAX_BYTES, kindOf, safeName, attachDir, inside, saveBuffer, saveFromPath, extractFrames };
