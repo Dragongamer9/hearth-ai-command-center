@@ -126,18 +126,24 @@ export function createWorkflow(C) {
     if (e) C.audit('Task instruction logged', t.id, `${e.id} · ${from}: ${e.text.slice(0, 160)}`);
     return e;
   }
-  // Owner, lead and reviewer messages that mention a task go into its log.
+  // Only the owner's messages that name a task go into its log (the lead and reviewers
+  // use explicit TASK NOTE: lines, so ordinary mentions never become instructions).
   function captureChat(who, text) {
+    if (who !== 'owner') return;
     for (const id of W.taskIds(text)) {
       const t = task(id);
       if (!t || !open(t)) continue;
-      const role = who === 'owner' ? 'owner' : who === S().lead ? 'lead' : who === t.reviewer ? 'reviewer' : null;
-      if (!role) continue;
       const line = W.linesAbout(text, id);
-      if (line && !/^(APPROVED?|CHANGES|TASK NOTE)\s*:/i.test(line)) instruct(t, role === 'owner' ? 'Owner' : `${N(who)} (${role})`, role, line);
+      if (line) instruct(t, 'Owner', 'owner', line);
     }
   }
+  // The verify instruction is done when the verify run ends.
+  function closeVerify(t) {
+    for (const i of t.instructions || []) if (!i.acked && i.kind === 'verify') i.acked = { at: C.now(), by: 'system', auto: true };
+  }
+  // Only the assignee's own runs acknowledge instructions.
   function acks(t, text, agent, run) {
+    if (agent !== t.assignee) { run.acked = []; run.unacked = W.openInstructions(t).map((i) => i.id); return { acked: [], missing: run.unacked }; }
     const r = W.applyAcks(t, text, { at: C.now(), by: agent });
     run.acked = r.acked;
     run.unacked = r.missing;
@@ -155,7 +161,8 @@ export function createWorkflow(C) {
       if (!open(t)) { res(false, `T-${t.id} is already ${t.stage}`); continue; }
       if (cmd.kind === 'note') {
         if (agent !== lead && agent !== t.reviewer) { res(false, `only the lead (${N(lead)}) or T-${t.id}'s reviewer (${N(t.reviewer)}) can add task notes`); continue; }
-        const e = instruct(t, `${N(agent)} (${agent === lead ? 'lead' : 'reviewer'})`, 'note', cmd.text);
+        if (W.grantsPermission(cmd.text)) { res(false, 'a task note can\'t approve a permission request; only the Owner (or the lead with APPROVE: R-<id>) answers those'); continue; }
+        const e = instruct(t, `${N(agent)} (${agent === lead ? 'lead' : 'reviewer'})`, 'ainote', cmd.text);
         res(true, e ? `logged as ${e.id}; the runner must acknowledge it` : 'already in the log');
       } else if (cmd.kind === 'verify') {
         if (!W.mayRequestVerify(t, agent, lead)) { res(false, `only the lead or T-${t.id}'s reviewer (${N(t.reviewer)}) can ask for a verify run`); continue; }
@@ -164,12 +171,14 @@ export function createWorkflow(C) {
       } else {
         if (!leadOn) { res(false, agent !== lead ? `only the lead (${N(lead)}) can do that` : 'ignored because the lead switch is off'); continue; }
         if (C.ui().running[t.id]) { res(false, `T-${t.id} has a run in progress`); continue; }
+        if (['review', 'testing', 'checkpoint', 'approval'].includes(t.stage)) { res(false, `T-${t.id} is in ${t.stage}; its branch is locked to the commit under review (ask for CHANGES or VERIFY: T-${t.id} instead)`); continue; }
         const r = await call('opsLeadTaskGit', cmd.kind, t.id, cmd.sha);
         if (!r?.ok) { res(false, r?.reason || r?.message || 'not available'); continue; }
         const what = cmd.kind === 'mergemain' ? (r.merged ? r.note : r.note || 'already up to date') : r.message;
         note(t, `${N(lead)} (lead)`, what);
-        // Undo = revert that commit (a revert of the revert, or of the merge).
-        if (r.merged || r.reverted) C.leadRecord(cmd.kind, `T-${t.id}`, `— ${what}`, { kind: 'revert', id: t.id, sha: r.head });
+        // Undo: a REVERT is undone by reverting the revert; a MERGE MAIN by resetting to the
+        // commit before it (only while nothing came after it and it isn't pushed).
+        if (r.merged || r.reverted) C.leadRecord(cmd.kind, `T-${t.id}`, `— ${what}`, cmd.kind === 'revert' ? { kind: 'revert', id: t.id, sha: r.head } : { kind: 'undomerge', id: t.id, merge: r.head, before: r.before });
         if (r.merged || r.reverted) instruct(t, `${N(lead)} (lead)`, 'note', cmd.kind === 'revert' ? `Reverted ${short(r.reverted)} (out of scope)${cmd.text ? `: ${cmd.text}` : ''}. Don't bring it back.` : 'Main was merged into this branch; continue on top of it.');
         res(true, `Routine (standing permission): ${what}`);
         refreshTruth([t.id]).then(() => C.render());
@@ -178,7 +187,7 @@ export function createWorkflow(C) {
   }
   // Undo of a lead REVERT: revert the revert.
   async function undoRevert(u) {
-    const r = await call('opsLeadTaskGit', 'revert', u.id, u.sha);
+    const r = u.kind === 'undomerge' ? await call('opsLeadTaskGit', 'undomerge', u.id, { merge: u.merge, before: u.before }) : await call('opsLeadTaskGit', 'revert', u.id, u.sha);
     return r?.ok ? { ok: true, message: r.message } : { ok: false, message: r?.reason || 'not available' };
   }
 
@@ -237,7 +246,7 @@ export function createWorkflow(C) {
     return `${truthCard(t)}
       ${!locked.ok ? `<div class="policy info wf-lock">${esc(locked.reason)}.${['review', 'approval', 'testing', 'checkpoint'].includes(t.stage) ? ` <button class="btn small" data-wf="reopen" data-arg="${esc(t.id)}">Reopen for the implementer</button>` : ''}</div>` : ''}
       ${t.ws && !['approved', 'rejected'].includes(t.stage) ? `<div class="row wf-modes"><button class="btn small" data-wf="verify" data-arg="${esc(t.id)}">${esc(W.RUN_MODES.verify)}</button><span class="faint" style="font-size:12px">Default mode: ${esc(W.RUN_MODES[W.defaultMode(t, t.assignee)])}</span></div>` : ''}
-      ${instr.length ? `<div class="sect">Instruction log <span class="faint">(read at the top of every run; the runner acknowledges each)</span></div>${instr.map((i) => `<div class="note wf-instr"><div class="who">${esc(i.id)} · ${esc(i.from)}${i.kind ? ` · ${esc(i.kind)}` : ''} · ${esc(C.time(i.at))} · ${i.acked ? `<span class="badge good">acknowledged</span>` : '<span class="badge warn">new</span>'}</div>${esc(i.text)}</div>`).join('')}` : ''}
+      ${instr.length ? `<div class="sect">Instruction log <span class="faint">(read at the top of every run; the runner acknowledges each)</span></div>${instr.map((i) => `<div class="note wf-instr"><div class="who">${esc(i.id)} · ${esc(i.from)}${i.kind ? ` · ${esc(i.kind)}` : ''} · ${esc(C.time(i.at))} · ${i.acked ? `<span class="badge good">${i.acked.dismissed ? 'dismissed' : i.acked.auto ? 'closed' : 'acknowledged'}</span>` : `<span class="badge warn">new</span> <button class="btn small link" data-wf="dismiss" data-arg="${esc(t.id)}:${esc(i.id)}">Dismiss</button>`}</div>${i.kind === 'ainote' ? '<span class="faint">AI note (notes can\'t grant permissions): </span>' : ''}${esc(i.text)}</div>`).join('')}` : ''}
       ${pk ? `<details class="wf-packet"><summary>Review packet sent to ${esc(N(t.reviewer))} for ${esc(short(t.reviewPing.sha) || 'this run')}</summary><pre class="note mono">${esc(pk)}</pre></details>` : ''}`;
   }
 
@@ -333,6 +342,12 @@ export function createWorkflow(C) {
       await C.save();
       return C.render();
     }
+    if (k === 'dismiss') {
+      const [tid, nid] = String(arg).split(':');
+      const i = (task(tid)?.instructions || []).find((x) => x.id === nid);
+      if (i && !i.acked) { i.acked = { at: C.now(), by: 'owner', dismissed: true }; C.audit('Owner dismissed a task instruction', tid, `${nid}: ${i.text.slice(0, 120)}`); await C.save(); }
+      return C.render();
+    }
     if (k === 'jobsrefresh') { await pollJobs(); return C.render(); }
     if (k === 'jobcancel') { const r = await call('opsJobCancel', arg); C.toast(r?.ok ? 'Cancelled.' : r?.message || 'Not cancelled.'); C.audit('Owner cancelled a job', null, arg); await pollJobs(); return C.render(); }
     if (k === 'jobretry') { const r = await call('opsJobRetry', arg); C.toast(r?.id ? `Retrying as ${r.id}.` : r?.message || 'Not retried.'); if (r?.id) C.audit('Owner retried a job', null, `${arg} → ${r.id}`); await pollJobs(); return C.render(); }
@@ -361,7 +376,7 @@ export function createWorkflow(C) {
     nav: [['jobs', '◷', 'Jobs'], ['release', '⚑', 'Release gate']],
     titles: { jobs: ['Jobs', 'Every background job: status, progress, output files, restarts survived; Cancel and Retry'], release: ['Release gate', 'The exact commit, tasks, notes and checklist before any tag or release'] },
     views: { jobs: viewJobs, release: viewRelease },
-    refreshTruth, facts, truthBadges, truthCard, truthLine, gate, modeBrief, prepare, snapshot, enforce, assets, instruct, captureChat, acks, lines, undoRevert, verify, verifyTests, ensureResults, packet, blockersHtml, blockerBadge, drawerExtras, overviewCard, pollTags, madeTag, releaseAllowed, pollJobs,
+    refreshTruth, facts, truthBadges, truthCard, truthLine, gate, modeBrief, prepare, snapshot, enforce, assets, instruct, captureChat, closeVerify, acks, lines, undoRevert, verify, verifyTests, ensureResults, packet, blockersHtml, blockerBadge, drawerExtras, overviewCard, pollTags, madeTag, releaseAllowed, pollJobs,
     defaultMode: W.defaultMode,
     boot() {
       document.addEventListener('click', onClick);

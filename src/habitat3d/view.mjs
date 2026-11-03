@@ -14,6 +14,7 @@ import { buildFigure, animateFigure, buildPet, animatePet } from './figures.mjs'
 import { iconTex, screenTex, labelTex, glowTex } from './textures.mjs';
 
 let V = null;
+let winBound = false;
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const now = () => performance.now();
 
@@ -76,6 +77,20 @@ export function stopHabitat3d() {
   if (V.timer) clearTimeout(V.timer); V.timer = 0;
   V.ro?.disconnect(); V.io?.disconnect();
   if (V.walk.on) exitWalk();
+  teardown();
+}
+// Leaving the Habitat page frees the GPU: the lodge, the renderer and its WebGL context
+// are disposed, and recreated when the page is shown again.
+function teardown() {
+  if (!V?.gl) return;
+  const gl = V.gl;
+  try { if (V.lodge) { gl.scene.remove(V.lodge.root); disposeTree(V.lodge.root, V.lodge.refs.textures); } } catch {}
+  try { gl.scene.traverse((o) => o.geometry?.dispose?.()); } catch {}
+  try { V.screenTex?.dispose(); gl.sun.shadow.map?.dispose(); } catch {}
+  try { gl.renderer.dispose(); gl.renderer.forceContextLoss(); } catch {}
+  gl.canvas.remove();
+  for (const n of Object.values(V.nodes || {})) n.remove();
+  Object.assign(V, { gl: null, lodge: null, key: '', figs: new Map(), pet: null, avatar: null, fxMap: new Map(), icons: new Map(), notice3d: new Map(), particles: null, weather: '', screenTex: null, frames: 0 });
 }
 
 function savePrefs(p) { V.prefs = normPrefs(p); V.opts?.saveView3d?.(V.prefs); }
@@ -512,6 +527,8 @@ function bindPointer() {
   c.addEventListener('wheel', (e) => { if (V.walk.on) return; e.preventDefault(); const g = V.goal || (V.goal = { ...V.cam, target: V.cam.target.clone() }); g.dist = Math.max(3, Math.min(90, g.dist * (e.deltaY > 0 ? 1.12 : 0.89))); if (habitatEngine()?.reduced) V.cam = { ...g, target: g.target.clone() }; }, { passive: false });
   c.addEventListener('dblclick', (e) => { if (V.walk.on) return; const h = pickAt(e); if (!h) return; const o = h.point; focusOn(o.x, o.z, h.hit.kind === 'actor' ? 3.2 : 4.5); });
   c.addEventListener('mousemove', (e) => { if (V.walk.on && document.pointerLockElement === c) { V.walk.yaw -= e.movementX * 0.0025; V.walk.pitch = Math.max(-1.1, Math.min(0.6, V.walk.pitch - e.movementY * 0.0022)); } });
+  if (winBound) return; // window listeners once, however often the renderer is recreated
+  winBound = true;
   window.addEventListener('keydown', (e) => {
     if (!V?.walk.on || !V.gl?.canvas.isConnected) return;
     if (e.target.closest?.('input, textarea, select')) return;

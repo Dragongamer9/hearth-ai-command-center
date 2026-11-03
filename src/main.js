@@ -305,6 +305,14 @@ async function handleVerdicts(agent, text) {
     const vline = `${v.verdict === 'approve' ? 'APPROVE' : 'CHANGES'}: T-${v.taskId}`;
     if (!t) { ops.actionResult(agent, vline, false, `unknown task id T-${v.taskId}`); continue; }
     const head = t.ws ? await api.workspaceHead(t.id).catch(() => null) : null;
+    // An APPROVE on a task with a workspace must name the commit it reviewed.
+    if (v.verdict === 'approve' && t.ws && !v.sha) {
+      const why = `name the commit you reviewed: APPROVE: T-${t.id} @${short(head) || '<sha>'}`;
+      recordReview(t, { by: agent, verdict: 'approve', sha: null, reason: v.reason, at: now(), accepted: false, why });
+      ops.actionResult(agent, vline, false, why, t.id);
+      save();
+      continue;
+    }
     // The sha it names must be the branch head; otherwise it reviewed something else.
     if (v.sha && head && !head.startsWith(v.sha)) {
       const why = `head moved since your review (${short(v.sha)}→${short(head)})`;
@@ -364,9 +372,12 @@ async function recheckApprovals(list = state.tasks.filter((t) => t.stage === 'ap
   let cleared = false;
   for (const t of list) {
     const was = t.reviewVerdict;
+    // Never while anything runs on it (task, verify, review or lead runs): checked again after it ends.
+    if (ui.running[t.id] || ui.busy[t.id] || ui.saving?.[t.id]) continue;
     const head = await api.workspaceHead(t.id).catch(() => null);
     if (!was?.sha || !head || head === was.sha) continue;
     const r = await api.opsSplitFollowup?.(t.id, was.sha).catch(() => null);
+    if (r?.busy) continue;
     if (r?.ok && r.moved) {
       changed = true;
       const text = `Commits after ${NAMES[was.by]}'s approval of ${short(was.sha)} were moved to ${r.followup} (${r.commits.join('; ')}); T-${t.id} stays approved at exactly ${short(was.sha)}. Make a follow-up task from that branch if the work is needed.`;
@@ -381,6 +392,7 @@ async function recheckApprovals(list = state.tasks.filter((t) => t.stage === 'ap
       cleared = true;
       audit('Approval cleared: branch changed', t.id, `${was.sha} → ${head}${r?.reason ? ` (${r.reason})` : ''}`);
       post({ who: 'system', text: `T-${t.id} “${t.title}” changed after ${NAMES[was.by]} approved ${short(was.sha)} (now ${short(head)})${r?.reason ? ` and the later commits couldn't be split off (${r.reason})` : ''}. The approval was cleared and it's back in review.` });
+      t.notes.push({ at: now(), who: 'System', text: `Approval of ${short(was.sha)} cleared: ${r?.pushed ? r.reason : `the branch is now at ${short(head)}`}. It needs a new review of ${short(head)}.` });
     }
   }
   if (changed) { save(); render(); }
@@ -547,7 +559,7 @@ async function undoLead(id) {
     const r = ui.running[t.id];
     if (r) await api.cancelRun(r.runId).catch(() => {});
     delete t.startNext;
-  } else if (u.kind === 'revert') {
+  } else if (u.kind === 'revert' || u.kind === 'undomerge') {
     const r = await wf.undoRevert(u);
     if (!r.ok) return toast(`Couldn't undo: ${r.message}`);
     if (t) t.notes.push({ at: now(), who: 'Owner', text: `Undid the lead's change: ${r.message}` });
@@ -877,7 +889,8 @@ const habitatHooks = {
   // Habitat progress lives in the app state and is saved with it.
   saveStore: (h) => { state.habitat = h; save(); },
   // 2D/3D switch, Lighter 3D, walk view, avatar and the owner's study: saved, never change by themselves.
-  view3d: () => state.habitat3d || null, saveView3d: (v) => { state.habitat3d = v; save(); },
+  // The 3D view's owner settings are app-wide (Settings), not per project.
+  view3d: () => settings.view3d || null, saveView3d: (v) => { api.setSettings({ view3d: v }).then((s2) => { if (s2 && !s2.message) settings = s2; }).catch(() => {}); },
   audit: (event, detail = '') => { audit(event, null, detail); save(); },
 };
 
@@ -1189,7 +1202,6 @@ async function chatTurn(agent, { trigger = '', canEdit = false, snapshot = null,
     handleLeadLines(agent, d.text);
     await ops.handleLines(agent, d.text, null, Boolean(edit)); // IMAGE REQUEST / BACKGROUND (jobs edit only if this turn could)
     await wf.lines(agent, d.text); // TASK NOTE / VERIFY / MERGE MAIN / REVERT
-    wf.captureChat(agent, d.text); // the lead's and reviewers' words about a task go into its log
     wf.ensureResults(agent, d.text); // no action line without a ✓/✗
     // Images and recordings it made in the chat workspace become attachments too.
     if (state.chatWs && m) {
@@ -1995,6 +2007,7 @@ async function finishVerify(t, agent, run, res, violation) {
   run.head = await api.workspaceHead(t.id).catch(() => null);
   const tr = res.ok ? await wf.verifyTests(t, run) : null;
   if (res.ok) wf.acks(t, res.text, agent, run);
+  wf.closeVerify(t); // the "verify only" instruction is done when the verify run ends
   audit(res.ok ? 'Verify-only run finished' : `Verify-only run stopped (${res.error.kind})`, t.id, `${NAMES[agent]} at ${short(run.head)}${tr ? ` · tests ${tr.status}` : ''}${violation ? ' · violation' : ''}`, agent);
   delete ui.saving[t.id];
   if (res.ok) {
@@ -2973,6 +2986,12 @@ async function boot() {
     if (!Array.isArray(state.permissions)) state.permissions = [];
     if (!state.chatSessions) state.chatSessions = {};
     for (const m of state.chat) if (!m.id) m.id = uid();
+    // One-time move of the 3D view settings from this project's state to the app settings,
+    // so switching projects doesn't look like settings changed by themselves.
+    if (!settings.view3d && state.habitat3d && typeof state.habitat3d === 'object') {
+      const s2 = await api.setSettings({ view3d: state.habitat3d }).catch(() => null);
+      if (s2 && !s2.message) { settings = s2; audit('3D Habitat settings moved to app settings (one-time)', null, 'view mode, Lighter 3D, walk view, avatar, study decor and notes'); }
+    }
     backups = await api.backups().catch(() => backups);
     const interrupted = recoverInterrupted(state);
     for (const t of interrupted) {

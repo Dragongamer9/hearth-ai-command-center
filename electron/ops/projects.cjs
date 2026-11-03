@@ -24,6 +24,8 @@ function defaultSettings() {
   };
 }
 
+// Docs paths: comma-separated globs of letters, digits, . _ - / * only (no "..", no pathspec magic).
+const validDocsPaths = (v) => typeof v === 'string' && /^[A-Za-z0-9._*/,\s-]{1,300}$/.test(v) && !v.includes('..') && v.split(',').every((x) => x.trim() && !x.trim().startsWith('/'));
 const clampInt = (v, lo, hi, dflt) => (Number.isFinite(Number(v)) ? Math.min(hi, Math.max(lo, Math.round(Number(v)))) : dflt);
 
 function cleanSettings(s = {}) {
@@ -38,7 +40,7 @@ function cleanSettings(s = {}) {
     nextVersion: typeof s.nextVersion === 'string' && /^\d{1,4}\.\d{1,4}(\.\d{1,6})?$/.test(s.nextVersion.trim()) ? s.nextVersion.trim() : '',
     versionFile: typeof s.versionFile === 'string' && /^[A-Za-z0-9._/-]{1,120}$/.test(s.versionFile) && !s.versionFile.includes('..') ? s.versionFile : 'package.json',
     releaseCommand: typeof s.releaseCommand === 'string' ? s.releaseCommand.replace(/[\r\n\0]/g, ' ').trim().slice(0, 300) : '',
-    docsPaths: typeof s.docsPaths === 'string' && /^[A-Za-z0-9._*/,\s-]{1,300}$/.test(s.docsPaths) && !s.docsPaths.includes('..') && s.docsPaths.trim() ? s.docsPaths.trim() : d.docsPaths,
+    docsPaths: validDocsPaths(s.docsPaths) ? s.docsPaths.trim() : d.docsPaths,
   };
 }
 
@@ -171,6 +173,8 @@ function createProjects(dataDir) {
     const p = byId(id);
     if (!p) throw new Error('Unknown project.');
     if (!patch || typeof patch !== 'object') throw new Error('bad settings');
+    // An invalid docs paths entry is refused with the reason, never silently reset.
+    if ('docsPaths' in patch && !validDocsPaths(patch.docsPaths)) throw new Error('Docs paths must be comma-separated relative globs using only letters, digits, . _ - / and * (no "..", no leading /), e.g. *.md, docs/**');
     const next = { ...p.settings };
     for (const k of Object.keys(defaultSettings())) if (k in patch) next[k] = patch[k];
     p.settings = cleanSettings(next);
@@ -181,4 +185,4 @@ function createProjects(dataDir) {
   return { notice: () => notice, changedOnDisk, keepDisk, discardDisk: () => write(), load, get, active, byId, add, setDir, switchTo, rename, setSettings, stateFile: (id) => stateFileFor(dataDir, id), file };
 }
 
-module.exports = { createProjects, defaultSettings, cleanSettings, migrate, normalize, stateFileFor, REPO_RE, LEGACY_STATE };
+module.exports = { validDocsPaths, createProjects, defaultSettings, cleanSettings, migrate, normalize, stateFileFor, REPO_RE, LEGACY_STATE };

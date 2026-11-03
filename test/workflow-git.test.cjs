@@ -90,17 +90,19 @@ test('E: a verify-only run can change nothing: stray commits and edits are disca
   commit(wt, 'b.txt', 'sneaky\n', 'commit during verify');
   fs.writeFileSync(path.join(wt, 'a.txt'), 'edited\n');
   fs.writeFileSync(path.join(wt, 'new.txt'), 'new\n');
-  const r = await w.enforceVerify({ git, dir: wt, before, stamp: 1 });
+  const r = await w.enforceVerify({ git, dir: wt, before, stamp: 1, taskId: 'ABC123' });
   assert.equal(r.ok, false);
   assert.equal(r.commits.length, 1);
   assert.match(r.commits[0], /commit during verify/);
-  assert.equal(r.files.length, 2);
+  assert.deepEqual(r.files.sort(), ['a.txt', 'new.txt']);
   assert.equal(run(wt, 'rev-parse', 'HEAD'), start, 'head back to where the run started');
-  assert.equal(run(wt, 'status', '--porcelain'), '', 'working tree clean');
-  assert.equal(r.backupRef, 'refs/hearth/discarded/1');
-  assert.match(run(wt, 'log', '-1', '--format=%s', r.backupRef), /commit during verify/, 'kept on a backup ref');
-  assert.match(run(wt, 'stash', 'list'), /verify-only run/, 'edits kept in a stash');
-  const clean = await w.enforceVerify({ git, dir: wt, before: await w.snapshot({ git, dir: wt }), stamp: 2 });
+  assert.equal(fs.readFileSync(path.join(wt, 'a.txt'), 'utf8'), 'one\n');
+  assert.equal(fs.existsSync(path.join(wt, 'new.txt')), false);
+  assert.ok(fs.existsSync(path.join(wt, '.hearth-ai', 'discarded', '1', 'new.txt')), 'new files kept aside');
+  assert.equal(r.backupRef, 'refs/hearth/discarded/ABC123/1');
+  assert.match(run(wt, 'log', '-1', '--format=%s', r.backupRef), /commit during verify/, 'commits kept on a per-task ref');
+  assert.equal(run(wt, 'stash', 'list'), '', 'the shared stash is never used');
+  const clean = await w.enforceVerify({ git, dir: wt, before: await w.snapshot({ git, dir: wt }), stamp: 2, taskId: 'ABC123' });
   assert.equal(clean.ok, true);
 });
 
@@ -168,7 +170,7 @@ test('D: the lead may revert a task-branch commit (undo = revert the revert), ne
   assert.equal((await w.revertOnTask({ git, dir: proj, sha: onMain, def: 'main' })).ok, false, 'never on main itself');
 });
 
-test('K: asset scan finds new images in the workspace, the assets folder and paths in the reply', async () => {
+test('K: asset scan finds new images in the workspace, the assets folder and paths in the reply; files are copied, never moved', async () => {
   const { wt } = setup();
   const assets = path.join(wt, '.hearth-ai', 'assets', 'google');
   fs.mkdirSync(assets, { recursive: true });
@@ -176,16 +178,16 @@ test('K: asset scan finds new images in the workspace, the assets folder and pat
   fs.mkdirSync(path.join(wt, 'public'));
   fs.writeFileSync(path.join(wt, 'public', 'icon.png'), 'x');
   fs.writeFileSync(path.join(assets, 'gen.webp'), 'x');
-  fs.writeFileSync(path.join(wt, 'notes.txt'), 'x');
   const found = await w.scanAssets({ git, dir: wt, assetsDir: assets, text: 'Saved the diagram to ./mock.png and also see /etc/passwd.png', sinceMs: Date.now() - 60000 });
   const by = Object.fromEntries(found.map((f) => [f.rel, f]));
-  assert.equal(by['mock.png'].move, true);
-  assert.equal(by['public/icon.png'].move, false, 'project folders are copied, not moved');
+  assert.ok(by['mock.png'] && by['public/icon.png']);
+  assert.ok(found.every((f) => f.move === false), 'nothing is marked to move');
   assert.equal(by['.hearth-ai/assets/google/gen.webp'].source, 'assets');
   assert.equal(found.some((f) => f.rel.includes('passwd')), false, 'nothing outside the workspace');
-  const rel = w.moveIntoAssets(wt, 'mock.png', assets);
-  assert.equal(rel, '.hearth-ai/assets/google/mock.png');
-  assert.equal(fs.existsSync(path.join(wt, 'mock.png')), false);
+  const rel = w.copyIntoAssets(wt, 'public/icon.png', assets);
+  assert.equal(rel, '.hearth-ai/assets/google/icon.png');
+  assert.ok(fs.existsSync(path.join(wt, 'public', 'icon.png')), 'the project file stays in the worktree');
+  assert.equal(w.moveIntoAssets, undefined, 'there is no move any more');
 });
 
 test('I: release facts: the commit, tasks since the last tag, the notes file and the version file', async () => {

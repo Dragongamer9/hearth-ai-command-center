@@ -145,7 +145,7 @@ export function leadRules(lead) {
   const owned = [!p.merge && 'merging to main', !p.release && 'releases', !p.tag && 'tags'].filter(Boolean);
   return [
     `- The Owner has let you, ${n}, take his Task board actions. Write one line per action:`,
-    '  APPROVE: T-<id> <note> — approve a task waiting for Owner approval (does what "Approve to merge" does) or approve resuming a stopped task',
+    '  APPROVE: T-<id> @<sha> <note> — (always name the commit you checked) approve a task waiting for Owner approval (does what "Approve to merge" does) or approve resuming a stopped task',
     '  CHANGES: T-<id> <what must be fixed> — send it back to its implementer',
     '  START: T-<id> — start a queued task (or queue it as Start next)',
     '  APPROVE: R-<id> / DENY: R-<id> <reason> — answer a teammate\'s permission card',
@@ -153,7 +153,8 @@ export function leadRules(lead) {
     '  TASK NOTE: T-<id> <instruction> — goes into that task\'s instruction log; its runner must acknowledge it (e.g. "merge main first", "verify only")',
     '  VERIFY: T-<id> — a verify-only run: checks are run and reported, nothing can be edited or committed (the only kind of run while a review is pending)',
     '  MERGE MAIN: T-<id> — bring main into a hearth/ task branch (Routine, audited, undoable)',
-    '  REVERT: T-<id> <sha> <why> — revert one commit on a hearth/ task branch that is outside the task\'s scope (Routine, audited, undoable). Never main, tags or releases.',
+    '  REVERT: T-<id> <sha> <why> — revert one commit on a hearth/ task branch that is outside the task\'s scope (Routine, audited, undoable). Never a merge of main, never main, tags or releases.',
+    '  (MERGE MAIN and REVERT are refused while the task is in review or approval.)',
     ...(p.merge ? ['- The Owner turned on "Lead may merge to main": APPROVE: T-<id> on a task in approval merges exactly the approved commit, only after an approving review by another AI (not you; not the local model for code). Never your own unreviewed work.'] : []),
     ...(p.release ? [`- The Owner turned on "Lead may publish releases": write RELEASE: v${p.nextVersion || '<Next version>'} to publish. Only the Owner's Next version (${p.nextVersion ? `v${p.nextVersion}` : 'not set yet, so no release'}) is allowed, and only when the version file on main already says it. You never edit or bump version numbers.`] : []),
     ...(p.tag ? [`- The Owner turned on "Lead may create tags": write TAG: v${p.nextVersion || '<Next version>'} to tag main's commit. Only v<Next version>; never another name, never force, never delete tags.`] : []),

@@ -438,7 +438,8 @@ async function releaseCreate(dir, { version, target, notes = '', draft = true })
   const gh = find('gh');
   if (!gh) return { ok: false, message: 'GitHub CLI (gh) is not installed.' };
   if (!VERSION.test(String(version || ''))) return { ok: false, message: 'Type the version as MAJOR.MINOR (for example 1.1).' };
-  if (!BRANCH_RE.test(String(target || ''))) return { ok: false, message: 'Bad target branch.' };
+  // A branch name, or (from the release gate) the exact 40-character commit to tag.
+  if (!BRANCH_RE.test(String(target || '')) && !/^[0-9a-f]{40}$/.test(String(target || ''))) return { ok: false, message: 'Bad target branch.' };
   const tag = `v${version}`;
   const args = ['release', 'create', tag, '--target', target, '--title', `${tag}`, '--notes', String(notes).slice(0, 20000) || `Release ${tag}`];
   if (draft) args.push('--draft');

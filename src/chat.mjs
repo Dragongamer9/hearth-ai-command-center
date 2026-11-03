@@ -86,7 +86,7 @@ export function chatRules(agent, lead, { leadActions = false } = {}) {
     '- To put work on the board, write one line per task in exactly this format (the Owner gets Add / Add & start buttons):',
     `TASK: <title> | implementer: ${editors} | reviewer: ${editors}|local | action: code|docs|merge|release|deploy`,
     '- The reviewer must differ from the implementer. The local AI cannot implement (it can only review).',
-    '- If you are the assigned REVIEWER of a task: when it is ready for the Owner write APPROVE: T-<task id> <short note>; to send it back write CHANGES: T-<task id> <what must be fixed>. Only the assigned reviewer counts, and APPROVE only moves it to Owner approval.',
+    '- If you are the assigned REVIEWER of a task: when it is ready for the Owner write APPROVE: T-<task id> @<commit you reviewed> <short note> (an APPROVE without the commit is refused); to send it back write CHANGES: T-<task id> <what must be fixed>. Only the assigned reviewer counts, and APPROVE only moves it to Owner approval.',
     ...(leadActions ? ['- With the lead switch on, APPROVE moves the task to the approval stage, where the lead (if allowed) or the Owner approves it.'] : []),
     ...(agent === 'ollama' ? [] : [ATTACH_RULE, extrasRules(agent)]),
     '- To fix one of YOUR OWN earlier messages, write a line: EDIT #<message id>: <the corrected full text>',

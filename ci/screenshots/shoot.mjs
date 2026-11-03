@@ -133,7 +133,7 @@ function stub(opts) {
     restoreBackup: () => ok(state), exportAll: () => ok({ ok: false }),
     providerStatus: () => ok({ encryption: true, weakEncryption: false, defaults: { anthropic: 'claude-sonnet-5-5', openai: 'gpt-5', xai: 'grok-4', mistral: 'mistral-large-latest', perplexity: 'sonar', deepseek: 'deepseek-chat' }, keys: { perplexity: populated, deepseek: false } }),
     setKey: () => ok(true), removeKey: () => ok(true), ask: () => ok({ ok: false }),
-    settings: () => ok(settings), setConnection: () => ok(settings), pickProject: () => ok(settings), pickBinary: () => ok(settings), useProject: () => ok(settings), setSettings: (p) => { Object.assign(settings, p); return ok(settings); }, addDir: () => ok(settings), removeDir: () => ok(settings),
+    settings: () => ok(settings), setConnection: () => ok(settings), pickProject: () => ok(settings), pickBinary: () => ok(settings), useProject: () => ok(settings), setSettings: (p) => { Object.assign(settings, p); window.__settings = JSON.parse(JSON.stringify(settings)); return ok(settings); }, addDir: () => ok(settings), removeDir: () => ok(settings),
     gitTools: () => ok(populated ? { git: '/usr/bin/git', gh: '/usr/bin/gh', ghUser: 'Dragongamer9' } : { git: '/usr/bin/git', gh: null, ghUser: null }),
     gitLogin: () => ok({ ok: false }), gitStatus: () => ok(git), gitPull: () => ok({ ok: false, message: 'CI preview' }), gitPushTask: () => ok({ ok: false }), gitPushBranch: () => ok({ ok: false }), gitMergeApproved: () => ok(flows ? { ok: true, sha: 'abc9999', branch: 'main', pushed: true, message: 'Merged into main (abc9999). Pushed main to GitHub.' } : { ok: false, message: 'CI preview' }),
     gitUpdateFromMain: () => ok({ ok: true, changed: false, message: 'Already up to date with main.' }), gitReleaseBranch: () => ok({ ok: false, message: 'CI preview' }),
@@ -468,7 +468,8 @@ await session('habitat-3d', { scenario: 'populated', theme: 'dark', habitat: tru
   check(await page.evaluate(() => Boolean(document.querySelector('.hab3d-canvas')?.habitat3d?.ready)), '3D lodge rendered (WebGL available)');
   check((await page.evaluate(H3('mode'))) === '3d', 'Habitat shows 3D after the switch');
   check(await page.evaluate(() => getComputedStyle(document.querySelector('#habitat canvas')).display === 'none'), '2D canvas hidden while 3D shows');
-  check((await page.evaluate(() => window.__saved?.habitat3d?.mode)) === '3d', 'the 3D choice is saved');
+  check((await page.evaluate(() => window.__settings?.view3d?.mode)) === '3d', 'the 3D choice is saved (app settings)');
+  check((await page.evaluate(() => window.__settings?.view3d?.avatar?.hair)) === 2, 'the 3D settings moved from the project to the app settings (one-time)');
   // Day: AIs at their desks, idle ones off to the kitchen, the garden and the pet.
   await page.evaluate(() => document.querySelector('#habitat canvas').habitat.setClock(new Date(2026, 10, 2, 13, 0).getTime()));
   await page.evaluate(H_('breakFor', ['ollama', 'freebuff', 'qwen', 'deepseek']));
@@ -508,10 +509,18 @@ await session('habitat-3d', { scenario: 'populated', theme: 'dark', habitat: tru
   await shot('owner-study-decorate');
   // Lighter 3D is saved; back to 2D shows the pixel Habitat again.
   await page.check('[data-h3="lighter"]'); await page.waitForTimeout(300);
-  check((await page.evaluate(() => window.__saved?.habitat3d?.lighter)) === true, 'Lighter 3D saved');
+  check((await page.evaluate(() => window.__settings?.view3d?.lighter)) === true, 'Lighter 3D saved');
   await page.click('[data-h3="2d"]'); await page.waitForTimeout(500);
   check(await page.evaluate(() => getComputedStyle(document.querySelector('#habitat canvas')).display !== 'none'), '2D is back after the switch');
-  check((await page.evaluate(() => window.__saved?.habitat3d?.mode)) === '2d', 'the 2D choice is saved');
+  check((await page.evaluate(() => window.__settings?.view3d?.mode)) === '2d', 'the 2D choice is saved');
+  // Leaving the Habitat page frees the 3D renderer; coming back recreates it.
+  await page.click('[data-h3="3d"]'); await page.waitForTimeout(800);
+  await nav('board');
+  check(await page.evaluate(() => !document.querySelector('.hab3d-canvas')), '3D renderer removed when leaving the Habitat');
+  await nav('habitat');
+  await page.waitForFunction(() => document.querySelector('.hab3d-canvas')?.habitat3d?.ready, null, { timeout: 45000 }).catch(() => {});
+  check(await page.evaluate(() => Boolean(document.querySelector('.hab3d-canvas')?.habitat3d?.ready)), '3D lodge recreated on return');
+  await shot('lodge-3d-after-return');
 }, glBrowser);
 await glBrowser.close();
 

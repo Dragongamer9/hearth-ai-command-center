@@ -192,6 +192,7 @@ function register(d) {
     if (!c.ok) return { ok: false, message: c.reason };
     const sha = (await workspace.git(dir, ['rev-parse', ref])).out;
     // The release gate: the checklist passed for exactly this commit (or the Owner overrode it).
+    // (fetched above, so ref is GitHub's main right now)
     const rg = releaseGateFor(c.version, sha);
     if (!rg.ok) return { ok: false, message: `Not ${k === 'tag' ? 'tagged' : 'released'}: ${rg.reason}.` };
     const g = await guard(dir, await releaseFrom(dir, sha), sha, k === 'tag' ? 'tagged' : 'released');
@@ -203,10 +204,19 @@ function register(d) {
       return p.ok ? { ok: true, message: `Tagged ${sha.slice(0, 7)} as v${c.version} and pushed the tag.`, sha } : { ok: false, message: `Tag v${c.version} created locally, but the push failed: ${p.err.split('\n')[0]}` };
     }
     if (ps.releaseCommand) {
-      const r = await exec('/bin/sh', ['-c', ps.releaseCommand], { cwd: dir, timeoutMs: 30 * 60000, env: { ...process.env, HEARTH_RELEASE_VERSION: c.version } });
-      return r.ok ? { ok: true, message: `Release command finished for v${c.version}.`, log: redact(r.out).slice(-4000) } : { ok: false, message: `Release command failed: ${redact(r.err).split('\n').slice(-2).join(' ')}` };
+      // Runs in a clean worktree at exactly the gated commit, never the local checkout.
+      const tmp = path.join(os.tmpdir(), `hearth-relcmd-${crypto.randomBytes(4).toString('hex')}`);
+      const add = await workspace.git(dir, ['worktree', 'add', '--detach', tmp, sha], { timeoutMs: 120000 });
+      if (!add.ok) return { ok: false, message: `Couldn't check out ${sha.slice(0, 7)} for the release command.` };
+      try {
+        const r = await exec('/bin/sh', ['-c', ps.releaseCommand], { cwd: tmp, timeoutMs: 30 * 60000, env: { ...process.env, HEARTH_RELEASE_VERSION: c.version, HEARTH_RELEASE_SHA: sha } });
+        return r.ok ? { ok: true, message: `Release command finished for v${c.version} at ${sha.slice(0, 7)}.`, log: redact(r.out).slice(-4000) } : { ok: false, message: `Release command failed: ${redact(r.err).split('\n').slice(-2).join(' ')}` };
+      } finally { await workspace.git(dir, ['worktree', 'remove', '--force', tmp]); }
     }
     if (!(await workspace.git(dir, ['cat-file', '-e', `${ref}:.github/workflows/release.yml`])).ok || !repo) return { ok: false, message: 'This project has no release path (no .github/workflows/release.yml and no release command on the Project page).' };
+    // The workflow builds main's head: re-check right before dispatch that it is still the gated commit.
+    const now = await ghApi([`repos/${repo.owner}/${repo.repo}/commits/${def}`, '--jq', '.sha']);
+    if (!now.ok || now.out.trim() !== sha) return { ok: false, message: `Not released: ${def} on GitHub is ${now.ok ? now.out.trim().slice(0, 7) : 'unreadable'}, not the gated ${sha.slice(0, 7)}. Run the release preview again.` };
     const d = await ghApi(['-X', 'POST', `repos/${repo.owner}/${repo.repo}/actions/workflows/release.yml/dispatches`, '-f', `ref=${def}`]);
     return d.ok ? { ok: true, dispatched: true, message: `Started the release workflow for v${c.version} on ${def}. Progress is shown here as it runs.`, url: `https://github.com/${repo.owner}/${repo.repo}/actions/workflows/release.yml` } : { ok: false, message: `Couldn't start the release workflow: ${d.err.split('\n')[0]}` };
   });
@@ -268,7 +278,10 @@ function register(d) {
     return { ok: true, ...listProjects() };
   });
   handle('ops:projectRename', (id, name) => { projects.rename(String(id), name); return listProjects(); });
-  handle('ops:projectSettings', (patch) => { projects.setSettings(active().id, patch); return listProjects(); });
+  handle('ops:projectSettings', (patch) => {
+    try { projects.setSettings(active().id, patch); } catch (e) { return { ok: false, message: String(e.message || e) }; }
+    return listProjects();
+  });
 
   // ---- project memory ----
   handle('ops:memoryGet', async (decisions) => {
@@ -622,7 +635,7 @@ function register(d) {
   handle('ops:enforceVerify', async (taskId, before) => {
     const d = taskWs(taskId);
     if (!d || !before || !shaOk(before.head)) return { ok: true, commits: [], files: [] };
-    return wfgit.enforceVerify({ git: g, dir: d, before: { head: before.head, status: String(before.status || '') } });
+    return wfgit.enforceVerify({ git: g, dir: d, taskId: String(taskId), before: { head: before.head, status: String(before.status || ''), stash: shaOk(before.stash) ? before.stash : null, tree: shaOk(before.tree) ? before.tree : null, untracked: Array.isArray(before.untracked) ? before.untracked.map(String) : [] } });
   });
   handle('ops:enforceDocs', async (taskId, startSha) => {
     const d = taskWs(taskId);
@@ -633,6 +646,8 @@ function register(d) {
   handle('ops:splitFollowup', async (taskId, approved) => {
     const d = taskWs(taskId);
     if (!d) return { ok: false, reason: 'no task workspace' };
+    // Never while a run is working in that workspace.
+    if (activeCwds.has(d)) return { ok: false, busy: true, reason: 'a run is in progress in that workspace' };
     return wfgit.splitFollowup({ git: g, dir: d, approved: String(approved || '') });
   });
   handle('ops:reviewData', async (taskId, from, changes) => {
@@ -653,6 +668,7 @@ function register(d) {
     const def = await defOf();
     if (op === 'mergemain') return wfgit.mergeMain({ git: g, dir: d, def, why: 'lead: MERGE MAIN' });
     if (op === 'revert') return wfgit.revertOnTask({ git: g, dir: d, sha: String(arg || ''), def });
+    if (op === 'undomerge') return wfgit.undoMergeMain({ git: g, dir: d, merge: String(arg?.merge || ''), before: String(arg?.before || '') });
     return { ok: false, reason: 'unknown operation' };
   });
   // K. New images and videos after a run become attachments; workspace files move into the AI's assets folder.
@@ -661,7 +677,8 @@ function register(d) {
     if (!d || !/^[a-z]+$/.test(String(agent))) return [];
     const assetsDir = path.join(d, '.hearth-ai', 'assets', String(agent));
     const found = await wfgit.scanAssets({ git: g, dir: d, assetsDir, text: String(text || '').slice(0, 20000), sinceMs: Number(sinceMs) || 0 });
-    return found.map((f) => { try { return f.move ? { ...f, from: f.rel, rel: wfgit.moveIntoAssets(d, f.rel, assetsDir), moved: true } : f; } catch { return f; } });
+    // Copied into the assets folder, never moved: the workspace file may be part of the project.
+    return found.map((f) => { try { return f.source === 'workspace' ? { ...f, from: f.rel, rel: wfgit.copyIntoAssets(d, f.rel, assetsDir), copied: true } : f; } catch { return f; } });
   });
 
   // ---- I. the release gate (enforced here before any tag or release) ----
@@ -764,9 +781,11 @@ function register(d) {
       const dir = projectDir();
       if (!dir) return { ok: false, reason: 'no project' };
       const t = String(target || '');
+      await workspace.git(dir, ['fetch', '--quiet', '--no-tags', 'origin'], { timeoutMs: 90000 });
       const ref = (await workspace.git(dir, ['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${t}`])).ok ? `origin/${t}` : t;
       const sha = (await workspace.git(dir, ['rev-parse', '--verify', '--quiet', ref])).out || null;
-      return releaseGateFor(version, sha);
+      // The release is created at exactly this commit (gh release create --target <sha>).
+      return { ...releaseGateFor(version, sha), sha };
     },
     imageInfo: (file) => media.imageInfo(file),
     withMemory: (prompt) => memory.withMemory(prompt, readMemory()),

@@ -23,6 +23,15 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Check vendored three.js against the npm tarball
+        run: |
+          mkdir -p /tmp/three && cd /tmp/three
+          npm pack three@0.170.0 --silent > name.txt
+          [ "$(sha512sum "$(cat name.txt)" | cut -d' ' -f1 | xxd -r -p | base64 -w0)" = "FQK+LEpYc0fBD+J8g6oSEyyNzjp+Q7Ks1C568WWaoMRLW+TkNNWmenWeGgJjV105Gd+p/2ql1ZcjYvNiPZBhuQ==" ]
+          tar -xzf "$(cat name.txt)" package/build/three.module.min.js
+          cmp package/build/three.module.min.js "$GITHUB_WORKSPACE/src/vendor/three/three.module.min.js"
+          echo "three.js matches the npm tarball"
+
       - name: Build web UI
         run: npx vite build
 

@@ -289,11 +289,17 @@ test('walk mode settings, avatar and study decorations persist', () => {
   wall = null;
 });
 
+// Recorded here, independently of the README: the npm tarball's dist.integrity (sha512)
+// and the sha256 of package/build/three.module.min.js inside it. CI re-downloads the
+// tarball with npm (which checks dist.integrity) and compares the extracted file.
+const THREE_TGZ_SHA512 = 'sha512-FQK+LEpYc0fBD+J8g6oSEyyNzjp+Q7Ks1C568WWaoMRLW+TkNNWmenWeGgJjV105Gd+p/2ql1ZcjYvNiPZBhuQ==';
+const THREE_MIN_SHA256 = '08fd7545d13d2c7fb65ab691530a802dafefd638596501854f267d0fb13c39e7';
 test('vendored three.js matches its recorded integrity', () => {
   const readme = readFileSync(new URL('../src/vendor/three/README.md', import.meta.url), 'utf8');
   const file = readFileSync(new URL('../src/vendor/three/three.module.min.js', import.meta.url));
   const sha = createHash('sha256').update(file).digest('hex');
-  assert.ok(readme.includes(sha), `README records sha256 ${sha}`);
+  assert.equal(sha, THREE_MIN_SHA256, 'the vendored file is byte-for-byte the upstream one');
+  assert.ok(readme.includes(THREE_MIN_SHA256) && readme.includes(THREE_TGZ_SHA512), 'README records the same values');
   assert.match(readme, /three-0\.170\.0\.tgz/);
   assert.match(readme, /sha512-FQK\+LEpYc0fBD\+J8g6oSEyyNzjp\+Q7Ks1C568WWaoMRLW\+TkNNWmenWeGgJjV105Gd\+p\/2ql1ZcjYvNiPZBhuQ==/);
   assert.match(file.subarray(0, 200).toString(), /three\.js/i);

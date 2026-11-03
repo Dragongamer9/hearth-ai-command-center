@@ -15,7 +15,8 @@ export function parseVerdicts(text) {
   const found = [];
   for (const raw of String(text || '').split('\n')) {
     const line = raw.trim().replace(/^[-*•>\s`]+/, '').replace(/[`*]/g, '');
-    // An optional commit after the id ("APPROVE: T-ABC123 @1a2b3c4") names the sha reviewed.
+    // The commit after the id ("APPROVE: T-ABC123 @1a2b3c4") names the sha reviewed; an
+    // APPROVE on a task with a workspace is refused without it (main.js).
     const m = /^(APPROVED?|CHANGES)\s*:\s*T-([A-Za-z0-9]{4,12})\b(?:\s*(?:@|at\s+|sha\s*:?\s*)([0-9a-f]{7,40})\b)?[\s:—–-]*(.*)$/i.exec(line);
     if (m) found.push({ verdict: /^CHANGES$/i.test(m[1]) ? 'changes' : 'approve', taskId: m[2].toUpperCase(), reason: m[4].trim().slice(0, 1000), ...(m[3] ? { sha: m[3].toLowerCase() } : {}) });
   }
