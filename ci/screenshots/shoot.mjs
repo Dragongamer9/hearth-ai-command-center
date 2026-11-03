@@ -9,7 +9,7 @@ const OUT = process.env.OUT_DIR || 'shots';
 mkdirSync(OUT, { recursive: true });
 
 function stub(opts) {
-  const { scenario, theme = 'hearth', hearthTheme = null, flows = false, habitat = false, habitatDay = false, habitatActions = false } = opts;
+  const { scenario, theme = 'hearth', hearthTheme = null, flows = false, habitat = false, habitatDay = false, habitatActions = false, habitat3d = false } = opts;
   const populated = scenario !== 'fresh';
   const ago = (m) => new Date(Date.now() - m * 60000).toISOString();
   const pol = (warn = []) => ({ ok: true, block: [], warn });
@@ -95,6 +95,8 @@ function stub(opts) {
   if (habitat) state.habitat = { v: 1, finished: 28, growth: 28, counted: [], ai: { anthropic: { done: 12, approvals: 9 }, google: { done: 6, approvals: 4 } }, pet: { name: '' } };
   // Claude unlocked a lantern earlier and put it away (it can place it with HABITAT: place lamp).
   if (habitatActions) state.habitat.ai.anthropic.stored = ['lantern'];
+  // 3D lodge: starts in 2D (the switch is pressed in the test); the owner's study is already furnished.
+  if (habitat3d) state.habitat3d = { mode: '2d', walkView: 'third', avatar: { hair: 2, outfit: '#e8833a' }, room: { props: [{ kind: 'owner-desk', x: 1, y: 0 }, { kind: 'bookshelf', x: 3, y: 0 }, { kind: 'armchair', x: 4, y: 3 }, { kind: 'plant', x: 0, y: 3 }, { kind: 'lamp', x: 5, y: 0 }, { kind: 'trophy', x: 0, y: 0 }, { kind: 'globe', x: 2, y: 3 }] }, notes: [{ text: 'Storage page next', at: ago(30) }] };
   const settings = { ownerIdentity: { name: 'Dragongamer9', email: 'Dragongamer9@users.noreply.github.com', emails: ['Dragongamer9@users.noreply.github.com'] }, project: populated ? '/home/owner/Projects/hearth-os' : null, projects: populated ? ['/home/owner/Projects/hearth-os', '/home/owner/Projects/beacon'] : [], connection: { anthropic: 'cli', openai: 'cli', xai: 'cli', mistral: 'cli', perplexity: 'api', deepseek: 'api' }, bins: {}, access: 'standard', extraDirs: populated ? ['/home/owner/Games'] : [], autoPush: true, chatEdits: true, chatResume: true, theme };
   let xaiChecks = 0;
   const agents = populated
@@ -125,7 +127,7 @@ function stub(opts) {
   window.__shots = { signinXai: () => { xaiChecks = 1; } };
   window.hearth = {
     loadState: () => ok(JSON.parse(JSON.stringify(state))),
-    saveState: () => ok(true),
+    saveState: (st) => { window.__saved = JSON.parse(JSON.stringify(st)); return ok(true); },
     appInfo: () => ok({ appVersion: '0.4.0', hearthOs: populated ? { name: 'Hearth OS 1.0', version: '1.0' } : null, dataPath: '/home/owner/.config/Hearth AI Command Center', electron: '45.0.0', packaged: true }),
     backups: () => ok({ recoveredFrom: null, backups: populated ? [{ n: 1, ok: true, savedAt: ago(60), tasks: 6 }, { n: 2, ok: true, savedAt: ago(240), tasks: 5 }] : [] }),
     restoreBackup: () => ok(state), exportAll: () => ok({ ok: false }),
@@ -159,8 +161,8 @@ function stub(opts) {
 const browser = await chromium.launch();
 const errors = [];
 const check = (cond, msg) => { if (!cond) errors.push(`check failed: ${msg}`); };
-async function session(name, opts, steps) {
-  const ctx = await browser.newContext({ viewport: { width: 1600, height: 1000 }, bypassCSP: true, colorScheme: opts.theme === 'light' ? 'light' : 'dark', reducedMotion: opts.reducedMotion ? 'reduce' : 'no-preference' });
+async function session(name, opts, steps, b = browser) {
+  const ctx = await b.newContext({ viewport: { width: 1600, height: 1000 }, bypassCSP: true, colorScheme: opts.theme === 'light' ? 'light' : 'dark', reducedMotion: opts.reducedMotion ? 'reduce' : 'no-preference' });
   await ctx.addInitScript(stub, opts);
   const page = await ctx.newPage();
   page.on('pageerror', (e) => errors.push(`${name}: ${e.message}`));
@@ -455,6 +457,60 @@ await session('habitat-actions', { scenario: 'populated', theme: 'dark', habitat
   await page.click('.hab-pop [data-hab="lock"]'); await page.waitForTimeout(200);
   check((await page.evaluate(H_('store'))).locks.anthropic === true, 'the owner locked Claude’s room (saved)');
 });
+
+// 8) Habitat in 3D: the Cozy Hearth lodge. Chromium renders WebGL with SwiftShader here.
+const glBrowser = await chromium.launch({ args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
+const H3 = (fn, ...args) => `document.querySelector('.hab3d-canvas').habitat3d.${fn}(${args.map((a) => JSON.stringify(a)).join(',')})`;
+await session('habitat-3d', { scenario: 'populated', theme: 'dark', habitat: true, habitat3d: true }, async ({ page, shot, nav }) => {
+  await habitatScene({ page, nav });
+  await page.click('[data-h3="3d"]');
+  await page.waitForFunction(() => document.querySelector('.hab3d-canvas')?.habitat3d?.ready, null, { timeout: 45000 }).catch(() => {});
+  check(await page.evaluate(() => Boolean(document.querySelector('.hab3d-canvas')?.habitat3d?.ready)), '3D lodge rendered (WebGL available)');
+  check((await page.evaluate(H3('mode'))) === '3d', 'Habitat shows 3D after the switch');
+  check(await page.evaluate(() => getComputedStyle(document.querySelector('#habitat canvas')).display === 'none'), '2D canvas hidden while 3D shows');
+  check((await page.evaluate(() => window.__saved?.habitat3d?.mode)) === '3d', 'the 3D choice is saved');
+  // Day: AIs at their desks, idle ones off to the kitchen, the garden and the pet.
+  await page.evaluate(() => document.querySelector('#habitat canvas').habitat.setClock(new Date(2026, 10, 2, 13, 0).getTime()));
+  await page.evaluate(H_('breakFor', ['ollama', 'freebuff', 'qwen', 'deepseek']));
+  await page.waitForFunction(() => document.querySelector('#habitat canvas').habitat.kitchenIds().length >= 1, null, { timeout: 25000 }).catch(() => {});
+  const st = await page.evaluate(H3('stats'));
+  check(st.figures >= 6 && st.pet && st.fire, `figures, pet and fireplace in the lodge (${st.figures})`);
+  check(st.phase === 'day', 'day lighting at 13:00');
+  check((await page.evaluate(H_('behaviour', 'anthropic'))).mode === 'desk', 'Claude works at its desk in 3D too');
+  await page.evaluate(H3('preset', 'lodge')); await page.waitForTimeout(1500);
+  await shot('day-whole-lodge');
+  await page.evaluate(H3('preset', 'great')); await page.waitForTimeout(1500);
+  await shot('day-great-room-desks');
+  // Night: warm windows, lamps and the fireplace.
+  await page.evaluate(() => document.querySelector('#habitat canvas').habitat.setClock(new Date(2026, 10, 2, 22, 30).getTime()));
+  await page.evaluate(H3('preset', 'lodge')); await page.waitForTimeout(1500);
+  const night = await page.evaluate(H3('stats'));
+  check(night.phase === 'night' && night.windows > 1 && night.lampsLit > 0, `night: window glow and lamps (${night.windows}, ${night.lampsLit})`);
+  await shot('night-window-glow-fireplace');
+  // Walk the lodge: third person in the great room, then his private study.
+  await page.evaluate(() => document.querySelector('#habitat canvas').habitat.setClock(new Date(2026, 10, 2, 17, 0).getTime()));
+  await page.click('[data-h3="walk"]');
+  await page.evaluate(H3('walkTo', 2, 10, -1.9)); await page.waitForTimeout(1500);
+  const w = await page.evaluate(H3('stats'));
+  check(w.walking && w.avatar, 'owner avatar walking in third person');
+  await shot('walk-third-person-great-room');
+  await page.keyboard.down('KeyW'); await page.waitForTimeout(1500); await page.keyboard.up('KeyW');
+  check((await page.evaluate(H3('pos'))).x > 2.2, 'W walks the avatar forward');
+  await page.evaluate(H3('walkTo', -2, 7, 1.57)); await page.waitForTimeout(1500);
+  await shot('walk-into-owner-study');
+  await page.keyboard.press('Escape'); await page.waitForTimeout(300);
+  check(!(await page.evaluate(H3('stats'))).walking, 'Esc leaves walk mode');
+  await page.click('[data-h3="study"]'); await page.waitForTimeout(1500);
+  check(await page.locator('.hab3d-panel .hab3d-cell').count() === 24, 'study decorate grid');
+  await shot('owner-study-decorate');
+  // Lighter 3D is saved; back to 2D shows the pixel Habitat again.
+  await page.check('[data-h3="lighter"]'); await page.waitForTimeout(300);
+  check((await page.evaluate(() => window.__saved?.habitat3d?.lighter)) === true, 'Lighter 3D saved');
+  await page.click('[data-h3="2d"]'); await page.waitForTimeout(500);
+  check(await page.evaluate(() => getComputedStyle(document.querySelector('#habitat canvas')).display !== 'none'), '2D is back after the switch');
+  check((await page.evaluate(() => window.__saved?.habitat3d?.mode)) === '2d', 'the 2D choice is saved');
+}, glBrowser);
+await glBrowser.close();
 
 await browser.close();
 console.log(errors.length ? `Page errors:\n${errors.join('\n')}` : 'No page errors.');

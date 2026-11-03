@@ -1,0 +1,35 @@
+/* Habitat 3D: the lodge view, its toolbar, walk HUD and study panel. */
+.habitat.hab3d-on { display: block; padding: 0; overflow: hidden; background: #1a120d; }
+.habitat canvas.hab3d-canvas { display: block; width: 100%; image-rendering: auto; border-radius: var(--r, 6px); cursor: grab; touch-action: none; outline: none; }
+.habitat canvas.hab3d-canvas:active { cursor: grabbing; }
+.hab3d-vignette { position: absolute; inset: 0; pointer-events: none; border-radius: var(--r, 6px); background: radial-gradient(ellipse at 50% 45%, rgba(0,0,0,0) 55%, rgba(30,14,6,.42) 100%); }
+.hab3d-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 6px 0 2px; width: 100%; }
+.hab-foot:has(.hab3d-bar) { flex-wrap: wrap; }
+.hab3d-seg { display: inline-flex; gap: 0; }
+.hab3d-seg .btn { margin-top: 0 !important; border-radius: 0; }
+.hab3d-seg .btn:first-child { border-radius: var(--r, 6px) 0 0 var(--r, 6px); }
+.hab3d-seg .btn:last-child { border-radius: 0 var(--r, 6px) var(--r, 6px) 0; }
+.hab3d-bar .btn { margin-top: 0 !important; }
+.hab3d-pre { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: var(--r, 6px); padding: 3px 6px; font-size: 12px; }
+.hab3d-check { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text); cursor: pointer; }
+.hab3d-link { font-size: 12px; color: var(--accent); }
+.hab3d-note { font-size: 12px; }
+.hab3d-hud, .hab3d-bubble, .hab3d-panel { position: absolute; z-index: 6; background: color-mix(in srgb, var(--panel, #231a16) 92%, transparent); color: var(--text); border: 1px solid var(--line-2, var(--line)); border-radius: var(--r, 6px); box-shadow: var(--shadow); padding: 8px 10px; font-size: 12px; line-height: 1.5; }
+.hab3d-hud { left: 10px; top: 10px; max-width: min(560px, calc(100% - 20px)); }
+.hab3d-hud-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 2px; }
+.hab3d-prompt { margin-top: 4px; display: inline-block; padding: 2px 8px; border-radius: 999px; background: #e8833a; color: #1c120c; font-weight: 600; }
+.hab3d-bubble { left: 50%; bottom: 16px; transform: translateX(-50%); max-width: min(440px, calc(100% - 20px)); }
+.hab3d-bubble .hab-row, .hab3d-panel .hab-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 6px; }
+.hab3d-panel { right: 10px; top: 10px; width: 300px; max-width: calc(100% - 20px); }
+.hab3d-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 3px; margin-top: 6px; }
+.hab3d-cell { aspect-ratio: 1; border: 1px solid var(--line); background: var(--bg-2); color: var(--text); border-radius: 4px; font-size: 10px; padding: 0; cursor: pointer; overflow: hidden; }
+.hab3d-cell.sel { outline: 2px solid #ffd166; }
+.hab3d-cell.door { opacity: .55; cursor: not-allowed; }
+.hab3d-msg { margin-top: 4px; min-height: 1.4em; color: var(--muted, inherit); }
+.hab3d-pool { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: var(--r, 6px); padding: 3px 6px; font-size: 12px; }
+.hab3d-swatch { width: 22px; height: 22px; border-radius: 50%; border: 2px solid transparent; cursor: pointer; }
+.hab3d-swatch.on { border-color: var(--text); }
+.hab3d-stick { position: absolute; left: 18px; bottom: 18px; width: 110px; height: 110px; border-radius: 50%; background: rgba(255,255,255,.12); border: 1px solid rgba(255,255,255,.25); z-index: 6; touch-action: none; }
+.hab3d-knob { position: absolute; left: 35px; top: 35px; width: 40px; height: 40px; border-radius: 50%; background: rgba(255,200,140,.75); }
+.hab3d-hud[hidden], .hab3d-bubble[hidden], .hab3d-panel[hidden], .hab3d-stick[hidden] { display: none; }
+@media (prefers-reduced-motion: reduce) { .hab3d-knob { transition: none; } }

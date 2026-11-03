@@ -10,6 +10,7 @@ import { chatPlan, canOwnerSend, newRound, ownerInterrupt, stopRound, cameAfterO
 import { leadOn, parseLeadLines, leadDecision, leadLabel, leadUndoable, pickReviewer } from './lead.mjs';
 import { AGENTS, AGENT_IDS, WEB_ONLY, HEADLESS, EDITORS, API_CAPABLE, DEFAULT_ROLES, BILLING, ACCESS_NOTE, OLLAMA_NOTE, COLORS } from './registry.mjs';
 import { viewHabitat, mountHabitat, stopHabitat } from './habitat.mjs';
+import { mountHabitat3d, stopHabitat3d } from './habitat3d/view.mjs';
 import { applyHabitatLines, habitatSection, stripHabitatLines } from './habitat/actions.mjs';
 import { HEARTH_OS, RED_FLAGS } from './hearth.mjs';
 import { tokensToCss, pickMode } from './theme.mjs';
@@ -807,6 +808,8 @@ const habitatHooks = {
   openChat: () => { ui.view = 'chat'; ui.selected = null; render(); },
   // Habitat progress lives in the app state and is saved with it.
   saveStore: (h) => { state.habitat = h; save(); },
+  // 2D/3D switch, Lighter 3D, walk view, avatar and the owner's study: saved, never change by themselves.
+  view3d: () => state.habitat3d || null, saveView3d: (v) => { state.habitat3d = v; save(); },
   audit: (event, detail = '') => { audit(event, null, detail); save(); },
 };
 
@@ -1812,8 +1815,8 @@ function render() {
     box.setSelectionRange(box.value.length, box.value.length);
   }
   document.getElementById('edit-text')?.focus();
-  if (ui.view === 'habitat') mountHabitat(document.getElementById('habitat'), habitatHooks);
-  else stopHabitat();
+  if (ui.view === 'habitat') { mountHabitat(document.getElementById('habitat'), habitatHooks); mountHabitat3d(document.getElementById('habitat'), habitatHooks); }
+  else { stopHabitat(); stopHabitat3d(); }
 }
 
 // ---------- actions ----------
