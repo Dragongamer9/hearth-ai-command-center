@@ -60,3 +60,38 @@ export function policyCheck(task, { source = 'Owner' } = {}) {
 
   return { ok: block.length === 0, block, warn };
 }
+
+const VERSION_NUM = /^\d{1,4}\.\d{1,4}(?:\.\d{1,4})?$/;
+export function isVersionBlock(task) {
+  return (task?.policy?.block || []).some((b) => /Only the owner picks version numbers/i.test(b));
+}
+function rewriteVersions(text, version) {
+  return String(text || '').replace(/\b((?:v|version\s+|release\s+|hearth\s*os\s+|update\s+))(\d+\.\d+(?:\.\d+)?)\b/gi, (_, p) => `${p}${version}`);
+}
+// Owner-only. The dialog in main.js is the only caller, and it always passes
+// by: 'Owner'. An AI name, a lead line, or any other by-value is refused.
+// policyCheck's AI block text is not edited; the previous block array is left
+// as it was and a new check is stored with the owner as the source.
+export function confirmOwnerVersion(task, { version, by, at = new Date().toISOString() } = {}) {
+  if (!task) return { ok: false, reason: 'no such task' };
+  if (by !== 'Owner') return { ok: false, reason: 'Only the owner can confirm a version number' };
+  if (!isVersionBlock(task)) return { ok: false, reason: 'This task is not waiting on a version number' };
+  const v = String(version || '').trim().replace(/^v/i, '');
+  if (!VERSION_NUM.test(v)) return { ok: false, reason: 'Write the exact version you want (MAJOR.MINOR)' };
+  let title = rewriteVersions(task.title, v);
+  let description = rewriteVersions(task.description, v);
+  if (!mentionedVersions(`${title}\n${description}`).length) {
+    description = [description, `Version ${v}.`].filter(Boolean).join('\n').trim();
+  }
+  const policy = policyCheck({ ...task, title, description }, { source: 'Owner' });
+  if (isVersionBlock({ policy })) return { ok: false, reason: 'That version did not clear the block' };
+  task.title = title;
+  task.description = description;
+  policy.source = 'Owner';
+  task.policy = policy;
+  task.policySource = 'Owner';
+  task.updatedAt = at;
+  task.notes = task.notes || [];
+  task.notes.push({ at, who: 'Owner', text: `Confirmed version ${v}.` });
+  return { ok: true, version: v, policy };
+}

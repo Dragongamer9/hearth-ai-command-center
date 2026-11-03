@@ -2,6 +2,7 @@
 // what a task is waiting on the owner for, and when a "done" report counts.
 import { NAMES, PERMISSION_KINDS } from './chat.mjs';
 import { taskRunState } from './team.mjs';
+import { isVersionBlock } from './policy.mjs';
 
 const CLOSED = ['approved', 'rejected'];
 // Commits are stored in full and shown short.
@@ -79,7 +80,10 @@ export function ownerAction(task, { permissions = [], running = false, saving = 
     const v = task.reviewVerdict?.verdict === 'approve' ? task.reviewVerdict : null;
     return { kind: 'approve', label, reason: v ? `${NAMES[v.by]} approved${v.sha ? ` ${short(v.sha)}` : ''}${v.reason ? `: ${v.reason}` : '.'}` : 'Ready for your sign-off.' };
   }
-  if (task.policy && !task.policy.ok) return { kind: 'policy', label: 'Fix policy issue', reason: task.policy.block?.[0] || 'Blocked by the policy check.' };
+  if (task.policy && !task.policy.ok) {
+    const version = isVersionBlock(task);
+    return { kind: 'policy', label: version ? 'Confirm version' : 'Fix policy issue', reason: task.policy.block?.[0] || 'Blocked by the policy check.' };
+  }
   if (running || saving) return null;
   // Queued with Start next: it starts by itself when its AI is free. Nothing to press.
   if (task.startNext) return { kind: 'queued', passive: true, label: `Queued for ${NAMES[task.assignee]}`, reason: `Starts as soon as ${NAMES[task.assignee]} finishes the current task.` };

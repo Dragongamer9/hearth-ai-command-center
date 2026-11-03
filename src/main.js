@@ -1,5 +1,5 @@
 import './styles.css';
-import { policyCheck } from './policy.mjs';
+import { policyCheck, mentionedVersions, isVersionBlock, confirmOwnerVersion } from './policy.mjs';
 import { recipients, buildPrompt, buildDelta, parseProposals, parseDirectives, applyEdit, applyRetract, makeRequest, decideRequest, blockedAgents, mentions, NAMES, PERMISSION_KINDS, HOLD_BADGES, authProblem, makeHold, holdLifted } from './chat.mjs';
 import { buildTaskBrief, nextAgent, parseStatus, taskRunState, recoverInterrupted, RUN_STATES, roleKinds, taskNeed, inQueue, queueOf, nextQueued, placeNext, placeLast, startLabel, redistribute } from './team.mjs';
 import { short, parseVerdicts, applyVerdict, ownerAction, REVIEWABLE, requestChanges, reviewBaseline, checkDoneAfterReview, testResult, TEST_LABEL, clearStaleApproval, doneLine } from './owner.mjs';
@@ -1797,7 +1797,7 @@ function drawer() {
     ${wf.drawerExtras(t)}
     ${ops.drawerPanel(t)}
     ${asks.map(askCard).join('')}
-    ${['resume', 'start', 'signin'].includes(actionFor(t)?.kind) ? ownerButton(t) : ''}
+    ${['resume', 'start', 'signin', 'policy'].includes(actionFor(t)?.kind) ? ownerButton(t) : ''}
     <div class="kv">
       <span class="k">Stage</span><span>${esc(STAGES[t.stage])}</span>
       <span class="k">Implementer</span><span>${agentChip(t.assignee)}</span>
@@ -1827,8 +1827,30 @@ function lightbox() {
   return `<div class="modal-bg lightbox" data-closelightbox><img src="${esc(ui.lightbox.url)}" alt="${esc(ui.lightbox.name)}"></div>`;
 }
 
+function versionModal() {
+  const t = state.tasks.find((x) => x.id === ui.versionTask);
+  if (!t) return '';
+  const proposed = [...new Set(mentionedVersions(`${t.title}\n${t.description}`))];
+  const ai = (t.policy?.block || []).some((b) => /An AI proposed a version/.test(b));
+  const shown = proposed.length ? proposed.join(', ') : 'none in the task text';
+  // One proposed number is filled in so Confirm accepts it. Several, or none, stay blank: the owner types the one number to use. Never a number from settings.
+  const value = proposed.length === 1 ? proposed[0] : '';
+  const lead = ai
+    ? 'An AI proposed this task with a version. Only you can clear that block. Confirm the number below or type a different one. The AIs use exactly what you confirm.'
+    : 'Only you pick version numbers. Type the exact version you want. The AIs use exactly that.';
+  return `<div class="modal-bg" data-modalbg><div class="modal" role="dialog" aria-labelledby="ver-title">
+    <h2 id="ver-title">Confirm version</h2>
+    <div class="muted" style="font-size:12.5px">${lead}</div>
+    <p class="note">${esc(t.title)}</p>
+    <div class="policy warn">Proposed number: <span class="mono">${esc(shown)}</span></div>
+    <label for="f-version">Version</label><input type="text" id="f-version" class="mono" value="${esc(value)}" placeholder="e.g. 1.1" autocomplete="off" spellcheck="false">
+    <div class="row" style="margin-top:16px;justify-content:flex-end"><button class="btn ghost" data-cancel>Cancel</button><button class="btn primary" data-confirmver="${esc(t.id)}">Confirm</button></div>
+  </div></div>`;
+}
+
 function modal() {
   if (ui.lightbox) return lightbox();
+  if (ui.modal === 'confirm-version') return versionModal();
   if (ui.modal !== 'new') return '';
   const opt = (sel, ids) => ids.map((k) => `<option value="${k}" ${k === sel ? 'selected' : ''}>${esc(AGENTS[k].name)}${k !== 'none' && !connected(k) ? ' (not linked)' : ''}</option>`).join('');
   const sug = ops.suggestHint(); // assign by strength and headroom (the owner can change both)
@@ -1911,6 +1933,8 @@ function render() {
     box.setSelectionRange(box.value.length, box.value.length);
   }
   document.getElementById('edit-text')?.focus();
+  const ver = document.getElementById('f-version');
+  if (ver && ui.modal === 'confirm-version') { ver.focus(); ver.select(); }
   if (ui.view === 'habitat') { mountHabitat(document.getElementById('habitat'), habitatHooks); mountHabitat3d(document.getElementById('habitat'), habitatHooks); }
   else { stopHabitat(); stopHabitat3d(); }
 }
@@ -1936,6 +1960,7 @@ function makeTask({ title, description = '', assignee, reviewer, action }, sourc
     notes: [],
     createdAt: now(),
     updatedAt: now(),
+    policySource: source,
   };
   t.policy = policyCheck(t, { source });
   if (!t.policy.ok && t.policy.block.some((b) => b.startsWith('Looks like it contains'))) {
@@ -2350,7 +2375,7 @@ async function syncHistory(quiet = false) {
   if (ui.view === 'history') render();
 }
 
-const CLICK = '[data-sendreview],[data-owneract],[data-updatemain],[data-releasebranch],[data-leadundo],[data-opendup],[data-adddup],[data-stopround],[data-toggleleadgh],[data-attach],[data-unattach],[data-lightbox],[data-closelightbox],[data-testkey],[data-nav],[data-new],[data-open],[data-close],[data-cancel],[data-create],[data-advance],[data-approve],[data-reject],[data-changes],[data-note],[data-delete],[data-savekey],[data-rmkey],[data-ask],[data-export],[data-reset],[data-upd],[data-opinion],[data-modalbg],[data-sendchat],[data-target],[data-addprop],[data-addall],[data-clearchat],[data-method],[data-login],[data-recheck],[data-locate],[data-available],[data-run],[data-stop],[data-freebuff],[data-fbdone],[data-openws],[data-pickproject],[data-autohandoff],[data-restore],[data-install],[data-installall],[data-installollama],[data-startprop],[data-showchanges],[data-dismisssetup],[data-signin],[data-disconnect],[data-toggleagent],[data-ghlogin],[data-gitrefresh],[data-useproject],[data-clone],[data-gitpull],[data-pushbranch],[data-openpr],[data-approvemerge],[data-approvepr],[data-access],[data-togglesetting],[data-adddir],[data-removedir],[data-expand],[data-opensignin],[data-openweb],[data-openexport],[data-makelead],[data-decide],[data-editmsg],[data-delmsg],[data-saveedit],[data-canceledit],[data-togglehist],[data-checkin],[data-histscan],[data-histimport],[data-histopen],[data-histresume],[data-histweb],[data-histwebin],[data-histremove],[data-prlist],[data-prrefresh],[data-release],[data-theme]';
+const CLICK = '[data-sendreview],[data-owneract],[data-updatemain],[data-releasebranch],[data-leadundo],[data-opendup],[data-adddup],[data-stopround],[data-toggleleadgh],[data-attach],[data-unattach],[data-lightbox],[data-closelightbox],[data-testkey],[data-nav],[data-new],[data-open],[data-close],[data-cancel],[data-create],[data-confirmver],[data-advance],[data-approve],[data-reject],[data-changes],[data-note],[data-delete],[data-savekey],[data-rmkey],[data-ask],[data-export],[data-reset],[data-upd],[data-opinion],[data-modalbg],[data-sendchat],[data-target],[data-addprop],[data-addall],[data-clearchat],[data-method],[data-login],[data-recheck],[data-locate],[data-available],[data-run],[data-stop],[data-freebuff],[data-fbdone],[data-openws],[data-pickproject],[data-autohandoff],[data-restore],[data-install],[data-installall],[data-installollama],[data-startprop],[data-showchanges],[data-dismisssetup],[data-signin],[data-disconnect],[data-toggleagent],[data-ghlogin],[data-gitrefresh],[data-useproject],[data-clone],[data-gitpull],[data-pushbranch],[data-openpr],[data-approvemerge],[data-approvepr],[data-access],[data-togglesetting],[data-adddir],[data-removedir],[data-expand],[data-opensignin],[data-openweb],[data-openexport],[data-makelead],[data-decide],[data-editmsg],[data-delmsg],[data-saveedit],[data-canceledit],[data-togglehist],[data-checkin],[data-histscan],[data-histimport],[data-histopen],[data-histresume],[data-histweb],[data-histwebin],[data-histremove],[data-prlist],[data-prrefresh],[data-release],[data-theme]';
 
 document.addEventListener('click', async (e) => {
   const el = e.target.closest(CLICK);
@@ -2358,7 +2383,7 @@ document.addEventListener('click', async (e) => {
   const d = el.dataset;
   const task = (id) => state.tasks.find((t) => t.id === id);
 
-  if (d.modalbg !== undefined && e.target === el) { ui.modal = null; return render(); }
+  if (d.modalbg !== undefined && e.target === el) { ui.modal = null; ui.versionTask = null; return render(); }
   if (d.nav) {
     ui.view = d.nav; ui.selected = null;
     if (d.nav === 'settings') backups = await api.backups().catch(() => backups);
@@ -2421,7 +2446,12 @@ document.addEventListener('click', async (e) => {
     }
     if (a.kind === 'signin') { ui.view = 'agents'; ui.side = a.agent; ui.selected = null; return render(); }
     if (a.kind === 'pickreviewer') { ui.selected = t.id; render(); return document.getElementById(`pickrev-${t.id}`)?.focus(); }
-    ui.selected = t.id; // approve / permission / policy: decide in the task panel
+    if (a.kind === 'policy') {
+      ui.selected = t.id;
+      if (isVersionBlock(t)) { ui.modal = 'confirm-version'; ui.versionTask = t.id; }
+      return render();
+    }
+    ui.selected = t.id; // approve / permission: decide in the task panel
     return render();
   }
   if (d.checkin !== undefined) return teamCheckin();
@@ -2704,7 +2734,20 @@ document.addEventListener('click', async (e) => {
     return render();
   }
   if (d.new !== undefined) { ui.modal = 'new'; render(); return document.getElementById('f-title')?.focus(); }
-  if (d.cancel !== undefined) { ui.modal = null; return render(); }
+  if (d.cancel !== undefined) { ui.modal = null; ui.versionTask = null; return render(); }
+  if (d.confirmver) {
+    const t = task(d.confirmver);
+    const r = confirmOwnerVersion(t, { version: document.getElementById('f-version')?.value, by: 'Owner', at: now() });
+    if (!r.ok) return toast(r.reason);
+    ui.modal = null;
+    ui.versionTask = null;
+    audit('Owner confirmed version', t.id, r.version);
+    save();
+    render();
+    if (t.policy.ok) { toast(`Version ${r.version} confirmed.`); wakeLead('task waiting to start'); }
+    else toast(t.policy.block[0] || 'Still blocked.');
+    return;
+  }
   if (d.create !== undefined) return createTask();
   if (d.close !== undefined) { ui.selected = null; return render(); }
   if (d.advance) {
