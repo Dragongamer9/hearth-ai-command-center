@@ -39,6 +39,10 @@ jobs:
           set +e
           OUT_DIR=shots node ci/screenshots/shoot.mjs 2>&1 | tee shots/log.txt
           status=${PIPESTATUS[0]}
+          # Team ops screens (summary, budget, CI failure, projects, logs, phone).
+          OUT_DIR=shots node ci/screenshots/shoot-ops.mjs 2>&1 | tee -a shots/log.txt
+          ops_status=${PIPESTATUS[0]}
+          [ "$status" -ne 0 ] || status=$ops_status
           set -e
           ls -la shots
           exit $status

@@ -68,6 +68,9 @@ jobs:
           dpkg-deb --contents "$d" | grep -q hearth-ai-command-center
           test "$(stat -c%s "$d")" -gt 50000000
           (cd release && sha256sum "$(basename "$f")" "$(basename "$d")") | tee release/SHA256SUMS.txt
+          # .deb installs update from inside the app: they need the .deb's checksum published.
+          grep -qE '^[0-9a-f]{64}  .*\.deb$' release/SHA256SUMS.txt
+          grep -qE '^[0-9a-f]{64}  .*\.AppImage$' release/SHA256SUMS.txt
 
       - name: Create draft release with assets
         env:
@@ -88,7 +91,7 @@ jobs:
           rel=$(jq -n --arg tag "$TAG" --arg sha "$GITHUB_SHA" --arg name "Hearth AI Command Center ${TAG#v}" --rawfile body notes.md \
             '{tag_name:$tag, target_commitish:$sha, name:$name, body:$body, draft:true, prerelease:false}' \
             | gh api -X POST "repos/$REPO/releases" --input - --jq .id)
-          for f in release/*.AppImage release/*.deb release/latest-linux.yml; do
+          for f in release/*.AppImage release/*.deb release/latest-linux.yml release/SHA256SUMS.txt; do
             curl -sSf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Content-Type: application/octet-stream" \
               --data-binary @"$f" "https://uploads.github.com/repos/$REPO/releases/$rel/assets?name=$(basename "$f")" > /dev/null
             echo "uploaded $(basename "$f")"

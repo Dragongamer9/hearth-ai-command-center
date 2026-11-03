@@ -19,6 +19,7 @@ const path = require('node:path');
 
 const crypto = require('node:crypto');
 const installer = require('./installer.cjs');
+const { claudeUsage } = require('./ops/usage.cjs');
 
 const BIN = { anthropic: 'claude', openai: 'codex', google: 'gemini', xai: 'grok', mistral: 'vibe', qwen: 'qwen', freebuff: 'freebuff', ollama: 'ollama' };
 const CLI_AGENTS = ['anthropic', 'openai', 'google', 'xai', 'mistral', 'qwen'];
@@ -145,12 +146,12 @@ function imageInputs(agent, images = [], { agy = false } = {}) {
 }
 
 
-function run(file, args, { cwd, input, timeoutMs = 60000, signal } = {}) {
+function run(file, args, { cwd, input, timeoutMs = 60000, signal, onData, extraEnv = null } = {}) {
   return new Promise((resolve) => {
     let out = '';
     let err = '';
     let done = false;
-    const child = spawn(file, args, { cwd, env: childEnv(), stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(file, args, { cwd, env: extraEnv ? { ...childEnv(), ...extraEnv } : childEnv(), stdio: ['pipe', 'pipe', 'pipe'] });
     const finish = (r) => {
       if (done) return;
       done = true;
@@ -166,8 +167,8 @@ function run(file, args, { cwd, input, timeoutMs = 60000, signal } = {}) {
       child.kill('SIGTERM');
       finish({ code: null, out, err, cancelled: true });
     });
-    child.stdout.on('data', (d) => { if (out.length < 2e6) out += d; });
-    child.stderr.on('data', (d) => { if (err.length < 2e5) err += d; });
+    child.stdout.on('data', (d) => { onData?.(); if (out.length < 2e6) out += d; });
+    child.stderr.on('data', (d) => { onData?.(); if (err.length < 2e5) err += d; });
     child.on('error', (e) => finish({ code: null, out, err: String(e.message), spawnError: true }));
     child.on('close', (code) => finish({ code, out, err }));
     // A tool that exits before reading its prompt must not crash the app (EPIPE).
@@ -232,7 +233,8 @@ async function runOllama({ prompt, model, timeoutMs = 300000, signal }) {
     });
     const j = await r.json().catch(() => null);
     const text = j?.message?.content;
-    if (r.ok && typeof text === 'string' && text) return { ok: true, text, via: `Ollama · ${use}` };
+    // The saved model is never changed here; when it's missing the reply says which one answered.
+    if (r.ok && typeof text === 'string' && text) return { ok: true, text, via: `Ollama · ${use}`, model: use, fellBackFrom: model && model !== use ? model : null };
     return { ok: false, error: { kind: 'failed', message: (j?.error || `HTTP ${r.status}`).toString().slice(0, 300) } };
   } catch (e) {
     if (signal?.aborted) return { ok: false, error: { kind: 'cancelled', message: 'Stopped by you.' } };
@@ -333,7 +335,11 @@ const uuid = () => crypto.randomUUID();
 // ('edit' is accepted as 'standard'.) extraDirs: other folders the owner granted.
 // resumeId: continue that CLI session (its own session list keeps the whole
 // conversation); on success the result carries sessionId for next time.
-async function runAgent({ agent, prompt, cwd, mode = 'read', model, timeoutMs, signal, bin, extraDirs = [], resumeId = null, images = [] }) {
+const runTool = (...a) => run(...a);
+async function runAgent({ agent, prompt, cwd, mode = 'read', model, timeoutMs, signal, bin, extraDirs = [], resumeId = null, images = [], onData, extraEnv = null }) {
+  // Output activity feeds the stall watchdog (electron/ops/watchdog.cjs).
+  // extraEnv: e.g. HEARTH_AI_ASSETS, the AI's own folder for generated files.
+  const run = (f, a, o) => runTool(f, a, { ...o, onData, extraEnv });
   if (mode === 'edit') mode = 'standard';
   const file = agent === 'ollama' ? null : bin || findBinary(agent);
   const img = imageInputs(agent, images, { agy: agent === 'google' && isAgy(file) });
@@ -360,7 +366,7 @@ async function runAgent({ agent, prompt, cwd, mode = 'read', model, timeoutMs, s
     const res = await run(file, args, { cwd: workdir, input: prompt, timeoutMs, signal });
     const parsed = parseClaude(res.out);
     const sessionId = (parsed.raw && parsed.raw.session_id) || sid;
-    if (res.code === 0 && !parsed.isError && parsed.text) return { ok: true, text: parsed.text, via: 'Claude Code', sessionId };
+    if (res.code === 0 && !parsed.isError && parsed.text) return { ok: true, text: parsed.text, via: 'Claude Code', sessionId, usage: claudeUsage(parsed.raw) };
     return { ok: false, error: classify(agent, res, parsed.text), partial: parsed.text || null, resumeFailed: Boolean(resume) };
   }
 

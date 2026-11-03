@@ -10,8 +10,12 @@ import { chatPlan, canOwnerSend, newRound, ownerInterrupt, stopRound, cameAfterO
 import { leadOn, parseLeadLines, leadDecision, leadLabel, leadUndoable, pickReviewer } from './lead.mjs';
 import { AGENTS, AGENT_IDS, WEB_ONLY, HEADLESS, EDITORS, API_CAPABLE, DEFAULT_ROLES, BILLING, ACCESS_NOTE, OLLAMA_NOTE, COLORS } from './registry.mjs';
 import { viewHabitat, mountHabitat, stopHabitat } from './habitat.mjs';
+import { applyHabitatLines, habitatSection, stripHabitatLines } from './habitat/actions.mjs';
 import { HEARTH_OS, RED_FLAGS } from './hearth.mjs';
 import { tokensToCss, pickMode } from './theme.mjs';
+import { createOps } from './ops/ui.mjs';
+import { setLevels as setApprovalLevels } from './ops/approval.mjs';
+import { createLeadWaker, waitingForLead } from './ops/leadwake.mjs';
 
 const api = window.hearth;
 
@@ -61,6 +65,17 @@ let upd = { enabled: false, reason: '', status: { state: 'idle' } };
 let hearthTheme = { found: false, tokens: {}, css: '', dir: '~/.config/hearth' };
 let consoleOut = {};
 const keyTests = {};
+// Team ops (src/ops/): summary, budget, strengths, stats, tests, CI, logs, projects, phone, voice.
+const ops = createOps({
+  api, esc: (s) => esc(s), NAMES, AGENTS, AGENT_IDS, EDITORS, HEADLESS, roleKinds, taskNeed, requestChanges,
+  state: () => state, ui: () => ui, settings: () => settings, setSettings: (s) => { settings = s; setApprovalLevels(s.approvalLevels); ops.syncPowers(); },
+  save: () => save(), render: () => render(), audit: (...a) => audit(...a), post: (m) => post(m), toast: (m) => toast(m),
+  now: () => now(), uid: () => uid(), time: (x) => time(x), ago: (x) => ago(x), agentChip: (a) => agentChip(a), connected: (a) => connected(a),
+  canRun: (a) => canRun(a), isFree: (a) => isFree(a), roleMap: () => roleMap(), moveWaiting: (a, id) => moveWaiting(a, id), assignTask: (t, a, why) => assignTask(t, a, why),
+  runTask: (...a) => runTask(...a), startOrQueue: (t, a) => startOrQueue(t, a), decide: (...a) => decide(...a), sendChat: () => sendChat(),
+  makeTask: (o, src) => makeTask(o, src), actionFor: (t) => actionFor(t),
+  cli: () => cli, method: (a) => method(a), refreshAgents: async () => { await refreshAgents(); render(); },
+});
 
 const uid = () => Math.random().toString(36).slice(2, 8).toUpperCase();
 const now = () => new Date().toISOString();
@@ -211,6 +226,7 @@ const isFree = (a) => canRun(a) && !busyOn(a) && !isTyping(a) && !blocked().incl
 // Start now, or, if that AI is busy, queue it as Start next (several run oldest-first).
 function startOrQueue(t, a) {
   if (!t) return null;
+  ops.beforeStart(t, a);
   const b = busyOn(a);
   if ((b && b[0] !== t.id) || isTyping(a)) {
     if (t.startNext && t.assignee === a) { toast(`T-${t.id} is already next for ${NAMES[a]}.`); return 'queued'; }
@@ -228,6 +244,7 @@ function startOrQueue(t, a) {
 // Each free AI starts its next Start-next task.
 async function pumpQueues() {
   if (!settings.project) return;
+  ops.routeQueued();
   const starts = [];
   for (const a of EDITORS) {
     if (!isFree(a)) continue;
@@ -270,14 +287,19 @@ async function handleVerdicts(agent, text) {
   const leading = leadOn({ enabled: settings.leadActions === true, agent, lead: state.lead });
   for (const v of parseVerdicts(text)) {
     const t = state.tasks.find((x) => x.id === v.taskId);
-    if (!t) continue; // e.g. a quoted example
+    const vline = `${v.verdict === 'approve' ? 'APPROVE' : 'CHANGES'}: T-${v.taskId}`;
+    if (!t) { ops.actionResult(agent, vline, false, `unknown task id T-${v.taskId}`); continue; }
+    if (agent === 'ollama') { const lr = ops.localMayReview(t); if (!lr.ok) { ops.actionResult(agent, vline, false, lr.reason, t.id); continue; } }
     if (leading) {
       const dec = leadDecision({ kind: v.verdict, id: v.taskId, reason: v.reason }, { ...leadCtx(), task: t, resumable: actionFor(t)?.kind === 'resume' });
       if (!dec.skip) { await leadAct({ kind: v.verdict, id: v.taskId, reason: v.reason }, dec, t); continue; }
     }
     const sha = v.verdict === 'approve' && t.ws ? await api.workspaceHead(t.id).catch(() => null) : null;
     const r = applyVerdict(t, { by: agent, verdict: v.verdict, reason: v.reason, at: now(), sha });
-    if (!r.ok) { post({ who: 'system', text: `${NAMES[agent]} wrote ${v.verdict === 'approve' ? 'APPROVE' : 'CHANGES'} for T-${v.taskId}, but ${r.reason}.` }); continue; }
+    if (!r.ok) { post({ who: 'system', text: `${NAMES[agent]} wrote ${v.verdict === 'approve' ? 'APPROVE' : 'CHANGES'} for T-${v.taskId}, but ${r.reason}.` }); ops.actionResult(agent, vline, false, r.reason, t.id); continue; }
+    ops.actionResult(agent, vline, true, v.verdict === 'approve' ? 'moved to approval' : `sent back to ${NAMES[t.assignee] || 'its implementer'}`, t.id);
+    ops.recordVerdict(t, v.verdict, agent);
+    wakeLead(v.verdict === 'approve' ? 'task reached approval' : 'reviewer verdict', agent);
     if (v.verdict === 'approve') {
       audit('Reviewer approved', t.id, `${NAMES[agent]}${sha ? ` at ${sha}` : ''}${v.reason ? `: ${v.reason}` : ''}`, agent);
       post({ who: 'system', text: `${NAMES[agent]} approved T-${t.id} “${t.title}”${sha ? ` at ${sha}` : ''}. It's in Approvals, waiting for you.` });
@@ -316,14 +338,20 @@ const approvedSha = (t) => (t.reviewVerdict?.verdict === 'approve' && t.reviewVe
 function doneBadge(t) {
   if (!t.done) return '';
   const cls = { passed: 'good', failed: 'bad' }[t.done.tests] || '';
-  return `${t.done.sha ? `<span class="badge mono" title="Reported done at this commit">${esc(short(t.done.sha))}</span>` : ''}<span class="badge ${cls}">${esc(TEST_LABEL[t.done.tests] || 'tests not run')}</span>`;
+  return `${t.done.sha ? `<span class="badge mono" title="Reported done at this commit">${esc(short(t.done.sha))}</span>` : ''}<span class="badge ${cls}">${esc(TEST_LABEL[t.done.tests] || 'tests not run')}</span>${t.done.testsChanged ? '<span class="badge warn">tests changed by this task</span>' : ''}`;
 }
 
 // ---------- the lead acting for the owner ----------
-const leadCtx = () => ({ lead: state.lead, enabled: settings.leadActions === true, tasks: state.tasks });
+const leadCtx = () => ({ lead: state.lead, enabled: settings.leadActions === true, tasks: state.tasks, powers: ops.syncPowers() });
 
 // START / APPROVE R- / DENY R- / ADD TASK lines from the lead (switch on only).
 function handleLeadLines(agent, text) {
+  ops.leadLines(agent, text); // MEMORY: proposals become owner-approved cards
+  if (!leadOn({ enabled: settings.leadActions === true, agent, lead: state.lead })) {
+    // No silent no-ops: say why each board line was ignored.
+    for (const cmd of parseLeadLines(text)) ops.actionResult(agent, cmd.kind === 'add' ? `ADD TASK: ${cmd.title}` : cmd.version ? `${cmd.kind.toUpperCase()}: ${cmd.version}` : `${{ start: 'START', allow: 'APPROVE', deny: 'DENY' }[cmd.kind] || cmd.kind.toUpperCase()}: ${['allow', 'deny'].includes(cmd.kind) ? 'R' : 'T'}-${cmd.id}`, false, agent !== state.lead ? `only the lead (${NAMES[state.lead]}) can do that` : 'ignored because the lead switch is off');
+    return;
+  }
   if (!leadOn({ enabled: settings.leadActions === true, agent, lead: state.lead })) return;
   for (const cmd of parseLeadLines(text)) {
     const t = cmd.id ? state.tasks.find((x) => x.id === cmd.id) : null;
@@ -348,15 +376,30 @@ function leadRecord(action, ref, detail, undo = null) {
 async function leadAct(cmd, dec, t = null, request = null) {
   const lead = state.lead;
   if (dec.ignored) return;
-  const ref = cmd.id ? `${cmd.kind === 'allow' || cmd.kind === 'deny' ? 'R' : 'T'}-${cmd.id}` : `“${cmd.title}”`;
+  const ref = cmd.version ? `v${String(cmd.version).replace(/^v/, '')}` : cmd.id ? `${cmd.kind === 'allow' || cmd.kind === 'deny' ? 'R' : 'T'}-${cmd.id}` : `“${cmd.title}”`;
   if (!dec.ok) {
     audit(`${NAMES[lead]} (lead) was refused`, t?.id || null, `${ref}: ${dec.reason}`, lead);
+    state.leadRefusals = [...(state.leadRefusals || []), { ref, reason: dec.reason, at: now() }].slice(-8);
+    ops.actionResult(lead, `${({ allow: 'APPROVE', deny: 'DENY', add: 'ADD TASK' })[cmd.kind] || cmd.kind.toUpperCase()}: ${ref}`, false, dec.reason, t?.id || null);
     post({ who: 'system', text: `${NAMES[lead]} (lead) can't act on ${ref}: ${dec.reason}.${dec.duplicate ? ` Open T-${dec.duplicate} instead.` : ''}` });
     save();
     render();
     return;
   }
   const title = t ? ` “${t.title}”` : '';
+  ops.actionResult(lead, `${({ allow: 'APPROVE', deny: 'DENY', add: 'ADD TASK' })[cmd.kind] || cmd.kind.toUpperCase()}: ${ref}`, true, `done (${dec.action})`, t?.id || null);
+  if (dec.action === 'release' || dec.action === 'tag' || dec.action === 'rewrite') {
+    // The main process re-checks the switch, the owner's Next version, the version file and the guard.
+    const r = dec.action === 'rewrite'
+      ? await api.opsRewriteTask(t.id, true).catch((err) => ({ ok: false, message: cleanErr(err.message) }))
+      : await api.opsLeadRelease(dec.action, dec.version).catch((err) => ({ ok: false, message: cleanErr(err.message) }));
+    if (!r?.ok) return leadAct(cmd, { ok: false, reason: r?.message || 'not available' }, t);
+    leadRecord(dec.action, ref, `— ${r.message}${dec.action === 'rewrite' ? '' : ' This can\'t be undone.'}`);
+    if (r.dispatched) ops.watchRelease(dec.version);
+    save();
+    render();
+    return;
+  }
   if (dec.action === 'merge') {
     if (await recheckApprovals([t])) return leadAct(cmd, { ok: false, reason: `T-${t.id} changed after its review, so it went back to review` }, t);
     const pr = ui.prs.byTask[t.id];
@@ -372,7 +415,7 @@ async function leadAct(cmd, dec, t = null, request = null) {
     t.notes.push({ at: now(), who: `${NAMES[lead]} (lead)`, text: r.message });
     t.stage = 'approved';
     t.updatedAt = now();
-    leadRecord('merge', `T-${t.id}`, `${title} — ${r.message}`);
+    leadRecord('merge', `T-${t.id}`, `${title} — ${r.message} This can't be undone.`);
     await refreshGit().catch(() => {});
   } else if (dec.action === 'approve') {
     t.decision = 'approved';
@@ -421,8 +464,8 @@ async function agentAttachments(parsed, base, agent) {
   const atts = [];
   for (const f of parsed.files) {
     const r = await api.attachFromAgent(f.path, base).catch((e) => ({ ok: false, message: cleanErr(e.message) }));
-    if (r?.ok) atts.push(r.att);
-    else post({ who: 'system', text: `${NAMES[agent]} tried to attach ${f.path}: ${r?.message || 'failed'}` });
+    if (r?.ok) { atts.push({ ...r.att, from: f.path }); audit('Routine: posted an attachment', null, `${NAMES[agent]}: ${f.path} (no approval needed)`, agent); }
+    ops.actionResult(agent, `ATTACH: ${f.path}`, Boolean(r?.ok), r?.ok ? 'posted' : r?.message || 'failed');
   }
   return { atts, text: parsed.text };
 }
@@ -462,6 +505,9 @@ async function undoLead(id) {
 
 // ---------- views ----------
 function viewOverview() {
+  return `${ops.summaryCard()}${viewOverviewMain()}`;
+}
+function viewOverviewMain() {
   const open = openTasks();
   const waiting = state.tasks.filter((t) => t.stage === 'approval');
   const asks = pendingAsks();
@@ -635,8 +681,19 @@ function chatCtx() {
     roster: AGENT_IDS.map((id) => ({ id, role: state.roles[id] || DEFAULT_ROLES[id], status: statusText(id) })),
     board: openTasks().map((t) => ({ id: t.id, title: t.title, stage: STAGES[t.stage], assignee: t.assignee, reviewer: t.reviewer, state: RUN_STATES[taskRunState(t, { running: Boolean(ui.running[t.id]) })], queue: queueText(t) })),
     leadActions: settings.leadActions === true,
+    // With the lead switch on, the lead sees what waits for it and its refused actions.
+    ...(settings.leadActions === true ? { waiting: waitingForLead({ tasks: state.tasks, permissions: state.permissions, lead: state.lead, running: ui.running, editors: EDITORS }), refusals: state.leadRefusals || [] } : {}),
   };
 }
+
+// The lead gets a short turn when something needs it (switch on only; debounced).
+const leadWaker = createLeadWaker({
+  isOn: () => settings.leadActions === true,
+  lead: () => state.lead,
+  canRun: () => canRun(state.lead) && !blocked().includes(state.lead) && !isTyping(state.lead),
+  run: (why) => runRoom([state.lead], { trigger: `lead check: ${why.join(', ')}` }),
+});
+const wakeLead = (reason, from = null) => leadWaker.nudge(reason, from);
 
 function markOut(a, err) {
   // Unknown reset time: assume an hour; you can mark it available any time.
@@ -698,9 +755,11 @@ async function refreshAgents() {
 
 function attachmentsHtml(m) {
   if (!m.attachments?.length) return '';
-  return `<div class="atts">${m.attachments.map((a, i) => a.kind === 'video'
+  return `<div class="atts">${m.attachments.map((a, i) => a.kind === 'audio'
+    ? `<figure><audio controls preload="none" src="${esc(a.url || '')}"></audio><figcaption>${esc(a.name)}</figcaption></figure>`
+    : a.kind === 'video'
     ? `<figure><video controls preload="metadata" src="${esc(a.url || '')}"></video><figcaption>${esc(a.name)}${a.duration ? ` · ${Math.round(a.duration)}s` : ''}${a.note ? ` · ${esc(a.note)}` : ''}</figcaption></figure>`
-    : `<figure><img src="${esc(a.url || '')}" alt="${esc(a.name)}" data-lightbox="${esc(m.id)}:${i}" title="Click to enlarge"><figcaption>${esc(a.name)}</figcaption></figure>`).join('')}</div>`;
+    : `<figure><img src="${esc(a.url || '')}" alt="${esc(a.name)}" data-lightbox="${esc(m.id)}:${i}" title="Click to enlarge"><figcaption>${esc(a.name)}${ops.attMeta(m, a, i)}</figcaption></figure>`).join('')}</div>`;
 }
 
 // ---------- team status panel ----------
@@ -722,7 +781,15 @@ function habitatSnapshot() {
   };
   const brief = (t) => (t ? { id: t.id, title: t.title, branch: t.ws?.branch || '' } : null);
   const reducedOs = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
+  // Real task facts for the Habitat's garden, desk lights, moods and visits.
+  const lastTests = (t) => [...(t.runs || [])].reverse().find((r) => r.tests)?.tests || t.done?.tests || '';
+  const ciOf = (t) => { const c = ui.prs.byTask?.[t.id]?.checks; return !c ? '' : c.failed ? 'failed' : c.pending ? 'pending' : c.total && c.passed === c.total ? 'passed' : ''; };
+  const fact = (t) => ({ id: t.id, title: t.title, stage: t.stage, assignee: t.assignee, reviewer: t.reviewer, updatedAt: t.updatedAt, tests: lastTests(t), ci: ciOf(t), running: Boolean(ui.running[t.id]), merged: (t.notes || []).some((n) => /^Merged into /.test(n.text || '')), runs: (t.runs || []).slice(-6).map((r) => ({ a: r.agent, s: r.status })) });
   return {
+    tasks: state.tasks.slice(-300).map(fact),
+    chat: state.chat.slice(-12).map((m) => ({ id: m.id, who: m.who, text: String(m.text || '').slice(0, 200) })),
+    store: state.habitat || null,
+    ops: ops.snapshot(), // finished tasks, failures, per-AI budget, CI per task
     reduced: settings.reduceMotion === true || reducedOs,
     agents: ids.slice(0, 12).map((a) => {
       const b = busyOn(a);
@@ -737,7 +804,32 @@ const habitatHooks = {
   snapshot: habitatSnapshot,
   openTask: (id) => { if (state.tasks.some((t) => t.id === id)) { ui.selected = id; render(); } },
   openAgent: (a) => { ui.view = 'agents'; ui.side = a; ui.expanded = a; ui.selected = null; render(); },
+  openChat: () => { ui.view = 'chat'; ui.selected = null; render(); },
+  // Habitat progress lives in the app state and is saved with it.
+  saveStore: (h) => { state.habitat = h; save(); },
+  audit: (event, detail = '') => { audit(event, null, detail); save(); },
 };
+
+// AIs acting in their Habitat with HABITAT: lines (logic in src/habitat/actions.mjs).
+// Cosmetic and Routine: no approval card; every line is audited and gets a ✓/✗ result.
+// d: the parsed reply; its HABITAT: lines are removed so @names in them don't call teammates in.
+function habitatLines(agent, d, m) {
+  const text = d.text;
+  d.text = stripHabitatLines(text);
+  const snap = habitatSnapshot();
+  const r = applyHabitatLines(state.habitat, { agent, text, ids: snap.agents.map((a) => a.id), agents: snap.agents, names: NAMES, reduced: snap.reduced, local: agent === 'ollama' });
+  if (!r.results.length) return;
+  if (r.changed) state.habitat = r.store;
+  for (const a of r.audits) audit(a.event, null, a.detail, agent);
+  if (m) { m.text = stripHabitatLines(m.text); m.results = [...(m.results || []), ...r.results]; } else post({ who: 'system', text: r.results.map((x) => `${NAMES[agent]} · ${x.line}: ${x.ok ? '✓' : '✗'} ${x.reason}`).join('\n') });
+}
+// Every chat prompt gets the AI's one-line Habitat memory; full prompts also the rules.
+function habitatPrompt(agent, resumed) {
+  const snap = habitatSnapshot();
+  const r = habitatSection(state.habitat, { agent, ids: snap.agents.map((a) => a.id), names: NAMES, local: agent === 'ollama', full: !resumed });
+  if (r.changed) state.habitat = r.store;
+  return r.text;
+}
 
 // Redraw only the panel (keeps the chat draft and scroll).
 function updatePanel() {
@@ -772,13 +864,13 @@ function chatMessage(m) {
   const editing = ui.editing === m.id;
   const body = editing
     ? `<textarea id="edit-text" style="min-height:70px">${esc(m.text)}</textarea><div class="row" style="margin-top:6px"><button class="btn small primary" data-saveedit="${m.id}">Save</button><button class="btn small ghost" data-canceledit>Cancel</button></div>`
-    : `<div class="body">${m.retracted ? `Message retracted by ${esc(NAMES[m.who])}.` : esc(m.text)}${edited}</div>`;
+    : `<div class="body">${m.retracted ? `Message retracted by ${esc(NAMES[m.who])}.` : ops.bodyHtml(m)}${edited}</div>`;
   const hist = ui.showHist[m.id] && m.history?.length ? `<div class="hist">${m.history.map((h) => `${esc(time(h.at))} · ${esc(NAMES[h.by] || h.by)}${h.retracted ? ' retracted' : ' edited'} — earlier text:\n${esc(h.text)}`).join('\n\n')}</div>` : '';
   const tools = m.who !== 'system' && !editing ? `<div class="tools"><button data-editmsg="${m.id}" title="Edit (you can edit any message)">Edit</button><button data-delmsg="${m.id}" title="Delete">Delete</button></div>` : '';
   return `<div class="msg ${cls} ${m.err ? 'err' : ''} ${m.retracted ? 'retracted' : ''}">
     ${tools}
     ${chip ? `<div class="who">${chip}<span>${esc(time(m.at))}${m.model ? ` · ${esc(m.model)}` : ''}${m.auto ? ' · posted on its own' : ''}${m.parallel ? ' · answered in parallel, independently' : ''}${m.beforeOwner ? ' · written before your newest message' : ''}</span><span class="mid">#${esc(m.id)}</span></div>` : ''}
-    ${body}${attachmentsHtml(m)}${hist}
+    ${body}${attachmentsHtml(m)}${ops.resultsHtml(m)}${hist}
     ${asks}
     ${m.leadUndo ? (() => { const e = (state.leadLog || []).find((x) => x.id === m.leadUndo); return e ? `<div class="row" style="margin-top:6px">${e.undone ? '<span class="badge">Undone</span>' : `<button class="btn small" data-leadundo="${esc(e.id)}">Undo</button>`}</div>` : ''; })() : ''}
     ${props ? `<div class="props">${props}${pending > 1 ? `<button class="btn small primary" data-addall="${m.id}" style="margin-top:4px;align-self:flex-start">Add all ${pending}</button>` : ''}</div>` : ''}
@@ -807,7 +899,7 @@ function viewChat() {
       ${ui.attach.length ? `<div class="row att-pending" style="margin-bottom:7px">${ui.attach.map((a, i) => `<span class="badge">${a.kind === 'video' ? '🎬' : '🖼'} ${esc(a.name)}<button class="btn small link" data-unattach="${i}" title="Remove">✕</button></span>`).join('')}</div>` : ''}
       <div class="row" style="margin-bottom:7px"><span class="faint" style="font-size:12px">Send to</span>${target('all', 'Team (lead first)')}${HEADLESS.filter((a) => connected(a)).map((a) => target(a, AGENTS[a].name)).join('')}<span style="flex:1"></span><button class="chip ${ui.target === 'relay' ? 'on' : ''}" data-target="relay" title="Paste what FreeBuff said so everyone can see it">Post as FreeBuff</button></div>
       <div class="row" style="align-items:flex-end">
-        <button class="btn ghost" data-attach title="Attach images or videos (or paste / drag them in)">📎</button>
+        <button class="btn ghost" data-attach title="Attach images or videos (or paste / drag them in)">📎</button>${ops.voiceButton()}
         <textarea id="chat-text" placeholder="Message the team…  (Enter to send, Shift+Enter for a new line, @name to address one AI)" style="flex:1;min-height:48px">${esc(ui.draft)}</textarea>
         <button class="btn primary" data-sendchat>Send</button>
       </div>
@@ -836,6 +928,7 @@ async function sendChat() {
   const plan = chatPlan(text, live, ui.target, state.lead);
   const who = plan.queue;
   post({ who: 'owner', text: text.slice(0, 8000), attachments: ui.attach.length ? ui.attach : undefined });
+  ops.mentionNotes(text);
   ui.draft = '';
   ui.attach = [];
   if (/@freebuff/i.test(text)) post({ who: 'system', text: 'FreeBuff only runs interactively, so it can’t answer in chat by itself. Open it from a task, then use “Post as FreeBuff” to share what it says.' });
@@ -955,6 +1048,7 @@ async function chatTurn(agent, { trigger = '', canEdit = false, snapshot = null,
   const chat = snapshot || state.chat;
   const edit = canEdit && state.chatWs && EDITORS.includes(agent) && method(agent) !== 'api';
   const full = buildPrompt(agent, chat, { ...chatCtx(), chatEdits: Boolean(edit) });
+  if (agent === state.lead && state.leadRefusals?.length && settings.leadActions === true) state.leadRefusals = []; // shown in this prompt
   const skey = `${chatId()}:${agent}`;
   const sess = settings.chatResume && method(agent) !== 'api' ? state.chatSessions?.[skey] : null;
   let prompt = full;
@@ -965,9 +1059,11 @@ async function chatTurn(agent, { trigger = '', canEdit = false, snapshot = null,
   // Images (and video frames) posted by the owner or other AIs since this AI's last turn.
   const media = mediaFor(agent, chat, NAMES);
   if (media.note) prompt += media.note;
+  ops.imageNotice(agent, media); // never claim an AI saw an image it didn't get
   const lastOwner = [...chat].reverse().find((m) => m.who === 'owner');
   const runId = uid() + uid();
   round.runs[agent] = runId;
+  prompt += habitatPrompt(agent, Boolean(sess?.sessionId));
   const res = await callAgent(agent, prompt, {
     ...(edit ? { mode: 'edit', taskId: chatId() } : { mode: 'read', taskId: state.chatWs ? chatId() : undefined }),
     runId,
@@ -985,20 +1081,26 @@ async function chatTurn(agent, { trigger = '', canEdit = false, snapshot = null,
   if (res.ok) {
     answered.push(agent);
     const d = parseDirectives(res.text);
+    let m = null;
+    ops.turnBegin(agent);
+    try { // results always attach, even if something below throws
     for (const e of d.edits) {
       const r = applyEdit(state.chat, { id: e.id, by: agent, text: e.text });
       if (r.ok) audit(`${NAMES[agent]} edited its message #${e.id}`, null, '', agent);
       else post({ who: 'system', text: `${NAMES[agent]} tried to edit #${e.id}: ${r.reason}.` });
+      ops.actionResult(agent, `EDIT #${e.id}`, r.ok, r.ok ? 'message updated' : r.reason);
     }
     for (const id of d.retracts) {
       const r = applyRetract(state.chat, { id, by: agent });
       if (r.ok) audit(`${NAMES[agent]} retracted its message #${id}`, null, '', agent);
       else post({ who: 'system', text: `${NAMES[agent]} tried to retract #${id}: ${r.reason}.` });
+      ops.actionResult(agent, `RETRACT #${id}`, r.ok, r.ok ? 'message retracted' : r.reason);
     }
-    let m = null;
     const posted = await agentAttachments(parseAttachLines(d.text), chatId(), agent);
     if (!d.pass && (d.text || d.asks.length || d.handoffs.length || posted.atts.length)) {
       const handoffNote = d.handoffs.map((h) => `→ handing off to ${NAMES[h.to]}${h.note ? `: ${h.note}` : ''}`).join('\n');
+      for (const h of d.handoffs) ops.actionResult(agent, `HANDOFF: @${h.to}`, canRun(h.to), canRun(h.to) ? `${NAMES[h.to]} answers next` : `${NAMES[h.to]} can't run right now`);
+      for (const p of parseProposals(d.text)) ops.actionResult(agent, `TASK: ${p.title}`, true, 'proposal card added (Add / Add & start)');
       m = post({ who: agent, attachments: posted.atts.length ? posted.atts : undefined, text: [posted.text, handoffNote].filter(Boolean).join('\n\n') || (posted.atts.length ? '' : `${NAMES[agent]} needs your permission:`), model: res.via, proposals: parseProposals(d.text), parallel: parallel || undefined, beforeOwner: late || undefined });
       m.asks = d.asks.map((a) => {
         const req = makeRequest({ id: uid(), agent, kind: a.kind, what: a.what, why: a.why, context: 'chat', msgId: m.id });
@@ -1006,19 +1108,24 @@ async function chatTurn(agent, { trigger = '', canEdit = false, snapshot = null,
         audit('Permission requested', null, `${NAMES[agent]} · ${PERMISSION_KINDS[req.kind]}: ${req.what}`, agent);
         return req.id;
       });
+      if (m.asks.length) wakeLead('permission card', agent);
     }
+    ops.auditRoutine(agent, d.routine, null);
     await handleVerdicts(agent, d.text);
     handleLeadLines(agent, d.text);
+    await ops.handleLines(agent, d.text, null, Boolean(edit)); // IMAGE REQUEST / BACKGROUND (jobs edit only if this turn could)
+    } finally { ops.turnEnd(agent, m); }
     if (res.sessionId && settings.chatResume) {
       state.chatSessions = state.chatSessions || {};
       state.chatSessions[skey] = { sessionId: res.sessionId, lastMsgId: (m || state.chat[state.chat.length - 1])?.id, at: now() };
     }
     if (res.resumeReset) post({ who: 'system', text: `${NAMES[agent]}'s saved CLI session couldn't continue, so it started a new one (also saved in its CLI).` });
+    habitatLines(agent, d, m);
     if (edit) {
       const cp = await api.checkpoint(chatId(), NAMES[agent], `Team chat: ${(lastOwner?.text || trigger || 'update').slice(0, 80)}`).catch(() => null);
       if (cp) {
         const pushed = await autoPush(chatId());
-        post({ who: 'system', text: `${NAMES[agent]} changed files — saved as commit ${cp.sha} (${cp.stat}) on ${state.chatWs.branch}${pushed?.ok ? ', pushed to GitHub' : pushed ? `; push failed: ${pushed.message}` : ''}.` });
+        ops.checkpointLine(agent, cp, null, ` On ${state.chatWs.branch}${pushed?.ok ? ', pushed to GitHub' : pushed ? `; push failed: ${pushed.message}` : ''}.`);
       }
     }
     // Mentions and handoffs bring teammates in after this reply.
@@ -1101,7 +1208,7 @@ function viewBoard() {
     return `<div class="col"><div class="col-h">${esc(c.title)}<span class="n">${items.length}</span></div>
       ${items.map((t) => `<div class="task ${ui.selected === t.id ? 'sel' : ''}" data-open="${t.id}">
         <div class="t">${esc(t.title)}</div>
-        <div class="meta">${actionFor(t) && !actionFor(t).passive ? '<span class="badge warn">Waiting for you</span>' : ''}${t.stage === 'review' && t.reviewWaiting ? `<span class="badge">Waiting for ${esc(NAMES[t.reviewer] || 'a reviewer')}</span>` : ''}${stageBadge(t)}${runBadge(t)}${queueBadge(t)}${agentChip(t.assignee)}${t.pr ? `<span class="badge accent">PR #${esc(t.pr.number || '')}</span>` : ''}${doneBadge(t)}</div>
+        <div class="meta">${ops.ciBadge(t)}${actionFor(t) && !actionFor(t).passive ? '<span class="badge warn">Waiting for you</span>' : ''}${t.stage === 'review' && t.reviewWaiting ? `<span class="badge">Waiting for ${esc(NAMES[t.reviewer] || 'a reviewer')}</span>` : ''}${stageBadge(t)}${runBadge(t)}${queueBadge(t)}${agentChip(t.assignee)}${t.pr ? `<span class="badge accent">PR #${esc(t.pr.number || '')}</span>` : ''}${doneBadge(t)}</div>
         ${ownerButton(t)}
       </div>`).join('') || `<div class="empty">${{ Intake: 'New tasks land here after the policy check.', 'In progress': 'Nothing being built.', Verify: 'Nothing waiting for tests or review.', 'Owner approval': 'Nothing waiting for you.', Closed: 'No decisions yet.' }[c.title]}</div>`}
     </div>`;
@@ -1130,7 +1237,7 @@ function viewApprovals() {
   const waiting = state.tasks.filter((t) => t.stage === 'approval');
   const decided = state.tasks.filter((t) => ['approved', 'rejected'].includes(t.stage));
   const asks = state.permissions.slice().reverse();
-  return `
+  return `${ops.approvalCards()}
     <div class="card mb"><h3>Permission requests from the AIs</h3>
       ${asks.filter((p) => p.status === 'pending').map((p) => `<div style="margin-bottom:6px">${agentChip(p.agent)} ${askCard(p)}</div>`).join('') || '<div class="empty">No AI is waiting for permission.</div>'}
     </div>
@@ -1265,7 +1372,7 @@ function sidePanel() {
   const c = cli[a] || {};
   const m = method(a);
   const modelField = ag.kind === 'web' || a === 'freebuff' ? '' : a === 'ollama'
-    ? (c.models?.length ? `<label>Model</label><select data-model="ollama">${c.models.map((x) => `<option ${x === (state.models.ollama || c.models[0]) ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select>` : '')
+    ? ops.localModels()
     : `<label>Model <span class="faint">(blank = ${m === 'api' ? esc(prov.defaults[a] || 'default') : 'the tool’s default'})</span></label>
       <input type="text" value="${esc(state.models[a] || '')}" placeholder="${m === 'api' ? esc(prov.defaults[a] || '') : 'default'}" data-model="${a}">`;
   return `<div class="card side-panel">
@@ -1459,14 +1566,16 @@ function viewAudit() {
 
 function updateBlock() {
   const s = upd.status || {};
-  if (!upd.enabled) return `<p class="muted">${esc(upd.reason || 'Updates unavailable.')}</p>`;
+  if (!upd.enabled) return `<p class="muted">${esc(upd.reason || 'Updates unavailable.')}${upd.link?.startsWith('https://github.com/') ? ` <a href="${esc(upd.link)}" target="_blank">Open the release page</a>` : ''}</p>`;
   const msg = {
     idle: 'Not checked yet.',
     checking: 'Checking GitHub Releases…',
     none: s.message || 'You are on the latest version.',
     available: `Version ${s.version} is available.`,
     downloading: `Downloading… ${s.percent || 0}%`,
-    ready: `Version ${s.version} downloaded. Restart when you're ready.`,
+    ready: s.deb ? `Version ${s.version} downloaded and its checksum checked. Installing asks for your computer password.` : `Version ${s.version} downloaded. Restart when you're ready.`,
+    installing: s.message || 'Installing…',
+    installed: s.message || 'Installed. Restart to use the new version.',
     error: s.message || 'Update failed.',
   }[s.state] || '';
   return `
@@ -1474,15 +1583,16 @@ function updateBlock() {
     ${s.state === 'downloading' ? `<div class="progress"><div style="width:${s.percent || 0}%"></div></div>` : ''}
     <div class="row">
       <button class="btn small" data-upd="check" ${['checking', 'downloading'].includes(s.state) ? 'disabled' : ''}>Check for updates</button>
-      ${s.state === 'available' ? '<button class="btn primary small" data-upd="download">Download update</button>' : ''}
-      ${s.state === 'ready' ? '<button class="btn primary small" data-upd="install">Restart & install</button>' : ''}
+      ${s.state === 'available' ? `<button class="btn primary small" data-upd="download">${upd.install === 'deb' ? 'Download and install' : 'Download update'}</button>` : ''}
+      ${s.state === 'ready' ? `<button class="btn primary small" data-upd="install">${s.deb ? 'Install (asks for your password)' : 'Restart & install'}</button>` : ''}
+      ${s.state === 'installed' ? '<button class="btn primary small" data-upd="restart">Restart now</button>' : ''}
     </div>`;
 }
 
 function viewSettings() {
   const themeChip = (v, l) => `<button class="chip ${settings.theme === v ? 'on' : ''}" data-theme="${v}">${l}</button>`;
   const check = (key, label) => `<label style="display:flex;gap:10px;align-items:center;margin:4px 0;cursor:pointer;color:var(--text)"><input type="checkbox" data-togglesetting="${key}" ${settings[key] ? 'checked' : ''}> ${label}</label>`;
-  return `<div class="grid two">
+  return `${ops.approvalSettings()}<div class="grid two">
     <div class="card"><h3>Appearance</h3>
       <div class="row">${themeChip('hearth', 'Follow Hearth OS desktop')}${themeChip('dark', 'Dark')}${themeChip('light', 'Light')}${themeChip('system', 'System')}</div>
       ${check('reduceMotion', 'Reduce motion (Habitat characters stay in place instead of walking around)')}
@@ -1584,6 +1694,7 @@ function drawer() {
     <h2>${esc(t.title)}</h2>
     <div class="row">${stageBadge(t)}${runBadge(t)}${queueBadge(t)}${doneBadge(t)}<span class="badge">${esc(ACTIONS[t.action])}</span></div>
     ${pol}
+    ${ops.drawerPanel(t)}
     ${asks.map(askCard).join('')}
     ${['resume', 'start', 'signin'].includes(actionFor(t)?.kind) ? ownerButton(t) : ''}
     <div class="kv">
@@ -1619,8 +1730,9 @@ function modal() {
   if (ui.lightbox) return lightbox();
   if (ui.modal !== 'new') return '';
   const opt = (sel, ids) => ids.map((k) => `<option value="${k}" ${k === sel ? 'selected' : ''}>${esc(AGENTS[k].name)}${k !== 'none' && !connected(k) ? ' (not linked)' : ''}</option>`).join('');
-  const firstEditor = liveEditors()[0] || state.lead;
-  const firstReviewer = pickReviewer(firstEditor, { candidates: [...liveAgents(), ...HEADLESS.filter((a) => !liveAgents().includes(a))], lead: state.lead });
+  const sug = ops.suggestHint(); // assign by strength and headroom (the owner can change both)
+  const firstEditor = sug.builder || liveEditors()[0] || state.lead;
+  const firstReviewer = sug.reviewer && sug.reviewer !== firstEditor ? sug.reviewer : pickReviewer(firstEditor, { candidates: [...liveAgents(), ...HEADLESS.filter((a) => !liveAgents().includes(a))], lead: state.lead });
   return `<div class="modal-bg" data-modalbg><div class="modal">
     <h2>New task</h2><div class="muted" style="font-size:12.5px">Runs a policy & scope check when created. If it needs a version number, write the exact one — only you pick versions.</div>
     <label>Title</label><input type="text" id="f-title" placeholder="e.g. Add Settings › Storage page to Mantel">
@@ -1629,6 +1741,7 @@ function modal() {
       <div><label>Implementer</label><select id="f-assignee">${opt(firstEditor, [...EDITORS, 'freebuff', 'none'])}</select></div>
       <div><label>Independent reviewer</label><select id="f-reviewer">${opt(firstReviewer, [...HEADLESS, 'none'])}</select></div>
     </div>
+    ${sug.html}
     <label>Action type</label><select id="f-action">${Object.entries(ACTIONS).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join('')}</select>
     <div id="f-dup"></div>
     <div class="row" style="margin-top:16px;justify-content:flex-end"><button class="btn ghost" data-cancel>Cancel</button><button class="btn primary" data-create>Create task</button></div>
@@ -1645,6 +1758,7 @@ const NAV = [
   ['history', '⌕', 'Chat history'],
   ['github', '⑂', 'GitHub'],
   ['audit', '☰', 'Audit log'],
+  ...ops.nav,
   ['settings', '⚙', 'Settings'],
 ];
 const TITLES = {
@@ -1658,11 +1772,12 @@ const TITLES = {
   audit: ['Audit log', 'Every decision, recorded'],
   github: ['GitHub', 'Pull requests, pushes and releases — main only changes when you approve'],
   settings: ['Settings', 'Appearance, permissions, Hearth OS facts, updates and data'],
+  ...ops.titles,
 };
 
 function render() {
   const waiting = state.tasks.filter((t) => t.stage === 'approval').length + pendingAsks().length;
-  const views = { habitat: viewHabitat, github: viewGithub, chat: viewChat, overview: viewOverview, board: viewBoard, approvals: viewApprovals, agents: viewAgents, history: viewHistory, audit: viewAudit, settings: viewSettings };
+  const views = { habitat: viewHabitat, github: viewGithub, chat: viewChat, overview: viewOverview, board: viewBoard, approvals: viewApprovals, agents: viewAgents, history: viewHistory, audit: viewAudit, settings: viewSettings, ...ops.views };
   const [title, sub] = TITLES[ui.view];
   const updBadge = upd.status?.state === 'available' || upd.status?.state === 'ready' ? '<span class="badge accent" data-nav="settings" style="cursor:pointer">Update available</span>' : '';
   const scroll = document.querySelector('.main')?.scrollTop || 0;
@@ -1670,6 +1785,7 @@ function render() {
   <div class="shell">
     <aside class="side">
       <div class="brand"><img src="./icon.png" alt=""><div><b>Hearth AI</b><span>Command Center</span></div></div>
+      ${ops.projectSwitcher()}
       ${NAV.map(([id, ico, label]) => `<button class="nav ${ui.view === id ? 'on' : ''}" data-nav="${id}"><span class="ico">${ico}</span>${label}${id === 'approvals' && waiting ? `<span class="count warn">${waiting}</span>` : ''}${id === 'chat' && typingNow() ? '<span class="count">…</span>' : ''}</button>`).join('')}
       <div class="spacer"></div>
       <div class="pin">Working on <b>Hearth OS ${esc(HEARTH_OS.line)}</b><br>Debian · Mantel · Steam Game Mode<br><span class="faint">App v${esc(info.appVersion)} · standalone</span></div>
@@ -1678,9 +1794,9 @@ function render() {
       <div class="top"><div><h1>${esc(title)}</h1><div class="sub">${esc(sub)}</div></div><div class="grow"></div>
         ${updBadge}<span class="badge warn">Beta</span>
         <button class="btn primary" data-new>＋ New task</button></div>
-      ${views[ui.view]()}
+      ${ops.banner()}${views[ui.view]()}
     </main>
-  </div>${drawer()}${modal()}`;
+  </div>${drawer()}${modal()}${ops.overlay()}`;
   const main = document.querySelector('.main');
   if (main && ui.keepScroll) main.scrollTop = scroll;
   ui.keepScroll = false;
@@ -1726,6 +1842,7 @@ function makeTask({ title, description = '', assignee, reviewer, action }, sourc
   state.tasks.unshift(t);
   audit('Task created', t.id, source === 'Owner' ? t.title : `${t.title} (proposed by ${source} in Team chat)`);
   audit(t.policy.ok ? 'Policy check passed' : 'Policy check blocked', t.id, [...t.policy.block, ...t.policy.warn].join(' '));
+  if (t.policy.ok) wakeLead('task waiting to start', source === NAMES[state.lead] ? state.lead : null);
   return t;
 }
 
@@ -1820,6 +1937,7 @@ async function runTask(t, agent, handoff = null, depth = 0) {
   run.sessionId = res.sessionId || null;
   run.output = res.ok ? res.text : `${res.error.message}${res.partial ? `\n\nLast output:\n${res.partial}` : ''}`;
   run.checkpoint = cp?.sha || null;
+  ops.afterRun(run, res);
   // A "done" after a review only counts with a new commit since that review.
   let refused = null;
   if (res.ok) {
@@ -1838,6 +1956,8 @@ async function runTask(t, agent, handoff = null, depth = 0) {
       t.done = { sha: run.head, tests: run.tests, at: now(), by: agent };
     }
   }
+  // The app runs the project's tests itself; its result replaces the AI's claim, and a failure refuses the report.
+  if (res.ok && run.status === 'done' && !refused) refused = await ops.checkDone(t, run, agent);
   if (cp) {
     const pushed = await autoPush(t.id);
     if (pushed) run.pushed = pushed.ok ? 'pushed to GitHub' : `push failed: ${pushed.message}`;
@@ -1849,9 +1969,13 @@ async function runTask(t, agent, handoff = null, depth = 0) {
     audit('Checkpoint saved', t.id, 'agent reported done');
   }
   // The AI posts its own update to Team chat, with any permission it needs.
+  if (cp) ops.checkpointLine(agent, cp, t.id);
   if (res.ok) {
+    let m = null;
+    ops.turnBegin(agent);
+    try {
     const media = await agentAttachments(parseAttachLines(d.text || res.text), t.id, agent);
-    const m = post({ who: agent, auto: true, model: res.via, attachments: media.atts.length ? media.atts : undefined, text: `T-${t.id} “${t.title}”: ${(media.text || d.text || res.text).replace(/STATUS:.*$/is, '').trim().slice(0, 400) || 'finished a run.'}${run.status === 'done' ? `\n(${doneLine(run)})` : ''}` });
+    m = post({ who: agent, auto: true, model: res.via, attachments: media.atts.length ? media.atts : undefined, text: `T-${t.id} “${t.title}”: ${(media.text || d.text || res.text).replace(/STATUS:.*$/is, '').trim().slice(0, 400) || 'finished a run.'}${run.status === 'done' ? `\n(${doneLine(run)})` : ''}` });
     if (refused) post({ who: 'system', text: `T-${t.id}: ${NAMES[agent]} reported done, but it wasn't accepted. The task stays with ${NAMES[agent]} (Ready to Resume): ${refused}` });
     m.asks = d.asks.map((a) => {
       const req = makeRequest({ id: uid(), agent, kind: a.kind, what: a.what, why: a.why, context: t.id, msgId: m.id });
@@ -1859,11 +1983,18 @@ async function runTask(t, agent, handoff = null, depth = 0) {
       audit('Permission requested', t.id, `${NAMES[agent]} · ${PERMISSION_KINDS[req.kind]}: ${req.what}`, agent);
       return req.id;
     });
+    ops.auditRoutine(agent, d.routine, t.id);
+    if (m.asks.length) wakeLead('permission card', agent);
+    await ops.handleLines(agent, d.text || res.text, t.id, true);
+    } finally { ops.turnEnd(agent, m); }
   }
   await save();
   delete ui.saving[t.id];
   render();
 
+  if (!res.ok && res.error.kind !== 'cancelled') wakeLead('task waiting to resume', null);
+  // Crash, stall or limit: resume on another AI with the same role (at most 2 hand-offs, then ask).
+  if (!res.ok && (await ops.handoff(t, agent, res, cp, depth))) { await pumpQueues(); return; }
   if (!res.ok && ['outage', 'auth', 'not_installed'].includes(res.error.kind)) {
     const next = nextAgent(liveEditors(), [agent], state.lead);
     t.notes.push({ at: now(), who: 'System', text: `${NAMES[agent]}: ${res.error.message} Progress is saved${cp ? ` (checkpoint ${cp.sha})` : ''}. Resume with ${NAMES[agent]} later${next ? `, or hand it to ${NAMES[next]} now` : ''}.` });
@@ -2139,12 +2270,16 @@ document.addEventListener('click', async (e) => {
     if (r.ok) ui.prs.byTask[d.prrefresh] = r.pr; else toast(r.message);
     return render();
   }
-  if (d.useproject) { settings = await api.useProject(d.useproject); state.chatWs = null; await refreshGit(); return render(); }
+  // A folder is a project with its own board: switching reloads the window (saved first, never after).
+  if (d.useproject) { await save(); settings = await api.useProject(d.useproject); if (settings.projectSwitched) return location.reload(); state.chatWs = null; await refreshGit(); return render(); }
   if (d.clone !== undefined) {
     const input = document.getElementById('clone-input').value.trim();
     if (!input) return;
     toast('Cloning…');
+    audit('Cloning a project', null, input);
+    await save();
     const r = await api.gitClone(input).catch((err) => ({ ok: false, message: cleanErr(err.message) }));
+    if (r.ok && r.settings?.projectSwitched) return location.reload();
     if (r.ok) { settings = await api.settings(); state.chatWs = null; await refreshGit(); audit('Cloned project', null, r.dir); save(); }
     toast(r.ok ? `Cloned to ${r.dir} — it's now the active project.` : `Clone failed: ${r.message}`);
     return render();
@@ -2323,7 +2458,7 @@ document.addEventListener('click', async (e) => {
   if (d.fbdone) return freebuffDone(task(d.fbdone));
   if (d.openws !== undefined) return api.openWorkspace(d.openws || null);
   if (d.pickproject !== undefined) {
-    try { settings = await api.pickProject(); state.chatWs = null; await refreshGit(); } catch (err) { toast(cleanErr(err.message)); }
+    try { await save(); settings = await api.pickProject(); if (settings.projectSwitched) return location.reload(); state.chatWs = null; await refreshGit(); } catch (err) { toast(cleanErr(err.message)); }
     return render();
   }
   if (d.autohandoff !== undefined) { state.autoHandoff = !state.autoHandoff; save(); return render(); }
@@ -2521,7 +2656,7 @@ document.addEventListener('click', async (e) => {
     return render();
   }
   if (d.upd) {
-    const fn = { check: api.checkForUpdates, download: api.downloadUpdate, install: api.installUpdate }[d.upd];
+    const fn = { check: api.checkForUpdates, download: api.downloadUpdate, install: api.installUpdate, restart: api.restartApp }[d.upd];
     const res = await fn();
     if (res && !res.ok && res.message) toast(res.message);
   }
@@ -2665,6 +2800,8 @@ async function boot() {
     toast(`Startup problem: ${e.message}`);
   }
   render();
+  ops.boot();
+  ops.syncLocal();
   // Update only the status panel, so a usage pause can expire without touching the draft.
   setInterval(updatePanel, 15000);
   // In the background: pick up CLI sessions started outside the app, and PR status.
