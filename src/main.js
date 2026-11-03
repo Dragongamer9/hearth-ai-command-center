@@ -722,7 +722,15 @@ function habitatSnapshot() {
   };
   const brief = (t) => (t ? { id: t.id, title: t.title, branch: t.ws?.branch || '' } : null);
   const reducedOs = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
+  // Real task facts for the Habitat's garden, desk lights, moods and visits.
+  const lastTests = (t) => [...(t.runs || [])].reverse().find((r) => r.tests)?.tests || t.done?.tests || '';
+  const ciOf = (t) => { const c = ui.prs.byTask?.[t.id]?.checks; return !c ? '' : c.failed ? 'failed' : c.pending ? 'pending' : c.total && c.passed === c.total ? 'passed' : ''; };
+  const fact = (t) => ({ id: t.id, title: t.title, stage: t.stage, assignee: t.assignee, reviewer: t.reviewer, updatedAt: t.updatedAt, tests: lastTests(t), ci: ciOf(t), running: Boolean(ui.running[t.id]), merged: (t.notes || []).some((n) => /^Merged into /.test(n.text || '')), runs: (t.runs || []).slice(-6).map((r) => ({ a: r.agent, s: r.status })) });
   return {
+    tasks: state.tasks.slice(-300).map(fact),
+    chat: state.chat.slice(-12).map((m) => ({ id: m.id, who: m.who, text: String(m.text || '').slice(0, 200) })),
+    store: state.habitat || null,
+    ops: typeof opsSnapshot === 'function' ? opsSnapshot() : null, // eslint-disable-line no-undef
     reduced: settings.reduceMotion === true || reducedOs,
     agents: ids.slice(0, 12).map((a) => {
       const b = busyOn(a);
@@ -737,6 +745,9 @@ const habitatHooks = {
   snapshot: habitatSnapshot,
   openTask: (id) => { if (state.tasks.some((t) => t.id === id)) { ui.selected = id; render(); } },
   openAgent: (a) => { ui.view = 'agents'; ui.side = a; ui.expanded = a; ui.selected = null; render(); },
+  openChat: () => { ui.view = 'chat'; ui.selected = null; render(); },
+  // Habitat progress lives in the app state and is saved with it.
+  saveStore: (h) => { state.habitat = h; save(); },
 };
 
 // Redraw only the panel (keeps the chat draft and scroll).

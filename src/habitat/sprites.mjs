@@ -80,6 +80,71 @@ export const ICONS = {
   ask: ['.ooo.', 'o...o', '...o.', '..o..', '.....', '..o..'],
 };
 
+// The pet: a round little ember-fox blob of our own design (12x10).
+// o outline, F fur, f fur shade, c cream, e eye, n nose, t tail tip.
+export const PET = {
+  sit: [
+    '..o......o..',
+    '.oFo....oFo.',
+    '.oFFooooFFo.',
+    'oFFFFFFFFFFo',
+    'oFeFFFFFFeFo',
+    'oFFccnnccFFo',
+    'oFcccccccFFo',
+    '.oFccccccFoo',
+    '.oFFffffFFoto',
+    '..oooooooooo',
+  ].map((r) => r.padEnd(12, '.').slice(0, 12)),
+  walk: [
+    [
+      '.......o..o.',
+      '......oFooFo',
+      '.ooo..oFFFFo',
+      'otFFooFFFFeo',
+      '.oFFFFFFFFno',
+      '.oFFFFFFccco',
+      '.offFFFFccco',
+      '..offffffoo.',
+      '..oo.oo.oo..',
+      '............',
+    ],
+    [
+      '.......o..o.',
+      '......oFooFo',
+      'ooo...oFFFFo',
+      'otFFooFFFFeo',
+      '.oFFFFFFFFno',
+      '.oFFFFFFccco',
+      '.offFFFFccco',
+      '..offffffoo.',
+      '...oo.oo.oo.',
+      '............',
+    ],
+  ],
+  nap: [
+    '............',
+    '............',
+    '....oooooo..',
+    '..ooFFFFFFo.',
+    '.oFFFFFFFFFo',
+    'oFoFFFFFoFFo',
+    'oFFccccFFFFo',
+    'otFFccFFFFFo',
+    '.ottffffffo.',
+    '..oooooooo..',
+  ],
+};
+
+export const ICONS2 = {
+  paper: ['ooooo.', 'owwwoo', 'okkkwo', 'owwwwo', 'okkkwo', 'oooooo'],
+  cloud: ['..ooo...', '.owwwoo.', 'owwwwwwo', 'owwwwwwo', '.oooooo.'],
+  sparkle: ['...y...', '...y...', '.yyyyy.', '...y...', '...y...'],
+  dots: ['ooooooooo', 'owwwwwwwo', 'owkwkwkwo', 'owwwwwwwo', '.oowoooo.'],
+  stamp: ['.ooooo.', 'orrrrro', 'orwrwro', 'orrrrro', 'orwwwro', 'orrrrro', '.ooooo.'],
+  trophy: ['ooooooo', 'oyyyyyo', '.oyyyo.', '..oyo..', '..oyo..', '.ooooo.'],
+  medal: ['o...o', '.o.o.', '.ooo.', 'oyyyo', 'oyyyo', '.ooo.'],
+};
+
 // 3x5 pixel font for name plates and task ids (A-Z, 0-9, - . space).
 const G = {
   A: '010101111101101', B: '110101110101110', C: '011100100100011', D: '110101101101110', E: '111100110100111',

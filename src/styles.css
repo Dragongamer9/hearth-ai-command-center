@@ -344,3 +344,12 @@ tr.open td { background: var(--accent-soft); }
 .hab-tip .hab-name i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
 .hab-tip .mono { font-family: var(--mono); font-size: 11px; }
 .hab-legend { font-size: 12px; margin: 8px 2px 0; line-height: 1.5; }
+.hab-foot { display: flex; align-items: flex-start; gap: 12px; justify-content: space-between; }
+.hab-foot .hab-legend { flex: 1; }
+.hab-foot .btn { margin-top: 6px; flex: none; }
+.hab-pop { position: absolute; z-index: 6; top: 14px; right: 14px; width: 300px; background: var(--panel); color: var(--text); border: 1px solid var(--line-2, var(--line)); border-radius: var(--r); box-shadow: var(--shadow); padding: 10px 12px; font-size: 12.5px; line-height: 1.5; display: grid; gap: 8px; }
+.hab-pop[hidden] { display: none; }
+.hab-pop b { color: var(--strong); }
+.hab-pop .hab-row { display: flex; gap: 6px; align-items: center; }
+.hab-pop .hab-col { display: grid; gap: 6px; }
+.hab-pop .hab-input { flex: 1; min-width: 0; }
