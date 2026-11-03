@@ -352,3 +352,16 @@ export function stepPet(world, pet, goal, dt, { reduced = false, closed = new Se
 
 // Walk-cycle frame: 0 stand, 1 step A, 2 stand, 3 step B.
 export const walkFrame = (actor) => (actor.pose === 'walk' ? Math.floor(actor.anim * 4) % 4 : 0);
+
+// Describe actual positions, including actors still walking between destinations.
+export function actorLocation(world, actor) {
+  if (!actor || !Number.isFinite(actor.x) || !Number.isFinite(actor.y)) return 'location unavailable';
+  const { x, y } = actor;
+  const inside = (r) => r && x >= r.x0 && x < r.x0 + r.w && y >= r.y0 && y < r.y0 + r.h;
+  if (inside(world.kitchen)) return 'break room';
+  if (inside(world.courtyard)) return 'garden courtyard';
+  const room = world.rooms.find((r) => x >= r.x0 + 1 && x < r.x0 + 7 && y >= r.y0 && y < r.y0 + 4);
+  if (room) return { room: room.id };
+  if (x >= world.hall.x0 && y >= 5 && y < 15) return 'hall';
+  return 'shared workroom';
+}

@@ -1,3 +1,4 @@
+import { actorLocation } from './habitat/world.mjs';
 // The Habitat page: a cozy top-down pixel world where each AI has its own room
 // and a desk in the shared workroom. Rendering only; the world logic lives in
 // ./habitat/world.mjs (pure, unit tested). All art is original and drawn in code.
@@ -1030,4 +1031,10 @@ export function stopHabitat() {
 if (typeof document !== 'undefined') {
   document.addEventListener('visibilitychange', () => { if (!document.hidden && H?.canvas?.isConnected) start(); });
   window.addEventListener('resize', () => { if (H?.canvas?.isConnected) { resize(); draw(performance.now()); } });
+}
+
+// Only expose a live scene; stopped scenes retain actors but no longer advance them.
+export function habitatPresence() {
+  if (!H?.canvas?.isConnected || !H.world) return {};
+  return Object.fromEntries([...H.actors].map(([id, actor]) => [id, actorLocation(H.world, actor)]));
 }

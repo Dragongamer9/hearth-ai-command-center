@@ -9,7 +9,7 @@ import { parseAttachLines, mediaFor } from './media.mjs';
 import { chatPlan, canOwnerSend, newRound, ownerInterrupt, stopRound, cameAfterOwner, beginPass } from './room.mjs';
 import { leadOn, parseLeadLines, leadDecision, leadLabel, leadUndoable, pickReviewer } from './lead.mjs';
 import { AGENTS, AGENT_IDS, WEB_ONLY, HEADLESS, EDITORS, API_CAPABLE, DEFAULT_ROLES, BILLING, ACCESS_NOTE, OLLAMA_NOTE, COLORS } from './registry.mjs';
-import { viewHabitat, mountHabitat, stopHabitat } from './habitat.mjs';
+import { viewHabitat, mountHabitat, stopHabitat, habitatPresence } from './habitat.mjs';
 import { applyHabitatLines, habitatSection, stripHabitatLines } from './habitat/actions.mjs';
 import { HEARTH_OS, RED_FLAGS } from './hearth.mjs';
 import { tokensToCss, pickMode } from './theme.mjs';
@@ -826,7 +826,7 @@ function habitatLines(agent, d, m) {
 // Every chat prompt gets the AI's one-line Habitat memory; full prompts also the rules.
 function habitatPrompt(agent, resumed) {
   const snap = habitatSnapshot();
-  const r = habitatSection(state.habitat, { agent, ids: snap.agents.map((a) => a.id), names: NAMES, local: agent === 'ollama', full: !resumed });
+  const r = habitatSection(state.habitat, { agent, ids: snap.agents.map((a) => a.id), names: NAMES, local: agent === 'ollama', full: !resumed, presence: habitatPresence() });
   if (r.changed) state.habitat = r.store;
   return r.text;
 }

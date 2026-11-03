@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildWorld, roomOf, stepActor, newActor, behaviourOf } from '../src/habitat/world.mjs';
+import { buildWorld, roomOf, stepActor, newActor, behaviourOf, actorLocation } from '../src/habitat/world.mjs';
 import { migrateStore, reconcile, resetStore, gardenState, applyUnlocks, layoutOf, boardNotes, JOURNAL_MAX, canPlace } from '../src/habitat/life.mjs';
 import {
   parseHabitatLines, stripHabitatLines, applyHabitatLines, undoLast, setLock, freeOwnerProps, clearBoard, clearJournal,
@@ -269,4 +269,25 @@ test('results come back as ✓/✗ entries (shown by the team-ops results) and t
   assert.equal(r.store.rev, migrateStore(JSON.parse(JSON.stringify(r.store))).rev);
   assert.ok(r.store.rev > 0);
   assert.deepEqual(migrateStore(JSON.parse(JSON.stringify(r.store))).life.events, r.store.life.events);
+});
+
+test('look reports live shared-area and room positions for every teammate', () => {
+  const world = buildWorld(IDS, {});
+  const room = roomOf(world, 'xai');
+  const positions = {
+    anthropic: world.kitchen.spots[0],
+    google: { x: world.courtyard.x0 + 1, y: world.courtyard.y0 + 2 },
+    openai: { x: world.hall.x0 + 1, y: world.hall.board.y + 2 },
+    xai: room.rugSpot,
+  };
+  const presence = Object.fromEntries(IDS.map((id) => [id, actorLocation(world, positions[id])]));
+  const s = run(base().s, 'HABITAT: look').store;
+  const result = habitatSection(s, { agent: 'anthropic', ids: IDS, names: NAMES, now: NOW, presence });
+  assert.match(result.text, /Claude: break room; Gemini: garden courtyard; ChatGPT: hall; Grok: Grok’s room/);
+  assert.equal(result.store.life.look.anthropic, undefined);
+  assert.match(describeRoom(s, 'anthropic', { ids: IDS, names: NAMES }), /ChatGPT: location unavailable/);
+  assert.equal(actorLocation(world, world.desks[0].seat), 'shared workroom');
+  assert.equal(actorLocation(world, null), 'location unavailable');
+  // A walker's current tile wins over its intended destination.
+  assert.equal(actorLocation(world, { ...world.desks[0].seat, visit: { to: world.kitchen.spots[0] } }), 'shared workroom');
 });
