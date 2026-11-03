@@ -231,3 +231,57 @@ export function decideRequest(list, id, decision, at = new Date().toISOString())
 export function blockedAgents(list = []) {
   return [...new Set(list.filter((r) => r.status === 'pending').map((r) => r.agent))];
 }
+
+// Statuses that belong on a badge in the chat header, not in the transcript.
+// An AI that isn't signed in, or has no key, shows one of these once.
+export const QUIET_STATUS_BADGES = ['needs sign-in', 'needs API key', 'signed out'];
+
+// Sign-in and missing-key failures are a status, not a chat line. `method` is
+// 'api' when this agent is linked with a key rather than a CLI login.
+export function quietAuthFailure(error, { method = 'cli' } = {}) {
+  if (!error || typeof error !== 'object') return null;
+  const kind = String(error.kind || '');
+  const message = String(error.message || '').slice(0, 300);
+  const saysKey = /api key/i.test(message);
+  const saysSignIn = /not eligible|not signed in|not logged in|sign[- ]?in required|needs sign-?in/i.test(message);
+  if (kind === 'no_key' || (kind === 'auth' && (method === 'api' || saysKey))) {
+    return { kind: 'no_key', badge: 'needs API key', message };
+  }
+  // kind "failed" still counts when the text is the sign-in error itself
+  // (for example "your account is not eligible"), so it cannot fill the chat.
+  if (kind === 'auth' || ((kind === 'failed' || kind === 'error') && saysSignIn)) {
+    return { kind: 'auth', badge: 'needs sign-in', message };
+  }
+  return null;
+}
+
+// How a failed chat turn should surface. Quiet failures never post, and `first`
+// is true only the first time that badge is recorded for this agent.
+export function chatTurnFailure(error, hold = null, opts = {}) {
+  const quiet = quietAuthFailure(error, opts);
+  if (!quiet) return { post: true, hold: null, first: false };
+  return { post: false, hold: quiet, first: !hold || hold.badge !== quiet.badge };
+}
+
+// Remember the sign-in / key snapshot from the run that failed. Repeating the
+// same failure keeps that snapshot, so a later status check can see what changed.
+export function rememberAuthHold(prev, failure, { signedIn = false, hasKey = false, at = null } = {}) {
+  const same = Boolean(prev && prev.badge === failure.badge);
+  return {
+    kind: failure.kind,
+    badge: failure.badge,
+    message: failure.message || '',
+    at: same && prev.at ? prev.at : at,
+    sawSignedIn: same ? Boolean(prev.sawSignedIn) : Boolean(signedIn),
+    sawKey: same ? Boolean(prev.sawKey) : Boolean(hasKey),
+  };
+}
+
+// Drop the hold when sign-in or the key is different from the failed run.
+// An unchanged "signed in" check does not clear it: that check was already
+// wrong when the run failed, and the run is what we trust.
+export function authHoldCleared(hold, { method = 'cli', signedIn = false, hasKey = false } = {}) {
+  if (!hold) return false;
+  if (method === 'api') return Boolean(hasKey) !== Boolean(hold.sawKey);
+  return Boolean(signedIn) !== Boolean(hold.sawSignedIn);
+}

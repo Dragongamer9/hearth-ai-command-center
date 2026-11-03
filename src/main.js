@@ -1,6 +1,6 @@
 import './styles.css';
 import { policyCheck } from './policy.mjs';
-import { recipients, buildPrompt, buildDelta, parseProposals, parseDirectives, applyEdit, applyRetract, makeRequest, decideRequest, blockedAgents, mentions, NAMES, PERMISSION_KINDS } from './chat.mjs';
+import { recipients, buildPrompt, buildDelta, parseProposals, parseDirectives, applyEdit, applyRetract, makeRequest, decideRequest, blockedAgents, mentions, NAMES, PERMISSION_KINDS, QUIET_STATUS_BADGES, chatTurnFailure, rememberAuthHold, authHoldCleared } from './chat.mjs';
 import { buildTaskBrief, nextAgent, parseStatus, taskRunState, recoverInterrupted, RUN_STATES } from './team.mjs';
 import { AGENTS, AGENT_IDS, WEB_ONLY, HEADLESS, EDITORS, API_CAPABLE, DEFAULT_ROLES, BILLING, ACCESS_NOTE, OLLAMA_NOTE } from './registry.mjs';
 import { HEARTH_OS, RED_FLAGS } from './hearth.mjs';
@@ -132,7 +132,9 @@ function outInfo(a) {
   return st;
 }
 const blocked = () => blockedAgents(state.permissions);
-const canRun = (a) => Boolean(AGENTS[a]?.headless) && connected(a) && !outInfo(a);
+const authHold = (a) => state.agentStatus?.[a]?.auth || null;
+// A sign-in or missing-key hold keeps the AI out of the room until it changes.
+const canRun = (a) => Boolean(AGENTS[a]?.headless) && connected(a) && !outInfo(a) && !authHold(a);
 const liveAgents = () => HEADLESS.filter(canRun);
 const liveEditors = () => EDITORS.filter((a) => canRun(a) && method(a) !== 'api');
 const busyOn = (a) => Object.entries(ui.running).find(([, r]) => r.agent === a);
@@ -146,6 +148,7 @@ function statusOf(a) {
   if (b) return { text: b[0].startsWith('CHAT') ? 'working in team chat' : `working on T-${b[0]}`, cls: 'accent', live: true };
   if (ui.typing === a) return { text: 'replying in team chat', cls: 'accent', live: true };
   if (blocked().includes(a)) return { text: 'waiting for your answer', cls: 'warn' };
+  if (authHold(a)?.badge) return { text: authHold(a).badge, cls: 'warn' };
   if (method(a) === 'api') return prov.keys[a] ? { text: 'linked (API key)', cls: 'good' } : { text: 'needs API key', cls: 'warn' };
   if (a === 'ollama') return c.installed ? (c.models?.length ? { text: 'running', cls: 'good' } : { text: 'no models yet', cls: 'warn' }) : { text: 'not running', cls: 'warn' };
   if (!c.installed) return { text: 'not installed', cls: 'warn' };
@@ -313,6 +316,43 @@ function markOut(a, err) {
   audit(`${NAMES[a]} ran out of usage`, null, err?.reset || '');
 }
 
+// One badge per agent. Later rounds with the same sign-in or key failure do not post again.
+function noteAuthFailure(agent, failure) {
+  state.agentStatus = state.agentStatus || {};
+  const prev = state.agentStatus[agent]?.auth || null;
+  const first = !prev || prev.badge !== failure.badge;
+  state.agentStatus[agent] = {
+    ...(state.agentStatus[agent] || {}),
+    auth: rememberAuthHold(prev, failure, { signedIn: Boolean(cli[agent]?.signedIn), hasKey: Boolean(prov.keys?.[agent]), at: now() }),
+  };
+  if (first) audit(`${NAMES[agent]} ${failure.badge}`, null, failure.message || '', agent);
+}
+
+function clearAuthHold(a) {
+  const st = state.agentStatus?.[a];
+  if (!st?.auth) return false;
+  delete st.auth;
+  if (!st.outUntil && Object.keys(st).length === 0) delete state.agentStatus[a];
+  return true;
+}
+
+// Clear a hold only when sign-in or the saved key changed since the failed run.
+function releaseAuthHolds() {
+  if (!state.agentStatus) return false;
+  let changed = false;
+  for (const a of AGENT_IDS) {
+    const h = state.agentStatus[a]?.auth;
+    if (!h) continue;
+    const c = cli[a] || {};
+    // A failed status check is {}, not "signed out". Leave the badge up.
+    if (method(a) !== 'api' && typeof c.installed !== 'boolean' && typeof c.signedIn !== 'boolean') continue;
+    if (!authHoldCleared(h, { method: method(a), signedIn: Boolean(c.signedIn), hasKey: Boolean(prov.keys?.[a]) })) continue;
+    clearAuthHold(a);
+    changed = true;
+  }
+  return changed;
+}
+
 // One way to talk to any agent, whatever it's linked by. Marks agents that run out.
 async function callAgent(agent, prompt, opts = {}) {
   let res;
@@ -329,6 +369,7 @@ async function refreshAgents() {
   try { settings = await api.settings(); } catch {}
   const list = await Promise.all(AGENT_IDS.map((a) => api.agentStatus(a).catch(() => ({}))));
   cli = Object.fromEntries(AGENT_IDS.map((a, i) => [a, list[i] || {}]));
+  if (releaseAuthHolds()) save();
 }
 
 // ---------- team chat ----------
@@ -373,7 +414,12 @@ function viewChat() {
   const live = liveAgents();
   const target = (id, label) => `<button class="chip ${ui.target === id ? 'on' : ''}" data-target="${id}" ${id !== 'all' && !live.includes(id) ? 'disabled' : ''}>${label}</button>`;
   if (ui.target !== 'all' && ui.target !== 'relay' && !live.includes(ui.target)) ui.target = 'all';
-  const presence = AGENT_IDS.filter((a) => connected(a) || a === state.lead).map((a) => `<span class="agent ${AGENTS[a].cls}" title="${esc(state.roles[a] || DEFAULT_ROLES[a])} — ${esc(statusText(a))}"><i style="${live.includes(a) ? '' : 'opacity:.3'}"></i>${AGENTS[a].name}${a === state.lead ? ' ★' : ''}</span>`).join('');
+  const presence = AGENT_IDS.filter((a) => connected(a) || a === state.lead || authHold(a)).map((a) => {
+    const s = statusOf(a);
+    const held = authHold(a);
+    const badge = QUIET_STATUS_BADGES.includes(s.text) ? `<span class="badge ${s.cls || 'warn'}"${held?.message ? ` title="${esc(held.message)}"` : ''}>${esc(s.text)}</span>` : '';
+    return `<span class="agent ${AGENTS[a].cls}" title="${esc(state.roles[a] || DEFAULT_ROLES[a])} — ${esc(s.text)}"><i style="${live.includes(a) ? '' : 'opacity:.3'}"></i>${AGENTS[a].name}${a === state.lead ? ' ★' : ''}${badge}</span>`;
+  }).join('');
   const asks = pendingAsks().length;
   return `<div class="chat">
     <div class="chat-top"><div class="row" style="gap:10px">${presence}</div><span style="flex:1"></span>
@@ -418,7 +464,14 @@ async function sendChat() {
   post({ who: 'owner', text: text.slice(0, 8000) });
   ui.draft = '';
   if (/@freebuff/i.test(text)) post({ who: 'system', text: 'FreeBuff only runs interactively, so it can’t answer in chat by itself. Open it from a task, then use “Post as FreeBuff” to share what it says.' });
-  if (!who.length) post({ who: 'system', text: live.length ? 'That AI isn’t available right now (not linked or out of usage).' : 'No AIs are available yet. Sign in on the Agents page.' });
+  if (!who.length) {
+    const mentioned = mentions(text);
+    const asked = mentioned.length ? mentioned : (ui.target !== 'all' && ui.target !== 'relay' ? [ui.target] : []);
+    // The header already shows their badge. Don't add another "not signed in" line.
+    const badgeShown = (a) => (connected(a) || a === state.lead || authHold(a)) && QUIET_STATUS_BADGES.includes(statusOf(a).text);
+    const covered = asked.length > 0 && asked.every(badgeShown);
+    if (!covered) post({ who: 'system', text: live.length ? 'That AI isn’t available right now (not linked or out of usage).' : 'No AIs are available yet. Sign in on the Agents page.' });
+  }
   save();
   render();
   await runRoom(who, { trigger: text });
@@ -515,7 +568,9 @@ async function runRoom(queue, { trigger = '', allow = [], hops = 0 } = {}) {
       post({ who: 'system', text: `${NAMES[agent]} is out of usage${res.error.reset ? ` (${res.error.reset})` : ''}.${after}` });
       if (sub) queue.push(sub);
     } else {
-      post({ who: agent, text: `${res.error.kind}: ${res.error.message}`, err: true });
+      const turn = chatTurnFailure(res.error, authHold(agent), { method: method(agent) });
+      if (turn.hold) noteAuthFailure(agent, turn.hold);
+      else post({ who: agent, text: `${res.error.kind}: ${res.error.message}`, err: true });
     }
     save();
   }
@@ -685,12 +740,13 @@ function agentActions(a) {
     if (ui.signin.ollama?.state === 'installing') return installingBtn(a);
     return `<button class="btn small" data-install="ollama" title="${esc(OLLAMA_NOTE)}">${installFailed(a) ? 'Try install again' : 'Install'}</button>`;
   }
-  if (m === 'api') out.push(prov.keys[a] ? '' : `<button class="btn small primary" data-opensignin="${a}">Get API key</button>`);
+  const needSignIn = !state.disabled?.[a] && (!connected(a) || authHold(a)?.badge === 'needs sign-in');
+  if (m === 'api') out.push(prov.keys[a] && authHold(a)?.badge !== 'needs API key' ? '' : `<button class="btn small primary" data-opensignin="${a}">Get API key</button>`);
   else if (!c.installed && ui.signin[a]?.state === 'installing') out.push(installingBtn(a));
   else if (a === 'freebuff') out.push(c.installed ? `<button class="btn small" data-login="${a}">Open</button>` : `<button class="btn small primary" data-install="${a}" title="Installs FreeBuff for you in a terminal you can see. No password needed.">${installFailed(a) ? 'Try install again' : 'Install'}</button>`);
-  else if (ui.signin[a]?.state === 'waiting' && !connected(a)) out.push('<button class="btn small" disabled><span class="dot pulse"></span> Waiting for browser…</button>');
+  else if (ui.signin[a]?.state === 'waiting' && needSignIn) out.push('<button class="btn small" disabled><span class="dot pulse"></span> Waiting for browser…</button>');
   else if (!c.installed && !state.disabled?.[a]) out.push(`<button class="btn small primary" data-signin="${a}" title="Installs ${esc(AGENTS[a].tool)} for you in a terminal you can see (no password), then opens its own sign-in">${installFailed(a) ? 'Try install again' : 'Install'}</button>`);
-  else if (!connected(a) && !state.disabled?.[a]) out.push(`<button class="btn small primary" data-signin="${a}">${ui.signin[a]?.state === 'timeout' ? 'Try again' : 'Sign in'}</button>`);
+  else if (needSignIn) out.push(`<button class="btn small primary" data-signin="${a}">${ui.signin[a]?.state === 'timeout' ? 'Try again' : 'Sign in'}</button>`);
   return out.join('');
 }
 
@@ -714,13 +770,13 @@ function agentDetail(a) {
       ${a === 'qwen' ? '<p class="faint">Qwen Code needs its Qwen OAuth sign-in cached before it can run from the app; if runs report “not signed in”, open it once in a terminal (Sign in) or give it an API key in ~/.qwen/.env.</p>' : ''}
       ${a === 'freebuff' ? '<p class="faint">FreeBuff has no hands-free mode: from any task, “Continue in FreeBuff” opens it in that task’s workspace with the handoff brief on your clipboard.</p>' : ''}`}
     <div class="row" style="margin-top:8px">
-      ${ag.kind === 'cli' && m !== 'api' && c.installed && !connected(a) && ui.signin[a]?.state !== 'waiting' ? `<button class="btn small primary" data-signin="${a}">${ui.signin[a]?.state === 'timeout' ? 'Try again' : 'Sign in'}</button>` : ''}
+      ${ag.kind === 'cli' && m !== 'api' && c.installed && (!connected(a) || authHold(a)?.badge === 'needs sign-in') && ui.signin[a]?.state !== 'waiting' ? `<button class="btn small primary" data-signin="${a}">${ui.signin[a]?.state === 'timeout' ? 'Try again' : 'Sign in'}</button>` : ''}
       ${ag.kind === 'cli' && m !== 'api' && c.signedIn ? `<button class="btn small danger" data-disconnect="${a}">Sign out</button>` : ''}
       ${ag.signin ? `<button class="btn small ghost" data-opensignin="${a}">${m === 'api' ? 'API key page' : 'Account page'} ↗</button>` : ''}
       ${ag.web ? `<button class="btn small ghost" data-openweb="${a}">Open ${esc(ag.name)} web chat</button>` : ''}
       <button class="btn small ghost" data-recheck>Re-check</button>
       ${ag.kind === 'cli' || a === 'freebuff' ? `<button class="btn small ghost" data-locate="${a}">Locate program…</button>` : ''}
-      ${out ? `<button class="btn small" data-available="${a}">Mark available</button>` : ''}
+      ${out || authHold(a) ? `<button class="btn small" data-available="${a}">Mark available</button>` : ''}
     </div>`;
   const right = ag.headless ? `
       <div class="sect" style="margin-top:0">Quick test</div>
@@ -1403,6 +1459,7 @@ function watchSignin(a) {
       toast(ui.signin[a].msg);
     } else if (s.state === 'waiting' && (st.signedIn || (a === 'mistral' && st.signedIn !== false))) {
       clearInterval(signinTimers[a]);
+      clearAuthHold(a);
       ui.signin[a] = { state: 'linked', at: Date.now() };
       audit(`${AGENTS[a].name} linked`, null, `signed in with your own account via ${AGENTS[a].tool}`);
       save();
@@ -1412,7 +1469,7 @@ function watchSignin(a) {
       ui.signin[a] = s.state === 'installing' ? { state: 'error', msg: 'The install did not finish. Check the terminal, then press Re-check.', install: true } : { state: 'timeout', at: Date.now() };
     }
     ui.keepScroll = true;
-    if (['agents', 'overview'].includes(ui.view)) render();
+    if (['agents', 'overview', 'chat'].includes(ui.view)) render();
   }, 3000);
 }
 
@@ -1585,6 +1642,7 @@ document.addEventListener('click', async (e) => {
     audit(r.ok ? `${AGENTS[a].name} signed out` : `${AGENTS[a].name} sign-out failed`, null, r.message || '');
     delete ui.signin[a];
     await refreshAgents();
+    clearAuthHold(a);
     save();
     toast(r.ok ? (r.message || `${AGENTS[a].name} is signed out.`) : `Couldn't sign out: ${r.message}`);
     return render();
@@ -1622,6 +1680,7 @@ document.addEventListener('click', async (e) => {
   if (d.method) {
     const [a, m] = d.method.split(':');
     settings = await api.setConnection(a, m);
+    if (clearAuthHold(a)) save();
     return render();
   }
   if (d.login) {
@@ -1629,7 +1688,16 @@ document.addEventListener('click', async (e) => {
     toast(r.ok ? `Opened in ${r.terminal}. Finish there, then press Re-check.` : r.message);
     return;
   }
-  if (d.recheck !== undefined) { await refreshAgents(); await refreshProviders(); toast('Agent status refreshed.'); ui.keepScroll = true; return render(); }
+  if (d.recheck !== undefined) {
+    let cleared = false;
+    for (const a of AGENT_IDS) if (clearAuthHold(a)) cleared = true;
+    await refreshAgents();
+    await refreshProviders();
+    if (cleared) save();
+    toast('Agent status refreshed.');
+    ui.keepScroll = true;
+    return render();
+  }
   if (d.locate) { settings = await api.pickBinary(d.locate); await refreshAgents(); return render(); }
   if (d.available) { delete state.agentStatus[d.available]; audit(`${NAMES[d.available]} marked available`); save(); return render(); }
   if (d.run) { const [id, a] = d.run.split(':'); return runTask(task(id), a); }
@@ -1744,6 +1812,7 @@ document.addEventListener('click', async (e) => {
     try {
       await api.setKey(d.savekey, input.value);
       input.value = '';
+      clearAuthHold(d.savekey);
       audit('API key saved', null, AGENTS[d.savekey].name);
       save();
       toast(`${AGENTS[d.savekey].name} key saved securely.`);
@@ -1755,6 +1824,7 @@ document.addEventListener('click', async (e) => {
   }
   if (d.rmkey) {
     await api.removeKey(d.rmkey);
+    clearAuthHold(d.rmkey);
     audit('API key removed', null, AGENTS[d.rmkey].name);
     save();
     await refreshProviders();

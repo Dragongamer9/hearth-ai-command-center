@@ -28,6 +28,19 @@ test('missing binary is reported, not thrown', async () => {
   assert.equal(r.error.kind, 'not_installed');
 });
 
+test('an account that is not eligible is a sign-in failure', async () => {
+  const bin = path.join(os.tmpdir(), `hearth-fake-gemini-${process.pid}.sh`);
+  fs.writeFileSync(bin, '#!/bin/sh\necho "Your current account is not eligible for Antigravity" >&2\nexit 1\n');
+  fs.chmodSync(bin, 0o755);
+  try {
+    const r = await agents.runAgent({ agent: 'google', prompt: 'hi', bin });
+    assert.equal(r.ok, false);
+    assert.equal(r.error.kind, 'auth');
+  } finally {
+    fs.unlinkSync(bin);
+  }
+});
+
 test('status of fake signed-in CLIs', async () => {
   assert.deepStrictEqual(await agents.status('anthropic', path.join(FIX, 'claude')), { installed: true, signedIn: true, path: path.join(FIX, 'claude') });
   assert.equal((await agents.status('openai', path.join(FIX, 'codex'))).signedIn, true);

@@ -158,7 +158,9 @@ function classify(agent, res, text) {
   if (/overloaded|service unavailable|internal server error|bad gateway|gateway timeout|\b50[0234]\b|ECONNRESET|ECONNREFUSED|ENOTFOUND|ETIMEDOUT|network error|fetch failed|stream disconnected/i.test(all)) {
     return { kind: 'outage', message: 'The provider is unreachable or having problems. Work so far is saved; resume when it is back.' };
   }
-  if (/not logged in|log ?in|authenticat|unauthori[sz]ed|invalid api key|\b401\b/i.test(all)) {
+  // "not eligible" is the account error Gemini/Antigravity prints when a personal
+  // login is refused. It is a sign-in problem, same as a missing login.
+  if (/not logged in|log ?in|authenticat|unauthori[sz]ed|invalid api key|\b401\b|not eligible/i.test(all)) {
     return { kind: 'auth', message: 'Not signed in. Use “Sign in” on the Agents page.' };
   }
   const tail = (res.err || res.out || '').trim().split('\n').slice(-3).join(' ').slice(0, 300);
