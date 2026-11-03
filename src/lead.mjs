@@ -4,13 +4,16 @@
 import { NAMES } from './chat.mjs';
 import { EDITORS } from './registry.mjs';
 import { findDuplicate } from './dupes.mjs';
+import { leadMayApprove, OWNER_ONLY } from './ops/approval.mjs';
 
 const CLOSED = ['approved', 'rejected'];
 const REVIEWABLE = ['checkpoint', 'testing', 'review'];
 // Always the owner's: releases and deploys, and the AIs' own merge/release/boot requests.
 const OWNER_ONLY_ACTIONS = ['release', 'deploy'];
-// push, command and outside too: otherwise the lead could approve `git push origin main --tags`.
-const OWNER_ONLY_PERMISSIONS = ['release', 'merge', 'boot', 'push', 'command', 'outside'];
+// The approval policy (src/ops/approval.mjs): owner-only categories and boot-critical
+// changes, and any request that touches main, tags or force-pushes (e.g. `git push origin
+// main --tags`), are never the lead's. Other major requests the lead may answer.
+export const OWNER_ONLY_PERMISSIONS = [...OWNER_ONLY, 'boot'];
 
 export const leadOn = ({ enabled = false, agent, lead } = {}) => enabled === true && Boolean(agent) && agent === lead;
 
@@ -87,7 +90,8 @@ export function leadDecision(cmd, { lead, enabled = false, task = null, request 
     if (request.status !== 'pending') return { ok: false, reason: `R-${request.id} was already answered` };
     if (cmd.kind === 'allow') {
       if (request.agent === lead) return { ok: false, reason: `${who} can't approve its own request R-${request.id}` };
-      if (OWNER_ONLY_PERMISSIONS.includes(request.kind)) return { ok: false, reason: `${request.kind} requests stay with the Owner` };
+      const may = leadMayApprove(request);
+      if (OWNER_ONLY_PERMISSIONS.includes(request.kind) || !may.ok) return { ok: false, reason: may.reason || `${request.kind} requests stay with the Owner` };
     }
     return { ok: true, action: cmd.kind === 'allow' ? 'allowperm' : 'denyperm' };
   }

@@ -71,7 +71,8 @@ test('AIs are told how to ask, edit, hand off; prompts show message ids and edit
   assert.match(p, /\[#M2BBBB\] Claude \(edited\): plan/);
   assert.match(p, /\[#M3CCCC\] ChatGPT: \(retracted\)/);
   assert.doesNotMatch(p, /deleted/);
-  assert.match(p, /ASK: <push\|merge\|release\|delete\|boot\|outside\|command\|other>/);
+  assert.match(p, /ASK: <install\|outside\|command\|delete\|secrets\|network\|push\|boot\|other\|merge\|release\|version\|tag\|settings>/);
+  assert.match(p, /ROUTINE, just do it, never ask/);
   assert.match(p, /EDIT #<message id>/);
   assert.match(p, /HANDOFF: @<name>/);
   assert.match(p, /R-R1 by Claude/);

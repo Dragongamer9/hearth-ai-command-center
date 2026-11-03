@@ -21,6 +21,8 @@ const { createHistory } = require('./history.cjs');
 const theme = require('./theme.cjs');
 const web = require('./webapps.cjs');
 const { LIVE_PROVIDERS } = require('./validate.cjs');
+const { cleanSavedLevels } = require('./ops/approval.cjs');
+const ops = require('./ops/index.cjs');
 
 // No Hearth OS version pin: the app never changes, bumps, publishes or deploys
 // Hearth OS versions (the owner picks every number). It only shows which Hearth
@@ -68,6 +70,8 @@ function readSettings() {
     theme: THEMES.includes(s.theme) ? s.theme : 'hearth',
     // Habitat page: characters stay in place. Off unless the owner turns it on (the OS setting also counts).
     reduceMotion: s.reduceMotion === true,
+    // Approval levels: the owner's moves between Routine and Major (owner-only stays owner-only).
+    approvalLevels: cleanSavedLevels(s.approvalLevels),
   };
 }
 function useProject(dir) {
@@ -92,6 +96,7 @@ let store = null;
 let history = null;
 let openWeb = null;
 let lastLoad = { recoveredFrom: null };
+let opsApi = null; // electron/ops/index.cjs
 
 function readState() {
   lastLoad = store.load();
@@ -278,6 +283,7 @@ function registerIpc() {
     if ('leadGitHub' in patch) s.leadGitHub = patch.leadGitHub === true;
     if ('theme' in patch && THEMES.includes(patch.theme)) s.theme = patch.theme;
     if ('reduceMotion' in patch) s.reduceMotion = patch.reduceMotion === true;
+    if ('approvalLevels' in patch) s.approvalLevels = cleanSavedLevels(patch.approvalLevels);
     writeSettings(s);
     return s;
   });
@@ -348,7 +354,8 @@ function registerIpc() {
   handle('agents:run', async (opts) => {
     if (!opts || typeof opts !== 'object') throw new Error('bad request');
     const agent = validateProvider(opts.agent);
-    const prompt = validatePrompt(opts.prompt);
+    // Every AI reads the project memory (.hearth-ai/PROJECT.md) at the start of each run.
+  const prompt = opsApi ? opsApi.withMemory(validatePrompt(opts.prompt)) : validatePrompt(opts.prompt);
     let mode = opts.mode === 'edit' ? 'edit' : 'read';
     const runId = typeof opts.runId === 'string' && /^[A-Za-z0-9]{4,20}$/.test(opts.runId) ? opts.runId : null;
     const s = readSettings();
@@ -388,6 +395,8 @@ function registerIpc() {
 
     const controller = new AbortController();
     if (runId) runs.set(runId, controller);
+    // No output and no file changes for the project's stall time: stopped as 'stalled'.
+    const wd = mode !== 'read' && taskId && opsApi ? opsApi.watchdog(cwd, () => controller.abort()) : null;
     const base = {
       agent,
       cwd,
@@ -399,6 +408,7 @@ function registerIpc() {
       extraDirs: s.extraDirs,
       // Only files from the app's attachments folder are ever passed to a tool.
       images: (Array.isArray(opts.images) ? opts.images : []).filter((f) => typeof f === 'string' && attachments.inside(f, [attachments.attachDir(worktreeRoot())])).slice(0, 8),
+      onData: wd ? wd.touch : undefined,
     };
     try {
       const resumeId = typeof opts.resumeId === 'string' ? opts.resumeId : null;
@@ -408,6 +418,7 @@ function registerIpc() {
         r = await agents.runAgent({ ...base, prompt: validatePrompt(opts.fallbackPrompt) });
         r.resumeReset = true;
       }
+      if (wd?.stalled) r = { ok: false, error: { kind: 'stalled', message: `No output and no file changes for ${opsApi.stallMinutes()} minutes, so the run was stopped. Progress is checkpointed.` }, partial: r.partial || null };
       r = cleanResult(r);
       if (r.ok && r.sessionId) {
         try {
@@ -416,6 +427,7 @@ function registerIpc() {
       }
       return r;
     } finally {
+      wd?.stop();
       if (runId) runs.delete(runId);
     }
   });
@@ -715,6 +727,16 @@ function registerIpc() {
   handle('updater:check', () => updater.check());
   handle('updater:download', () => updater.download());
   handle('updater:install', () => updater.install());
+  registerOps();
+}
+
+// Team ops (projects, project memory, test runs, CI, logs, voice, phone): electron/ops/.
+function registerOps() {
+  opsApi = ops.register({
+    handle, dataDir, readSettings, useProject, taskDir, worktreeRoot, gitops, workspace, agents, attachments, redact, send, dialog,
+    getWindow: () => mainWindow,
+    setStore: (file) => { store = createStore(file); lastLoad = { recoveredFrom: null }; },
+  });
 }
 
 app.on('second-instance', () => {
@@ -731,7 +753,8 @@ process.on('uncaughtException', (e) => {
 app.whenReady().then(() => {
   Menu.setApplicationMenu(null);
   secrets = createSecretStore({ safeStorage, dir: dataDir() });
-  store = createStore(stateFile());
+  // The active project's board (the data from before projects is the default project, in the same file).
+  store = createStore(ops.stateFile(dataDir(), readSettings().project));
   history = createHistory(historyFile());
   openWeb = web.createWebWindows({ BrowserWindow, shell, iconPath: path.join(__dirname, '..', 'dist', 'icon.png') });
   theme.watchTheme((t) => send('theme:changed', t));
@@ -745,6 +768,7 @@ app.whenReady().then(() => {
 
 app.on('before-quit', () => {
   for (const c of runs.values()) c.abort();
+  opsApi?.stop();
 });
 
 app.on('window-all-closed', () => {

@@ -78,6 +78,34 @@ contextBridge.exposeInMainWorld('hearth', {
   checkForUpdates: () => ipcRenderer.invoke('updater:check'),
   downloadUpdate: () => ipcRenderer.invoke('updater:download'),
   installUpdate: () => ipcRenderer.invoke('updater:install'),
+  // Team ops (electron/ops/)
+  opsProjects: () => ipcRenderer.invoke('ops:projects'),
+  opsProjectAdd: (kind, input) => ipcRenderer.invoke('ops:projectAdd', kind, input),
+  opsProjectSwitch: (id) => ipcRenderer.invoke('ops:projectSwitch', id),
+  opsProjectRename: (id, name) => ipcRenderer.invoke('ops:projectRename', id, name),
+  opsProjectSettings: (patch) => ipcRenderer.invoke('ops:projectSettings', patch),
+  opsMemoryGet: (decisions) => ipcRenderer.invoke('ops:memoryGet', decisions),
+  opsMemorySave: (text) => ipcRenderer.invoke('ops:memorySave', text),
+  opsMemoryApply: (proposal) => ipcRenderer.invoke('ops:memoryApply', proposal),
+  opsTestRun: (taskId, sha) => ipcRenderer.invoke('ops:testRun', taskId, sha),
+  opsTestCancel: (taskId) => ipcRenderer.invoke('ops:testCancel', taskId),
+  opsCiPoll: (branches) => ipcRenderer.invoke('ops:ciPoll', branches),
+  opsLogsPoll: () => ipcRenderer.invoke('ops:logsPoll'),
+  opsVoiceTools: () => ipcRenderer.invoke('ops:voiceTools'),
+  opsVoiceSave: (data) => ipcRenderer.invoke('ops:voiceSave', data),
+  opsUsage: (agent) => ipcRenderer.invoke('ops:usage', agent),
+  opsPhoneStatus: () => ipcRenderer.invoke('ops:phoneStatus'),
+  opsPhoneEnable: () => ipcRenderer.invoke('ops:phoneEnable'),
+  opsPhoneDisable: () => ipcRenderer.invoke('ops:phoneDisable'),
+  opsPhoneNewCode: () => ipcRenderer.invoke('ops:phoneNewCode'),
+  opsPhoneForget: () => ipcRenderer.invoke('ops:phoneForget'),
+  opsPhoneRemove: (id) => ipcRenderer.invoke('ops:phoneRemove', id),
+  opsPhonePush: (snap) => ipcRenderer.invoke('ops:phonePush', snap),
+  onOpsPhoneAction: (cb) => {
+    const listener = (_e, a) => cb(a);
+    ipcRenderer.on('ops:phoneAction', listener);
+    return () => ipcRenderer.removeListener('ops:phoneAction', listener);
+  },
   onUpdaterStatus: (cb) => {
     const listener = (_e, status) => cb(status);
     ipcRenderer.on('updater:status', listener);

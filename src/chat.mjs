@@ -3,6 +3,7 @@ import { AGENTS, AGENT_IDS, DEFAULT_ROLES, EDITORS, aliasOf } from './registry.m
 import { hearthFacts } from './hearth.mjs';
 import { leadRules } from './lead.mjs';
 import { ATTACH_RULE } from './media.mjs';
+import { CATEGORIES, splitAsks, policyText } from './ops/approval.mjs';
 
 export const NAMES = { owner: 'Owner', system: 'System', ...Object.fromEntries(AGENT_IDS.map((a) => [a, AGENTS[a].name])) };
 const ACTIONS = ['code', 'docs', 'merge', 'release', 'deploy'];
@@ -17,6 +18,12 @@ export const PERMISSION_KINDS = {
   boot: 'Boot-critical change',
   outside: 'Work outside the workspace',
   command: 'Run a risky command',
+  install: 'Install software',
+  secrets: 'Secrets, keys or credentials',
+  network: 'Network access beyond its own tool',
+  version: 'Pick a version number',
+  tag: 'Create a tag',
+  settings: 'Change app settings',
   other: 'Something else',
 };
 
@@ -82,8 +89,7 @@ export function chatRules(agent, lead, { leadActions = false } = {}) {
     '- To fix one of YOUR OWN earlier messages, write a line: EDIT #<message id>: <the corrected full text>',
     '- To take back one of YOUR OWN earlier messages, write a line: RETRACT #<message id>',
     '- To hand the conversation to a teammate, write a line: HANDOFF: @<name> <what they should do>',
-    `- BEFORE any risky action (${Object.keys(PERMISSION_KINDS).filter((k) => k !== 'other').join(', ')} — i.e. pushing, merging, releasing, deleting files, boot-critical changes, running commands outside the workspace) you MUST ask the Owner and stop until they answer. Write one line: ASK: <push|merge|release|delete|boot|outside|command|other> | <exactly what you want to do> | <why>`,
-    '- After an ASK line, do NOT do that action in this reply. The Owner answers Approve / Deny / Ask why; you will be told the answer.',
+    policyText(),
     ...(leadActions && agent === lead ? [leadRules(lead)] : []),
   ].join('\n');
 }
@@ -174,15 +180,20 @@ export function parseDirectives(text) {
     }
     if ((m = line.match(/^ASK:\s*(.+)$/i))) {
       const parts = m[1].split('|').map((s) => s.trim());
-      const kind = PERMISSION_KINDS[parts[0]?.toLowerCase()] ? parts[0].toLowerCase() : 'other';
-      const what = (PERMISSION_KINDS[parts[0]?.toLowerCase()] ? parts[1] : parts[0]) || '';
-      const why = (PERMISSION_KINDS[parts[0]?.toLowerCase()] ? parts[2] : parts[1]) || '';
+      const named = CATEGORIES[parts[0]?.toLowerCase()] ? parts[0].toLowerCase() : null;
+      const kind = named || 'other';
+      const what = (named ? parts[1] : parts[0]) || '';
+      const why = (named ? parts[2] : parts[1]) || '';
       if (what) out.asks.push({ kind, what: what.slice(0, 500), why: why.slice(0, 800) });
       continue;
     }
     keep.push(raw);
   }
   out.text = keep.join('\n').trim();
+  // Routine asks never become approval cards (main.js records them in the Audit log).
+  const split = splitAsks(out.asks);
+  out.asks = split.cards;
+  out.routine = split.routine;
   out.pass = /^PASS\.?$/i.test(out.text) && !out.edits.length && !out.retracts.length && !out.asks.length && !out.handoffs.length;
   if (out.pass) out.text = '';
   return out;
