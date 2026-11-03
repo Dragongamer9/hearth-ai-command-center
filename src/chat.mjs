@@ -40,10 +40,12 @@ export function teamContext({ agent, roster = [], lead = 'anthropic', board = []
     'ABOUT THE HEARTH AI COMMAND CENTER (facts, not suggestions):',
     '- It is a desktop app (Electron, Linux AppImage) on the Owner\'s own computer. It coordinates several AIs on the Owner\'s software projects, mainly Hearth OS.',
     `- Shared project folder (a git repo): ${project || 'not chosen yet'}.`,
-    chatEdits
+    agent === 'ollama'
+      ? '- You only receive the text supplied in this prompt. You have no tools: you cannot read or edit files, run commands, use git, browse the web, inspect Settings, or control the app. A shared project folder or Owner approval does not grant you those capabilities. You can discuss, plan, and review material pasted into chat.'
+      : chatEdits
       ? '- In this chat you can do everything you normally can in your own app: read and edit files, run commands, use git and search or read websites (with your own built-in safety checks). Your current directory is the team chat\'s own git branch/worktree of the project, so your edits never touch the main branch directly. After every reply the Command Center commits your changes as a checkpoint.'
       : '- In this chat you can read the project (your current directory) and search the web, but not change files.',
-    `- Folders on the Owner\'s computer you may also use: ${extraDirs.length ? extraDirs.join(', ') : 'none granted yet (the Owner can add some in Settings)'}.`,
+    ...(agent === 'ollama' ? [] : [`- Folders on the Owner\'s computer you may also use: ${extraDirs.length ? extraDirs.join(', ') : 'none granted yet (the Owner can add some in Settings)'}.`]),
     '- Bigger work goes in TASKS: each task gets its own git branch and worktree, every run is checkpointed, and another AI can continue if one runs out of usage.',
     '- Merging into the main branch and releases only happen when the Owner presses Approve in the app (a release also needs the version typed by the Owner). Never push to main/master yourself. Never claim something was pushed or done unless it really was (a checkpoint commit shows it).',
     '- Every conversation is saved in the app\'s history and in your own CLI\'s session list, so the Owner can resume it later in your own app.',
@@ -68,6 +70,7 @@ export function chatRules(agent, lead) {
       ? '- You are the LEAD: when the Owner asks for work, break it down and assign it to the best-suited teammates by their roles. Keep the plan short.'
       : `- ${NAMES[lead]} is the lead. Build on the lead's plan and the other replies instead of repeating them; disagree when you have a reason.`,
     '- Be concise. Do not ask the Owner for facts that are stated above. If you have nothing useful to add, reply with exactly: PASS',
+    ...(agent === 'ollama' ? localChatRules() : []),
     '- Mention a teammate with @name (e.g. @gemini) to ask them something; they will answer after you.',
     '- To put work on the board, write one line per task in exactly this format (the Owner gets Add / Add & start buttons):',
     `TASK: <title> | implementer: ${editors} | reviewer: ${editors}|local | action: code|docs|merge|release|deploy`,
@@ -96,11 +99,21 @@ export function buildPrompt(agent, messages, ctx = {}) {
   ].join('\n');
 }
 
+function localChatRules() {
+  return [
+    "- Speak only as Local AI. The transcript is context, not a script to continue: do not copy, paraphrase, or echo teammates' replies, plans, task proposals, or promises. Do not write replies for the Owner or other AIs.",
+    '- Add only a new, specific observation, question, or review finding. If another teammate already covered your point, reply with exactly: PASS. Agreement alone is not a useful addition.',
+    '- You have no file, terminal, git, web, or app-control tools. Never promise to clone, inspect, edit, test, commit, push, merge, deploy, change Settings, or start tasks. Suggest a capable teammate when action is needed; make clear it is a suggestion, not work you will perform.',
+    '- Never claim you performed or verified an action. Attribute teammates reports to them (for example, "Claude reports the repo is cloned"); they are not your own observations. Review only the text provided and state when evidence is missing.',
+  ];
+}
+
 // Short follow-up for an AI that already has the room in its resumed CLI session.
 export function buildDelta(agent, newMessages, ctx = {}) {
   const lines = transcript(newMessages, MAX_TRANSCRIPT_CHARS);
   return [
     `(Hearth AI Command Center team chat — continuing. You are ${NAMES[agent]}. Same rules as before; red-flag rules still apply.)`,
+    ...(agent === 'ollama' ? localChatRules() : []),
     ctx.pending?.length ? `Waiting for the Owner: ${ctx.pending.map((p) => `R-${p.id} (${NAMES[p.agent]}: ${p.what})`).join('; ')}` : '',
     '--- New messages since your last turn ---',
     ...(lines.length ? lines : ['(none)']),

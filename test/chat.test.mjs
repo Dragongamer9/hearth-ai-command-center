@@ -1,6 +1,30 @@
 import test from 'node:test';
 import assert from 'node:assert';
-import { recipients, buildPrompt, parseProposals } from '../src/chat.mjs';
+import { recipients, buildPrompt, buildDelta, parseProposals } from '../src/chat.mjs';
+
+test('Local AI gets text-only capabilities even when chat editing is enabled', () => {
+  for (const chatEdits of [false, true]) {
+    const p = buildPrompt('ollama', [], { chatEdits, project: '/repo', extraDirs: ['/extra'] });
+    assert.match(p, /You only receive the text supplied/);
+    assert.match(p, /Owner approval does not grant you those capabilities/);
+    assert.doesNotMatch(p, /you can read the project|you can do everything|Folders on the Owner/);
+  }
+  assert.match(buildPrompt('openai', [], { chatEdits: true }), /you can do everything/);
+});
+
+test('Local AI full and continuing prompts prohibit echoing and unsupported claims', () => {
+  const messages = [{ who: 'anthropic', text: 'I cloned the repo.' }];
+  for (const build of [buildPrompt, buildDelta]) {
+    const p = build('ollama', messages);
+    assert.match(p, /do not copy, paraphrase, or echo/);
+    assert.match(p, /already covered your point, reply with exactly: PASS/);
+    assert.match(p, /Never promise to clone/);
+    assert.match(p, /Never claim you performed or verified an action/);
+    assert.match(p, /Claude reports the repo is cloned/);
+    assert.match(p, /Claude: I cloned the repo/);
+    assert.doesNotMatch(build('openai', messages), /Speak only as Local AI/);
+  }
+});
 
 const both = ['anthropic', 'openai'];
 test('everyone by default, mentions narrow it, offline agents skipped', () => {
