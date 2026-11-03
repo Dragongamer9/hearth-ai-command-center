@@ -3,6 +3,9 @@ import { AGENTS, AGENT_IDS, DEFAULT_ROLES, EDITORS, aliasOf } from './registry.m
 import { hearthFacts } from './hearth.mjs';
 import { leadRules } from './lead.mjs';
 import { ATTACH_RULE } from './media.mjs';
+import { CATEGORIES, splitAsks, policyText } from './ops/approval.mjs';
+import { waitingSection, refusalSection } from './ops/leadwake.mjs';
+import { extrasRules } from './ops/extras.mjs';
 
 export const NAMES = { owner: 'Owner', system: 'System', ...Object.fromEntries(AGENT_IDS.map((a) => [a, AGENTS[a].name])) };
 const ACTIONS = ['code', 'docs', 'merge', 'release', 'deploy'];
@@ -17,6 +20,12 @@ export const PERMISSION_KINDS = {
   boot: 'Boot-critical change',
   outside: 'Work outside the workspace',
   command: 'Run a risky command',
+  install: 'Install software',
+  secrets: 'Secrets, keys or credentials',
+  network: 'Network access beyond its own tool',
+  version: 'Pick a version number',
+  tag: 'Create a tag',
+  settings: 'Change app settings',
   other: 'Something else',
 };
 
@@ -36,7 +45,7 @@ export function mentions(text) {
 
 // What every agent is told about the Command Center, so it knows what it can
 // actually do instead of guessing.
-export function teamContext({ agent, roster = [], lead = 'anthropic', board = [], project = null, chatEdits = false, extraDirs = [], pending = [] } = {}) {
+export function teamContext({ agent, roster = [], lead = 'anthropic', board = [], project = null, chatEdits = false, extraDirs = [], pending = [], leadActions = false } = {}) {
   const roleOf = (r) => r.role || DEFAULT_ROLES[r.id] || '';
   return [
     'ABOUT THE HEARTH AI COMMAND CENTER (facts, not suggestions):',
@@ -58,7 +67,7 @@ export function teamContext({ agent, roster = [], lead = 'anthropic', board = []
     '',
     board.length ? 'OPEN TASKS ON THE BOARD:' : 'The task board is empty.',
     ...board.slice(0, 15).map((t) => `- T-${t.id} "${t.title}" — ${t.stage}, implementer ${NAMES[t.assignee] || 'none'}${t.reviewer && t.reviewer !== 'none' ? `, reviewer ${NAMES[t.reviewer] || t.reviewer}` : ''}${t.state ? `, ${t.state}` : ''}${t.queue ? `, ${t.queue}` : ''}`),
-    pending.length ? '\nPERMISSION REQUESTS WAITING FOR THE OWNER:' : '',
+    pending.length ? (leadActions ? '\nPERMISSION REQUESTS WAITING FOR THE OWNER OR THE LEAD:' : '\nPERMISSION REQUESTS WAITING FOR THE OWNER:') : '',
     ...pending.map((p) => `- R-${p.id} by ${NAMES[p.agent]}: ${PERMISSION_KINDS[p.kind] || p.kind} — ${p.what}`),
   ].filter((l) => l !== '').join('\n');
 }
@@ -78,12 +87,12 @@ export function chatRules(agent, lead, { leadActions = false } = {}) {
     `TASK: <title> | implementer: ${editors} | reviewer: ${editors}|local | action: code|docs|merge|release|deploy`,
     '- The reviewer must differ from the implementer. The local AI cannot implement (it can only review).',
     '- If you are the assigned REVIEWER of a task: when it is ready for the Owner write APPROVE: T-<task id> <short note>; to send it back write CHANGES: T-<task id> <what must be fixed>. Only the assigned reviewer counts, and APPROVE only moves it to Owner approval.',
-    ...(agent === 'ollama' ? [] : [ATTACH_RULE]),
+    ...(leadActions ? ['- With the lead switch on, APPROVE moves the task to the approval stage, where the lead (if allowed) or the Owner approves it.'] : []),
+    ...(agent === 'ollama' ? [] : [ATTACH_RULE, extrasRules(agent)]),
     '- To fix one of YOUR OWN earlier messages, write a line: EDIT #<message id>: <the corrected full text>',
     '- To take back one of YOUR OWN earlier messages, write a line: RETRACT #<message id>',
     '- To hand the conversation to a teammate, write a line: HANDOFF: @<name> <what they should do>',
-    `- BEFORE any risky action (${Object.keys(PERMISSION_KINDS).filter((k) => k !== 'other').join(', ')} — i.e. pushing, merging, releasing, deleting files, boot-critical changes, running commands outside the workspace) you MUST ask the Owner and stop until they answer. Write one line: ASK: <push|merge|release|delete|boot|outside|command|other> | <exactly what you want to do> | <why>`,
-    '- After an ASK line, do NOT do that action in this reply. The Owner answers Approve / Deny / Ask why; you will be told the answer.',
+    policyText(undefined, { leadActions }),
     ...(leadActions && agent === lead ? [leadRules(lead)] : []),
   ].join('\n');
 }
@@ -96,6 +105,7 @@ export function buildPrompt(agent, messages, ctx = {}) {
     teamContext({ ...ctx, agent }),
     '',
     chatRules(agent, lead, { leadActions: ctx.leadActions === true }),
+    ...(ctx.leadActions === true && agent === lead ? ['', waitingSection(ctx.waiting, NAMES), refusalSection(ctx.refusals)] : []),
     '',
     '--- Chat so far ---',
     ...lines,
@@ -111,7 +121,9 @@ export function buildDelta(agent, newMessages, ctx = {}) {
     `(Hearth AI Command Center team chat — continuing. You are ${NAMES[agent]}. Same rules as before; red-flag rules still apply.)`,
     ...(agent === 'ollama' ? LOCAL_RULES : []),
     ctx.leadActions === true && agent === (ctx.lead || 'anthropic') ? leadRules(agent) : '',
-    ctx.pending?.length ? `Waiting for the Owner: ${ctx.pending.map((p) => `R-${p.id} (${NAMES[p.agent]}: ${p.what})`).join('; ')}` : '',
+    ctx.pending?.length ? `Waiting for the Owner${ctx.leadActions === true ? ' or the lead' : ''}: ${ctx.pending.map((p) => `R-${p.id} (${NAMES[p.agent]}: ${p.what})`).join('; ')}` : '',
+    ctx.leadActions === true && agent === (ctx.lead || 'anthropic') ? waitingSection(ctx.waiting, NAMES) : '',
+    ctx.leadActions === true && agent === (ctx.lead || 'anthropic') ? refusalSection(ctx.refusals) : '',
     '--- New messages since your last turn ---',
     ...(lines.length ? lines : ['(none)']),
     '--- End ---',
@@ -124,7 +136,7 @@ function transcript(messages, max) {
   let used = 0;
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
-    if (m.who === 'system' || m.deleted) continue;
+    if ((m.who === 'system' && !m.report) || m.deleted) continue; // checkpoint reports are shown to the AIs
     const body = m.retracted ? '(retracted)' : m.text;
     const line = `[#${m.id || '?'}] ${NAMES[m.who] || m.who}${m.edited ? ' (edited)' : ''}: ${body}`;
     if (used + line.length > max) break;
@@ -174,15 +186,20 @@ export function parseDirectives(text) {
     }
     if ((m = line.match(/^ASK:\s*(.+)$/i))) {
       const parts = m[1].split('|').map((s) => s.trim());
-      const kind = PERMISSION_KINDS[parts[0]?.toLowerCase()] ? parts[0].toLowerCase() : 'other';
-      const what = (PERMISSION_KINDS[parts[0]?.toLowerCase()] ? parts[1] : parts[0]) || '';
-      const why = (PERMISSION_KINDS[parts[0]?.toLowerCase()] ? parts[2] : parts[1]) || '';
+      const named = CATEGORIES[parts[0]?.toLowerCase()] ? parts[0].toLowerCase() : null;
+      const kind = named || 'other';
+      const what = (named ? parts[1] : parts[0]) || '';
+      const why = (named ? parts[2] : parts[1]) || '';
       if (what) out.asks.push({ kind, what: what.slice(0, 500), why: why.slice(0, 800) });
       continue;
     }
     keep.push(raw);
   }
   out.text = keep.join('\n').trim();
+  // Routine asks never become approval cards (main.js records them in the Audit log).
+  const split = splitAsks(out.asks);
+  out.asks = split.cards;
+  out.routine = split.routine;
   out.pass = /^PASS\.?$/i.test(out.text) && !out.edits.length && !out.retracts.length && !out.asks.length && !out.handoffs.length;
   if (out.pass) out.text = '';
   return out;

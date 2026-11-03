@@ -33,7 +33,7 @@ export const AGENTS = {
   qwen: { name: 'Qwen', vendor: 'Alibaba Qwen', cls: 'a-qwen', kind: 'cli', tool: 'Qwen Code', plan: 'your qwen.ai account', install: 'npm install -g --prefix ~/.local @qwen-code/qwen-code', installNote: NPM_NOTE, headless: true, edits: true, api: false, mention: ['qwen'], web: 'https://chat.qwen.ai/', signin: 'https://chat.qwen.ai/auth', export: null, resume: 'qwen --resume <id>' },
   perplexity: { name: 'Perplexity', vendor: 'Perplexity', cls: 'a-perplexity', kind: 'api', tool: 'Sonar API', plan: 'an API key from your Perplexity account', install: '', headless: true, edits: false, api: true, mention: ['perplexity', 'pplx', 'sonar'], web: 'https://www.perplexity.ai/', signin: 'https://www.perplexity.ai/account/api', export: null },
   deepseek: { name: 'DeepSeek', vendor: 'DeepSeek', cls: 'a-deepseek', kind: 'api', tool: 'DeepSeek API', plan: 'an API key from your DeepSeek platform account', install: '', headless: true, edits: false, api: true, mention: ['deepseek'], web: 'https://chat.deepseek.com/', signin: 'https://platform.deepseek.com/api_keys', export: 'chat.deepseek.com → Settings → Data → Export data (JSON)' },
-  ollama: { name: 'Local AI', vendor: 'Ollama, on this computer', cls: 'a-ollama', kind: 'local', tool: 'Ollama', plan: 'no account — runs on your own hardware', install: 'Ollama’s official installer (ollama.com/install.sh)', installNote: OLLAMA_NOTE, headless: true, edits: false, api: false, mention: ['local', 'ollama'], web: null, signin: null, export: null },
+  ollama: { name: 'Local AI', vendor: 'Ollama, on this computer', cls: 'a-ollama', kind: 'local', tool: 'Ollama', plan: 'no account — runs on your own hardware', install: 'Ollama’s official installer (ollama.com/install.sh)', installNote: OLLAMA_NOTE, headless: true, edits: false, api: false, mention: ['local', 'ollama', 'localai'], web: null, signin: null, export: null },
   freebuff: { name: 'FreeBuff', vendor: 'FreeBuff', cls: 'a-freebuff', kind: 'manual', tool: 'FreeBuff CLI', plan: 'your free FreeBuff account', install: 'npm install -g --prefix ~/.local freebuff', installNote: NPM_NOTE, headless: false, edits: true, api: false, mention: ['freebuff'], web: 'https://freebuff.com/', signin: 'https://freebuff.com/', export: null, resume: 'freebuff --continue' },
   // Web-window only (no CLI or consumer API for personal accounts).
   copilot: { name: 'Copilot', vendor: 'Microsoft', cls: 'a-copilot', kind: 'web', tool: 'copilot.microsoft.com', plan: 'your Microsoft account', headless: false, edits: false, api: false, mention: [], web: 'https://copilot.microsoft.com/', signin: 'https://copilot.microsoft.com/', export: 'account.microsoft.com/privacy → Copilot activity (view/clear; no chat-file download)' },
@@ -97,7 +97,8 @@ export const EDITORS = AGENT_IDS.filter((a) => AGENTS[a].headless && AGENTS[a].e
 // Agents that can be linked with an official API key.
 export const API_CAPABLE = AGENT_IDS.filter((a) => AGENTS[a].api);
 
+// @local, @LocalAI, @Local_AI, display names ("@Claude", "@ChatGPT"): case-insensitive.
 export function aliasOf(word) {
-  const w = String(word || '').toLowerCase();
-  return AGENT_IDS.find((a) => AGENTS[a].mention.includes(w)) || null;
+  const w = String(word || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  return AGENT_IDS.find((a) => AGENTS[a].mention.includes(w) || AGENTS[a].name.toLowerCase().replace(/[^a-z0-9]/g, '') === w) || null;
 }
