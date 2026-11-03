@@ -132,4 +132,21 @@ async function callProvider({ provider, apiKey, model, prompt, timeoutMs = 60000
   return { ok: true, text: text.slice(0, MAX_RESPONSE_CHARS), model };
 }
 
-module.exports = { callProvider, extractText, classifyStatus, DEFAULT_MODELS, ENDPOINTS };
+// "Test" on the Agents page: one tiny prompt with the saved key. Only a category
+// comes back, never the provider's text (an error body could echo the key).
+const TEST_MESSAGES = {
+  no_key: 'Save an API key first.',
+  auth: 'The provider rejected this key or denied access.',
+  rate_limit: 'The key works, but the provider reports a usage or rate limit.',
+  not_found: 'The selected model or endpoint was not found.',
+  server: 'The provider is having problems right now.',
+  network: 'Could not reach the provider (offline or blocked).',
+  timeout: 'The test timed out.',
+};
+async function testKey(options) {
+  const r = await callProvider({ ...options, prompt: 'Hi' });
+  if (r.ok) return { ok: true };
+  return { ok: false, error: { kind: r.error.kind, status: r.error.status ?? null, message: TEST_MESSAGES[r.error.kind] || 'The provider could not complete the test.' } };
+}
+
+module.exports = { testKey, callProvider, extractText, classifyStatus, DEFAULT_MODELS, ENDPOINTS };
