@@ -2750,7 +2750,11 @@ function changeTextSize(value) {
     settings = await api.setSettings({ textSize: size });
     const select = document.getElementById('text-size');
     if (select) select.value = String(settings.textSize);
-  }).catch((e) => toast(`Could not save text size: ${cleanErr(e.message)}`));
+  }).catch((e) => {
+    const select = document.getElementById('text-size');
+    if (select) select.value = String(settings.textSize || 100);
+    toast(`Could not save text size: ${cleanErr(e.message)}`);
+  });
   return textSizeChange;
 }
 document.addEventListener('change', (e) => {

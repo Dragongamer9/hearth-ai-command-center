@@ -98,3 +98,33 @@ test('saved text size survives unrelated edits and is reapplied on renderer reco
   assert.equal(zoom, 1.5);
   assert.equal(saved.textSize, 150);
 });
+
+test('rapid text-size changes serialize, respect bounds and recover after a failed save', async () => {
+  const select = { value: '100' };
+  const saved = [];
+  const errors = [];
+  let fail = false;
+  const context = {
+    settings: { textSize: 100 },
+    document: { getElementById: () => select },
+    api: { setSettings: async (patch) => {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      if (fail) throw new Error('Disk full');
+      saved.push(patch.textSize);
+      return { textSize: patch.textSize };
+    } },
+    toast: (message) => errors.push(message),
+    cleanErr: (message) => message,
+  };
+  runInNewContext(between(ui, 'let textSizeChange = Promise.resolve();', "document.addEventListener('change'"), context);
+  await Promise.all(['up', 'up', 'up', 'up', 'down', 100, 'down'].map(context.changeTextSize));
+  assert.deepEqual(saved, [115, 130, 150, 150, 130, 100, 100]);
+  fail = true;
+  select.value = '150';
+  await context.changeTextSize(150);
+  assert.equal(select.value, '100', 'failed save restores the last saved choice');
+  assert.deepEqual(errors, ['Could not save text size: Disk full']);
+  fail = false;
+  await context.changeTextSize('up');
+  assert.equal(select.value, '115', 'a failed save does not block later changes');
+});
