@@ -345,7 +345,7 @@ tr.open td { background: var(--accent-soft); }
 .chat-log { min-height: 80px; }
 .chat-input, .chat-top { flex-shrink: 0; }
 .top { flex-wrap: wrap; }
-#text-size { margin: 8px 0 0 12px; }
+#text-size { margin-top: 8px; }
 @media (max-width: 1100px) {
   .two, .three, .roster-wrap, .detail { grid-template-columns: minmax(0, 1fr); }
   .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
