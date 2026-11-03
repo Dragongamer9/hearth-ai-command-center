@@ -29,12 +29,20 @@ export function teamHabitat(store, agents = [], names = {}, now = Date.now()) {
 }
 
 const PLACE_TEXT = { desk: 'at the desk', room: 'in its room', 'break room': 'in the break room', garden: 'in the garden', hall: 'in the hall' };
+const YOU_PLACE = { desk: 'at the desk', room: 'in your room', 'break room': 'in the break room', garden: 'in the garden', hall: 'in the hall' };
+const rowText = (r, places = PLACE_TEXT) => `${places[r.place] || r.place} (${r.activity})`;
 // One line for the prompts, next to the AI's own Habitat memory.
-export function teamHabitatLine(store, agents = [], names = {}, now = Date.now(), max = 360) {
+// selfId: the AI reading the line. Prefixed as "You (<name>): …" so it can
+// confirm its own location; the team list still omits that AI.
+export function teamHabitatLine(store, agents = [], names = {}, now = Date.now(), max = 360, selfId = null) {
   const t = teamHabitat(store, agents, names, now);
   if (!t.rows.length) return '';
-  const who = t.rows.map((r) => `${r.name} ${PLACE_TEXT[r.place] || r.place} (${r.activity})`).join('; ');
-  const board = t.board.length ? ` Hall board: ${t.board.map((b) => `${b.who}: '${cleanText(b.text, 50)}'`).join('; ')}.` : '';
-  const line = `Team in the Habitat now: ${who}.${board}`;
+  const you = selfId ? t.rows.find((r) => r.id === selfId) : null;
+  const others = selfId ? t.rows.filter((r) => r.id !== selfId) : t.rows;
+  const parts = [];
+  if (you) parts.push(`You (${you.name}): ${rowText(you, YOU_PLACE)}.`);
+  if (others.length) parts.push(`Team in the Habitat now: ${others.map((r) => `${r.name} ${rowText(r)}`).join('; ')}.`);
+  if (t.board.length) parts.push(`Hall board: ${t.board.map((b) => `${b.who}: '${cleanText(b.text, 50)}'`).join('; ')}.`);
+  const line = parts.join(' ');
   return line.length > max ? `${line.slice(0, max - 1)}…` : line;
 }
