@@ -547,7 +547,7 @@ function registerIpc() {
     const att = { ...r.att, url: pathToFileURL(r.att.path).href, ...(r.att.kind === 'image' && opsApi ? opsApi.imageInfo(r.att.path) : {}) };
     if (att.kind === 'video') {
       const f = await attachments.extractFrames(att.path, { ffmpeg: gitops.find('ffmpeg'), count: 4 });
-      Object.assign(att, { frames: f.frames, duration: f.duration, note: f.note });
+      Object.assign(att, { frames: f.frames, duration: f.duration, note: f.note, ...(f.width ? { width: f.width, height: f.height } : {}) });
     }
     return { ok: true, att };
   };
@@ -750,6 +750,11 @@ function registerIpc() {
     const s = readSettings();
     if (!s.project) return { ok: false, message: 'Pick a project first.' };
     if (!o || typeof o.version !== 'string' || o.version !== o.confirmVersion) return { ok: false, message: 'The two version fields must match exactly.' };
+    // The release gate: the checklist must pass for the commit being released (or the Owner overrides it).
+    if (opsApi) {
+      const rg = await opsApi.releaseGate(o.version, String(o.target || ''));
+      if (!rg.ok) return { ok: false, message: `Not released: ${rg.reason}.` };
+    }
     const confirm = dialog.showMessageBoxSync(mainWindow, {
       type: 'warning',
       message: `Create release v${o.version} from ${o.target}?`,

@@ -83,6 +83,7 @@ async function extractFrames(file, { ffmpeg, count = 4, outDir } = {}) {
   const probe = await exec(ffmpeg, ['-hide_banner', ...input]);
   const m = `${probe.err}\n${probe.out}`.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
   const duration = m ? Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]) : null;
+  const res = probeResolution(`${probe.err}\n${probe.out}`);
   const dir = outDir || path.dirname(file);
   const stem = path.basename(file, path.extname(file));
   const frames = [];
@@ -92,8 +93,14 @@ async function extractFrames(file, { ffmpeg, count = 4, outDir } = {}) {
     const r = await exec(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-y', '-ss', at.toFixed(2), ...input, '-frames:v', '1', '-vf', 'scale=960:-2', out]);
     if (r.ok && fs.existsSync(out)) frames.push(out);
   }
-  if (!frames.length) return { ok: false, frames, duration, note: 'video attached (frames unavailable: ffmpeg could not read it)' };
-  return { ok: true, frames, duration, note: '' };
+  if (!frames.length) return { ok: false, frames, duration, ...res, note: 'video attached (frames unavailable: ffmpeg could not read it)' };
+  return { ok: true, frames, duration, ...res, note: '' };
+}
+
+// "Stream #0:0: Video: h264 (High), yuv420p(progressive), 1280x720 [SAR 1:1 DAR 16:9], 30 fps"
+function probeResolution(text) {
+  const m = String(text || '').match(/Stream[^\n]*Video:[^\n]*?\b(\d{2,5})x(\d{2,5})\b/);
+  return m ? { width: Number(m[1]), height: Number(m[2]) } : {};
 }
 
 // An AI's ATTACH path: plain relative paths inside its workspace only.
@@ -105,4 +112,4 @@ function agentPath(base, rel) {
 
 const ffmpegInput = (file) => ['-protocol_whitelist', 'file', '-f', /\.webm$/i.test(file) ? 'matroska' : 'mov', '-i', `file:${path.resolve(file)}`];
 
-module.exports = { agentPath, ffmpegInput, TYPES, MAX_BYTES, kindOf, safeName, attachDir, inside, saveBuffer, saveFromPath, extractFrames };
+module.exports = { probeResolution, agentPath, ffmpegInput, TYPES, MAX_BYTES, kindOf, safeName, attachDir, inside, saveBuffer, saveFromPath, extractFrames };

@@ -43,6 +43,10 @@ jobs:
           OUT_DIR=shots node ci/screenshots/shoot-ops.mjs 2>&1 | tee -a shots/log.txt
           ops_status=${PIPESTATUS[0]}
           [ "$status" -ne 0 ] || status=$ops_status
+          # Team workflow screens (truth card, refused action, review packet, release gate, jobs, blockers).
+          OUT_DIR=shots node ci/screenshots/shoot-workflow.mjs 2>&1 | tee -a shots/log.txt
+          wf_status=${PIPESTATUS[0]}
+          [ "$status" -ne 0 ] || status=$wf_status
           set -e
           ls -la shots
           exit $status

@@ -3,6 +3,8 @@
 // logs, phone), approval levels in Settings, voice notes, and the hooks main.js calls
 // around task runs. main.js passes its helpers in through createOps(ctx).
 import './ops.css';
+import { describeMedia } from '../media.mjs';
+import { classifyFailure, BLOCKER_LABEL } from './workflow.mjs';
 import { budgets as computeBudgets, pickByHeadroom, nearLimitWarning } from './budget.mjs';
 import { buildSummary } from './summary.mjs';
 import { inferKind, outcomes, score, suggest, KINDS } from './strength.mjs';
@@ -69,6 +71,15 @@ async function checkDone(t, run, agent) {
   if (t.done) { t.done.tests = r.status; t.done.testsChanged = run.testsChanged; }
   if (run.testsChanged) C.audit('Tests changed by this task', t.id, run.testsChanged.join(', '), agent);
   C.audit(r.status === 'passed' ? 'Tests passed' : r.status === 'failed' ? 'Tests failed' : 'Tests not run', t.id, `${r.command || 'no test command'} at ${short(run.head)}${r.ms ? ` · ${fmtMs(r.ms)}` : ''}${run.claimedTests && run.claimedTests !== r.status ? ` (the AI said: ${run.claimedTests})` : ''}`, agent);
+  // Environment blockers (missing deps or tools, denied permissions, wrong Node, machine-
+  // dependent tests) are shown as their own state and never count as the implementer's failure.
+  const b = r.status === 'failed' ? classifyFailure(r.log) : r.reason === 'no dependencies installed' ? classifyFailure('no node_modules') : null;
+  if (b && b.kind !== 'code') {
+    run.blocker = b;
+    t.testBlocker = { ...b, at: C.now(), sha: run.head };
+    C.audit(`Blocker: ${BLOCKER_LABEL[b.kind]}`, t.id, `${b.title} — next: ${b.next}`, agent);
+    if (r.status === 'failed') { t.notes.push({ at: C.now(), who: 'Tests', text: `The tests couldn't run properly here (${BLOCKER_LABEL[b.kind]}: ${b.title}). That isn't counted against ${N(agent)}'s code. Next: ${b.next}`, err: true }); return null; }
+  } else if (r.status === 'passed') delete t.testBlocker;
   const gate = testGate(r);
   if (gate.accept) return null;
   if (gate.note) {
@@ -322,6 +333,7 @@ function viewProject() {
       <label class="ops-field"><span>Next version (only you set it; the lead may release or tag only this one)</span><input type="text" data-opsset="nextVersion" value="${esc(s.nextVersion || '')}" placeholder="e.g. 0.9.0"></label>
       <label class="ops-field"><span>Version file</span><input type="text" data-opsset="versionFile" value="${esc(s.versionFile || 'package.json')}"></label>
       <label class="ops-field"><span>Release command (blank = run .github/workflows/release.yml on main)</span><input type="text" data-opsset="releaseCommand" value="${esc(s.releaseCommand || '')}" placeholder="blank"></label>
+      <label class="ops-field"><span>Docs and research runs may only change (comma-separated)</span><input type="text" data-opsset="docsPaths" value="${esc(s.docsPaths || '')}" placeholder="*.md, **/*.md, docs/**, release-notes/**"></label>
       <div class="faint ops-note">Saved for this project and never changed by the app or any AI.</div></div>
   </div>
   <div class="grid two">
@@ -475,6 +487,7 @@ function actionResult(agent, line, ok, reason = '', taskId = null) {
   return r;
 }
 function turnBegin(agent) { local.turn[agent] = []; }
+const turnResults = (agent) => [...(local.turn[agent] || [])];
 function turnEnd(agent, m) {
   const list = local.turn[agent] || [];
   delete local.turn[agent];
@@ -509,10 +522,11 @@ function imageNotice(agent, media) {
   if (!canSeeImages(agent, C.method(agent) === 'api')) C.post({ who: 'system', text: `${N(agent)} can't see images, so it only got the file names (${media.images.length} image${media.images.length > 1 ? 's' : ''}).` });
 }
 function attMeta(m, a, i) {
+  if (a.kind === 'video') return `<span class="ops-attmeta">${esc(describeMedia(a))}</span>`;
   if (a.kind !== 'image') return '';
   const want = requestedSize(`${m.text || ''} ${linkedTaskText(m)}`);
   const low = belowRequested(a, want);
-  return `<span class="ops-attmeta">${a.width ? `${a.width}×${a.height}` : 'size unknown'}${a.size ? ` · ${esc(fmtBytes(a.size))}` : ''}${low ? ` <span class="badge warn">below the asked ${want.w}×${want.h}</span>` : ''}
+  return `<span class="ops-attmeta">${esc(describeMedia(a))}${low ? ` <span class="badge warn">below the asked ${want.w}×${want.h}</span>` : ''}
     <span class="ops-up">Upscale ${['1080p', '1440p', '4k'].map((t) => `<button class="btn small link" data-ops="upscale" data-arg="${esc(m.id)}:${i}" data-val="${t}">${t === '4k' ? '4K' : t}</button>`).join('')}</span></span>`;
 }
 function linkedTaskText(m) {
@@ -647,6 +661,7 @@ function localModels() {
 }
 
 // ---------- lead powers, Next version, owner identity ----------
+function docsPaths() { const cur = local.projects.list.find((x) => x.id === local.projects.active); return cur?.settings?.docsPaths || '*.md, **/*.md, docs/**, release-notes/**'; }
 function syncPowers() {
   const s = C.settings();
   const p = local.projects.list.find((x) => x.id === local.projects.active);
@@ -875,7 +890,7 @@ export function createOps(ctx) {
     summaryCard, approvalCards, approvalSettings, projectSwitcher, ciBadge, drawerPanel, voiceButton, suggestHint,
     afterRun, checkDone, handoff, recordVerdict, leadLines, auditRoutine, beforeStart, routeQueued,
     snapshot: opsSnapshot,
-    overlay, banner, syncPowers, watchRelease, actionResult, turnBegin, turnEnd, resultsHtml, bodyHtml, mentionNotes, imageNotice, attMeta, checkpointLine, handleLines, localModels, localMayReview: localMayReviewTask, syncLocal,
+    overlay, banner, syncPowers, docsPaths, watchRelease, actionResult, turnBegin, turnEnd, turnResults, resultsHtml, bodyHtml, mentionNotes, imageNotice, attMeta, checkpointLine, handleLines, localModels, localMayReview: localMayReviewTask, syncLocal,
     async boot() {
       setLevels(C.settings().approvalLevels);
       document.addEventListener('click', onClick);

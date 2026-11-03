@@ -19,13 +19,34 @@ export function parseAttachLines(text) {
   return { files: files.slice(0, 6), text: kept.join('\n').trim() };
 }
 
+// Visual facts about an attachment (format, dimensions, aspect ratio, size, colour depth;
+// duration and resolution for video), so AIs can fact-check visuals without opening them.
+const gcd = (a, b) => (b ? gcd(b, a % b) : a);
+export function aspect(w, h) {
+  if (!(w > 0 && h > 0)) return '';
+  const g = gcd(w, h);
+  const [x, y] = [w / g, h / g];
+  return x <= 32 && y <= 32 ? `${x}:${y}` : `${(w / h).toFixed(2)}:1`;
+}
+const bytes = (n) => (!(n >= 0) ? '' : n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`);
+export function describeMedia(a = {}) {
+  const ext = String(a.name || a.path || '').split('.').pop().toUpperCase();
+  const fmt = a.format || (ext === 'JPEG' ? 'JPG' : ext) || '?';
+  const dims = a.width && a.height ? `${a.width}×${a.height} (${aspect(a.width, a.height)})` : 'dimensions unknown';
+  const parts = a.kind === 'video'
+    ? [`${fmt} video`, a.duration ? `${Number(a.duration).toFixed(1)} s` : 'duration unknown', dims]
+    : [fmt, dims];
+  if (a.size) parts.push(bytes(a.size));
+  if (a.depth) parts.push(`${a.depth}-bit${a.color ? ` ${a.color}` : ''}`);
+  return parts.join(' · ');
+}
+
 // One line describing an attachment, for the AIs' prompts.
 export function attachmentLine(who, a) {
   if (a.kind === 'video') {
-    const dur = a.duration ? `, ${Math.round(a.duration)}s` : '';
-    return `${who} attached a video: ${a.name}${dur}${a.frames?.length ? ` (${a.frames.length} still frames attached as images)` : ` (${a.note || 'frames unavailable'})`}`;
+    return `${who} attached a video: ${a.name} [${describeMedia(a)}]${a.frames?.length ? ` (${a.frames.length} still frames attached as images)` : ` (${a.note || 'frames unavailable'})`}`;
   }
-  return `${who} attached an image: ${a.name}`;
+  return `${who} attached an image: ${a.name} [${describeMedia(a)}]`;
 }
 
 // What an AI receives on its turn: every attachment posted by someone else since its
