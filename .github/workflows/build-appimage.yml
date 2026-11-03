@@ -4,7 +4,7 @@ name: Build Linux AppImage (artifact only)
 # Never creates or publishes a GitHub Release, so nothing here reaches the in-app updater.
 on:
   push:
-    branches: ['feature/**', 'main']
+    branches: ['feature/**', 'main', 'release/**']
   pull_request:
   workflow_dispatch:
 

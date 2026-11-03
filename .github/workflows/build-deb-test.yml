@@ -4,7 +4,7 @@ name: Build Linux DEB (test artifact only)
 # publishes a GitHub Release.
 on:
   push:
-    branches: ['test/deb-auto-detect-ai', 'feature/next-team']
+    branches: ['test/deb-auto-detect-ai', 'feature/next-team', 'release/**']
   workflow_dispatch:
 
 permissions:

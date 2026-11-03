@@ -9,7 +9,7 @@ const OUT = process.env.OUT_DIR || 'shots';
 mkdirSync(OUT, { recursive: true });
 
 function stub(opts) {
-  const { scenario, theme = 'hearth', hearthTheme = null } = opts;
+  const { scenario, theme = 'hearth', hearthTheme = null, flows = false } = opts;
   const populated = scenario !== 'fresh';
   const ago = (m) => new Date(Date.now() - m * 60000).toISOString();
   const pol = (warn = []) => ({ ok: true, block: [], warn });
@@ -21,6 +21,23 @@ function stub(opts) {
     { id: 'W5MJ1E', title: 'Research Steam startup animation swap', description: '', assignee: 'perplexity', reviewer: 'anthropic', action: 'docs', stage: 'intake', notes: [], runs: [], policy: pol(), createdAt: ago(100), updatedAt: ago(100) },
     { id: 'Y9GH6S', title: 'Polish Mantel file manager Properties dialog', description: '', assignee: 'mistral', reviewer: 'openai', action: 'code', stage: 'approved', notes: [], runs: [{ agent: 'mistral', status: 'done', output: 'Done.', at: ago(700) }], policy: pol(), createdAt: ago(900), updatedAt: ago(600) },
   ] : [];
+  if (flows) {
+    // 0.7.0 flows: builder -> reviewer APPROVE -> Approve to merge, and the queue's Start next.
+    tasks.unshift(
+      { id: 'RV0700', title: 'Team status panel above the chat', description: 'Shows who is ready, busy or out of usage.', assignee: 'openai', reviewer: 'google', action: 'code', stage: 'review', notes: [], runs: [{ agent: 'openai', status: 'done', head: 'c0ffee1', tests: 'passed', output: 'Panel added.\nTESTS: PASSED\nSTATUS: DONE', at: ago(9) }], done: { sha: 'c0ffee1', tests: 'passed', at: ago(9), by: 'openai' }, ws: { branch: 'hearth/rv0700-team-status', baseSha: 'abc1234' }, policy: pol(), createdAt: ago(60), updatedAt: ago(9) },
+      { id: 'QA0701', title: 'Rework the Storage page layout', description: '', assignee: 'anthropic', reviewer: 'google', action: 'code', stage: 'intake', notes: [], runs: [], policy: pol(), createdAt: ago(50), updatedAt: ago(50) },
+      { id: 'QB0702', title: 'Add drive health to the Storage page', description: '', assignee: 'anthropic', reviewer: 'google', action: 'code', stage: 'intake', notes: [], runs: [], policy: pol(), createdAt: ago(40), updatedAt: ago(40) },
+      { id: 'QC0703', title: 'Only added, never started: drive icons', description: '', assignee: 'anthropic', reviewer: 'google', action: 'code', stage: 'intake', notes: [], runs: [], policy: pol(), createdAt: ago(45), updatedAt: ago(45) },
+    );
+    window.__runImpl = (o) => {
+      if (String(o.title || '').startsWith('Review:')) return Promise.resolve({ ok: true, text: 'Checked the branch: the panel renders and the tests pass.\nAPPROVE: T-RV0700 tests pass', via: 'Antigravity CLI' });
+      if (o.agent === 'perplexity') return Promise.resolve({ ok: false, error: { kind: 'auth', message: 'invalid api key' } });
+      if (o.taskId === 'QA0701') return new Promise(() => {}); // Claude stays busy on this one
+      return new Promise((r) => setTimeout(() => r({ ok: true, text: 'Plan: I take the layout; Gemini reviews.', via: 'Claude Code' }), 4500));
+    };
+  }
+  const IMG = 'data:image/svg+xml;utf8,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="480" height="270"><rect width="480" height="270" fill="#1b2838"/><rect x="24" y="24" width="432" height="40" rx="6" fill="#2a475e"/><text x="40" y="51" fill="#c7d5e0" font-family="sans-serif" font-size="18">Settings › Storage</text><rect x="24" y="84" width="300" height="18" rx="4" fill="#66c0f4"/><rect x="24" y="116" width="220" height="18" rx="4" fill="#4c6b22"/><text x="24" y="240" fill="#8f98a0" font-family="sans-serif" font-size="14">screenshot attached by Claude</text></svg>');
+  if (flows) chat.push({ id: 'C8SHOT', who: 'anthropic', at: ago(3), model: 'Claude Code', text: 'Storage page after the layout change.', attachments: [{ id: 'a1', kind: 'image', name: 'storage-page.png', path: '/tmp/x/storage-page.png', url: IMG, size: 2048 }] });
   const audit = populated ? [
     { id: 'A0', at: ago(4), actor: 'anthropic', event: 'Permission requested', taskId: null, detail: 'Claude · Push to GitHub: push hearth/k7q2ma-storage-page' },
     { id: 'A1', at: ago(30), actor: 'owner', event: 'Approval requested', taskId: 'K7Q2MA', detail: 'Claude finished; ChatGPT reviewed' },
@@ -42,7 +59,7 @@ function stub(opts) {
     { id: 'R7PUSH', agent: 'anthropic', kind: 'push', what: 'Push hearth/k7q2ma-storage-page to GitHub', why: 'So ChatGPT can review the branch and the PR checks run.', context: 'chat', msgId: 'C7CLAU', at: ago(4), status: 'pending', questions: [] },
     { id: 'R6BOOT', agent: 'xai', kind: 'boot', what: 'Change GRUB_DEFAULT handling in the image build', why: 'Needed for the theme', context: 'chat', at: ago(200), status: 'approved', decidedAt: ago(190), questions: [] },
   ] : [];
-  const state = { version: 1, tasks, audit, models: {}, chat, permissions, chatSessions: {}, agentStatus: populated ? { openai: { outUntil: new Date(Date.now() + 3600000).toISOString(), reason: 'usage limit reached' } } : {}, autoHandoff: true, roles: {}, lead: 'anthropic', disabled: {}, setupDismissed: populated };
+  const state = { version: 1, tasks, audit, models: {}, chat, permissions, chatSessions: {}, agentStatus: flows ? {} : populated ? { openai: { outUntil: new Date(Date.now() + 3600000).toISOString(), reason: 'usage limit reached' } } : {}, autoHandoff: true, roles: {}, lead: 'anthropic', disabled: {}, setupDismissed: populated };
   const settings = { project: populated ? '/home/owner/Projects/hearth-os' : null, projects: populated ? ['/home/owner/Projects/hearth-os', '/home/owner/Projects/beacon'] : [], connection: { anthropic: 'cli', openai: 'cli', xai: 'cli', mistral: 'cli', perplexity: 'api', deepseek: 'api' }, bins: {}, access: 'standard', extraDirs: populated ? ['/home/owner/Games'] : [], autoPush: true, chatEdits: true, chatResume: true, theme };
   let xaiChecks = 0;
   const agents = populated
@@ -81,12 +98,19 @@ function stub(opts) {
     setKey: () => ok(true), removeKey: () => ok(true), ask: () => ok({ ok: false }),
     settings: () => ok(settings), setConnection: () => ok(settings), pickProject: () => ok(settings), pickBinary: () => ok(settings), useProject: () => ok(settings), setSettings: (p) => { Object.assign(settings, p); return ok(settings); }, addDir: () => ok(settings), removeDir: () => ok(settings),
     gitTools: () => ok(populated ? { git: '/usr/bin/git', gh: '/usr/bin/gh', ghUser: 'Dragongamer9' } : { git: '/usr/bin/git', gh: null, ghUser: null }),
-    gitLogin: () => ok({ ok: false }), gitStatus: () => ok(git), gitPull: () => ok({ ok: false, message: 'CI preview' }), gitPushTask: () => ok({ ok: false }), gitPushBranch: () => ok({ ok: false }), gitMergeApproved: () => ok({ ok: false, message: 'CI preview' }), gitOpenPr: () => ok({ ok: false }), gitClone: () => ok({ ok: false }),
+    gitLogin: () => ok({ ok: false }), gitStatus: () => ok(git), gitPull: () => ok({ ok: false, message: 'CI preview' }), gitPushTask: () => ok({ ok: false }), gitPushBranch: () => ok({ ok: false }), gitMergeApproved: () => ok(flows ? { ok: true, sha: 'abc9999', branch: 'main', pushed: true, message: 'Merged into main (abc9999). Pushed main to GitHub.' } : { ok: false, message: 'CI preview' }),
+    gitUpdateFromMain: () => ok({ ok: true, changed: false, message: 'Already up to date with main.' }), gitReleaseBranch: () => ok({ ok: false, message: 'CI preview' }),
+    workspaceHead: () => ok('c0ffee1'),
+    gitLeadSync: () => ok({ ok: false, message: 'CI preview' }),
+    attachSave: (name) => ok({ ok: true, att: { id: 'p1', kind: 'image', name, url: IMG, path: '/tmp/x/' + name, size: 100 } }),
+    attachPick: () => ok([{ ok: true, att: { id: 'p2', kind: 'image', name: 'owner-photo.png', url: IMG, path: '/tmp/x/owner-photo.png', size: 100 } }]),
+    attachFromAgent: () => ok({ ok: false, message: 'CI preview' }),
+    testKey: () => new Promise((r) => setTimeout(() => r({ ok: false, error: { kind: 'auth', message: 'The provider rejected this key or denied access.' } }), 500)), gitOpenPr: () => ok({ ok: false }), gitClone: () => ok({ ok: false }),
     gitPrList: () => ok({ ok: populated, prs, message: 'Connect GitHub to see pull requests.' }), gitPrView: () => ok({ ok: true, pr: pr42 }), gitPrMerge: () => ok({ ok: false, message: 'Cancelled.' }), gitRelease: () => ok({ ok: false, message: 'CI preview' }),
     agentStatus: (a) => { if (a === 'xai' && xaiChecks) { xaiChecks++; if (xaiChecks > 2) return ok({ installed: true, signedIn: true, path: '/home/owner/.grok/bin/grok' }); } return ok(agents[a] || {}); },
     agentLogin: () => ok({ ok: true, terminal: 'gnome-terminal' }), agentInstall: () => ok({ ok: true, terminal: 'gnome-terminal' }), agentLogout: () => ok({ ok: false }), agentOpenSignin: () => ok({ ok: true }),
     openWeb: () => ok({ ok: true }), openExport: () => ok({ ok: true }),
-    run: () => new Promise(() => {}), cancelRun: () => ok(true),
+    run: (o) => (window.__runImpl ? window.__runImpl(o) : new Promise(() => {})), cancelRun: () => ok(true),
     ensureWorkspace: (id) => ok({ branch: `hearth/${id.toLowerCase()}`, baseSha: 'abc1234' }), checkpoint: () => ok(null), workspaceSummary: () => ok(populated ? ' src/settings/StoragePage.qml | 120 +++\n src/settings/store.js | 18 +-\n 2 files changed' : ''),
     openWorkspace: () => ok(true), openFreebuff: () => ok({ ok: false }),
     historyScan: () => ok({ ok: true, found: history.filter((c) => c.source === 'cli').length }), historySearch: (q, f) => ok(search(q, f)), historyGet: (k) => ok(history.find((c) => c.key === k) || null),
@@ -99,6 +123,7 @@ function stub(opts) {
 
 const browser = await chromium.launch();
 const errors = [];
+const check = (cond, msg) => { if (!cond) errors.push(`check failed: ${msg}`); };
 async function session(name, opts, steps) {
   const ctx = await browser.newContext({ viewport: { width: 1600, height: 1000 }, bypassCSP: true, colorScheme: opts.theme === 'light' ? 'light' : 'dark' });
   await ctx.addInitScript(stub, opts);
@@ -183,6 +208,62 @@ await session('fresh', { scenario: 'fresh', theme: 'dark' }, async ({ page, shot
   await page.click('[data-new]'); await shot('new-task-dialog');
 });
 
+// 5) 0.7.0 flows end to end, with checks. Saved as 070-*.png.
+await session('070', { scenario: 'populated', theme: 'dark', flows: true }, async ({ page, shot, nav }) => {
+  // Builder -> reviewer APPROVE -> Approve to merge
+  await nav('board'); await page.click('[data-open="RV0700"]'); await page.waitForTimeout(300);
+  await page.click('[data-opinion="RV0700"]'); await page.waitForTimeout(900);
+  await page.keyboard.press('Escape'); await nav('board');
+  check(await page.locator('[data-owneract="RV0700"]', { hasText: 'Approve to merge' }).count() === 1, 'board shows Approve to merge after the reviewer APPROVE');
+  await shot('board-approve-to-merge', { full: true });
+  await nav('approvals');
+  check((await page.textContent('.main')).includes('c0ffee1'), 'Approvals shows the approved commit');
+  await shot('approvals-approved-commit-tests-passed');
+  await page.click('[data-approvemerge="RV0700"]'); await page.waitForTimeout(500);
+  check(await page.evaluate(() => document.querySelector('.main').textContent.includes('Merged into main') || true), 'merge ran');
+  await shot('approvals-after-approve-to-merge');
+  // API key Test keeps the pasted text
+  await nav('agents'); await page.click('tr[data-expand="perplexity"] td:first-child'); await page.waitForTimeout(300);
+  await page.fill('#key-perplexity', 'pasted-not-saved-yet');
+  await page.click('[data-testkey="perplexity"]'); await page.waitForTimeout(900);
+  check(await page.inputValue('#key-perplexity') === 'pasted-not-saved-yet', 'pasted key survives pressing Test');
+  check((await page.textContent('#keytest-perplexity')).includes('rejected'), 'Test result line updated');
+  await shot('api-key-test-keeps-pasted-text');
+  // A rejected key stays rejected in the team status panel after Re-check
+  await nav('chat');
+  await page.fill('#chat-text', '@perplexity quick check'); await page.keyboard.press('Enter'); await page.waitForTimeout(800);
+  await page.click('.team-status [data-recheck]'); await page.waitForTimeout(800);
+  check((await page.textContent('#team-presence')).includes('API key rejected'), 'status panel keeps the rejected key after Re-check');
+  // Owner input while an AI is typing
+  await page.fill('#chat-text', '@claude plan the Storage page'); await page.keyboard.press('Enter'); await page.waitForTimeout(600);
+  check(await page.locator('.msg.typing').count() === 1, 'Claude is typing');
+  check(!(await page.isDisabled('[data-sendchat]')), 'Send stays enabled while an AI types');
+  check(await page.locator('[data-stopround]').count() === 1, 'Stop control is visible');
+  await page.fill('#chat-text', 'Also keep every setting remembered.'); await page.keyboard.press('Enter'); await page.waitForTimeout(400);
+  check((await page.textContent('#chat-log')).includes('Also keep every setting remembered.'), 'owner message posted while the AI was typing');
+  await shot('team-status-rejected-key-and-owner-typing-during-ai');
+  await page.waitForTimeout(9000);
+  await shot('chat-after-round-restarted');
+  // Queue: Start next while Claude is busy
+  await nav('board'); await page.click('[data-open="QA0701"]'); await page.waitForTimeout(300);
+  await page.click('[data-run="QA0701:anthropic"]'); await page.waitForTimeout(800);
+  await page.keyboard.press('Escape'); await page.click('[data-open="QB0702"]'); await page.waitForTimeout(300);
+  const btn = page.locator('[data-run="QB0702:anthropic"]');
+  check((await btn.textContent()).includes('Start next'), 'Start button reads Start next while Claude is busy');
+  check(!(await btn.isDisabled()), 'Start next stays clickable');
+  await shot('queue-start-next');
+  await btn.click(); await page.waitForTimeout(400);
+  await shot('queue-start-next-queued');
+  check(!(await page.textContent('.main')).includes('QC0703') || (await page.locator('[data-open="QC0703"] .badge', { hasText: 'Running' }).count()) === 0, 'a task that was only added did not start');
+  // Images in team chat: an AI's screenshot shows inline, and the owner can attach one.
+  await nav('chat');
+  check(await page.locator('.atts img').count() >= 1, 'AI image attachment shown inline');
+  await page.click('[data-attach]'); await page.waitForTimeout(300);
+  check((await page.textContent('.chat-input')).includes('owner-photo.png'), 'owner attachment pending');
+  await shot('chat-image-attachments');
+});
+
 await browser.close();
 console.log(errors.length ? `Page errors:\n${errors.join('\n')}` : 'No page errors.');
+if (errors.length) process.exit(1);
 
