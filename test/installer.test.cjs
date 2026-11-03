@@ -10,6 +10,8 @@ const { spawnSync, execFileSync } = require('node:child_process');
 // Hermetic home: everything the installer touches lives under a temp HOME.
 const HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'hearth-inst-home-'));
 process.env.HOME = HOME;
+// Exclude the real user's CLI installations from discovery in this test process.
+process.env.PATH = '/usr/bin:/bin';
 delete process.env.XDG_DATA_HOME;
 const installer = require('../electron/installer.cjs');
 const agents = require('../electron/agents.cjs');
