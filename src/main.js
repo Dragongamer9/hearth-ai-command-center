@@ -2,7 +2,7 @@ import './styles.css';
 import { policyCheck } from './policy.mjs';
 import { recipients, buildPrompt, buildDelta, parseProposals, parseDirectives, applyEdit, applyRetract, makeRequest, decideRequest, blockedAgents, mentions, NAMES, PERMISSION_KINDS } from './chat.mjs';
 import { buildTaskBrief, nextAgent, parseStatus, taskRunState, recoverInterrupted, RUN_STATES } from './team.mjs';
-import { AGENTS, AGENT_IDS, WEB_ONLY, HEADLESS, EDITORS, API_CAPABLE, DEFAULT_ROLES, BILLING, ACCESS_NOTE } from './registry.mjs';
+import { AGENTS, AGENT_IDS, WEB_ONLY, HEADLESS, EDITORS, API_CAPABLE, DEFAULT_ROLES, BILLING, ACCESS_NOTE, OLLAMA_NOTE } from './registry.mjs';
 import { HEARTH_OS, RED_FLAGS } from './hearth.mjs';
 import { tokensToCss, pickMode } from './theme.mjs';
 
@@ -42,7 +42,7 @@ const MAX_HOPS = 6;
 
 // ---------- state ----------
 let state = { version: 1, tasks: [], audit: [], models: {}, chat: [], agentStatus: {}, autoHandoff: true, roles: {}, lead: 'anthropic', disabled: {}, permissions: [], chatSessions: {} };
-let ui = { view: 'overview', selected: null, modal: null, busy: {}, draft: '', target: 'all', typing: null, running: {}, saving: {}, changes: {}, expanded: null, side: 'anthropic', signin: {}, editing: null, showHist: {}, hist: { q: '', provider: 'all', source: 'all', list: [], sel: null, stats: null, kind: 'auto', scanning: false }, prs: { list: [], loaded: false, msg: '', byTask: {} }, release: { version: '', confirm: '', target: '', notes: '', draft: true } };
+let ui = { view: 'overview', selected: null, modal: null, busy: {}, draft: '', target: 'all', typing: null, running: {}, saving: {}, changes: {}, expanded: null, side: 'anthropic', signin: {}, installOllama: false, editing: null, showHist: {}, hist: { q: '', provider: 'all', source: 'all', list: [], sel: null, stats: null, kind: 'auto', scanning: false }, prs: { list: [], loaded: false, msg: '', byTask: {} }, release: { version: '', confirm: '', target: '', notes: '', draft: true } };
 let backups = { recoveredFrom: null, backups: [] };
 let settings = { project: null, projects: [], connection: { anthropic: 'cli', openai: 'cli', xai: 'cli', mistral: 'cli', perplexity: 'api', deepseek: 'api' }, bins: {}, access: 'standard', extraDirs: [], autoPush: true, chatEdits: true, chatResume: true, theme: 'hearth' };
 let gh = { git: null, gh: null, ghUser: null };
@@ -257,7 +257,7 @@ function setupChecklist() {
     <p class="muted" style="font-size:12.5px;margin:0 0 6px">Sign in with your own accounts on each provider's own page — no passwords pass through this app.</p>
     ${['anthropic', 'openai', 'google'].map((a) => step(connected(a), `<b>${AGENTS[a].name}</b> <span class="muted">· ${esc(AGENTS[a].plan)}</span>`,
       `<button class="btn small primary" data-signin="${a}">Sign in</button>`)).join('')}
-    ${step(connected('ollama'), '<b>Local AI</b> <span class="muted">· optional, free, works offline (Ollama)</span>', cli.ollama.installed ? '' : '<button class="btn small" data-install="ollama">Get Ollama</button>')}
+    ${step(connected('ollama'), '<b>Local AI</b> <span class="muted">· optional, free, works offline (Ollama)</span>', cli.ollama.installed ? '' : ui.signin.ollama?.state === 'installing' ? '<button class="btn small" disabled><span class="dot pulse"></span> Installing…</button>' : '<button class="btn small" data-install="ollama" title="Runs Ollama’s official installer in a terminal. It asks for your computer password there; this app never sees it.">Install Ollama</button>')}
     ${step(Boolean(gh.ghUser), `<b>GitHub</b> <span class="muted">· ${gh.ghUser ? `signed in as ${esc(gh.ghUser)}` : 'sign in on github.com to pull, push and track pull requests'}</span>`, gh.gh ? '<button class="btn small primary" data-ghlogin>Connect GitHub</button>' : '<button class="btn small" data-nav="github">How to install</button>')}
     ${step(Boolean(settings.project), '<b>Shared project folder</b> <span class="muted">· the git repo the AIs work on</span>', '<button class="btn small primary" data-pickproject>Choose folder</button>')}
     <div class="row" style="margin-top:6px"><button class="btn small ghost" data-recheck>Re-check</button><span class="faint" style="font-size:12px">More AIs (Grok, Mistral, Qwen, Perplexity, DeepSeek, Copilot, Meta AI) are on the Agents page.</span></div>
@@ -649,9 +649,30 @@ function signinSteps(a) {
   const waiting = s?.state === 'waiting';
   const fail = s?.state === 'timeout' || s?.state === 'error';
   return `<div class="signin-steps">
-    <span class="${installed ? 'done' : s?.state === 'installing' ? 'now' : 'now'}">1 · ${installed ? 'Installed' : s?.state === 'installing' ? 'Installing…' : 'Install official tool'}</span>
+    <span class="${installed ? 'done' : installFailed(a) ? 'fail' : 'now'}">1 · ${installed ? 'Installed' : s?.state === 'installing' ? (c.install === 'queued' ? 'Waiting in line to install…' : 'Installing…') : installFailed(a) ? 'Install failed: see the terminal' : 'Install official tool'}</span>
     <span class="${linked ? 'done' : waiting ? 'now' : fail ? 'fail' : ''}">2 · ${waiting ? 'Waiting for sign-in in your browser…' : fail ? 'Sign-in not finished' : 'Sign in on the official page'}</span>
     <span class="${linked ? 'done' : ''}">3 · ${linked ? 'Linked ✓' : 'Linked'}</span></div>`;
+}
+
+// Install / Installing… / Installed for every agent with a one-click installer.
+const INSTALLABLE = AGENT_IDS.filter((a) => ['cli', 'manual'].includes(AGENTS[a].kind));
+const installFailed = (a) => !cli[a]?.installed && (ui.signin[a]?.state === 'error' ? Boolean(ui.signin[a].install) : cli[a]?.install === 'failed' && ui.signin[a]?.state !== 'installing');
+const installingBtn = (a) => `<button class="btn small" disabled><span class="dot pulse"></span> ${cli[a]?.install === 'queued' ? 'Queued…' : 'Installing…'}</button>`;
+
+function installAllBar() {
+  const missing = INSTALLABLE.filter((a) => !cli[a]?.installed && !state.disabled?.[a]);
+  const busy = [...missing, 'ollama'].some((a) => ui.signin[a]?.state === 'installing' && !cli[a]?.installed);
+  const ollamaMissing = !cli.ollama?.installed;
+  const count = missing.length + (ollamaMissing && ui.installOllama ? 1 : 0);
+  const names = missing.map((a) => AGENTS[a].name).join(', ');
+  return `<div class="card mb install-all">
+    <div class="install-all-main">
+      <div class="install-all-text"><b>Install all</b> <span class="muted">· ${missing.length ? `not installed yet: ${esc(names)}` : 'every AI tool is installed'}</span>
+        <div class="faint">Runs each official installer one after another in a terminal you can see. Node.js and uv are set up for you in your own folder if needed, so no password is asked.</div></div>
+      <button class="btn primary small" data-installall ${!count || busy ? 'disabled' : ''}>${busy ? '<span class="dot pulse"></span> Installing…' : count ? `Install all (${count})` : 'All installed ✓'}</button>
+    </div>
+    ${ollamaMissing ? `<label class="install-all-opt"><input type="checkbox" data-installollama ${ui.installOllama ? 'checked' : ''}> Also install Local AI (Ollama). It asks for your computer password in the terminal; this app never sees it.</label>` : ''}
+  </div>`;
 }
 
 function agentActions(a) {
@@ -659,11 +680,17 @@ function agentActions(a) {
   const m = method(a);
   const out = [];
   if (AGENTS[a].kind === 'web') return `<button class="btn small primary" data-openweb="${a}">Open</button>`;
-  if (a === 'ollama') return c.installed ? '' : '<button class="btn small" data-install="ollama">Get Ollama</button>';
+  if (a === 'ollama') {
+    if (c.installed) return '';
+    if (ui.signin.ollama?.state === 'installing') return installingBtn(a);
+    return `<button class="btn small" data-install="ollama" title="${esc(OLLAMA_NOTE)}">${installFailed(a) ? 'Try install again' : 'Install'}</button>`;
+  }
   if (m === 'api') out.push(prov.keys[a] ? '' : `<button class="btn small primary" data-opensignin="${a}">Get API key</button>`);
-  else if (a === 'freebuff') out.push(c.installed ? `<button class="btn small" data-login="${a}">Open</button>` : `<button class="btn small primary" data-signin="${a}">Install</button>`);
-  else if (['waiting', 'installing'].includes(ui.signin[a]?.state) && !connected(a)) out.push(`<button class="btn small" disabled><span class="dot pulse"></span> ${ui.signin[a].state === 'installing' ? 'Installing…' : 'Waiting for browser…'}</button>`);
-  else if (!connected(a) && !state.disabled?.[a]) out.push(`<button class="btn small primary" data-signin="${a}">${c.installed ? (ui.signin[a]?.state === 'timeout' ? 'Try again' : 'Sign in') : 'Install & sign in'}</button>`);
+  else if (!c.installed && ui.signin[a]?.state === 'installing') out.push(installingBtn(a));
+  else if (a === 'freebuff') out.push(c.installed ? `<button class="btn small" data-login="${a}">Open</button>` : `<button class="btn small primary" data-install="${a}" title="Installs FreeBuff for you in a terminal you can see. No password needed.">${installFailed(a) ? 'Try install again' : 'Install'}</button>`);
+  else if (ui.signin[a]?.state === 'waiting' && !connected(a)) out.push('<button class="btn small" disabled><span class="dot pulse"></span> Waiting for browser…</button>');
+  else if (!c.installed && !state.disabled?.[a]) out.push(`<button class="btn small primary" data-signin="${a}" title="Installs ${esc(AGENTS[a].tool)} for you in a terminal you can see (no password), then opens its own sign-in">${installFailed(a) ? 'Try install again' : 'Install'}</button>`);
+  else if (!connected(a) && !state.disabled?.[a]) out.push(`<button class="btn small primary" data-signin="${a}">${ui.signin[a]?.state === 'timeout' ? 'Try again' : 'Sign in'}</button>`);
   return out.join('');
 }
 
@@ -680,9 +707,9 @@ function agentDetail(a) {
     ${m === 'api' ? `<div class="row"><input type="password" id="key-${a}" placeholder="${prov.keys[a] ? '•••••••• saved — paste to replace' : `Paste your ${esc(ag.vendor)} API key`}" autocomplete="off" style="flex:1">
         <button class="btn small" data-savekey="${a}">Save</button>${prov.keys[a] ? `<button class="btn danger small" data-rmkey="${a}">Remove</button>` : ''}</div>
         <p style="margin-top:6px">The key is encrypted with your OS keyring and never shown again. ${ag.edits ? 'API-linked AIs can chat, plan and review but not edit files.' : 'Chat, plan, research and review — no file edits.'}</p>`
-    : a === 'ollama' ? `<p>Runs models on your own computer — free, private, offline. ${c.installed ? (c.models?.length ? `Models: ${esc(c.models.join(', '))}` : 'Download a model: <span class="mono">ollama pull llama3.2</span>') : 'Install Ollama, start it, pull a model, then Re-check.'}</p>`
+    : a === 'ollama' ? `<p>Runs models on your own computer — free, private, offline. ${c.installed ? (c.models?.length ? `Models: ${esc(c.models.join(', '))}` : 'Download a model: <span class="mono">ollama pull llama3.2</span>') : `Install runs ${esc(ag.install)} in a terminal you can see. ${esc(ag.installNote)} Then download a model: <span class="mono">ollama pull llama3.2</span>.`}</p>`
     : `<p>Signs in through ${esc(ag.tool)}’s own official sign-in (it opens ${esc(ag.vendor)}’s page in your browser) with ${esc(ag.plan)}. This app never sees your password; ${esc(ag.tool)} keeps its own login token where it always does.</p>
-      ${c.installed ? `<div class="kv" style="margin:4px 0"><span class="k">Program</span><span class="mono" style="font-size:11px;word-break:break-all">${esc(c.path)}</span></div>` : `<p class="faint">Install runs <span class="mono">${esc(ag.install)}</span> in a terminal.</p>`}
+      ${c.installed ? `<div class="kv" style="margin:4px 0"><span class="k">Program</span><span class="mono" style="font-size:11px;word-break:break-all">${esc(c.path)}</span></div>` : `<p class="faint">Install runs <span class="mono">${esc(ag.install)}</span> in a terminal you can see. ${esc(ag.installNote || '')}${ag.kind === 'cli' ? ' Sign-in starts by itself when it finishes.' : ''}</p>`}
       ${a === 'xai' ? '<p class="faint">Grok’s headless mode has no “safe auto” level: working mode auto-approves its tools; read mode leaves approvals on.</p>' : ''}
       ${a === 'qwen' ? '<p class="faint">Qwen Code needs its Qwen OAuth sign-in cached before it can run from the app; if runs report “not signed in”, open it once in a terminal (Sign in) or give it an API key in ~/.qwen/.env.</p>' : ''}
       ${a === 'freebuff' ? '<p class="faint">FreeBuff has no hands-free mode: from any task, “Continue in FreeBuff” opens it in that task’s workspace with the handoff brief on your clipboard.</p>' : ''}`}
@@ -751,6 +778,7 @@ function viewAgents() {
   return `${warn}${proj}
   <div class="roster-wrap">
     <div>
+      ${installAllBar()}
       <div class="card mb" style="padding:4px 6px">
         <table class="roster"><thead><tr><th>AI</th><th>Access</th><th>Status</th><th>Working on</th><th>Signed in with</th><th style="text-align:right"><button class="btn small ghost" data-recheck>Re-check all</button></th></tr></thead>
         <tbody>${AGENT_IDS.map(row).join('')}</tbody></table>
@@ -1314,15 +1342,43 @@ async function refreshProviders() {
 // own sign-in (it opens the provider's page in your browser), then watch for it
 // to finish. Passwords and tokens never pass through this app.
 const signinTimers = {};
+const INSTALL_WAIT_MS = 20 * 60 * 1000;
 async function startSignin(a) {
   await refreshAgents();
-  const installed = cli[a]?.installed;
-  const r = installed ? await api.agentLogin(a) : await api.agentInstall(a);
+  if (!cli[a]?.installed) return startInstall([a], { signin: true });
+  const r = await api.agentLogin(a);
   if (!r.ok) { ui.signin[a] = { state: 'error', msg: r.message }; render(); return toast(r.message); }
-  ui.signin[a] = { state: installed ? 'waiting' : 'installing', at: Date.now() };
-  audit(installed ? `${AGENTS[a].name} sign-in started` : `${AGENTS[a].tool} install started`, null, `official ${installed ? 'sign-in' : 'installer'} in ${r.terminal}`);
-  toast(installed ? `${AGENTS[a].tool}'s own sign-in opened in ${r.terminal}. Finish on ${AGENTS[a].vendor}'s page in your browser — this updates by itself.` : `Installing ${AGENTS[a].tool} in ${r.terminal}. Sign-in starts when it's done.`);
+  ui.signin[a] = { state: 'waiting', at: Date.now() };
+  audit(`${AGENTS[a].name} sign-in started`, null, `official sign-in in ${r.terminal}`);
+  toast(`${AGENTS[a].tool}'s own sign-in opened in ${r.terminal}. Finish on ${AGENTS[a].vendor}'s page in your browser — this updates by itself.`);
   render();
+  watchSignin(a);
+}
+
+// One-click install of one or more official tools, one after another in a
+// terminal you can see. signin: open the tool's own sign-in when it's done.
+async function startInstall(list, { signin = false } = {}) {
+  await refreshAgents();
+  const todo = list.filter((a) => !cli[a]?.installed);
+  if (!todo.length) { render(); return toast('Already installed.'); }
+  const r = await api.agentInstall(todo).catch((e) => ({ ok: false, message: cleanErr(e.message) }));
+  if (!r.ok) {
+    for (const a of todo) ui.signin[a] = { state: 'error', msg: r.message, install: true };
+    render();
+    return toast(r.message);
+  }
+  for (const a of todo) {
+    ui.signin[a] = { state: 'installing', at: Date.now(), signin: signin && AGENTS[a].kind === 'cli' };
+    cli[a] = { ...cli[a], install: 'queued' };
+  }
+  const names = todo.map((a) => AGENTS[a].tool).join(', ');
+  audit(todo.length > 1 ? 'Install all started' : `${AGENTS[todo[0]].tool} install started`, null, `official installer${todo.length > 1 ? 's' : ''} in ${r.terminal}: ${names}`);
+  toast(`Installing ${names} in ${r.terminal}.${todo.includes('ollama') ? ' Ollama asks for your computer password there; this app never sees it.' : ''}${signin ? ' Sign-in starts when it’s done.' : ''}`);
+  render();
+  for (const a of todo) watchSignin(a);
+}
+
+function watchSignin(a) {
   clearInterval(signinTimers[a]);
   signinTimers[a] = setInterval(async () => {
     const s = ui.signin[a];
@@ -1330,17 +1386,30 @@ async function startSignin(a) {
     const st = await api.agentStatus(a).catch(() => ({}));
     cli[a] = st;
     if (s.state === 'installing' && st.installed) {
-      const lr = await api.agentLogin(a);
-      ui.signin[a] = lr.ok ? { state: 'waiting', at: Date.now() } : { state: 'error', msg: lr.message };
+      if (s.signin) {
+        const lr = await api.agentLogin(a);
+        ui.signin[a] = lr.ok ? { state: 'waiting', at: Date.now() } : { state: 'error', msg: lr.message };
+        if (lr.ok) toast(`${AGENTS[a].tool} is installed. Its own sign-in opened in ${lr.terminal}.`);
+      } else {
+        clearInterval(signinTimers[a]);
+        ui.signin[a] = { state: 'installed', at: Date.now() };
+        audit(`${AGENTS[a].tool} installed`);
+        save();
+        toast(`${AGENTS[a].tool} is installed.${AGENTS[a].kind === 'cli' ? ' Press Sign in on its card.' : ''}`);
+      }
+    } else if (s.state === 'installing' && st.install === 'failed') {
+      clearInterval(signinTimers[a]);
+      ui.signin[a] = { state: 'error', msg: `${AGENTS[a].tool} could not be installed. The terminal says why.`, install: true };
+      toast(ui.signin[a].msg);
     } else if (s.state === 'waiting' && (st.signedIn || (a === 'mistral' && st.signedIn !== false))) {
       clearInterval(signinTimers[a]);
       ui.signin[a] = { state: 'linked', at: Date.now() };
       audit(`${AGENTS[a].name} linked`, null, `signed in with your own account via ${AGENTS[a].tool}`);
       save();
       toast(`${AGENTS[a].name} is linked.`);
-    } else if (Date.now() - s.at > 5 * 60 * 1000) {
+    } else if (Date.now() - s.at > (s.state === 'installing' ? INSTALL_WAIT_MS : 5 * 60 * 1000)) {
       clearInterval(signinTimers[a]);
-      ui.signin[a] = { state: 'timeout', at: Date.now() };
+      ui.signin[a] = s.state === 'installing' ? { state: 'error', msg: 'The install did not finish. Check the terminal, then press Re-check.', install: true } : { state: 'timeout', at: Date.now() };
     }
     ui.keepScroll = true;
     if (['agents', 'overview'].includes(ui.view)) render();
@@ -1366,7 +1435,7 @@ async function syncHistory(quiet = false) {
   if (ui.view === 'history') render();
 }
 
-const CLICK = '[data-nav],[data-new],[data-open],[data-close],[data-cancel],[data-create],[data-advance],[data-approve],[data-reject],[data-changes],[data-note],[data-delete],[data-savekey],[data-rmkey],[data-ask],[data-export],[data-reset],[data-upd],[data-opinion],[data-modalbg],[data-sendchat],[data-target],[data-addprop],[data-addall],[data-clearchat],[data-method],[data-login],[data-recheck],[data-locate],[data-available],[data-run],[data-stop],[data-freebuff],[data-fbdone],[data-openws],[data-pickproject],[data-autohandoff],[data-restore],[data-install],[data-startprop],[data-showchanges],[data-dismisssetup],[data-signin],[data-disconnect],[data-toggleagent],[data-ghlogin],[data-gitrefresh],[data-useproject],[data-clone],[data-gitpull],[data-pushbranch],[data-openpr],[data-approvemerge],[data-approvepr],[data-access],[data-togglesetting],[data-adddir],[data-removedir],[data-expand],[data-opensignin],[data-openweb],[data-openexport],[data-makelead],[data-decide],[data-editmsg],[data-delmsg],[data-saveedit],[data-canceledit],[data-togglehist],[data-checkin],[data-histscan],[data-histimport],[data-histopen],[data-histresume],[data-histweb],[data-histwebin],[data-histremove],[data-prlist],[data-prrefresh],[data-release],[data-theme]';
+const CLICK = '[data-nav],[data-new],[data-open],[data-close],[data-cancel],[data-create],[data-advance],[data-approve],[data-reject],[data-changes],[data-note],[data-delete],[data-savekey],[data-rmkey],[data-ask],[data-export],[data-reset],[data-upd],[data-opinion],[data-modalbg],[data-sendchat],[data-target],[data-addprop],[data-addall],[data-clearchat],[data-method],[data-login],[data-recheck],[data-locate],[data-available],[data-run],[data-stop],[data-freebuff],[data-fbdone],[data-openws],[data-pickproject],[data-autohandoff],[data-restore],[data-install],[data-installall],[data-installollama],[data-startprop],[data-showchanges],[data-dismisssetup],[data-signin],[data-disconnect],[data-toggleagent],[data-ghlogin],[data-gitrefresh],[data-useproject],[data-clone],[data-gitpull],[data-pushbranch],[data-openpr],[data-approvemerge],[data-approvepr],[data-access],[data-togglesetting],[data-adddir],[data-removedir],[data-expand],[data-opensignin],[data-openweb],[data-openexport],[data-makelead],[data-decide],[data-editmsg],[data-delmsg],[data-saveedit],[data-canceledit],[data-togglehist],[data-checkin],[data-histscan],[data-histimport],[data-histopen],[data-histresume],[data-histweb],[data-histwebin],[data-histremove],[data-prlist],[data-prrefresh],[data-release],[data-theme]';
 
 document.addEventListener('click', async (e) => {
   const el = e.target.closest(CLICK);
@@ -1528,10 +1597,12 @@ document.addEventListener('click', async (e) => {
     save();
     return render();
   }
-  if (d.install) {
-    const r = await api.agentInstall(d.install);
-    toast(r.ok ? (d.install === 'ollama' ? 'Opened ollama.com in your browser. Install it, pull a model, then press Re-check.' : `Installing in ${r.terminal}. When it finishes, press Re-check.`) : r.message);
-    return;
+  if (d.install) return startInstall([d.install]);
+  if (d.installollama !== undefined) { ui.installOllama = !ui.installOllama; ui.keepScroll = true; return render(); }
+  if (d.installall !== undefined) {
+    const list = INSTALLABLE.filter((a) => !cli[a]?.installed && !state.disabled?.[a]);
+    if (ui.installOllama && !cli.ollama?.installed) list.push('ollama');
+    return startInstall(list);
   }
   if (d.startprop) {
     const [id, i] = d.startprop.split(':');

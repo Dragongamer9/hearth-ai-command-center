@@ -28,7 +28,7 @@ Docs: `docs/ACCOUNTS.md` (connecting accounts), `docs/GITHUB_AND_ACCESS.md` (Git
 | Updates say "disabled" | You launched an unpacked build — run the `.AppImage` file itself. |
 
 ## Connecting your AIs
-Open **Agents** (or follow the setup checklist on the Overview page) and press **Connect account** on each AI. That installs the official tool if needed, then opens the provider's own sign-in. No API keys to hunt down. Details, billing and limits: `docs/ACCOUNTS.md`.
+Open **Agents** (or follow the setup checklist on the Overview page) and press **Install** on each AI (or **Install all**). That installs the official tool for you in a terminal you can see, setting up Node.js or uv in your own folder if they're missing (no password), then opens the provider's own sign-in. No installers or API keys to hunt down. Only Local AI (Ollama) asks for your computer password, in the terminal; the app never sees it. Details, billing and limits: `docs/ACCOUNTS.md`.
 
 | AI | Signs in with | Paid by |
 |---|---|---|

@@ -175,6 +175,10 @@ await session('hearth-theme', { scenario: 'populated', theme: 'hearth', hearthTh
 await session('fresh', { scenario: 'fresh', theme: 'dark' }, async ({ page, shot, nav }) => {
   await nav('overview'); await shot('overview-setup');
   await nav('agents'); await shot('agents');
+  // One-click installs: Install all (optionally with Ollama), then per-card Installing… states.
+  await page.click('tr[data-expand="anthropic"] td:first-child'); await shot('agents-install-buttons');
+  await page.click('[data-installollama]'); await shot('agents-install-all-with-ollama');
+  await page.click('[data-installall]'); await page.waitForTimeout(400); await shot('agents-install-all-installing', { full: true });
   await nav('history'); await shot('history-explainer');
   await page.click('[data-new]'); await shot('new-task-dialog');
 });

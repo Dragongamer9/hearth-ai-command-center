@@ -18,20 +18,14 @@ const os = require('node:os');
 const path = require('node:path');
 
 const crypto = require('node:crypto');
+const installer = require('./installer.cjs');
 
 const BIN = { anthropic: 'claude', openai: 'codex', google: 'gemini', xai: 'grok', mistral: 'vibe', qwen: 'qwen', freebuff: 'freebuff', ollama: 'ollama' };
 const CLI_AGENTS = ['anthropic', 'openai', 'google', 'xai', 'mistral', 'qwen'];
 // Each tool's own sign-in. hold: keep the terminal open afterwards to read the result.
 const LOGIN = { anthropic: ['auth', 'login'], openai: ['login'], google: [], xai: ['login'], mistral: ['--setup'], qwen: [], freebuff: [] };
 const LOGIN_HOLD = ['anthropic', 'openai', 'xai'];
-const NPM_PACKAGE = {
-  anthropic: '@anthropic-ai/claude-code',
-  openai: '@openai/codex',
-  google: '@google/gemini-cli',
-  xai: '@xai-official/grok',
-  qwen: '@qwen-code/qwen-code',
-  freebuff: 'freebuff',
-};
+const NPM_PACKAGE = installer.NPM_PACKAGE;
 // Claude Code adds AI attribution to commits/PRs by default; the owner's rule is
 // commits only as Dragongamer9 with no AI attribution, so turn it off per run.
 // Passed as a settings file (not inline JSON) in the user's own cache folder.
@@ -75,7 +69,11 @@ function searchDirs() {
   try {
     for (const v of fs.readdirSync(nvm)) extra.push(path.join(nvm, v, 'bin'));
   } catch {}
-  return [...new Set([...(process.env.PATH || '').split(path.delimiter), ...extra])].filter(Boolean);
+  // Node.js set up by the one-click installer (only exists when the system had
+  // none new enough) goes first so the CLIs' "#!/usr/bin/env node" finds it.
+  const first = fs.existsSync(installer.nodeBin()) ? [installer.nodeBin()] : [];
+  extra.push(path.join(installer.userPrefix(), 'bin'));
+  return [...new Set([...first, ...(process.env.PATH || '').split(path.delimiter), ...extra])].filter(Boolean);
 }
 
 // Env for child processes: a desktop-launched AppImage often has a thin PATH.
@@ -401,7 +399,17 @@ function qwenSignedIn() {
   return fs.existsSync(path.join(dir, 'oauth_creds.json')) || fileHas(path.join(dir, '.env'), 'OPENAI_API_KEY');
 }
 
+// Status plus, while not installed, how the last one-click install went.
 async function status(agent, bin) {
+  const s = await toolStatus(agent, bin);
+  if (!s.installed) {
+    const run = installer.readRun(agent);
+    if (run && run !== 'ok') s.install = run;
+  }
+  return s;
+}
+
+async function toolStatus(agent, bin) {
   if (agent === 'ollama') return ollamaStatus();
   const file = bin || findBinary(agent);
   if (!file) return { installed: false, signedIn: false, path: null };
@@ -493,18 +501,24 @@ async function logout(agent, bin) {
   return { ok: false, message: 'This one signs out inside its own app.' };
 }
 
-// One-click install of an agent's official CLI from npm, shown in a terminal.
-function install(agent) {
-  if (agent === 'mistral') {
-    const uv = searchDirs().map((d) => path.join(d, 'uv')).find((p) => fs.existsSync(p));
-    if (!uv) return { ok: false, message: 'Mistral Vibe installs with uv (Python). Install uv first, or follow docs.mistral.ai/vibe.', docs: 'https://docs.mistral.ai/vibe/code/cli/install-setup' };
-    return openTerminal(uv, ['tool', 'install', 'mistral-vibe'], os.homedir(), { hold: true });
+// One-click install of the official tools (one agent or a list, one after
+// another) in a terminal you can see. Node.js and uv are set up in your own
+// folders when missing; see installer.cjs. Passwords never pass through here.
+async function install(list, { fetchImpl } = {}) {
+  const want = (Array.isArray(list) ? list : [list]).filter((a) => installer.canInstall(a));
+  if (!want.length) return { ok: false, message: 'No installer for this agent.' };
+  const versionOf = async (node) => (await run(node, ['--version'], { timeoutMs: 8000 })).out;
+  const plan = await installer.prepare({ agents: want, dirs: searchDirs(), versionOf, fetchImpl });
+  if (!plan.ok) return plan;
+  let script;
+  try {
+    script = installer.writeScript();
+    installer.markQueued(plan.agents);
+  } catch (e) {
+    return { ok: false, message: `Could not prepare the installer in ${installer.appDir()}: ${e.message}` };
   }
-  const pkg = NPM_PACKAGE[agent];
-  if (!pkg) return { ok: false, message: 'No installer for this agent.' };
-  const npm = searchDirs().map((d) => path.join(d, 'npm')).find((p) => fs.existsSync(p));
-  if (!npm) return { ok: false, message: 'npm was not found. Install Node.js 18 or newer first (it includes npm).' };
-  return openTerminal(npm, ['install', '-g', pkg], os.homedir(), { hold: true });
+  const r = openTerminal('/bin/sh', [script, ...plan.args], os.homedir());
+  return r.ok ? { ...r, agents: plan.agents, plan: plan.plan } : r;
 }
 
 module.exports = { runAgent, status, login, logout, install, openTerminal, findBinary, isLimit, resetHint, parseClaude, parseGemini, parseCodexEvents, parseGrok, parseVibe, lastJson, run, searchDirs, BIN, CLI_AGENTS, NPM_PACKAGE, execFile };

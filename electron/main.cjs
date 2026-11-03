@@ -297,13 +297,11 @@ function registerIpc() {
     const s = readSettings();
     return agents.status(agent, s.bins[agent]);
   });
-  handle('agents:install', (agent) => {
-    validateProvider(agent);
-    if (agent === 'ollama') {
-      shell.openExternal('https://ollama.com/download');
-      return { ok: true, terminal: 'your browser' };
-    }
-    return agents.install(agent);
+  // One agent or a list ("Install all"); everything runs in a visible terminal.
+  handle('agents:install', (list) => {
+    const ids = (Array.isArray(list) ? list : [list]).map((a) => validateProvider(a));
+    if (!ids.length || ids.length > 12) throw new Error('nothing to install');
+    return agents.install([...new Set(ids)]);
   });
   handle('agents:logout', async (agent) => {
     validateProvider(agent);
@@ -484,7 +482,7 @@ function registerIpc() {
     if (!fs.existsSync(dir)) throw new Error('Start the task first so it has a workspace.');
     const s = readSettings();
     const file = agents.findBinary('freebuff', s.bins.freebuff);
-    if (!file) return { ok: false, message: 'freebuff is not installed. Install it with: npm install -g freebuff' };
+    if (!file) return { ok: false, message: 'FreeBuff is not installed yet. Open Agents and press Install on FreeBuff (one click, no password).' };
     const text = String(brief).slice(0, 20000);
     const briefFile = path.join(worktreeRoot(), `${taskId}-HANDOFF.md`);
     fs.writeFileSync(briefFile, text, { mode: 0o600 });

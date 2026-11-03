@@ -305,3 +305,10 @@ tr.open td { background: var(--accent-soft); }
 .checks { display: flex; gap: 10px; font-size: 12px; margin: 6px 0; }
 .check-list { font-size: 12px; margin: 4px 0 0; padding: 0; list-style: none; }
 .check-list li { display: flex; gap: 6px; align-items: center; padding: 2px 0; color: var(--muted); }
+
+/* Agents: Install all */
+.install-all { padding: 10px 14px; }
+.install-all-main { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.install-all-text { flex: 1; min-width: 260px; font-size: 13px; }
+.install-all-text .faint { font-size: 12px; margin-top: 3px; line-height: 1.45; }
+.install-all-opt { display: flex; gap: 8px; align-items: center; margin: 8px 0 0; font-size: 12.5px; cursor: pointer; text-transform: none; letter-spacing: 0; }
