@@ -89,13 +89,13 @@ test('Start next while busy: stays clickable and several run oldest-first', () =
   tasks.find((t) => t.id === 'N1').startNext = false;
   tasks.find((t) => t.id === 'N1').stage = 'checkpoint';
   assert.equal(nextQueued(tasks, 'anthropic').id, 'N2');
-  assert.ok(placeLast(tasks, 'anthropic', '2026-01-01T00:00:00.000Z') > '2026-11-02');
+  assert.ok(placeLast(tasks, 'anthropic', '2026-01-01T00:00:00.000Z') > '2026-11-01T02:00:00.000Z', 'placed after the last task');
 });
 
 test('out of usage: waiting tasks go to free AIs with the same kind of role, never the reviewer', () => {
   assert.deepEqual(roleKinds(DEFAULT_ROLES.openai), ['code']);
   assert.ok(roleKinds(DEFAULT_ROLES.google).includes('research'));
-  const tasks = [T('C1', { stage: 'implementing', runs: [{ status: 'limit' }] }), T('C2'), T('C3'), T('C4', { action: 'docs' }), T('C5', { reviewer: 'openai' })];
+  const tasks = [T('C1', { stage: 'implementing', runs: [{ status: 'limit' }] }), T('C2'), T('C3'), T('C4', { action: 'docs', reviewer: 'openai' }), T('C5', { reviewer: 'openai' })];
   const moves = redistribute({ tasks, agent: 'anthropic', currentId: 'C1', available: ['openai', 'google', 'xai'], roles: DEFAULT_ROLES });
   const to = Object.fromEntries(moves.map((m) => [m.id, m.to]));
   assert.equal(to.C1, undefined, 'the task it was inside stays for the caller');
