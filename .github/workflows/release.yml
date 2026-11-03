@@ -11,6 +11,9 @@ name: Release (draft, automatic)
 on:
   push:
     tags: ['v*']
+  # The owner's "Run workflow" button (Actions > Release > Run workflow): builds the version in package.json from the
+  # chosen branch, creates its tag with the release, and publishes it (pressing the button is the approval).
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -31,10 +34,21 @@ jobs:
           cache: npm
 
       - name: Tag must match package.json version
+        id: ver
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           pkg="v$(node -p "require('./package.json').version")"
-          if [ "$pkg" != "$GITHUB_REF_NAME" ]; then
-            echo "Tag $GITHUB_REF_NAME does not match package.json ($pkg). Nothing released."; exit 1
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+            if gh api "repos/$GITHUB_REPOSITORY/releases/tags/$pkg" >/dev/null 2>&1; then
+              echo "$pkg is already released. Nothing released."; exit 1
+            fi
+            echo "tag=$pkg" >> "$GITHUB_OUTPUT"; echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            if [ "$pkg" != "$GITHUB_REF_NAME" ]; then
+              echo "Tag $GITHUB_REF_NAME does not match package.json ($pkg). Nothing released."; exit 1
+            fi
+            echo "tag=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
           fi
 
       - run: npm ci
@@ -59,8 +73,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
-          TAG: ${{ github.ref_name }}
-          AUTO_PUBLISH: ${{ vars.AUTO_PUBLISH }}
+          TAG: ${{ steps.ver.outputs.tag }}
+          AUTO_PUBLISH: ${{ steps.ver.outputs.publish || vars.AUTO_PUBLISH }}
         run: |
           set -euo pipefail
           # Notes: release-notes/<tag>.md, else an existing draft's notes, else a default.
