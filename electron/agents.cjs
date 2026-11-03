@@ -2,7 +2,7 @@
 // with the user's own subscriptions (no API credit needed).
 //   Claude   -> Claude Code  (`claude -p`)          sign in: `claude auth login`
 //   ChatGPT  -> OpenAI Codex (`codex exec`)         sign in: `codex login`
-//   Gemini   -> Gemini CLI   (`gemini -p`)          sign in: run `gemini`, "Sign in with Google"
+//   Gemini   -> Antigravity (`agy -p`), legacy `gemini` fallback; sign in: `agy`
 //   Grok     -> xAI Grok Build (`grok -p`)       sign in: `grok login` (browser OAuth, grok.com account)
 //   Mistral  -> Mistral Vibe (`vibe -p`)          sign in: `vibe --setup` (browser, Mistral account)
 //   Qwen     -> Qwen Code (`qwen -p`)             sign in: run `qwen`, choose Qwen OAuth
@@ -20,7 +20,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const installer = require('./installer.cjs');
 
-const BIN = { anthropic: 'claude', openai: 'codex', google: 'gemini', xai: 'grok', mistral: 'vibe', qwen: 'qwen', freebuff: 'freebuff', ollama: 'ollama' };
+const BIN = { anthropic: 'claude', openai: 'codex', google: 'agy', xai: 'grok', mistral: 'vibe', qwen: 'qwen', freebuff: 'freebuff', ollama: 'ollama' };
 const CLI_AGENTS = ['anthropic', 'openai', 'google', 'xai', 'mistral', 'qwen'];
 // Each tool's own sign-in. hold: keep the terminal open afterwards to read the result.
 const LOGIN = { anthropic: ['auth', 'login'], openai: ['login'], google: [], xai: ['login'], mistral: ['--setup'], qwen: [], freebuff: [] };
@@ -86,8 +86,8 @@ function childEnv() {
 
 function findBinary(agent, custom) {
   if (custom) return fs.existsSync(custom) ? custom : null;
-  for (const dir of searchDirs()) {
-    const p = path.join(dir, BIN[agent]);
+  for (const name of (agent === 'google' ? ['agy', 'gemini'] : [BIN[agent]])) for (const dir of searchDirs()) {
+    const p = path.join(dir, name);
     try {
       fs.accessSync(p, fs.constants.X_OK);
       return p;
@@ -95,6 +95,8 @@ function findBinary(agent, custom) {
   }
   return null;
 }
+
+const isAntigravity = (file) => /^agy(?:\.exe)?$/i.test(path.basename(file));
 
 function run(file, args, { cwd, input, timeoutMs = 60000, signal } = {}) {
   return new Promise((resolve) => {
@@ -210,7 +212,7 @@ function parseGemini(stdout) {
   try {
     const j = JSON.parse(s.slice(Math.max(0, start)));
     const err = j.error ? (typeof j.error === 'string' ? j.error : j.error.message || JSON.stringify(j.error)) : null;
-    return { text: typeof j.response === 'string' ? j.response : '', error: err, sessionId: j.session_id || j.sessionId || j.stats?.session_id || null };
+    return { text: typeof j.response === 'string' ? j.response : '', error: err || (j.status && j.status !== 'SUCCESS' ? `Antigravity ended with status ${j.status}` : null), sessionId: j.conversation_id || j.session_id || j.sessionId || j.stats?.session_id || null };
   } catch {
     return { text: s, error: null, sessionId: null };
   }
@@ -334,15 +336,18 @@ async function runAgent({ agent, prompt, cwd, mode = 'read', model, timeoutMs, s
   }
 
   if (agent === 'google' || agent === 'qwen') {
-    // Brief comes in over stdin; -p forces headless mode and is appended to it.
-    // Qwen Code is built on the Gemini CLI and takes the same flags.
-    const args = ['-p', 'Follow the instructions above.', '--output-format', 'json', '--approval-mode', { read: 'plan', standard: 'auto_edit', full: 'yolo' }[mode]];
-    if (resume) args.push('--resume', resume);
-    if (dirs.length) args.push('--include-directories', dirs.join(','));
-    if (model) args.push('-m', model);
-    const res = await run(file, args, { cwd: workdir, input: prompt, timeoutMs, signal });
+    const agy = agent === 'google' && isAntigravity(file);
+    const args = agy
+      ? ['-p', prompt, '--output-format', 'json', '--mode', { read: 'plan', standard: 'accept-edits', full: 'auto' }[mode]]
+      : ['-p', 'Follow the instructions above.', '--output-format', 'json', '--approval-mode', { read: 'plan', standard: 'auto_edit', full: 'yolo' }[mode]];
+    if (resume) args.push(agy ? '--conversation' : '--resume', resume);
+    if (agy) for (const d of dirs) args.push('--add-dir', d);
+    else if (dirs.length) args.push('--include-directories', dirs.join(','));
+    if (agy && mode === 'full') args.push('--sandbox');
+    if (model) args.push(agy ? '--model' : '-m', model);
+    const res = await run(file, args, { cwd: workdir, input: agy ? undefined : prompt, timeoutMs, signal });
     const parsed = parseGemini(res.out);
-    const via = agent === 'google' ? 'Gemini CLI' : 'Qwen Code';
+    const via = agent === 'google' ? (agy ? 'Antigravity CLI' : 'Gemini CLI') : 'Qwen Code';
     if (res.code === 0 && !parsed.error && parsed.text) return { ok: true, text: parsed.text, via, sessionId: parsed.sessionId || resume || null };
     return { ok: false, error: classify(agent, res, `${parsed.error || ''}\n${parsed.text}`), partial: parsed.text || null, resumeFailed: Boolean(resume) };
   }
@@ -425,7 +430,14 @@ async function toolStatus(agent, bin) {
     const r = await run(file, ['login', 'status'], { timeoutMs: 15000 });
     return { installed: true, signedIn: r.code === 0 && !/not logged/i.test(r.out + r.err), path: file };
   }
-  if (agent === 'google') return { installed: true, signedIn: geminiSignedIn(), path: file };
+  if (agent === 'google') {
+    if (!isAntigravity(file)) return { installed: true, signedIn: geminiSignedIn(), path: file };
+    // /usage is handled by the CLI, without asking a model to run tools.
+    const r = await run(file, ['-p', '/usage', '--output-format', 'json'], { timeoutMs: 15000 });
+    const parsed = parseGemini(r.out);
+    const auth = /authentication required|not signed in|not logged in|unauthori[sz]ed|sign.?in|not eligible/i.test(`${r.err} ${parsed.error || ''}`);
+    return { installed: true, signedIn: auth ? false : r.code === 0 && !parsed.error ? true : null, path: file };
+  }
   if (agent === 'xai') return { installed: true, signedIn: grokSignedIn(), path: file };
   if (agent === 'qwen') return { installed: true, signedIn: qwenSignedIn(), path: file };
   // Vibe keeps a browser sign-in in the OS keyring, which can't be checked
@@ -487,6 +499,7 @@ async function logout(agent, bin) {
     return r.code === 0 ? { ok: true } : { ok: false, message: (r.err || r.out || `exit ${r.code}`).trim().split('\n').slice(-1)[0] };
   }
   if (agent === 'google') {
+    if (file && isAntigravity(file)) return { ok: false, message: 'Open Antigravity with Sign in and use /logout to sign out of its shared account session.' };
     // Gemini CLI has no sign-out command; its cached Google sign-in lives in
     // ~/.gemini/oauth_creds.json. Removing that file is how it signs out.
     const f = path.join(os.homedir(), '.gemini', 'oauth_creds.json');
@@ -523,4 +536,4 @@ async function install(list, { fetchImpl } = {}) {
   return r.ok ? { ...r, agents: plan.agents, plan: plan.plan } : r;
 }
 
-module.exports = { runAgent, status, login, logout, install, openTerminal, findBinary, isLimit, resetHint, parseClaude, parseGemini, parseCodexEvents, parseGrok, parseVibe, lastJson, run, searchDirs, BIN, CLI_AGENTS, NPM_PACKAGE, execFile };
+module.exports = { runAgent, status, login, logout, install, openTerminal, findBinary, isAntigravity, isLimit, resetHint, parseClaude, parseGemini, parseCodexEvents, parseGrok, parseVibe, lastJson, run, searchDirs, BIN, CLI_AGENTS, NPM_PACKAGE, execFile };

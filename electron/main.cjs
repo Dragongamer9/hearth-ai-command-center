@@ -423,10 +423,11 @@ function registerIpc() {
   handle('history:resume', (key) => {
     const c = history.get(String(key));
     if (!c) return { ok: false, message: 'Not found.' };
-    const args = bridge.resumeArgs(c.provider, c.sessionId);
+    let args = bridge.resumeArgs(c.provider, c.sessionId);
     if (!c.resumable || !args) return { ok: false, message: 'This conversation can\'t be resumed in a CLI (imported from a web app, or an API chat).' };
     const file = agents.findBinary(c.provider, readSettings().bins[c.provider]);
     if (!file) return { ok: false, message: `${agents.BIN[c.provider]} is not installed.` };
+    if (c.provider === 'google' && agents.isAntigravity(file) && args.length) args = ['--conversation', c.sessionId];
     const cwd = c.cwd && fs.existsSync(c.cwd) ? c.cwd : os.homedir();
     return { ...agents.openTerminal(file, args, cwd), command: `${agents.BIN[c.provider]} ${args.join(' ')}`, cwd };
   });

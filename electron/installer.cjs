@@ -24,13 +24,12 @@ const OLLAMA_INSTALLER = 'https://ollama.com/install.sh';
 const NPM_PACKAGE = {
   anthropic: '@anthropic-ai/claude-code',
   openai: '@openai/codex',
-  google: '@google/gemini-cli',
   xai: '@xai-official/grok',
   qwen: '@qwen-code/qwen-code',
   freebuff: 'freebuff',
 };
 const UV_TOOL = { mistral: 'mistral-vibe' };
-const LABEL = { anthropic: 'Claude Code', openai: 'Codex CLI', google: 'Gemini CLI', xai: 'Grok Build CLI', qwen: 'Qwen Code', freebuff: 'FreeBuff', mistral: 'Mistral Vibe', ollama: 'Ollama' };
+const LABEL = { anthropic: 'Claude Code', openai: 'Codex CLI', google: 'Antigravity CLI', xai: 'Grok Build CLI', qwen: 'Qwen Code', freebuff: 'FreeBuff', mistral: 'Mistral Vibe', ollama: 'Ollama' };
 // Install order for "Install all": CLI tools first, Ollama (password) last.
 const ORDER = ['anthropic', 'openai', 'google', 'xai', 'qwen', 'freebuff', 'mistral', 'ollama'];
 
@@ -145,6 +144,10 @@ async function prepare({ agents, dirs, versionOf, fetchImpl, arch }) {
       steps.push('npm', a, npm, NPM_PACKAGE[a], LABEL[a]);
       plan.push(LABEL[a]);
     }
+  }
+  if (want.includes('google')) {
+    steps.push('antigravity');
+    plan.push(LABEL.google);
   }
   if (want.includes('mistral')) {
     if (!findIn(dirs, 'uv')) {
@@ -262,6 +265,15 @@ while [ $# -gt 0 ]; do
       else
         echo "npm could not install $pkg. The lines above say why (often no internet connection)."
         done_fail "$label" "$agent"
+      fi
+      ;;
+    antigravity)
+      mark google running
+      say "Antigravity CLI: Google's official installer"
+      if fetch "https://antigravity.google/cli/install.sh" "$TMP/agy-install.sh" && bash "$TMP/agy-install.sh" --dir "$PREFIX/bin"; then
+        done_ok "Antigravity CLI" google
+      else
+        done_fail "Antigravity CLI" google
       fi
       ;;
     uv)

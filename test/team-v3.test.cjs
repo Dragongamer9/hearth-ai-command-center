@@ -72,7 +72,7 @@ test('OLLAMA_HOST pointing off this machine is ignored', () => {
 test('installers only use the fixed official npm packages', () => {
   const agents = require('../electron/agents.cjs');
   assert.deepStrictEqual(agents.NPM_PACKAGE, {
-    anthropic: '@anthropic-ai/claude-code', openai: '@openai/codex', google: '@google/gemini-cli', xai: '@xai-official/grok', qwen: '@qwen-code/qwen-code', freebuff: 'freebuff',
+    anthropic: '@anthropic-ai/claude-code', openai: '@openai/codex', xai: '@xai-official/grok', qwen: '@qwen-code/qwen-code', freebuff: 'freebuff',
   });
 });
 
@@ -87,10 +87,10 @@ test('disconnect uses each tool\'s own sign-out; Gemini forgets only its Google 
     fs.mkdirSync(path.join(home, '.gemini'));
     fs.writeFileSync(path.join(home, '.gemini', 'oauth_creds.json'), '{}');
     fs.writeFileSync(path.join(home, '.gemini', 'settings.json'), '{"keep":true}');
-    assert.deepStrictEqual(await agents.logout('google'), { ok: true });
+    assert.deepStrictEqual(await agents.logout('google', path.join(FIX, 'gemini')), { ok: true });
     assert.ok(!fs.existsSync(path.join(home, '.gemini', 'oauth_creds.json')));
     assert.ok(fs.existsSync(path.join(home, '.gemini', 'settings.json')), 'other Gemini settings untouched');
-    assert.equal((await agents.logout('google')).ok, true);
+    assert.equal((await agents.logout('google', path.join(FIX, 'gemini'))).ok, true);
     assert.equal((await agents.logout('freebuff')).ok, false);
   } finally {
     process.env.HOME = old;

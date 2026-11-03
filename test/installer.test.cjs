@@ -10,6 +10,7 @@ const { spawnSync, execFileSync } = require('node:child_process');
 // Hermetic home: everything the installer touches lives under a temp HOME.
 const HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'hearth-inst-home-'));
 process.env.HOME = HOME;
+process.env.PATH = '/usr/bin:/bin';
 delete process.env.XDG_DATA_HOME;
 const installer = require('../electron/installer.cjs');
 const agents = require('../electron/agents.cjs');
@@ -83,13 +84,13 @@ test('old or missing Node.js: the official LTS is downloaded first and its npm i
   const bin = path.join(scratch(), 'bin');
   exe(path.join(bin, 'node'), 'echo v16.20.0');
   exe(path.join(bin, 'npm'), 'exit 0');
-  const plan = await installer.prepare({ agents: ['google'], dirs: [bin], versionOf: async () => 'v16.20.0', fetchImpl: fakeFetch(NODE_ROUTES), arch: 'x64' });
+  const plan = await installer.prepare({ agents: ['qwen'], dirs: [bin], versionOf: async () => 'v16.20.0', fetchImpl: fakeFetch(NODE_ROUTES), arch: 'x64' });
   assert.equal(plan.ok, true);
   assert.deepStrictEqual(plan.args.slice(2), [
     'node', 'v24.11.1', SUMS_HASH, 'https://nodejs.org/dist/v24.11.1/node-v24.11.1-linux-x64.tar.gz',
-    'npm', 'google', path.join(installer.nodeBin(), 'npm'), '@google/gemini-cli', 'Gemini CLI',
+    'npm', 'qwen', path.join(installer.nodeBin(), 'npm'), '@qwen-code/qwen-code', 'Qwen Code',
   ]);
-  const offline = await installer.prepare({ agents: ['google'], dirs: [], versionOf: async () => '', fetchImpl: fakeFetch({}), arch: 'x64' });
+  const offline = await installer.prepare({ agents: ['qwen'], dirs: [], versionOf: async () => '', fetchImpl: fakeFetch({}), arch: 'x64' });
   assert.equal(offline.ok, false);
   assert.match(offline.message, /nodejs\.org/);
 });
@@ -184,4 +185,10 @@ test('status reports a failed install while the tool is still missing', async ()
   assert.equal(st.installed, false);
   assert.equal(st.install, 'failed');
   assert.equal(installer.readRun('copilot'), null);
+});
+
+test('Antigravity uses the official native installer without Node', async () => {
+  const plan = await installer.prepare({ agents: ['google'], dirs: [], versionOf: async () => { throw new Error('must not need Node'); } });
+  assert.equal(plan.ok, true);
+  assert.deepStrictEqual(plan.args.slice(2), ['antigravity']);
 });
