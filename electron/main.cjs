@@ -26,6 +26,7 @@ const { LIVE_PROVIDERS } = require('./validate.cjs');
 // Hearth OS versions (the owner picks every number). It only shows which Hearth
 // OS this computer runs, read from /etc/os-release.
 const API_ONLY = ['perplexity', 'deepseek'];
+const TEXT_SIZES = [100, 115, 130, 150];
 const THEMES = ['hearth', 'dark', 'light', 'system'];
 
 if (!app.requestSingleInstanceLock()) {
@@ -66,6 +67,7 @@ function readSettings() {
     // Lead handles GitHub (pull, combine, push branches). Off until the owner turns it on.
     leadGitHub: s.leadGitHub === true,
     theme: THEMES.includes(s.theme) ? s.theme : 'hearth',
+    textSize: TEXT_SIZES.includes(s.textSize) ? s.textSize : 100,
   };
 }
 function useProject(dir) {
@@ -139,6 +141,10 @@ function createWindow() {
     },
   });
 
+  // Reapply the saved choice on every load, including renderer recovery.
+  mainWindow.webContents.on('did-finish-load', () => {
+    mainWindow.webContents.setZoomFactor(readSettings().textSize / 100);
+  });
   mainWindow.once('ready-to-show', () => mainWindow.show());
   mainWindow.webContents.on('will-navigate', (e) => e.preventDefault());
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
@@ -275,7 +281,12 @@ function registerIpc() {
     if ('leadActions' in patch) s.leadActions = patch.leadActions === true;
     if ('leadGitHub' in patch) s.leadGitHub = patch.leadGitHub === true;
     if ('theme' in patch && THEMES.includes(patch.theme)) s.theme = patch.theme;
+    if ('textSize' in patch) {
+      if (!TEXT_SIZES.includes(patch.textSize)) throw new Error('Invalid text size');
+      s.textSize = patch.textSize;
+    }
     writeSettings(s);
+    mainWindow.webContents.setZoomFactor(s.textSize / 100);
     return s;
   });
   handle('settings:addDir', async () => {

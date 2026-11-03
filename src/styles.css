@@ -334,3 +334,26 @@ tr.open td { background: var(--accent-soft); }
 .att-pending { flex-wrap: wrap; gap: 6px; }
 .lightbox { display: flex; align-items: center; justify-content: center; cursor: zoom-out; }
 .lightbox img { max-width: 92vw; max-height: 92vh; border-radius: 6px; }
+
+/* Electron zoom reduces the CSS viewport: keep every view reachable. */
+.shell { grid-template-columns: 224px minmax(0, 1fr); }
+.side { min-height: 0; overflow-y: auto; }
+.main, .card, .grid > *, .roster-wrap > * { min-width: 0; }
+.card, .msg, .task { overflow-wrap: anywhere; }
+.board { overflow-x: auto; padding-bottom: 10px; }
+.chat { min-height: 420px; }
+.chat-log { min-height: 80px; }
+.chat-input, .chat-top { flex-shrink: 0; }
+.top { flex-wrap: wrap; }
+#text-size { margin: 8px 0 0 12px; }
+@media (max-width: 1100px) {
+  .two, .three, .roster-wrap, .detail { grid-template-columns: minmax(0, 1fr); }
+  .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 760px) {
+  .shell { grid-template-columns: 180px minmax(0, 1fr); }
+  .main { padding: 14px 12px 28px; }
+  .two-in, .quick { grid-template-columns: minmax(0, 1fr); }
+  .kv { grid-template-columns: minmax(0, 1fr); }
+  .msg { max-width: 95%; }
+}

@@ -50,3 +50,15 @@ test('a failed key Test sets the shared sign-in hold', () => {
   assert.match(t, /authProblem\(test\.result\?\.error, \{ method: 'api' \}\)/);
   assert.match(t, /setHold\(p, problem\)/);
 });
+
+test('text size is opt-in, validated, persisted and restored on renderer load', () => {
+  assert.match(main, /const TEXT_SIZES = \[100, 115, 130, 150\]/);
+  assert.match(main, /textSize: TEXT_SIZES.includes\(s.textSize\) \? s.textSize : 100/);
+  assert.match(main, /on\('did-finish-load', \(\) => \{\s*mainWindow.webContents.setZoomFactor\(readSettings\(\).textSize \/ 100\)/);
+  const setter = between(main, "handle('settings:set',", "handle('settings:addDir'");
+  assert.match(setter, /if \(!TEXT_SIZES.includes\(patch.textSize\)\) throw/);
+  assert.ok(setter.indexOf('writeSettings(s)') < setter.indexOf('setZoomFactor'));
+  assert.match(ui, /e.ctrlKey && !e.altKey && !e.metaKey/);
+  assert.match(ui, /e.preventDefault\(\);\s*changeTextSize/);
+  assert.match(ui, /textSizeChange = textSizeChange.then/);
+});
