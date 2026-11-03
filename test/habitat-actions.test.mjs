@@ -285,9 +285,25 @@ test('look reports live shared-area and room positions for every teammate', () =
   const result = habitatSection(s, { agent: 'anthropic', ids: IDS, names: NAMES, now: NOW, presence });
   assert.match(result.text, /Claude: break room; Gemini: garden courtyard; ChatGPT: hall; Grok: Grok’s room/);
   assert.equal(result.store.life.look.anthropic, undefined);
-  assert.match(describeRoom(s, 'anthropic', { ids: IDS, names: NAMES }), /ChatGPT: location unavailable/);
+  assert.match(describeRoom(s, 'anthropic', { ids: IDS, names: NAMES }), /ChatGPT: ChatGPT’s room/);
   assert.equal(actorLocation(world, world.desks[0].seat), 'shared workroom');
   assert.equal(actorLocation(world, null), 'location unavailable');
   // A walker's current tile wins over its intended destination.
   assert.equal(actorLocation(world, { ...world.desks[0].seat, visit: { to: world.kitchen.spots[0] } }), 'shared workroom');
+});
+
+test('look uses saved visits without a canvas, expires them, and respects work/status', () => {
+  const s = run(base().s, 'HABITAT: go break room\nHABITAT: look').store;
+  const opts = { agent: 'anthropic', ids: IDS, names: NAMES, agents: AGENTS, now: NOW + 1000 };
+  assert.match(habitatSection(s, opts).text, /Claude: break room/);
+  assert.match(describeRoom(s, 'anthropic', { ...opts, now: NOW + 45000 }), /Claude: Claude’s room/);
+  assert.match(describeRoom(s, 'anthropic', { ...opts, agents: [idle('anthropic', { task: { id: 't' } })] }), /Claude: shared workroom/);
+  assert.match(describeRoom(s, 'anthropic', { ...opts, agents: [idle('anthropic', { status: 'out' })] }), /Claude: Claude’s room/);
+  const coffee = run(s, 'HABITAT: coffee with @grok').store;
+  assert.match(describeRoom(coffee, 'anthropic', opts), /Grok: break room/);
+  const world = buildWorld(IDS);
+  for (const room of world.rooms) {
+    assert.deepEqual(actorLocation(world, { x: room.x0, y: room.y0 }), { room: room.id });
+    assert.deepEqual(actorLocation(world, { x: room.x0 + room.w - 1, y: room.y0 + room.h - 1 }), { room: room.id });
+  }
 });

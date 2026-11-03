@@ -360,7 +360,7 @@ export function actorLocation(world, actor) {
   const inside = (r) => r && x >= r.x0 && x < r.x0 + r.w && y >= r.y0 && y < r.y0 + r.h;
   if (inside(world.kitchen)) return 'break room';
   if (inside(world.courtyard)) return 'garden courtyard';
-  const room = world.rooms.find((r) => x >= r.x0 + 1 && x < r.x0 + 7 && y >= r.y0 && y < r.y0 + 4);
+  const room = world.rooms.find((r) => inside(r));
   if (room) return { room: room.id };
   if (x >= world.hall.x0 && y >= 5 && y < 15) return 'hall';
   return 'shared workroom';

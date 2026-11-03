@@ -826,7 +826,7 @@ function habitatLines(agent, d, m) {
 // Every chat prompt gets the AI's one-line Habitat memory; full prompts also the rules.
 function habitatPrompt(agent, resumed) {
   const snap = habitatSnapshot();
-  const r = habitatSection(state.habitat, { agent, ids: snap.agents.map((a) => a.id), names: NAMES, local: agent === 'ollama', full: !resumed, presence: habitatPresence() });
+  const r = habitatSection(state.habitat, { agent, ids: snap.agents.map((a) => a.id), names: NAMES, local: agent === 'ollama', full: !resumed, agents: snap.agents, presence: habitatPresence() });
   if (r.changed) state.habitat = r.store;
   return r.text;
 }

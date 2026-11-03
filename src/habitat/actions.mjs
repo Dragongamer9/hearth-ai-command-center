@@ -3,7 +3,7 @@
 // (no approval card): it only ever changes the AI's own room, its board note,
 // its journal and a small, capped garden watering. Every change is audited by
 // the caller and can be undone by the owner (the last one per AI).
-import { buildWorld, roomOf } from './world.mjs';
+import { buildWorld, roomOf, behaviourOf } from './world.mjs';
 import { migrateStore, applyUnlocks, layoutOf, canPlace, roomLocal, gardenState, cleanText, addJournal, blankAi, dayKey, PROP_POOL, RUG_STYLES, RELIEF_CAP, ACHIEVEMENTS, GARDEN_STAGES } from './life.mjs';
 import { aliasOf } from '../registry.mjs';
 
@@ -301,8 +301,36 @@ export function habitatRules({ local = false } = {}) {
   ].join('\n');
 }
 
+// Saved actions describe visits even when the canvas is closed. Visits expire
+// on the same schedule as the scene; current work/status always takes priority.
+export function storedPresence(store, { ids = [], agents = [], now = Date.now() } = {}) {
+  const s = migrateStore(store);
+  return Object.fromEntries(ids.map((id) => {
+    const agent = agents.find((a) => a.id === id);
+    const mode = agent ? behaviourOf(agent).mode : 'idle';
+    let place = { room: id };
+    if (mode === 'desk') place = 'shared workroom';
+    if (mode === 'idle') {
+      for (const e of s.life.events) {
+        if (e.at > now) continue;
+        const mine = e.who === id;
+        if (e.kind === 'go' && mine) {
+          place = now < e.at + 45000
+            ? ({ desk: 'shared workroom', room: { room: id }, kitchen: 'break room', garden: 'garden courtyard', hall: 'hall' }[e.place] || place)
+            : { room: id };
+        } else if (e.kind === 'coffee' && (mine || e.with === id)) {
+          place = now < e.at + 40000 ? 'break room' : { room: id };
+        } else if (e.kind === 'water' && mine) {
+          place = now < e.at + 15000 ? 'garden courtyard' : { room: id };
+        }
+      }
+    }
+    return [id, place];
+  }));
+}
+
 // The full description an AI gets on the turn after HABITAT: look.
-export function describeRoom(store, agent, { ids = [], names = {}, now = Date.now(), presence = {} } = {}) {
+export function describeRoom(store, agent, { ids = [], names = {}, now = Date.now(), presence = {}, agents = [] } = {}) {
   const { s, world } = worldFor(migrateStore(store), ids);
   const room = roomOf(world, agent);
   if (!room) return 'HABITAT LOOK: you have no room in the Habitat right now.';
@@ -315,11 +343,12 @@ export function describeRoom(store, agent, { ids = [], names = {}, now = Date.no
   const g = gardenState(s, world.courtyard?.beds.length);
   const grown = g.stages.filter((x) => x >= GARDEN_STAGES).length;
   const medals = ACHIEVEMENTS.filter((x) => a.ach?.[x.id]).map((x) => x.label);
+  const locations = { ...storedPresence(s, { ids, agents, now }), ...presence };
   const notes = Object.entries(s.board).map(([id, n]) => `${nameOf(names, id)}: '${n.text}'`);
   const journal = (s.journal[agent] || []).slice(-10);
   return [
     'HABITAT LOOK (you asked with HABITAT: look):',
-    `- AI locations (current scene): ${ids.map((id) => { const p = presence[id]; return `${nameOf(names, id)}: ${p?.room ? `${nameOf(names, p.room)}’s room` : typeof p === 'string' ? p : 'location unavailable'}`; }).join('; ') || 'unavailable'}.`,
+    `- AI locations: ${ids.map((id) => { const p = locations[id]; return `${nameOf(names, id)}: ${p?.room ? `${nameOf(names, p.room)}’s room` : typeof p === 'string' ? p : 'location unavailable'}`; }).join('; ') || 'unavailable'}.`,
     '- Your room is 6x4 tiles: x 0-5 left to right, y 0-3 from the back wall. The door is at 2,3 and must stay free.',
     `- Built-in furniture (fixed): ${room.props.map((p) => `${p.kind} ${loc(p)}`).join('; ') || 'none'}; bed ${room.bed.map(loc).join(' and ')}; rug ${Math.min(...xs)}-${Math.max(...xs)},${Math.min(...ys)}-${Math.max(...ys)} (${RUG_STYLES[a.rug ?? room.rug.style]}), its middle ${loc(room.rugSpot)} stays free.`,
     `- Your props: ${(a.props || []).map((p) => `${p.kind} ${p.x},${p.y}${p.owner ? ' (placed by the Owner: fixed)' : ''}`).join('; ') || 'none placed'}.`,
@@ -335,13 +364,13 @@ export function describeRoom(store, agent, { ids = [], names = {}, now = Date.no
 
 // What goes at the end of an AI's team chat prompt: the rules (full prompts
 // only), its memory line, and the look description if it asked for one.
-export function habitatSection(store, { agent, ids = [], names = {}, now = Date.now(), local = false, full = true, presence = {} } = {}) {
+export function habitatSection(store, { agent, ids = [], names = {}, now = Date.now(), local = false, full = true, presence = {}, agents = [] } = {}) {
   if (!ids.includes(agent)) return { text: '', store, changed: false };
   const s = migrateStore(store);
   const parts = ['', full || local ? habitatRules({ local }) : '', habitatSummary(s, agent, now)];
   let changed = false;
   if (s.life.look[agent]) {
-    parts.push(describeRoom(s, agent, { ids, names, now, presence }));
+    parts.push(describeRoom(s, agent, { ids, names, now, presence, agents }));
     delete s.life.look[agent];
     s.rev += 1;
     changed = true;
