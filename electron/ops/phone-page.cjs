@@ -21,7 +21,7 @@ input.code{font-size:28px;letter-spacing:8px;width:100%;text-align:center;backgr
 <div id="note" class="note" hidden></div>
 <nav id="tabs"><button data-tab="wait" class="on">Waiting</button><button data-tab="board">Board</button><button data-tab="chat">Chat</button></nav>
 <main id="main"></main>
-<div id="bar" hidden><input id="msg" placeholder="Message the team"><button class="btn p" id="send">Send</button></div>
+<div id="bar" hidden><input id="msg" placeholder="Message the team" enterkeyhint="send" autocomplete="off"><button class="btn p" id="send">Send</button></div>
 <script>
 const esc=(s)=>String(s==null?'':s).replace(/[&<>"']/g,(c)=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let tab='wait',snap=null,seen=null;
@@ -30,7 +30,10 @@ function pairView(msg){document.getElementById('tabs').hidden=true;document.getE
 document.getElementById('main').innerHTML='<div class="card"><p>Enter the 6-digit code shown in the app (Project page, Your phone).</p><input class="code" id="code" inputmode="numeric" maxlength="6" autocomplete="one-time-code"><div class="row"><input id="name" placeholder="Name for this phone" style="flex:1;padding:8px;background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:6px"><button class="btn p" id="pair">Pair</button></div><p class="k">'+esc(msg||'')+'</p></div>';
 document.getElementById('pair').onclick=async()=>{const r=await api('/api/pair',{code:document.getElementById('code').value,name:document.getElementById('name').value});if(r.ok)load();else pairView(r.message);};}
 const n=(id)=>snap&&snap.names&&snap.names[id]||id;
-function render(){if(!snap)return;document.getElementById('tabs').hidden=false;document.getElementById('bar').hidden=tab!=='chat';document.getElementById('dev').textContent=(snap.project||'')+' · '+(snap.device||'');
+let lastHtml='';
+const typing=()=>{const i=document.getElementById('msg');return document.activeElement===i||(i&&i.value.trim()!=='');};
+const atBottom=()=>window.innerHeight+window.scrollY>=document.body.scrollHeight-80;
+function render(force){if(!snap)return;document.getElementById('tabs').hidden=false;document.getElementById('bar').hidden=tab!=='chat';document.getElementById('dev').textContent=(snap.project||'')+' · '+(snap.device||'');
 document.querySelectorAll('#tabs button').forEach((b)=>b.classList.toggle('on',b.dataset.tab===tab));
 const w=snap.waiting||{permissions:[],approvals:[],cards:[]};let h='';
 if(tab==='wait'){h+='<h3>Permission requests</h3>'+(w.permissions.map((p)=>'<div class="card"><div class="k">'+esc(n(p.agent))+' · R-'+esc(p.id)+' · '+esc(p.kind)+'</div>'+esc(p.what)+(p.why?'<div class="k">Why: '+esc(p.why)+'</div>':'')+'<div class="row">'+(p.computerOnly?'<span class="k">Approve this on the computer.</span>':'<button class="btn p" data-a="decide" data-id="'+esc(p.id)+'" data-v="approved">Approve</button>')+'<button class="btn d" data-a="decide" data-id="'+esc(p.id)+'" data-v="denied">Deny</button></div></div>').join('')||'<div class="empty">None.</div>');
@@ -38,15 +41,19 @@ h+='<h3>Tasks for your approval</h3>'+(w.approvals.map((t)=>'<div class="card"><
 h+='<h3>Questions for you</h3>'+(w.cards.map((c)=>'<div class="card">'+esc(c.text)+'<div class="row">'+c.options.map((o)=>'<button class="btn'+(o.primary?' p':'')+'" data-a="card" data-id="'+esc(c.id)+'" data-v="'+esc(o.value)+'">'+esc(o.label)+'</button>').join('')+'</div></div>').join('')||'<div class="empty">None.</div>');}
 if(tab==='board'){h+=(snap.board||[]).map((c)=>'<h3>'+esc(c.title)+' ('+c.tasks.length+')</h3>'+c.tasks.map((t)=>'<div class="card"><div class="k">T-'+esc(t.id)+' · '+esc(n(t.assignee))+(t.ci?' · CI '+esc(t.ci):'')+'</div>'+esc(t.title)+(t.canStart?'<div class="row"><button class="btn p" data-a="start" data-id="'+esc(t.id)+'">'+esc(t.canStart)+'</button></div>':'')+'</div>').join('')).join('');}
 if(tab==='chat'){h+=(snap.chat||[]).map((m)=>'<div class="msg"><b>'+esc(n(m.who))+'</b> <span class="k">'+esc((m.at||'').slice(11,16))+'</span><div>'+esc(m.text)+'</div></div>').join('')||'<div class="empty">No messages.</div>';}
-document.getElementById('main').innerHTML=h;if(tab==='chat')window.scrollTo(0,document.body.scrollHeight);}
+if(!force&&h===lastHtml)return;const stick=tab==='chat'&&(force||atBottom());lastHtml=h;document.getElementById('main').innerHTML=h;if(stick&&!typing())window.scrollTo(0,document.body.scrollHeight);}
 function notify(){const w=snap.waiting||{};const ids=[...(w.permissions||[]).map((p)=>'R'+p.id),...(w.approvals||[]).map((t)=>'T'+t.id),...(w.cards||[]).map((c)=>'C'+c.id)];
 const fresh=seen?ids.filter((i)=>!seen.has(i)):[];seen=new Set(ids);document.title=(ids.length?'('+ids.length+') ':'')+'Hearth AI';
 const el=document.getElementById('note');if(fresh.length){el.hidden=false;el.textContent=fresh.length+' new item'+(fresh.length>1?'s':'')+' waiting for you';if(navigator.vibrate)navigator.vibrate(200);
 try{if(window.Notification&&Notification.permission==='granted')new Notification('Hearth AI',{body:el.textContent});}catch(e){}setTimeout(()=>{el.hidden=true;},8000);}}
-async function load(){const r=await api('/api/state');if(r.pair)return pairView('');if(!r.ok)return;snap=r;notify();render();}
-document.addEventListener('click',async(e)=>{const t=e.target.closest('[data-tab]');if(t){tab=t.dataset.tab;return render();}
+async function load(){const r=await api('/api/state');if(r.pair)return pairView('');if(!r.ok)return;snap=r;notify();if(tab==='chat'&&typing())return;render();}
+document.addEventListener('click',async(e)=>{const t=e.target.closest('[data-tab]');if(t){tab=t.dataset.tab;return render(true);}
 const b=e.target.closest('[data-a]');if(!b)return;b.disabled=true;const r=await api('/api/action',{type:b.dataset.a,id:b.dataset.id,value:b.dataset.v});b.textContent=r.ok?'Sent':'Failed';setTimeout(load,1200);});
-document.getElementById('send').onclick=async()=>{const i=document.getElementById('msg');if(!i.value.trim())return;await api('/api/action',{type:'chat',value:i.value});i.value='';setTimeout(load,1200);};
+async function sendMsg(){const i=document.getElementById('msg');const v=i.value;if(!v.trim())return;i.value='';i.focus();const r=await api('/api/action',{type:'chat',value:v});if(!r.ok){i.value=v;return;}setTimeout(async()=>{await load();render(true);},1200);}
+document.getElementById('send').addEventListener('pointerdown',(e)=>e.preventDefault());
+document.getElementById('send').onclick=sendMsg;
+document.getElementById('msg').addEventListener('keydown',(e)=>{if(e.key==='Enter'&&!e.isComposing){e.preventDefault();sendMsg();}});
+document.getElementById('msg').addEventListener('blur',()=>setTimeout(()=>{if(!typing())render();},300));
 load();setInterval(load,5000);
 </script></body></html>`;
 
