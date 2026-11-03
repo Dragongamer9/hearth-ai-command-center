@@ -12,7 +12,7 @@
     "build:web": "vite build",
     "start": "vite build && electron .",
     "dist:linux": "npm run check && npm test && vite build && electron-builder --linux AppImage --x64 --publish never",
-    "test": "node --test test/*.test.*",
+    "test": "node --test \"test/*.test.*\"",
     "check": "for f in electron/*.cjs; do node --check $f || exit 1; done",
     "dist:deb": "npm run check && npm test && vite build && electron-builder --linux deb --x64 --publish never"
   },
