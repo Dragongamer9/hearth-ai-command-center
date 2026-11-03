@@ -30,7 +30,7 @@ function stub(opts) {
       { id: 'QC0703', title: 'Only added, never started: drive icons', description: '', assignee: 'anthropic', reviewer: 'google', action: 'code', stage: 'intake', notes: [], runs: [], policy: pol(), createdAt: ago(45), updatedAt: ago(45) },
     );
     window.__runImpl = (o) => {
-      if (String(o.title || '').startsWith('Review:')) return Promise.resolve({ ok: true, text: 'Checked the branch: the panel renders and the tests pass.\nAPPROVE: T-RV0700 tests pass', via: 'Antigravity CLI' });
+      if (String(o.title || '').startsWith('Review:')) return Promise.resolve({ ok: true, text: 'Checked the branch: the panel renders and the tests pass.\nAPPROVE: T-RV0700 @c0ffee1 tests pass', via: 'Antigravity CLI' });
       if (o.agent === 'perplexity') return Promise.resolve({ ok: false, error: { kind: 'auth', message: 'invalid api key' } });
       if (o.taskId === 'QA0701') return new Promise(() => {}); // Claude stays busy on this one
       return new Promise((r) => setTimeout(() => r({ ok: true, text: 'Plan: I take the layout; Gemini reviews.', via: 'Claude Code' }), 4500));
