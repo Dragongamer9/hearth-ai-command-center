@@ -33,24 +33,16 @@ test('status of fake signed-in CLIs', async () => {
   assert.equal((await agents.status('openai', path.join(FIX, 'codex'))).signedIn, true);
 });
 
-test('shared workspace: Claude runs out, ChatGPT continues on the same branch, nothing lost', async (t) => {
+test('shared workspace: Claude runs out, ChatGPT continues on the same branch, nothing lost', async () => {
   // Hermetic: ignore this machine's global git identity.
   const oldGlobal = process.env.GIT_CONFIG_GLOBAL;
   process.env.GIT_CONFIG_GLOBAL = '/dev/null';
-  t.after(() => { if (oldGlobal === undefined) delete process.env.GIT_CONFIG_GLOBAL; else process.env.GIT_CONFIG_GLOBAL = oldGlobal; });
-  // The Command Center can supply commit identity through the environment too.
-  for (const key of ['GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL']) {
-    const old = process.env[key];
-    delete process.env[key];
-    t.after(() => { if (old === undefined) delete process.env[key]; else process.env[key] = old; });
-  }
+  test.after?.(() => { if (oldGlobal === undefined) delete process.env.GIT_CONFIG_GLOBAL; else process.env.GIT_CONFIG_GLOBAL = oldGlobal; });
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hearth-test-'));
   const project = path.join(tmp, 'project');
   fs.mkdirSync(project);
   const g = (...a) => execFileSync('git', a, { cwd: project });
   g('init', '-q');
-  g('config', 'user.name', 'Dragongamer9');
-  g('config', 'user.email', 'Dragongamer9@users.noreply.github.com');
   fs.writeFileSync(path.join(project, 'README.md'), 'hi\n');
   g('add', '.');
   g('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'init');

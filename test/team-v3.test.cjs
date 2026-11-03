@@ -87,10 +87,10 @@ test('disconnect uses each tool\'s own sign-out; Gemini forgets only its Google 
     fs.mkdirSync(path.join(home, '.gemini'));
     fs.writeFileSync(path.join(home, '.gemini', 'oauth_creds.json'), '{}');
     fs.writeFileSync(path.join(home, '.gemini', 'settings.json'), '{"keep":true}');
-    assert.deepStrictEqual(await agents.logout('google', path.join(FIX, 'gemini')), { ok: true });
+    assert.deepStrictEqual(await agents.logout('google'), { ok: true });
     assert.ok(!fs.existsSync(path.join(home, '.gemini', 'oauth_creds.json')));
     assert.ok(fs.existsSync(path.join(home, '.gemini', 'settings.json')), 'other Gemini settings untouched');
-    assert.equal((await agents.logout('google', path.join(FIX, 'gemini'))).ok, true);
+    assert.equal((await agents.logout('google')).ok, true);
     assert.equal((await agents.logout('freebuff')).ok, false);
   } finally {
     process.env.HOME = old;
