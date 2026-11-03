@@ -54,7 +54,7 @@ function ensure() {
     cam: { target: new THREE.Vector3(0, 0, 1), dist: 40, theta: 0.3, phi: 0.95 }, goal: null, frames: 0,
     fxMap: new Map(), icons: new Map(), particles: null, weather: '', notice: '', lighter: false,
     walk: { on: false, pos: { x: 1, y: 11 }, yaw: Math.PI / 2, pitch: -0.12, sit: null, mugUntil: 0, camPos: null, prev: {}, moving: false, faceYaw: 0 },
-    keys: new Set(), touch: { move: null, look: null }, notice3d: new Map(), lastScreen: 0, prefs: normPrefs(null), opts: null,
+    keys: new Set(), tapped: new Set(), touch: { move: null, look: null }, notice3d: new Map(), lastScreen: 0, prefs: normPrefs(null), opts: null,
   };
   return V;
 }
@@ -515,7 +515,7 @@ function bindPointer() {
   window.addEventListener('keydown', (e) => {
     if (!V?.walk.on || !V.gl?.canvas.isConnected) return;
     if (e.target.closest?.('input, textarea, select')) return;
-    if (KEYS[e.code]) { V.keys.add(e.code); e.preventDefault(); }
+    if (KEYS[e.code]) { V.keys.add(e.code); V.tapped.add(e.code); e.preventDefault(); }
   });
   window.addEventListener('keyup', (e) => { V?.keys.delete(e.code); });
   window.addEventListener('blur', () => V?.keys.clear());
@@ -629,7 +629,9 @@ function walkTargets(eng) {
 function walkStep(eng, t, dt, reduced) {
   const w = V.walk; const world = eng.world;
   const pad = navigator.getGamepads?.().find((g) => g && g.connected) || null;
-  const inp = inputFrom(V.keys, pad, V.touch);
+  // taps shorter than a frame still count (slow machines, quick presses)
+  const inp = inputFrom(new Set([...V.keys, ...V.tapped]), pad, V.touch);
+  V.tapped.clear();
   const edge = (k) => { const was = w.prev[k]; w.prev[k] = inp[k]; return inp[k] && !was; };
   if (edge('exit')) { if (!V.nodes.bubble.hidden) { V.nodes.bubble.hidden = true; } else return exitWalk(); }
   if (edge('view')) setWalkView(V.prefs.walkView === 'first' ? 'third' : 'first');

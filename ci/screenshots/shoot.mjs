@@ -494,11 +494,14 @@ await session('habitat-3d', { scenario: 'populated', theme: 'dark', habitat: tru
   const w = await page.evaluate(H3('stats'));
   check(w.walking && w.avatar, 'owner avatar walking in third person');
   await shot('walk-third-person-great-room');
-  await page.keyboard.down('KeyW'); await page.waitForTimeout(1500); await page.keyboard.up('KeyW');
+  await page.keyboard.down('KeyW');
+  await page.waitForFunction(() => document.querySelector('.hab3d-canvas').habitat3d.pos().x > 2.2, null, { timeout: 20000 }).catch(() => {});
+  await page.keyboard.up('KeyW');
   check((await page.evaluate(H3('pos'))).x > 2.2, 'W walks the avatar forward');
   await page.evaluate(H3('walkTo', -2, 7, 1.57)); await page.waitForTimeout(1500);
   await shot('walk-into-owner-study');
-  await page.keyboard.press('Escape'); await page.waitForTimeout(300);
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(() => !document.querySelector('.hab3d-canvas').habitat3d.stats().walking, null, { timeout: 20000 }).catch(() => {});
   check(!(await page.evaluate(H3('stats'))).walking, 'Esc leaves walk mode');
   await page.click('[data-h3="study"]'); await page.waitForTimeout(1500);
   check(await page.locator('.hab3d-panel .hab3d-cell').count() === 24, 'study decorate grid');

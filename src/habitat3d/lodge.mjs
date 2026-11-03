@@ -268,22 +268,34 @@ export function buildLodge({ world, agents = {}, store = {}, notes = [], prefs =
   const plaster = M('#efe2c9', { vc: true, rough: 0.95 });
   const panel = M('#ffffff', { map: woodTex('light'), vc: true, rough: 0.8 });
   const mats2 = { back: plaster, outer: plaster, inner: panel };
+  // Thin timber-framed walls: a post on each wall tile plus an arm toward every
+  // connected neighbour (wall, door or opening), so walls read as walls, not blocks.
   const dummy = new THREE.Object3D();
+  const TH = WALL_T;
+  const linked = new Set([...Object.values(cells).flat().map((c) => `${c.x},${c.y}`), ...skip]);
+  for (let y = 0; y < Hh; y++) for (let x = 0; x < W; x++) if (world.grid[y][x] === T.DOOR) linked.add(`${x},${y}`);
+  const pieces = (c) => {
+    const out = [{ x: 0, z: 0, sx: TH, sz: TH }];
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) if (linked.has(`${c.x + dx},${c.y + dy}`)) out.push(dx ? { x: dx * 0.25, z: 0, sx: 0.5, sz: TH } : { x: 0, z: dy * 0.25, sx: TH, sz: 0.5 });
+    return out;
+  };
   for (const kind of ['back', 'outer', 'inner']) {
     const list = cells[kind]; if (!list.length) continue;
     const h = wallHeight(kind);
-    const im = new THREE.InstancedMesh(wallGeo, mats2[kind], list.length);
-    list.forEach((c, i) => { const p = P(c.x, c.y); dummy.position.set(p.x, h / 2, p.z); dummy.scale.set(1, h, 1); dummy.updateMatrix(); im.setMatrixAt(i, dummy.matrix); });
-    im.castShadow = true; im.receiveShadow = true;
-    root.add(im); refs[`walls_${kind}`] = im;
-    // Timber: a top plate on every wall tile and posts every few tiles.
-    const plate = new THREE.InstancedMesh(new THREE.BoxGeometry(1.02, 0.12, 1.02), DARKWOOD(), list.length);
-    list.forEach((c, i) => { const p = P(c.x, c.y); dummy.position.set(p.x, h + 0.06, p.z); dummy.scale.set(1, 1, 1); dummy.updateMatrix(); plate.setMatrixAt(i, dummy.matrix); });
-    plate.castShadow = true; root.add(plate);
-    const posts = list.filter((c) => (c.x + c.y) % 4 === 0 && kind !== 'inner');
+    const parts = list.flatMap((c) => pieces(c).map((q) => ({ ...q, c })));
+    const im = new THREE.InstancedMesh(wallGeo, mats2[kind], parts.length);
+    const plate = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), DARKWOOD(), parts.length);
+    parts.forEach((q, i) => {
+      const p = P(q.c.x, q.c.y);
+      dummy.position.set(p.x + q.x, h / 2, p.z + q.z); dummy.scale.set(q.sx, h, q.sz); dummy.updateMatrix(); im.setMatrixAt(i, dummy.matrix);
+      dummy.position.set(p.x + q.x, h + 0.05, p.z + q.z); dummy.scale.set(q.sx + (q.sx < 0.5 ? 0.06 : 0), 0.1, q.sz + (q.sz < 0.5 ? 0.06 : 0)); dummy.updateMatrix(); plate.setMatrixAt(i, dummy.matrix);
+    });
+    im.castShadow = true; im.receiveShadow = true; plate.castShadow = true;
+    root.add(im); root.add(plate); refs[`walls_${kind}`] = im;
+    const posts = list.filter((c) => (c.x + c.y) % 3 === 0 && kind !== 'inner');
     if (posts.length) {
-      const pm = new THREE.InstancedMesh(new THREE.BoxGeometry(0.2, 1, 1.04), DARKWOOD(), posts.length);
-      posts.forEach((c, i) => { const p = P(c.x, c.y); dummy.position.set(p.x, h / 2, p.z); dummy.scale.set(1, h, 1); dummy.updateMatrix(); pm.setMatrixAt(i, dummy.matrix); });
+      const pm = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), DARKWOOD(), posts.length);
+      posts.forEach((c, i) => { const p = P(c.x, c.y); dummy.position.set(p.x, h / 2, p.z); dummy.scale.set(TH + 0.08, h, TH + 0.08); dummy.updateMatrix(); pm.setMatrixAt(i, dummy.matrix); });
       pm.castShadow = true; root.add(pm);
     }
   }
@@ -298,7 +310,7 @@ export function buildLodge({ world, agents = {}, store = {}, notes = [], prefs =
   const winMat = M('#ffe6b0', { emissive: '#ffb45a', ei: 0, rough: 0.2 });
   refs.windowMat = winMat;
   const windowAt = (x, y, w = 1) => {
-    const p = P(x, y); const zf = p.z + 0.52;
+    const p = P(x, y); const zf = p.z + (WALL_T / 2 + 0.02);
     const g = new THREE.Group(); g.position.set(p.x + (w - 1) / 2, 1.45, zf); root.add(g);
     box(g, w * 0.8 + 0.12, 0.08, 0.08, 0, -0.5, 0.02, DARKWOOD()); box(g, w * 0.8 + 0.12, 0.08, 0.08, 0, 0.46, 0.02, DARKWOOD());
     for (const s of [-1, 1]) box(g, 0.08, 1.0, 0.08, s * (w * 0.4 + 0.02), -0.5, 0.02, DARKWOOD());
@@ -317,7 +329,7 @@ export function buildLodge({ world, agents = {}, store = {}, notes = [], prefs =
   const roofW = (b.maxX - b.minX) + 1.2; const zBack = b.minZ - 0.6; const zRidge = (b.minZ + b.maxZ) / 2 - 1.5;
   const slope = Math.hypot(zRidge - zBack, 2.0);
   const roofMat = new THREE.MeshStandardMaterial({ map: texRepeat(roofTex(), roofW / 2, slope / 2), roughness: 0.9, transparent: true, opacity: 1, depthWrite: false, side: THREE.DoubleSide });
-  const roof = add(root, new THREE.PlaneGeometry(roofW, slope), roofMat, { x: (b.minX + b.maxX) / 2, y: WALL_TOP + 1.0, z: (zBack + zRidge) / 2, rx: -Math.PI / 2 - Math.atan2(2.0, zRidge - zBack), cast: true, receive: false });
+  const roof = add(root, new THREE.PlaneGeometry(roofW, slope), roofMat, { x: (b.minX + b.maxX) / 2, y: WALL_TOP + 1.0, z: (zBack + zRidge) / 2, rx: -Math.PI / 2 - Math.atan2(2.0, zRidge - zBack), cast: false, receive: false });
   const ridge = box(root, roofW, 0.16, 0.18, (b.minX + b.maxX) / 2, WALL_TOP + 1.95, zRidge, DARKWOOD());
   refs.roof = { mesh: roof, mat: roofMat, ridge };
 
@@ -333,7 +345,7 @@ export function buildLodge({ world, agents = {}, store = {}, notes = [], prefs =
     rug.receiveShadow = true;
     // bed (head at the back wall)
     const b0 = P(r.bed[0].x, r.bed[0].y); const b1 = P(r.bed[1].x, r.bed[1].y);
-    const bed = new THREE.Group(); bed.position.set(b0.x, 0, (b0.z + b1.z) / 2); root.add(bed);
+    const bed = new THREE.Group(); bed.position.set(b0.x + 0.22, 0, (b0.z + b1.z) / 2 + backZ * 0.3); root.add(bed);
     box(bed, 0.86, 0.22, 1.9, 0, 0.06, 0, WOOD());
     box(bed, 0.8, 0.12, 1.84, 0, 0.28, 0, M('#f6f0e4', { rough: 1 }));
     box(bed, 0.84, 0.08, 1.2, 0, 0.36, -backZ * 0.32, M('#ffffff', { map: fabricTex(c), rough: 1 }));
@@ -346,12 +358,13 @@ export function buildLodge({ world, agents = {}, store = {}, notes = [], prefs =
     // built-in props and unlocked extras
     for (const p of [...r.props, ...(r.extras || [])]) {
       const pr = buildProp(p.kind, { color: c, lit, refs, id: r.id, seed: p.x * 7 + p.y });
-      const q = P(p.x, p.y); pr.position.set(q.x, 0, q.z);
+      const q = P(p.x, p.y); const back = world.grid[p.y + backZ]?.[p.x] === T.WALL;
+      pr.position.set(q.x, 0, q.z + (back ? backZ * 0.3 : 0));
       if (r.side === 'bottom') pr.rotation.y = Math.PI;
       root.add(pr);
     }
     // framed picture on the back wall
-    const pz = r.side === 'top' ? P(0, 0).z + 0.53 : P(0, Hh - 1).z - 0.53;
+    const pz = r.side === 'top' ? P(0, 0).z + (WALL_T / 2 + 0.02) : P(0, Hh - 1).z - (WALL_T / 2 + 0.02);
     const pic = P(r.x0 + 4, 0);
     if (r.side === 'bottom') {
       const fr = new THREE.Group(); fr.position.set(pic.x, 1.0, pz); fr.rotation.y = Math.PI; root.add(fr);
@@ -363,7 +376,7 @@ export function buildLodge({ world, agents = {}, store = {}, notes = [], prefs =
     refs.textures.push(pt);
     const pp = P(r.plate.x + 1, r.plate.y);
     const facing = r.side === 'top' ? 1 : -1;
-    const sign = new THREE.Group(); sign.position.set(pp.x, 0.82, pp.z + facing * 0.53); sign.rotation.y = facing > 0 ? 0 : Math.PI; root.add(sign);
+    const sign = new THREE.Group(); sign.position.set(pp.x, 0.82, pp.z + facing * (WALL_T / 2 + 0.02)); sign.rotation.y = facing > 0 ? 0 : Math.PI; root.add(sign);
     box(sign, 1.1, 0.32, 0.05, 0, -0.16, 0, DARKWOOD());
     add(sign, new THREE.PlaneGeometry(1.0, 0.26), new THREE.MeshStandardMaterial({ map: pt, roughness: 0.9 }), { z: 0.03, cast: false });
     // the door
@@ -426,7 +439,7 @@ export function buildLodge({ world, agents = {}, store = {}, notes = [], prefs =
   for (let x = 4; x < W - 4; x += 6) {
     const p = P(x, 5);
     if (world.grid[5][x] !== T.WALL) continue;
-    const g = new THREE.Group(); g.position.set(p.x, 1.0, p.z + 0.52); root.add(g);
+    const g = new THREE.Group(); g.position.set(p.x, 1.0, p.z + (WALL_T / 2 + 0.02)); root.add(g);
     box(g, 0.1, 0.18, 0.06, 0, -0.09, 0, DARKWOOD());
     const bulb = ball(g, 0.07, 0, 0.06, 0.08, new THREE.MeshStandardMaterial({ color: '#ffe2a8', emissive: '#ffae4a', emissiveIntensity: lampsOn ? 1.6 : 0.1 }));
     const gl = glow(g, 1.1, 0, 0.06, 0.12); gl.visible = lampsOn;
@@ -478,7 +491,7 @@ export function buildLodge({ world, agents = {}, store = {}, notes = [], prefs =
   if (world.kitchen) {
     const k = world.kitchen;
     for (const p of k.props) {
-      const q = P(p.x, p.y); const g = new THREE.Group(); g.position.set(q.x, 0, q.z); root.add(g);
+      const q = P(p.x, p.y); const g = new THREE.Group(); g.position.set(q.x, 0, q.z - (p.y === k.y0 ? 0.3 : 0)); root.add(g);
       if (p.kind === 'coffee') {
         box(g, 0.9, 0.85, 0.6, 0, 0, -0.15, WOOD()); box(g, 0.94, 0.05, 0.64, 0, 0.85, -0.15, M('#d9cbb4', { rough: 0.5 }));
         box(g, 0.36, 0.42, 0.3, 0, 0.9, -0.25, M('#b8432f', { rough: 0.35, metal: 0.3 }));
@@ -516,7 +529,7 @@ export function buildLodge({ world, agents = {}, store = {}, notes = [], prefs =
   if (world.hall) {
     const bd = world.hall.board;
     const a = P(bd.x, bd.y); const e = P(bd.x + bd.w - 1, bd.y);
-    const g = new THREE.Group(); g.position.set((a.x + e.x) / 2, 0, a.z - 0.25); root.add(g);
+    const g = new THREE.Group(); g.position.set((a.x + e.x) / 2, 0, a.z - 0.68); root.add(g);
     for (const s of [-1, 1]) box(g, 0.1, 1.9, 0.1, s * 1.85, 0, 0, DARKWOOD());
     box(g, 3.8, 1.2, 0.08, 0, 0.6, 0, DARKWOOD());
     const cork = box(g, 3.6, 1.04, 0.06, 0, 0.68, 0.04, M('#b88a5a', { rough: 1 }));
@@ -538,7 +551,7 @@ export function buildLodge({ world, agents = {}, store = {}, notes = [], prefs =
     refs.boardPos = { x: g.position.x, z: g.position.z };
     // trophy shelf on the south wall
     const sh = world.hall.shelf; const sa = P(sh.x, sh.y); const se = P(sh.x + sh.w - 1, sh.y);
-    const s = new THREE.Group(); s.position.set((sa.x + se.x) / 2, 0, sa.z + 0.3); root.add(s);
+    const s = new THREE.Group(); s.position.set((sa.x + se.x) / 2, 0, sa.z + 0.55); root.add(s);
     box(s, 3.6, 0.9, 0.4, 0, 0, 0, WOOD()); box(s, 3.7, 0.05, 0.44, 0, 0.9, 0, DARKWOOD()); box(s, 3.6, 0.05, 0.36, 0, 1.45, 0.02, DARKWOOD());
     TROPHIES.forEach((tr, i) => {
       const x = -1.4 + i * 0.7; const got = Boolean(store.trophies?.[tr.id]);
@@ -604,7 +617,7 @@ export function buildLodge({ world, agents = {}, store = {}, notes = [], prefs =
     const rc = P(STUDY.x0 + 2, STUDY.y0 + 1);
     plane(root, 2.6, 1.6, rc.x + 0.5, 0.015, rc.z + 0.5, M('#ffffff', { map: knitTex('#e8833a', 2), rough: 1 }));
     const wp = P(STUDY.x0 - 1, STUDY.y0 + 1);
-    const scrG = new THREE.Group(); scrG.position.set(wp.x + 0.53, 1.35, wp.z + 0.5); scrG.rotation.y = Math.PI / 2; root.add(scrG);
+    const scrG = new THREE.Group(); scrG.position.set(wp.x + (WALL_T / 2 + 0.02), 1.35, wp.z + 0.5); scrG.rotation.y = Math.PI / 2; root.add(scrG);
     box(scrG, 1.6, 0.95, 0.05, 0, -0.47, 0, M('#1c1c20', { rough: 0.4 }));
     const screen = add(scrG, new THREE.PlaneGeometry(1.5, 0.85), new THREE.MeshStandardMaterial({ color: '#ffffff', emissive: '#ffffff', emissiveIntensity: 0.9, roughness: 0.3 }), { z: 0.03, cast: false });
     refs.wallScreen = screen;
@@ -615,6 +628,7 @@ export function buildLodge({ world, agents = {}, store = {}, notes = [], prefs =
   return { root, refs };
 }
 const WALL_TOP = 2.5;
+const WALL_T = 0.36;
 
 // Fewer draw calls: bake every static, non-interactive mesh into one mesh per
 // material (lamps, doors, screens, flames and anything clickable stay separate).
