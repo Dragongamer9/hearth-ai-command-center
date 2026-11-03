@@ -41,6 +41,9 @@ export const AGENTS = {
   none: { name: 'Unassigned', vendor: '', cls: 'a-none', headless: false, edits: false, mention: [] },
 };
 
+// Each AI's color (the same as the .a-* chips in styles.css).
+export const COLORS = { anthropic: '#d4a27f', openai: '#74c7a4', google: '#8ab4f8', xai: '#c9ccd1', mistral: '#fa7a35', qwen: '#8a7cf6', perplexity: '#20b8cd', deepseek: '#4d6bfe', ollama: '#e6ebe7', freebuff: '#a99be0', copilot: '#36b37e', meta: '#0a7cff' };
+
 // Why each provider is a full team member or a web window (shown on the Agents page).
 export const ACCESS_NOTE = {
   anthropic: 'Full member: Claude Code CLI signs in with your Claude account in the browser.',

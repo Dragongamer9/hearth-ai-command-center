@@ -8,7 +8,8 @@ import { findDuplicate } from './dupes.mjs';
 import { parseAttachLines, mediaFor } from './media.mjs';
 import { chatPlan, canOwnerSend, newRound, ownerInterrupt, stopRound, cameAfterOwner, beginPass } from './room.mjs';
 import { leadOn, parseLeadLines, leadDecision, leadLabel, leadUndoable, pickReviewer } from './lead.mjs';
-import { AGENTS, AGENT_IDS, WEB_ONLY, HEADLESS, EDITORS, API_CAPABLE, DEFAULT_ROLES, BILLING, ACCESS_NOTE, OLLAMA_NOTE } from './registry.mjs';
+import { AGENTS, AGENT_IDS, WEB_ONLY, HEADLESS, EDITORS, API_CAPABLE, DEFAULT_ROLES, BILLING, ACCESS_NOTE, OLLAMA_NOTE, COLORS } from './registry.mjs';
+import { viewHabitat, mountHabitat, stopHabitat } from './habitat.mjs';
 import { HEARTH_OS, RED_FLAGS } from './hearth.mjs';
 import { tokensToCss, pickMode } from './theme.mjs';
 
@@ -50,7 +51,7 @@ const MAX_HOPS = 6;
 let state = { version: 1, tasks: [], audit: [], models: {}, chat: [], agentStatus: {}, autoHandoff: true, roles: {}, lead: 'anthropic', disabled: {}, permissions: [], chatSessions: {} };
 let ui = { view: 'overview', selected: null, modal: null, busy: {}, draft: '', target: 'all', typing: null, running: {}, saving: {}, changes: {}, expanded: null, side: 'anthropic', signin: {}, installOllama: false, editing: null, showHist: {}, typingSet: new Set(), attach: [], lightbox: null, hist: { q: '', provider: 'all', source: 'all', list: [], sel: null, stats: null, kind: 'auto', scanning: false }, prs: { list: [], loaded: false, msg: '', byTask: {} }, release: { version: '', confirm: '', target: '', notes: '', draft: true } };
 let backups = { recoveredFrom: null, backups: [] };
-let settings = { project: null, projects: [], connection: { anthropic: 'cli', openai: 'cli', xai: 'cli', mistral: 'cli', perplexity: 'api', deepseek: 'api' }, bins: {}, access: 'standard', extraDirs: [], autoPush: true, chatEdits: true, chatResume: true, theme: 'hearth' };
+let settings = { project: null, projects: [], connection: { anthropic: 'cli', openai: 'cli', xai: 'cli', mistral: 'cli', perplexity: 'api', deepseek: 'api' }, bins: {}, access: 'standard', extraDirs: [], autoPush: true, chatEdits: true, chatResume: true, theme: 'hearth', reduceMotion: false };
 let gh = { git: null, gh: null, ghUser: null };
 let repo = { repo: false };
 let cli = Object.fromEntries(AGENT_IDS.map((a) => [a, {}]));
@@ -116,7 +117,7 @@ const agentChip = (id) => {
   const a = AGENTS[id] || AGENTS.none;
   return `<span class="agent ${a.cls}"><i></i>${esc(a.name)}</span>`;
 };
-const avatar = (id) => `<span class="avatar ${AGENTS[id]?.cls || ''}" style="background:${{ anthropic: '#d4a27f', openai: '#74c7a4', google: '#8ab4f8', xai: '#c9ccd1', mistral: '#fa7a35', qwen: '#8a7cf6', perplexity: '#20b8cd', deepseek: '#4d6bfe', ollama: '#e6ebe7', freebuff: '#a99be0', copilot: '#36b37e', meta: '#0a7cff' }[id] || '#67707b'}">${esc((AGENTS[id]?.name || '?')[0])}</span>`;
+const avatar = (id) => `<span class="avatar ${AGENTS[id]?.cls || ''}" style="background:${COLORS[id] || '#67707b'}">${esc((AGENTS[id]?.name || '?')[0])}</span>`;
 
 function method(a) {
   if (API_ONLY.includes(a)) return 'api';
@@ -710,6 +711,34 @@ function renderPanel() {
     return `<div class="team-member">${agentChip(a)}<span class="badge ${st.cls}"${hold?.message ? ` title="${esc(hold.message)}"` : ''}>${st.live ? '<span class="dot pulse"></span>' : ''}${esc(st.text)}</span>${st.detail ? `<small>${esc(st.detail)}</small>` : ''}</div>`;
   }).join('') || '<span class="faint">No AIs linked yet.</span>';
 }
+// ---------- Habitat (src/habitat.mjs) ----------
+// The same state the status panel reads, one entry per enabled AI.
+function habitatSnapshot() {
+  const open = (t) => !['approved', 'rejected'].includes(t.stage);
+  const ids = AGENT_IDS.filter((a) => !state.disabled?.[a] && (connected(a) || authHold(a) || outInfo(a) || a === state.lead || cli[a]?.installed || prov.keys?.[a] || busyOn(a) || state.tasks.some((t) => open(t) && t.assignee === a)));
+  const reviewOf = (a) => {
+    const id = Object.keys(ui.busy).find((k) => ui.busy[k] === 'opinion' && state.tasks.find((t) => t.id === k)?.reviewer === a);
+    return id ? state.tasks.find((t) => t.id === id) : null;
+  };
+  const brief = (t) => (t ? { id: t.id, title: t.title, branch: t.ws?.branch || '' } : null);
+  const reducedOs = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
+  return {
+    reduced: settings.reduceMotion === true || reducedOs,
+    agents: ids.slice(0, 12).map((a) => {
+      const b = busyOn(a);
+      const task = b && !b[0].startsWith('CHAT') ? state.tasks.find((t) => t.id === b[0]) : null;
+      const st = statusOf(a);
+      const status = outInfo(a) ? 'out' : authHold(a) ? 'hold' : connected(a) ? 'idle' : 'signedout';
+      return { id: a, name: AGENTS[a].name, color: COLORS[a] || '#888888', lead: a === state.lead, status, task: brief(task), reviewing: brief(reviewOf(a)), typing: isTyping(a) || Boolean(b && b[0].startsWith('CHAT')), waiting: blocked().includes(a), note: authHold(a)?.message || st.text };
+    }),
+  };
+}
+const habitatHooks = {
+  snapshot: habitatSnapshot,
+  openTask: (id) => { if (state.tasks.some((t) => t.id === id)) { ui.selected = id; render(); } },
+  openAgent: (a) => { ui.view = 'agents'; ui.side = a; ui.expanded = a; ui.selected = null; render(); },
+};
+
 // Redraw only the panel (keeps the chat draft and scroll).
 function updatePanel() {
   const el = document.getElementById('team-panel');
@@ -1456,6 +1485,7 @@ function viewSettings() {
   return `<div class="grid two">
     <div class="card"><h3>Appearance</h3>
       <div class="row">${themeChip('hearth', 'Follow Hearth OS desktop')}${themeChip('dark', 'Dark')}${themeChip('light', 'Light')}${themeChip('system', 'System')}</div>
+      ${check('reduceMotion', 'Reduce motion (Habitat characters stay in place instead of walking around)')}
       <p class="muted" style="font-size:12.5px;line-height:1.5;margin:8px 0 0">${hearthTheme.found
         ? `Using the Hearth desktop theme${hearthTheme.tokens.name ? ` “${esc(hearthTheme.tokens.name)}”` : ''} from <span class="mono">${esc(hearthTheme.dir)}</span> — changes there apply here live.`
         : `No Hearth desktop theme found at <span class="mono">${esc(hearthTheme.dir)}</span> (theme.json / theme.css), so the Steam-style Hearth OS 1.0 look is used. On Hearth OS it follows Mantel's theme automatically.`}</p>
@@ -1607,6 +1637,7 @@ function modal() {
 
 const NAV = [
   ['overview', '◈', 'Overview'],
+  ['habitat', '⌂', 'Habitat'],
   ['chat', '✎', 'Team chat'],
   ['board', '▦', 'Task board'],
   ['approvals', '✓', 'Approvals'],
@@ -1618,6 +1649,7 @@ const NAV = [
 ];
 const TITLES = {
   overview: ['Command Center', 'Your AI team, working on the Hearth OS project under your approval'],
+  habitat: ['Habitat', 'Each AI has its own room; when they work, they sit at their desk in the shared workroom'],
   chat: ['Team chat', 'You and the whole AI team in one room — everyone sees everything'],
   board: ['Task board', 'Owner → policy → agent → checkpoint → tests → review → approval'],
   approvals: ['Approvals', 'Nothing high-impact happens without your explicit sign-off'],
@@ -1630,7 +1662,7 @@ const TITLES = {
 
 function render() {
   const waiting = state.tasks.filter((t) => t.stage === 'approval').length + pendingAsks().length;
-  const views = { github: viewGithub, chat: viewChat, overview: viewOverview, board: viewBoard, approvals: viewApprovals, agents: viewAgents, history: viewHistory, audit: viewAudit, settings: viewSettings };
+  const views = { habitat: viewHabitat, github: viewGithub, chat: viewChat, overview: viewOverview, board: viewBoard, approvals: viewApprovals, agents: viewAgents, history: viewHistory, audit: viewAudit, settings: viewSettings };
   const [title, sub] = TITLES[ui.view];
   const updBadge = upd.status?.state === 'available' || upd.status?.state === 'ready' ? '<span class="badge accent" data-nav="settings" style="cursor:pointer">Update available</span>' : '';
   const scroll = document.querySelector('.main')?.scrollTop || 0;
@@ -1660,6 +1692,8 @@ function render() {
     box.setSelectionRange(box.value.length, box.value.length);
   }
   document.getElementById('edit-text')?.focus();
+  if (ui.view === 'habitat') mountHabitat(document.getElementById('habitat'), habitatHooks);
+  else stopHabitat();
 }
 
 // ---------- actions ----------
