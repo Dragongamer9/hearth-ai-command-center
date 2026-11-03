@@ -3,7 +3,7 @@ name: UI screenshots (CI only)
 # Renders the app's UI with fake data and saves PNGs. Never builds a release.
 on:
   push:
-    branches: ['ci/screenshots', 'feature/next-team', 'release/**']
+    branches: ['ci/screenshots', 'feature/next-team', 'feature/**', 'release/**']
   workflow_dispatch:
 
 permissions:

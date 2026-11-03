@@ -9,7 +9,7 @@ const OUT = process.env.OUT_DIR || 'shots';
 mkdirSync(OUT, { recursive: true });
 
 function stub(opts) {
-  const { scenario, theme = 'hearth', hearthTheme = null, flows = false } = opts;
+  const { scenario, theme = 'hearth', hearthTheme = null, flows = false, habitat = false } = opts;
   const populated = scenario !== 'fresh';
   const ago = (m) => new Date(Date.now() - m * 60000).toISOString();
   const pol = (warn = []) => ({ ok: true, block: [], warn });
@@ -36,6 +36,14 @@ function stub(opts) {
       return new Promise((r) => setTimeout(() => r({ ok: true, text: 'Plan: I take the layout; Gemini reviews.', via: 'Claude Code' }), 4500));
     };
   }
+  if (habitat) {
+    // Habitat scene: Claude and Gemini work at their desks (runs never finish here).
+    tasks.unshift(
+      { id: 'HB0001', title: 'Settings › Storage: drive health panel', description: '', assignee: 'anthropic', reviewer: 'google', action: 'code', stage: 'intake', notes: [], runs: [], policy: pol(), createdAt: ago(30), updatedAt: ago(30) },
+      { id: 'HB0002', title: 'Mantel dock: remember pinned apps', description: '', assignee: 'google', reviewer: 'anthropic', action: 'code', stage: 'intake', notes: [], runs: [], policy: pol(), createdAt: ago(25), updatedAt: ago(25) },
+    );
+    window.__runImpl = () => new Promise(() => {});
+  }
   const IMG = 'data:image/svg+xml;utf8,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="480" height="270"><rect width="480" height="270" fill="#1b2838"/><rect x="24" y="24" width="432" height="40" rx="6" fill="#2a475e"/><text x="40" y="51" fill="#c7d5e0" font-family="sans-serif" font-size="18">Settings › Storage</text><rect x="24" y="84" width="300" height="18" rx="4" fill="#66c0f4"/><rect x="24" y="116" width="220" height="18" rx="4" fill="#4c6b22"/><text x="24" y="240" fill="#8f98a0" font-family="sans-serif" font-size="14">screenshot attached by Claude</text></svg>');
   const audit = populated ? [
     { id: 'A0', at: ago(4), actor: 'anthropic', event: 'Permission requested', taskId: null, detail: 'Claude · Push to GitHub: push hearth/k7q2ma-storage-page' },
@@ -60,7 +68,7 @@ function stub(opts) {
     { id: 'R6BOOT', agent: 'xai', kind: 'boot', what: 'Change GRUB_DEFAULT handling in the image build', why: 'Needed for the theme', context: 'chat', at: ago(200), status: 'approved', decidedAt: ago(190), questions: [] },
   ] : [];
   // In the 0.7.0 flows Claude isn't waiting on a permission card, so it can take turns and tasks.
-  if (flows) for (const p of permissions) if (p.agent === 'anthropic') { p.status = 'approved'; p.decidedAt = ago(2); }
+  if (flows || habitat) for (const p of permissions) if (p.agent === 'anthropic') { p.status = 'approved'; p.decidedAt = ago(2); }
   const state = { version: 1, tasks, audit, models: {}, chat, permissions, chatSessions: {}, agentStatus: flows ? {} : populated ? { openai: { outUntil: new Date(Date.now() + 3600000).toISOString(), reason: 'usage limit reached' } } : {}, autoHandoff: true, roles: {}, lead: 'anthropic', disabled: {}, setupDismissed: populated };
   const settings = { project: populated ? '/home/owner/Projects/hearth-os' : null, projects: populated ? ['/home/owner/Projects/hearth-os', '/home/owner/Projects/beacon'] : [], connection: { anthropic: 'cli', openai: 'cli', xai: 'cli', mistral: 'cli', perplexity: 'api', deepseek: 'api' }, bins: {}, access: 'standard', extraDirs: populated ? ['/home/owner/Games'] : [], autoPush: true, chatEdits: true, chatResume: true, theme };
   let xaiChecks = 0;
@@ -127,7 +135,7 @@ const browser = await chromium.launch();
 const errors = [];
 const check = (cond, msg) => { if (!cond) errors.push(`check failed: ${msg}`); };
 async function session(name, opts, steps) {
-  const ctx = await browser.newContext({ viewport: { width: 1600, height: 1000 }, bypassCSP: true, colorScheme: opts.theme === 'light' ? 'light' : 'dark' });
+  const ctx = await browser.newContext({ viewport: { width: 1600, height: 1000 }, bypassCSP: true, colorScheme: opts.theme === 'light' ? 'light' : 'dark', reducedMotion: opts.reducedMotion ? 'reduce' : 'no-preference' });
   await ctx.addInitScript(stub, opts);
   const page = await ctx.newPage();
   page.on('pageerror', (e) => errors.push(`${name}: ${e.message}`));
@@ -265,6 +273,53 @@ await session('070', { scenario: 'populated', theme: 'dark', flows: true }, asyn
   await page.click('[data-attach]'); await page.waitForTimeout(300);
   check((await page.textContent('.chat-input')).includes('owner-photo.png'), 'owner attachment pending');
   await shot('chat-image-attachments');
+});
+
+// 6) Habitat: some AIs at their desks, one typing, one asleep, some locked out. Saved as habitat-*.png.
+const habitatScene = async ({ page, nav }) => {
+  for (const [id, a] of [['HB0001', 'anthropic'], ['HB0002', 'google']]) {
+    await nav('board'); await page.click(`[data-open="${id}"]`); await page.waitForTimeout(300);
+    await page.click(`[data-run="${id}:${a}"]`); await page.waitForTimeout(500);
+    await page.keyboard.press('Escape');
+  }
+  await nav('chat');
+  await page.fill('#chat-text', '@perplexity find sources on GRUB theme formats'); await page.keyboard.press('Enter'); await page.waitForTimeout(500);
+  await nav('habitat');
+  await page.waitForSelector('#habitat canvas');
+  await page.waitForTimeout(4500); // let them walk to their places
+  const beh = (id) => page.evaluate((x) => document.querySelector('#habitat canvas').habitat.behaviour(x), id);
+  const act = (id) => page.evaluate((x) => document.querySelector('#habitat canvas').habitat.actor(x), id);
+  check((await beh('anthropic'))?.mode === 'desk', 'Claude works at its desk');
+  check((await beh('anthropic'))?.monitor?.id === 'HB0001', 'Claude’s monitor shows its task id');
+  check((await beh('anthropic'))?.star === true, 'the lead has a star');
+  check((await beh('google'))?.mode === 'desk', 'Gemini works at its desk');
+  check((await beh('openai'))?.mode === 'sleep', 'ChatGPT is out of usage and asleep');
+  check((await beh('xai'))?.door === 'locked', 'Grok is signed out: door locked');
+  check((await beh('perplexity'))?.icon === 'bubble', 'Perplexity is typing in team chat');
+  return { beh, act };
+};
+await session('habitat', { scenario: 'populated', theme: 'dark', habitat: true }, async ({ page, shot, nav }) => {
+  const { act } = await habitatScene({ page, nav });
+  const claude = await act('anthropic');
+  check(claude.pose === 'sit' && claude.mode === 'desk', 'Claude is sitting at the desk');
+  check((await page.evaluate(() => getComputedStyle(document.querySelector('#habitat canvas')).imageRendering)) === 'pixelated', 'canvas is pixelated');
+  await shot('desks-typing-asleep-locked');
+  const at = await page.evaluate(() => document.querySelector('#habitat canvas').habitat.at('anthropic'));
+  await page.mouse.move(at.x, at.y); await page.waitForTimeout(300);
+  const tip = await page.textContent('.hab-tip');
+  check(tip.includes('HB0001') && tip.includes('drive health') && tip.includes('hearth/hb0001'), 'tooltip shows the task title and branch');
+  await shot('tooltip-task-and-branch');
+  await page.mouse.click(at.x, at.y); await page.waitForTimeout(400);
+  check(await page.locator('.drawer').count() >= 1 || (await page.textContent('body')).includes('Settings › Storage: drive health panel'), 'clicking a working AI opens its task');
+  await page.keyboard.press('Escape');
+});
+await session('habitat-light', { scenario: 'populated', theme: 'light', habitat: true, reducedMotion: true }, async ({ page, shot, nav }) => {
+  const { act } = await habitatScene({ page, nav });
+  const p = await act('ollama');
+  await page.waitForTimeout(2500);
+  const q = await act('ollama');
+  check(p.x === q.x && p.y === q.y && !p.path.length, 'reduced motion: idle AIs stay in place');
+  await shot('light-reduced-motion');
 });
 
 await browser.close();

@@ -66,6 +66,8 @@ function readSettings() {
     // Lead handles GitHub (pull, combine, push branches). Off until the owner turns it on.
     leadGitHub: s.leadGitHub === true,
     theme: THEMES.includes(s.theme) ? s.theme : 'hearth',
+    // Habitat page: characters stay in place. Off unless the owner turns it on (the OS setting also counts).
+    reduceMotion: s.reduceMotion === true,
   };
 }
 function useProject(dir) {
@@ -275,6 +277,7 @@ function registerIpc() {
     if ('leadActions' in patch) s.leadActions = patch.leadActions === true;
     if ('leadGitHub' in patch) s.leadGitHub = patch.leadGitHub === true;
     if ('theme' in patch && THEMES.includes(patch.theme)) s.theme = patch.theme;
+    if ('reduceMotion' in patch) s.reduceMotion = patch.reduceMotion === true;
     writeSettings(s);
     return s;
   });
