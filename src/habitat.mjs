@@ -768,7 +768,7 @@ function tick(t) {
   const goal = petGoal(H.world, { busiest: busy, lamps: H.light.lamps, closed });
   if (!H.pet) H.pet = newPet(H.world, goal);
   stepPet(H.world, H.pet, goal, dt, { reduced, closed });
-  draw(t);
+  if (!H.headless) draw(t); // the 3D lodge view reads the same state and draws it itself
   if (reduced) H.timer = setTimeout(() => { H.timer = 0; if (H) H.raf = requestAnimationFrame(tick); }, POLL_MS);
   else H.raf = requestAnimationFrame(tick);
 }
@@ -876,8 +876,8 @@ function onMove(ev) {
   if (H.snap?.reduced) draw(performance.now());
 }
 
-function onClick(ev) {
-  const hit = hitTest(ev);
+function onClick(ev, forced) {
+  const hit = forced !== undefined ? forced : hitTest(ev);
   if (H.rearrange) {
     if (!hit) return;
     const room = roomOf(H.world, H.rearrange.id);
@@ -1016,6 +1016,23 @@ export function mountHabitat(el, opts) {
   if ('ResizeObserver' in window) { H.ro = new ResizeObserver(() => { resize(); draw(performance.now()); }); H.ro.observe(el); }
   draw(performance.now());
   start();
+}
+
+// The 3D lodge (src/habitat3d/) shows this same simulation: it reads the live
+// state here and sends clicks back, so 2D and 3D always agree.
+export function habitatEngine() {
+  if (!H) return null;
+  return {
+    get world() { return H.world; }, get actors() { return H.actors; }, get pet() { return H.pet; }, get behs() { return H.behs; },
+    get agents() { return H.agents; }, get moods() { return H.moods; }, get lights() { return H.lights; }, get light() { return H.light; },
+    get weather() { return H.weather; }, get store() { return H.store; }, get effects() { return H.effects; }, get notes() { return H.notes || []; },
+    get reduced() { return Boolean(H.snap?.reduced); }, get tasks() { return H.snap?.tasks || []; }, get visits() { return H.visits; }, get rearranging() { return Boolean(H.rearrange); }, get running() { return Boolean(H.raf || H.timer); },
+    setHeadless(on) { H.headless = Boolean(on); if (!on && H.canvas && H.base) draw(performance.now()); },
+    tip: (hit) => tipHtml(hit),
+    click: (hit) => onClick(null, hit),
+    clock: () => clock(),
+    setClock: (ms) => { H.clockAt = ms; poll(); },
+  };
 }
 
 export function stopHabitat() {

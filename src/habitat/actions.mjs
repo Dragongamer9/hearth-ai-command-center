@@ -16,6 +16,10 @@ export const JOURNAL_NOTES_PER_DAY = 3;
 export const SUMMARY_MAX = 300;
 export const EMOTES = ['happy', 'thinking', 'tired', 'celebrate'];
 export const PLACES = { desk: 'desk', room: 'room', 'break room': 'kitchen', breakroom: 'kitchen', kitchen: 'kitchen', garden: 'garden', courtyard: 'garden', hall: 'hall' };
+// The owner's private room (3D lodge) is his alone: no HABITAT: action can reach,
+// target or describe it beyond this one line, and it lives outside this store.
+export const OWNER_ROOM = /\b(owner|owner['’]?s|private|study|loft)\b/i;
+export const OWNER_ROOM_LINE = 'The owner’s room is private (door closed).';
 export const LOCAL_ACTIONS = ['look', 'emote', 'note'];
 const ALIASES = { lamp: 'lantern', plant: 'fern', fish: 'fishbowl', bowl: 'fishbowl', pillow: 'cushion', tea: 'teapot', painting: 'easel' };
 const UNDOABLE = new Set(['place', 'move', 'remove', 'nameplate', 'rug', 'lamp', 'note', 'water']);
@@ -190,6 +194,7 @@ function act(s, c, { agent, who, room, me, ids, agents, names, now, world }) {
       return { ok: true, reason: `lamp ${a.lamp}`, label: `turned its lamp ${a.lamp}`, journal: `turned the lamp ${a.lamp}` };
     }
     case 'go': {
+      if (OWNER_ROOM.test(c.place)) return no('the owner’s room is private');
       const place = PLACES[c.place];
       if (!place) return no('go where? desk, room, break room, garden or hall');
       if (me?.task || me?.reviewing) return no('busy with a task: stays at its desk');
@@ -322,6 +327,7 @@ export function habitatRules({ local = false } = {}) {
     'HABITAT: look | place <prop> at <x>,<y> | move <prop> to <x>,<y> | remove <prop> | nameplate <text> | rug stripes|round|diamond | lamp on|off | journal <short note>',
     'HABITAT: go desk|room|break room|garden|hall | coffee with @name | water garden | pet | note <text for the hall board> | wave @name | emote happy|thinking|tired|celebrate',
     'Only your own room and props you have unlocked; the room must stay walkable. Max 5 Habitat lines per reply and 30 an hour. The Owner can lock rooms, and props he placed stay where he put them.',
+    OWNER_ROOM_LINE,
   ].join('\n');
 }
 
@@ -352,6 +358,7 @@ export function describeRoom(store, agent, { ids = [], names = {}, now = Date.no
     `- Medals: ${medals.join(', ') || 'none yet'}.`,
     `- Garden: ${grown} of ${g.stages.length} plants in full bloom${g.wilt ? `, wilting a little (${s.failStreak} failed results in a row)` : ', healthy'}${s.life.watered[agent] === dayKey(new Date(now)) ? '; you watered it today' : ''}.`,
     `- Pet: ${s.pet.name || 'not named yet'}. Board notes: ${notes.join('; ') || 'none'}.`,
+    `- ${OWNER_ROOM_LINE}`,
     journal.length ? `- Your journal (latest ${journal.length}):\n${journal.map((e) => `  ${e.at.slice(0, 10)} ${e.text}`).join('\n')}` : '- Your journal is empty.',
   ].join('\n');
 }
