@@ -21,7 +21,7 @@ test('the other AIs receive attachments on their turns (owner and AI alike)', ()
   const g = mediaFor('google', chat, { anthropic: 'Claude' });
   assert.deepEqual(g.images, ['/w/a/bug.png', '/w/a/run-frame1.jpg', '/w/a/run-frame2.jpg']);
   assert.match(g.note, /The Owner attached an image: bug\.png/);
-  assert.match(g.note, /Claude attached a video: run\.mp4, 12s \(2 still frames/);
+  assert.match(g.note, /Claude attached a video: run\.mp4 \[MP4 video · 12\.0 s · [^\]]*\] \(2 still frames/);
   const c = mediaFor('anthropic', chat, {});
   assert.deepEqual(c.images, [], 'an AI does not get its own attachment back, nor ones from before its turn');
   const v = mediaFor('openai', [{ who: 'owner', attachments: [{ kind: 'video', name: 'x.mov', frames: [], note: 'video attached (frames unavailable: install ffmpeg)' }] }]);

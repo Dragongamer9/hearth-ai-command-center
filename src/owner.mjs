@@ -15,8 +15,9 @@ export function parseVerdicts(text) {
   const found = [];
   for (const raw of String(text || '').split('\n')) {
     const line = raw.trim().replace(/^[-*•>\s`]+/, '').replace(/[`*]/g, '');
-    const m = /^(APPROVED?|CHANGES)\s*:\s*T-([A-Za-z0-9]{4,12})\b[\s:—–-]*(.*)$/i.exec(line);
-    if (m) found.push({ verdict: /^CHANGES$/i.test(m[1]) ? 'changes' : 'approve', taskId: m[2].toUpperCase(), reason: m[3].trim().slice(0, 1000) });
+    // An optional commit after the id ("APPROVE: T-ABC123 @1a2b3c4") names the sha reviewed.
+    const m = /^(APPROVED?|CHANGES)\s*:\s*T-([A-Za-z0-9]{4,12})\b(?:\s*(?:@|at\s+|sha\s*:?\s*)([0-9a-f]{7,40})\b)?[\s:—–-]*(.*)$/i.exec(line);
+    if (m) found.push({ verdict: /^CHANGES$/i.test(m[1]) ? 'changes' : 'approve', taskId: m[2].toUpperCase(), reason: m[4].trim().slice(0, 1000), ...(m[3] ? { sha: m[3].toLowerCase() } : {}) });
   }
   return found;
 }
@@ -59,6 +60,8 @@ export function applyVerdict(task, { by, verdict, reason = '', at = new Date().t
     task.notes = task.notes || [];
     task.notes.push({ at, who: `${NAMES[by]} (review)`, text: `CHANGES REQUESTED: ${reason}` });
     requestChanges(task, { by, reason, at });
+    // CHANGES are tied to the commit they were given for, so a later APPROVE needs a new one.
+    if (sha) task.changesSince.sha = sha;
   } else return { ok: false, reason: 'unknown verdict' };
   task.updatedAt = at;
   return { ok: true, stage: task.stage };

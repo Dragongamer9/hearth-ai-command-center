@@ -66,7 +66,7 @@ export function teamContext({ agent, roster = [], lead = 'anthropic', board = []
     ...roster.map((r) => `- ${NAMES[r.id]}${r.id === agent ? ' (you)' : ''}${r.id === lead ? ' [LEAD]' : ''}: ${roleOf(r)} — ${r.status}`),
     '',
     board.length ? 'OPEN TASKS ON THE BOARD:' : 'The task board is empty.',
-    ...board.slice(0, 15).map((t) => `- T-${t.id} "${t.title}" — ${t.stage}, implementer ${NAMES[t.assignee] || 'none'}${t.reviewer && t.reviewer !== 'none' ? `, reviewer ${NAMES[t.reviewer] || t.reviewer}` : ''}${t.state ? `, ${t.state}` : ''}${t.queue ? `, ${t.queue}` : ''}`),
+    ...board.slice(0, 15).map((t) => `- T-${t.id} "${t.title}" — ${t.stage}, implementer ${NAMES[t.assignee] || 'none'}${t.reviewer && t.reviewer !== 'none' ? `, reviewer ${NAMES[t.reviewer] || t.reviewer}` : ''}${t.state ? `, ${t.state}` : ''}${t.queue ? `, ${t.queue}` : ''}${t.truth && (agent === lead || agent === t.reviewer) ? `\n  truth (from git): ${t.truth}` : ''}`),
     pending.length ? (leadActions ? '\nPERMISSION REQUESTS WAITING FOR THE OWNER OR THE LEAD:' : '\nPERMISSION REQUESTS WAITING FOR THE OWNER:') : '',
     ...pending.map((p) => `- R-${p.id} by ${NAMES[p.agent]}: ${PERMISSION_KINDS[p.kind] || p.kind} — ${p.what}`),
   ].filter((l) => l !== '').join('\n');

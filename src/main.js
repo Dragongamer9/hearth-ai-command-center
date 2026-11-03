@@ -16,6 +16,9 @@ import { tokensToCss, pickMode } from './theme.mjs';
 import { createOps } from './ops/ui.mjs';
 import { setLevels as setApprovalLevels } from './ops/approval.mjs';
 import { createLeadWaker, waitingForLead } from './ops/leadwake.mjs';
+import { createWorkflow } from './ops/workflow-ui.mjs';
+import { instructionsBlock, recordReview, holdApproval, useHeldApproval, recordTest, shouldPing, lastReview } from './ops/workflow.mjs';
+import { teamHabitat, teamHabitatLine } from './habitat/status.mjs';
 
 const api = window.hearth;
 
@@ -75,6 +78,15 @@ const ops = createOps({
   runTask: (...a) => runTask(...a), startOrQueue: (t, a) => startOrQueue(t, a), decide: (...a) => decide(...a), sendChat: () => sendChat(),
   makeTask: (o, src) => makeTask(o, src), actionFor: (t) => actionFor(t),
   cli: () => cli, method: (a) => method(a), refreshAgents: async () => { await refreshAgents(); render(); },
+});
+
+// Team workflow (src/ops/workflow*.mjs): truth card, run gates and modes, instruction log,
+// review packet, blockers, assets, Jobs panel and the release gate.
+const wf = createWorkflow({
+  api, esc: (s) => esc(s), NAMES, EDITORS, state: () => state, ui: () => ui, settings: () => settings, save: () => save(), render: () => render(),
+  audit: (...a) => audit(...a), post: (m) => post(m), toast: (m) => toast(m), now: () => now(), time: (x) => time(x), ago: (x) => ago(x), agentChip: (a) => agentChip(a),
+  canRun: (a) => canRun(a), isFree: (a) => isFree(a), runTask: (...a) => runTask(...a), actionResult: (...a) => ops.actionResult(...a), turnResults: (a) => ops.turnResults(a),
+  leadRecord: (...a) => leadRecord(...a), nextVersion: () => ops.syncPowers()?.nextVersion || '', docsPaths: () => ops.docsPaths(),
 });
 
 const uid = () => Math.random().toString(36).slice(2, 8).toUpperCase();
@@ -282,6 +294,8 @@ function ownerButton(t) {
 
 // Reviewer lines (APPROVE:/CHANGES: T-…) in a reply. Only the assigned reviewer
 // counts; with the lead switch on, the lead's lines act for the owner (lead.mjs).
+// Every verdict is recorded against the sha it names (or the branch head) and gets a
+// ✓/✗ with the exact reason; an APPROVE on a stopped task is held for that sha, never lost.
 async function handleVerdicts(agent, text) {
   const restart = [];
   const leading = leadOn({ enabled: settings.leadActions === true, agent, lead: state.lead });
@@ -289,22 +303,48 @@ async function handleVerdicts(agent, text) {
     const t = state.tasks.find((x) => x.id === v.taskId);
     const vline = `${v.verdict === 'approve' ? 'APPROVE' : 'CHANGES'}: T-${v.taskId}`;
     if (!t) { ops.actionResult(agent, vline, false, `unknown task id T-${v.taskId}`); continue; }
-    if (agent === 'ollama') { const lr = ops.localMayReview(t); if (!lr.ok) { ops.actionResult(agent, vline, false, lr.reason, t.id); continue; } }
+    const head = t.ws ? await api.workspaceHead(t.id).catch(() => null) : null;
+    // The sha it names must be the branch head; otherwise it reviewed something else.
+    if (v.sha && head && !head.startsWith(v.sha)) {
+      const why = `head moved since your review (${short(v.sha)}→${short(head)})`;
+      recordReview(t, { by: agent, verdict: v.verdict, sha: v.sha, reason: v.reason, at: now(), accepted: false, why });
+      ops.actionResult(agent, vline, false, why, t.id);
+      save();
+      continue;
+    }
+    const sha = head || v.sha || null;
+    const refuse = (why) => { recordReview(t, { by: agent, verdict: v.verdict, sha, reason: v.reason, at: now(), accepted: false, why }); };
+    if (agent === 'ollama') { const lr = ops.localMayReview(t); if (!lr.ok) { refuse(lr.reason); ops.actionResult(agent, vline, false, lr.reason, t.id); continue; } }
     if (leading) {
       const dec = leadDecision({ kind: v.verdict, id: v.taskId, reason: v.reason }, { ...leadCtx(), task: t, resumable: actionFor(t)?.kind === 'resume' });
-      if (!dec.skip) { await leadAct({ kind: v.verdict, id: v.taskId, reason: v.reason }, dec, t); continue; }
+      if (!dec.skip) {
+        if (!dec.ok) refuse(dec.reason);
+        else if (v.verdict === 'changes') recordReview(t, { by: agent, verdict: 'changes', sha, reason: v.reason, at: now(), accepted: true });
+        await leadAct({ kind: v.verdict, id: v.taskId, reason: v.reason }, dec, t);
+        continue;
+      }
     }
-    const sha = v.verdict === 'approve' && t.ws ? await api.workspaceHead(t.id).catch(() => null) : null;
     const r = applyVerdict(t, { by: agent, verdict: v.verdict, reason: v.reason, at: now(), sha });
-    if (!r.ok) { post({ who: 'system', text: `${NAMES[agent]} wrote ${v.verdict === 'approve' ? 'APPROVE' : 'CHANGES'} for T-${v.taskId}, but ${r.reason}.` }); ops.actionResult(agent, vline, false, r.reason, t.id); continue; }
-    ops.actionResult(agent, vline, true, v.verdict === 'approve' ? 'moved to approval' : `sent back to ${NAMES[t.assignee] || 'its implementer'}`, t.id);
+    if (!r.ok) {
+      refuse(r.reason);
+      // A reviewer's APPROVE on a stopped (or not yet handed over) task is held against its sha.
+      const held = v.verdict === 'approve' && agent === t.reviewer && /isn't ready for review yet/.test(r.reason) && holdApproval(t, { by: agent, sha, reason: v.reason, at: now() });
+      const why = held ? `${r.reason}; your APPROVE is held for ${short(sha)} and applies when the task reaches review at that commit` : r.reason;
+      post({ who: 'system', text: `${NAMES[agent]} wrote ${v.verdict === 'approve' ? 'APPROVE' : 'CHANGES'} for T-${v.taskId}, but ${why}.` });
+      ops.actionResult(agent, vline, held, why, t.id);
+      if (held) audit('Reviewer approval held', t.id, `${NAMES[agent]} at ${sha}`, agent);
+      continue;
+    }
+    recordReview(t, { by: agent, verdict: v.verdict, sha, reason: v.reason, at: now(), accepted: true });
+    ops.actionResult(agent, vline, true, v.verdict === 'approve' ? `moved to approval at ${short(sha) || 'its head'}` : `sent back to ${NAMES[t.assignee] || 'its implementer'}`, t.id);
     ops.recordVerdict(t, v.verdict, agent);
     wakeLead(v.verdict === 'approve' ? 'task reached approval' : 'reviewer verdict', agent);
     if (v.verdict === 'approve') {
       audit('Reviewer approved', t.id, `${NAMES[agent]}${sha ? ` at ${sha}` : ''}${v.reason ? `: ${v.reason}` : ''}`, agent);
-      post({ who: 'system', text: `${NAMES[agent]} approved T-${t.id} “${t.title}”${sha ? ` at ${sha}` : ''}. It's in Approvals, waiting for you.` });
+      post({ who: 'system', text: `${NAMES[agent]} approved T-${t.id} “${t.title}”${sha ? ` at ${short(sha)}` : ''}. It's in Approvals, waiting for you. The approval is locked to that commit.` });
     } else {
       audit('Reviewer requested changes', t.id, `${NAMES[agent]}: ${v.reason}`, agent);
+      wf.instruct(t, `${NAMES[agent]} (review)`, 'changes', v.reason);
       post({ who: 'system', text: `${NAMES[agent]} sent T-${t.id} “${t.title}” back to ${NAMES[t.assignee] || 'its implementer'}: ${v.reason}` });
       if (EDITORS.includes(t.assignee) && canRun(t.assignee)) restart.push(t);
     }
@@ -314,21 +354,36 @@ async function handleVerdicts(agent, text) {
   for (const t of restart) startOrQueue(t, t.assignee);
 }
 
-// An approval covers the exact commit it was given for. If a task branch has moved
-// since, the approval is cleared and the task goes back to review.
+// An approval covers the exact commit it was given for ("Merge this SHA only"). If the
+// task branch moved since, the later commits go to a new follow-up branch and the task
+// branch goes back to the approved commit, so the review stays valid. Only if that isn't
+// possible is the approval cleared (back to review). Returns true when it was cleared.
 async function recheckApprovals(list = state.tasks.filter((t) => t.stage === 'approval' && t.ws && t.reviewVerdict?.sha)) {
   let changed = false;
+  let cleared = false;
   for (const t of list) {
-    const head = await api.workspaceHead(t.id).catch(() => null);
     const was = t.reviewVerdict;
+    const head = await api.workspaceHead(t.id).catch(() => null);
+    if (!was?.sha || !head || head === was.sha) continue;
+    const r = await api.opsSplitFollowup?.(t.id, was.sha).catch(() => null);
+    if (r?.ok && r.moved) {
+      changed = true;
+      const text = `Commits after ${NAMES[was.by]}'s approval of ${short(was.sha)} were moved to ${r.followup} (${r.commits.join('; ')}); T-${t.id} stays approved at exactly ${short(was.sha)}. Make a follow-up task from that branch if the work is needed.`;
+      t.notes.push({ at: now(), who: 'System', text });
+      t.followups = [...(t.followups || []), { branch: r.followup, from: r.from, commits: r.commits, at: now() }].slice(-5);
+      audit('Stray commits moved to a follow-up branch', t.id, `${r.followup}: ${r.commits.join('; ')}`);
+      post({ who: 'system', text: `T-${t.id} “${t.title}”: ${text}` });
+      continue;
+    }
     if (clearStaleApproval(t, head, now())) {
       changed = true;
-      audit('Approval cleared: branch changed', t.id, `${was.sha} → ${head}`);
-      post({ who: 'system', text: `T-${t.id} “${t.title}” changed after ${NAMES[was.by]} approved ${was.sha} (now ${head}). The approval was cleared and it's back in review.` });
+      cleared = true;
+      audit('Approval cleared: branch changed', t.id, `${was.sha} → ${head}${r?.reason ? ` (${r.reason})` : ''}`);
+      post({ who: 'system', text: `T-${t.id} “${t.title}” changed after ${NAMES[was.by]} approved ${short(was.sha)} (now ${short(head)})${r?.reason ? ` and the later commits couldn't be split off (${r.reason})` : ''}. The approval was cleared and it's back in review.` });
     }
   }
   if (changed) { save(); render(); }
-  return changed;
+  return cleared;
 }
 
 // The commit that was approved (or reported done): what a merge must use.
@@ -395,6 +450,7 @@ async function leadAct(cmd, dec, t = null, request = null) {
       : await api.opsLeadRelease(dec.action, dec.version).catch((err) => ({ ok: false, message: cleanErr(err.message) }));
     if (!r?.ok) return leadAct(cmd, { ok: false, reason: r?.message || 'not available' }, t);
     leadRecord(dec.action, ref, `— ${r.message}${dec.action === 'rewrite' ? '' : ' This can\'t be undone.'}`);
+    if (dec.action !== 'rewrite') wf.madeTag(dec.version);
     if (r.dispatched) ops.watchRelease(dec.version);
     save();
     render();
@@ -432,6 +488,7 @@ async function leadAct(cmd, dec, t = null, request = null) {
     t.updatedAt = now();
     t.notes.push({ at: now(), who: `${NAMES[lead]} (lead)`, text: `CHANGES REQUESTED: ${cmd.reason}` });
     requestChanges(t, { by: lead, reason: cmd.reason, at: now() });
+    wf.instruct(t, `${NAMES[lead]} (lead)`, 'changes', cmd.reason);
     leadRecord('changes', `T-${t.id}`, `${title}: ${cmd.reason}`, { kind: 'stage', id: t.id, stage: prev });
   } else if (dec.action === 'start' || dec.action === 'resume') {
     leadRecord(dec.action, `T-${t.id}`, title, { kind: 'start', id: t.id });
@@ -489,6 +546,10 @@ async function undoLead(id) {
     const r = ui.running[t.id];
     if (r) await api.cancelRun(r.runId).catch(() => {});
     delete t.startNext;
+  } else if (u.kind === 'revert') {
+    const r = await wf.undoRevert(u);
+    if (!r.ok) return toast(`Couldn't undo: ${r.message}`);
+    if (t) t.notes.push({ at: now(), who: 'Owner', text: `Undid the lead's change: ${r.message}` });
   } else if (u.kind === 'stage') {
     if (!t || (t.stage === 'approved' && t.decision === 'approved' && u.stage !== 'approval')) return;
     if (t.integratedInto) return toast(`T-${t.id} is already on ${t.integratedInto}; it stays on the release branch.`);
@@ -505,7 +566,7 @@ async function undoLead(id) {
 
 // ---------- views ----------
 function viewOverview() {
-  return `${ops.summaryCard()}${viewOverviewMain()}`;
+  return `${wf.overviewCard()}${ops.summaryCard()}${viewOverviewMain()}`;
 }
 function viewOverviewMain() {
   const open = openTasks();
@@ -679,7 +740,7 @@ function chatCtx() {
     extraDirs: settings.extraDirs,
     pending: pendingAsks(),
     roster: AGENT_IDS.map((id) => ({ id, role: state.roles[id] || DEFAULT_ROLES[id], status: statusText(id) })),
-    board: openTasks().map((t) => ({ id: t.id, title: t.title, stage: STAGES[t.stage], assignee: t.assignee, reviewer: t.reviewer, state: RUN_STATES[taskRunState(t, { running: Boolean(ui.running[t.id]) })], queue: queueText(t) })),
+    board: openTasks().map((t) => ({ id: t.id, title: t.title, stage: STAGES[t.stage], assignee: t.assignee, reviewer: t.reviewer, state: RUN_STATES[taskRunState(t, { running: Boolean(ui.running[t.id]) })], queue: queueText(t), truth: t.ws ? wf.truthLine(t) : '' })),
     leadActions: settings.leadActions === true,
     // With the lead switch on, the lead sees what waits for it and its refused actions.
     ...(settings.leadActions === true ? { waiting: waitingForLead({ tasks: state.tasks, permissions: state.permissions, lead: state.lead, running: ui.running, editors: EDITORS }), refusals: state.leadRefusals || [] } : {}),
@@ -764,11 +825,18 @@ function attachmentsHtml(m) {
 
 // ---------- team status panel ----------
 function renderPanel() {
-  return AGENT_IDS.filter((a) => connected(a) || authHold(a) || outInfo(a) || a === state.lead).map((a) => {
+  // Passive Habitat status: where each AI is and what it's doing, plus the latest hall board notes.
+  const snap = habitatSnapshot();
+  const hab = teamHabitat(state.habitat, snap.agents, NAMES);
+  const where = Object.fromEntries(hab.rows.map((r) => [r.id, r]));
+  const rows = AGENT_IDS.filter((a) => connected(a) || authHold(a) || outInfo(a) || a === state.lead).map((a) => {
     const st = panelState(statusOf(a), outInfo(a));
     const hold = authHold(a);
-    return `<div class="team-member">${agentChip(a)}<span class="badge ${st.cls}"${hold?.message ? ` title="${esc(hold.message)}"` : ''}>${st.live ? '<span class="dot pulse"></span>' : ''}${esc(st.text)}</span>${st.detail ? `<small>${esc(st.detail)}</small>` : ''}</div>`;
-  }).join('') || '<span class="faint">No AIs linked yet.</span>';
+    const h = where[a];
+    return `<div class="team-member">${agentChip(a)}<span class="badge ${st.cls}"${hold?.message ? ` title="${esc(hold.message)}"` : ''}>${st.live ? '<span class="dot pulse"></span>' : ''}${esc(st.text)}</span>${st.detail ? `<small>${esc(st.detail)}</small>` : ''}${h ? `<small class="wf-hab" title="Habitat">⌂ ${esc(h.place)} · ${esc(h.activity)}</small>` : ''}</div>`;
+  }).join('');
+  const board = hab.board.length ? `<div class="wf-hallboard"><b>Hall board</b>${hab.board.map((b) => `<span>${esc(b.who)}: “${esc(b.text)}”</span>`).join('')}</div>` : '';
+  return rows ? rows + board : '<span class="faint">No AIs linked yet.</span>';
 }
 // ---------- Habitat (src/habitat.mjs) ----------
 // The same state the status panel reads, one entry per enabled AI.
@@ -828,7 +896,9 @@ function habitatPrompt(agent, resumed) {
   const snap = habitatSnapshot();
   const r = habitatSection(state.habitat, { agent, ids: snap.agents.map((a) => a.id), names: NAMES, local: agent === 'ollama', full: !resumed });
   if (r.changed) state.habitat = r.store;
-  return r.text;
+  // Passive status of the whole team next to its own memory line: no HABITAT: look round trip needed.
+  const team = r.text ? teamHabitatLine(state.habitat, snap.agents.filter((a) => a.id !== agent), NAMES) : '';
+  return team ? `${r.text}\n${team}` : r.text;
 }
 
 // Redraw only the panel (keeps the chat draft and scroll).
@@ -929,6 +999,7 @@ async function sendChat() {
   const who = plan.queue;
   post({ who: 'owner', text: text.slice(0, 8000), attachments: ui.attach.length ? ui.attach : undefined });
   ops.mentionNotes(text);
+  wf.captureChat('owner', text); // a message that names T-<id> goes into that task's instruction log
   ui.draft = '';
   ui.attach = [];
   if (/@freebuff/i.test(text)) post({ who: 'system', text: 'FreeBuff only runs interactively, so it can’t answer in chat by itself. Open it from a task, then use “Post as FreeBuff” to share what it says.' });
@@ -1114,6 +1185,14 @@ async function chatTurn(agent, { trigger = '', canEdit = false, snapshot = null,
     await handleVerdicts(agent, d.text);
     handleLeadLines(agent, d.text);
     await ops.handleLines(agent, d.text, null, Boolean(edit)); // IMAGE REQUEST / BACKGROUND (jobs edit only if this turn could)
+    await wf.lines(agent, d.text); // TASK NOTE / VERIFY / MERGE MAIN / REVERT
+    wf.captureChat(agent, d.text); // the lead's and reviewers' words about a task go into its log
+    wf.ensureResults(agent, d.text); // no action line without a ✓/✗
+    // Images and recordings it made in the chat workspace become attachments too.
+    if (state.chatWs && m) {
+      const extra = await wf.assets(chatId(), agent, d.text, Date.parse(startedAt), posted.atts.map((a) => a.from));
+      if (extra.length) m.attachments = [...(m.attachments || []), ...extra];
+    }
     } finally { ops.turnEnd(agent, m); }
     if (res.sessionId && settings.chatResume) {
       state.chatSessions = state.chatSessions || {};
@@ -1170,6 +1249,7 @@ async function decide(id, decision, by = 'Owner') {
     const t = state.tasks.find((x) => x.id === p.context);
     if (t) {
       t.notes.push({ at: now(), who: by, text: `${decision === 'approved' ? 'APPROVED' : 'DENIED'} permission R-${p.id} (${label}): ${p.what}${decision === 'approved' ? ' — go ahead with exactly that.' : ' — do not do it; find another way or stop.'}` });
+      wf.instruct(t, by, 'permission', `${decision === 'approved' ? 'Approved' : 'Denied'} R-${p.id} (${label}): ${p.what}${decision === 'approved' ? ' — go ahead with exactly that.' : ' — do not do it.'}`);
       post({ who: 'system', text: `${by === 'Owner' ? 'You' : by} ${decision} R-${p.id} for T-${t.id}.` });
       save();
       render();
@@ -1208,7 +1288,8 @@ function viewBoard() {
     return `<div class="col"><div class="col-h">${esc(c.title)}<span class="n">${items.length}</span></div>
       ${items.map((t) => `<div class="task ${ui.selected === t.id ? 'sel' : ''}" data-open="${t.id}">
         <div class="t">${esc(t.title)}</div>
-        <div class="meta">${ops.ciBadge(t)}${actionFor(t) && !actionFor(t).passive ? '<span class="badge warn">Waiting for you</span>' : ''}${t.stage === 'review' && t.reviewWaiting ? `<span class="badge">Waiting for ${esc(NAMES[t.reviewer] || 'a reviewer')}</span>` : ''}${stageBadge(t)}${runBadge(t)}${queueBadge(t)}${agentChip(t.assignee)}${t.pr ? `<span class="badge accent">PR #${esc(t.pr.number || '')}</span>` : ''}${doneBadge(t)}</div>
+        <div class="meta">${ops.ciBadge(t)}${actionFor(t) && !actionFor(t).passive ? '<span class="badge warn">Waiting for you</span>' : ''}${t.stage === 'review' && t.reviewWaiting ? `<span class="badge">Waiting for ${esc(NAMES[t.reviewer] || 'a reviewer')}</span>` : ''}${stageBadge(t)}${runBadge(t)}${queueBadge(t)}${agentChip(t.assignee)}${t.pr ? `<span class="badge accent">PR #${esc(t.pr.number || '')}</span>` : ''}${doneBadge(t)}${wf.blockerBadge(t)}</div>
+        ${wf.truthBadges(t)}
         ${ownerButton(t)}
       </div>`).join('') || `<div class="empty">${{ Intake: 'New tasks land here after the policy check.', 'In progress': 'Nothing being built.', Verify: 'Nothing waiting for tests or review.', 'Owner approval': 'Nothing waiting for you.', Closed: 'No decisions yet.' }[c.title]}</div>`}
     </div>`;
@@ -1698,6 +1779,7 @@ function drawer() {
     <h2>${esc(t.title)}</h2>
     <div class="row">${stageBadge(t)}${runBadge(t)}${queueBadge(t)}${doneBadge(t)}<span class="badge">${esc(ACTIONS[t.action])}</span></div>
     ${pol}
+    ${wf.drawerExtras(t)}
     ${ops.drawerPanel(t)}
     ${asks.map(askCard).join('')}
     ${['resume', 'start', 'signin'].includes(actionFor(t)?.kind) ? ownerButton(t) : ''}
@@ -1763,6 +1845,7 @@ const NAV = [
   ['github', '⑂', 'GitHub'],
   ['audit', '☰', 'Audit log'],
   ...ops.nav,
+  ...wf.nav,
   ['settings', '⚙', 'Settings'],
 ];
 const TITLES = {
@@ -1777,11 +1860,12 @@ const TITLES = {
   github: ['GitHub', 'Pull requests, pushes and releases — main only changes when you approve'],
   settings: ['Settings', 'Appearance, permissions, Hearth OS facts, updates and data'],
   ...ops.titles,
+  ...wf.titles,
 };
 
 function render() {
   const waiting = state.tasks.filter((t) => t.stage === 'approval').length + pendingAsks().length;
-  const views = { habitat: viewHabitat, github: viewGithub, chat: viewChat, overview: viewOverview, board: viewBoard, approvals: viewApprovals, agents: viewAgents, history: viewHistory, audit: viewAudit, settings: viewSettings, ...ops.views };
+  const views = { habitat: viewHabitat, github: viewGithub, chat: viewChat, overview: viewOverview, board: viewBoard, approvals: viewApprovals, agents: viewAgents, history: viewHistory, audit: viewAudit, settings: viewSettings, ...ops.views, ...wf.views };
   const [title, sub] = TITLES[ui.view];
   const updBadge = upd.status?.state === 'available' || upd.status?.state === 'ready' ? '<span class="badge accent" data-nav="settings" style="cursor:pointer">Update available</span>' : '';
   const scroll = document.querySelector('.main')?.scrollTop || 0;
@@ -1873,12 +1957,21 @@ function createTask(force = false) {
   render();
 }
 
-async function askForTask(t, kind) {
+async function askForTask(t, kind, force = false) {
   const who = t.reviewer;
   delete t.reviewWaiting;
+  // One review ping per commit, with the review packet: the sha, the diff since this
+  // reviewer's last sign-off (or vs main), the tests at that sha, and its earlier CHANGES.
+  const head = t.ws ? await api.workspaceHead(t.id).catch(() => null) : null;
+  if (!force && !shouldPing(t, head)) {
+    audit('Review ping skipped', t.id, `${NAMES[who]} already has the packet for ${short(head)}`);
+    return;
+  }
+  const pk = await wf.packet(t, who);
   let summary = '';
   if (t.ws) summary = await api.workspaceSummary(t.id, t.ws.baseSha).catch(() => '');
-  const prompt = `You are an independent reviewer (${NAMES[who]}) in the Hearth AI Command Center. Look at the task's workspace (your current directory) and the shared progress below. List concerns, missing tests, and whether the owner should approve. Be concise. Do not modify files. End with exactly one line: "APPROVE: T-${t.id}" if it is ready for the owner, or "CHANGES: T-${t.id} <what must be fixed>" to send it back.\n\n${buildTaskBrief({ task: t, agent: who, summary })}`;
+  const prompt = `You are an independent reviewer (${NAMES[who]}) in the Hearth AI Command Center. Look at the task's workspace (your current directory), the review packet and the shared progress below. List concerns, missing tests, and whether the owner should approve. Be concise. Do not modify files. End with exactly one line: "APPROVE: T-${t.id} @${short(pk.head)}" if it is ready for the owner, or "CHANGES: T-${t.id} <what must be fixed>" to send it back. To have the checks run again without anyone editing, write "VERIFY: T-${t.id}".\n\n${pk.text}\n\n${instructionsBlock(t)}\n\n${buildTaskBrief({ task: t, agent: who, summary })}`;
+  post({ who: 'system', text: `T-${t.id} “${t.title}” is in review: the review packet for ${short(pk.head) || 'its latest work'} went to ${NAMES[who]}.` });
   ui.busy[t.id] = kind;
   render();
   const res = await callAgent(who, prompt, { mode: 'read', taskId: t.ws ? t.id : undefined, title: `Review: ${t.title}`, thread: `review-${t.id}`, historyText: `Independent review of T-${t.id}: ${t.title}` });
@@ -1891,13 +1984,45 @@ async function askForTask(t, kind) {
   if (res.ok) await handleVerdicts(who, res.text);
 }
 
+// After a verify-only run: nothing was kept (enforced), the app runs the tests at the
+// head, and the report is posted with any verdict lines it contains. No stage changes.
+async function finishVerify(t, agent, run, res, violation) {
+  run.status = res.ok ? 'verified' : res.error.kind;
+  run.output = res.ok ? res.text : res.error.message;
+  run.head = await api.workspaceHead(t.id).catch(() => null);
+  const tr = res.ok ? await wf.verifyTests(t, run) : null;
+  if (res.ok) wf.acks(t, res.text, agent, run);
+  audit(res.ok ? 'Verify-only run finished' : `Verify-only run stopped (${res.error.kind})`, t.id, `${NAMES[agent]} at ${short(run.head)}${tr ? ` · tests ${tr.status}` : ''}${violation ? ' · violation' : ''}`, agent);
+  delete ui.saving[t.id];
+  if (res.ok) {
+    let m = null;
+    ops.turnBegin(agent);
+    try {
+      const d = parseDirectives(res.text);
+      m = post({ who: agent, auto: true, model: res.via, text: `Verify-only run of T-${t.id} at ${short(run.head)}: ${(d.text || res.text).replace(/STATUS:.*$/is, '').trim().slice(0, 500)}${tr ? `\n(The app ran ${tr.command || 'the tests'}: ${tr.status}.)` : ''}${violation ? `\n(${violation})` : ''}` });
+      await handleVerdicts(agent, d.text || res.text);
+      handleLeadLines(agent, d.text || res.text);
+      await wf.lines(agent, d.text || res.text);
+      wf.ensureResults(agent, d.text || res.text, t.id);
+    } finally { ops.turnEnd(agent, m); }
+  }
+  await save();
+  wf.refreshTruth([t.id]).then(() => render());
+  render();
+  await pumpQueues();
+}
+
 // Run (or continue) a task with an agent in the shared workspace. Progress is
 // checkpointed after every run; if the agent runs out of usage the next free
 // agent picks up from the checkpoint automatically.
-async function runTask(t, agent, handoff = null, depth = 0) {
+async function runTask(t, agent, handoff = null, depth = 0, mode = null) {
   if (!t || ui.running[t.id] || !canRun(agent)) return;
   const other = busyOn(agent);
   if (other && other[0] !== t.id) return startOrQueue(t, agent);
+  // Run modes: normal, Verify only (read-only, nothing kept), Docs and research (docs files only).
+  mode = mode || wf.defaultMode(t, agent);
+  // While a review is pending, or after APPROVE (sha lock), only verify runs may start.
+  if (!wf.gate(t, mode, agent).ok) { delete t.startNext; save(); return render(); }
   delete t.startNext;
   const waitingOn = pendingAsks().find((p) => p.agent === agent);
   if (waitingOn) return toast(`${NAMES[agent]} is waiting for your answer on R-${waitingOn.id} first.`);
@@ -1906,18 +2031,25 @@ async function runTask(t, agent, handoff = null, depth = 0) {
   } catch (e) {
     return toast(cleanErr(e.message));
   }
-  assignTask(t, agent, handoff ? `${NAMES[handoff.from]}: ${handoff.reason}` : undefined);
-  if (t.stage === 'intake') { t.stage = 'implementing'; audit('Work started', t.id, NAMES[agent]); }
-  const summary = await api.workspaceSummary(t.id, t.ws.baseSha).catch(() => '');
-  const prompt = buildTaskBrief({ task: t, agent, summary, handoffFrom: handoff?.from, reason: handoff?.reason });
+  if (mode !== 'verify') assignTask(t, agent, handoff ? `${NAMES[handoff.from]}: ${handoff.reason}` : undefined);
+  if (t.stage === 'intake' && mode !== 'verify') { t.stage = 'implementing'; audit('Work started', t.id, NAMES[agent]); }
   const runId = uid() + uid();
   // Checkpoint BEFORE the call: commit anything already in the workspace and
   // persist the task (with the exact brief) so a crash mid-call loses nothing saved.
   ui.saving[t.id] = true;
   render();
-  try { await api.checkpoint(t.id, 'owner', `Snapshot before next run: ${t.title}`); } catch {}
+  if (mode !== 'verify') { try { await api.checkpoint(t.id, 'owner', `Snapshot before next run: ${t.title}`); } catch {} }
+  // A verified starting workspace: fetch, fast-forward main, merge main into the task
+  // branch (or stop with a conflict report), and check the runtime the project needs.
+  const prep = await wf.prepare(t, agent, mode);
+  if (!prep.ok) { delete ui.saving[t.id]; save(); return render(); }
   if (t.changesSince && !t.changesSince.sha) reviewBaseline(t, await api.workspaceHead(t.id).catch(() => null));
-  const run = { id: runId, agent, at: now(), status: 'running', brief: prompt.slice(0, 20000) };
+  const summary = await api.workspaceSummary(t.id, t.ws.baseSha).catch(() => '');
+  // The task's instruction log comes first in every run; the runner acknowledges each new one.
+  const prompt = [instructionsBlock(t), wf.modeBrief(t, mode), buildTaskBrief({ task: t, agent, summary, handoffFrom: handoff?.from, reason: handoff?.reason })].filter(Boolean).join('\n\n');
+  const before = mode === 'normal' ? null : await wf.snapshot(t);
+  const sinceMs = Date.now();
+  const run = { id: runId, agent, at: now(), status: 'running', mode, brief: prompt.slice(0, 20000) };
   t.runs = t.runs || [];
   t.runs.push(run);
   await save();
@@ -1925,10 +2057,16 @@ async function runTask(t, agent, handoff = null, depth = 0) {
   ui.running[t.id] = { agent, runId };
   render();
 
-  const res = await callAgent(agent, prompt, { mode: 'edit', taskId: t.id, runId, title: `T-${t.id}: ${t.title}`, thread: `task-${t.id}-${agent}`, historyText: `Task T-${t.id}: ${t.title}${t.description ? `\n\n${t.description}` : ''}` });
+  const res = await callAgent(agent, prompt, { mode: mode === 'verify' ? 'read' : 'edit', taskId: t.id, runId, title: `T-${t.id}: ${t.title}`, thread: `task-${t.id}-${agent}`, historyText: `Task T-${t.id}: ${t.title}${t.description ? `\n\n${t.description}` : ''}` });
   delete ui.running[t.id];
   ui.saving[t.id] = true;
   render();
+  // Verify only / Docs and research: enforced before anything is saved (violations discarded and reported).
+  const violation = await wf.enforce(t, agent, mode, before, run);
+  // Generated images, diagrams and recordings become attachments (moved into its assets folder).
+  const explicit = res.ok ? parseAttachLines(res.text).files.map((f) => f.path) : [];
+  const found = res.ok && mode !== 'verify' ? await wf.assets(t.id, agent, res.text, sinceMs, explicit) : [];
+  if (mode === 'verify') return finishVerify(t, agent, run, res, violation);
   let cp = null;
   try {
     cp = await api.checkpoint(t.id, agent, `${t.title} — ${res.ok ? 'progress' : `checkpoint (${res.error.kind})`}`);
@@ -1949,7 +2087,11 @@ async function runTask(t, agent, handoff = null, depth = 0) {
     run.tests = testResult(res.text);
   }
   if (res.ok) {
-    const verdict = checkDoneAfterReview(t, { head: run.head, status: run.status, text: res.text });
+    // Every new instruction in the task's log must be acknowledged in the report.
+    const ack = wf.acks(t, res.text, agent, run);
+    const verdict = run.status === 'done' && ack.missing.length
+      ? { ok: false, note: `Not accepted: acknowledge ${ack.missing.join(', ')} from the task's instruction log first (one "ACK: N<k> <what you did>" line each).` }
+      : checkDoneAfterReview(t, { head: run.head, status: run.status, text: res.text });
     if (!verdict.ok) {
       refused = verdict.note;
       run.status = 'continue';
@@ -1962,6 +2104,7 @@ async function runTask(t, agent, handoff = null, depth = 0) {
   }
   // The app runs the project's tests itself; its result replaces the AI's claim, and a failure refuses the report.
   if (res.ok && run.status === 'done' && !refused) refused = await ops.checkDone(t, run, agent);
+  if (res.ok && run.head && run.appTests) recordTest(t, run.head, { status: run.appTests, command: run.testCommand, blocker: run.blocker?.kind && run.blocker.kind !== 'code' ? run.blocker.title : null });
   if (cp) {
     const pushed = await autoPush(t.id);
     if (pushed) run.pushed = pushed.ok ? 'pushed to GitHub' : `push failed: ${pushed.message}`;
@@ -1979,7 +2122,8 @@ async function runTask(t, agent, handoff = null, depth = 0) {
     ops.turnBegin(agent);
     try {
     const media = await agentAttachments(parseAttachLines(d.text || res.text), t.id, agent);
-    m = post({ who: agent, auto: true, model: res.via, attachments: media.atts.length ? media.atts : undefined, text: `T-${t.id} “${t.title}”: ${(media.text || d.text || res.text).replace(/STATUS:.*$/is, '').trim().slice(0, 400) || 'finished a run.'}${run.status === 'done' ? `\n(${doneLine(run)})` : ''}` });
+    const allAtts = [...media.atts, ...found];
+    m = post({ who: agent, auto: true, model: res.via, attachments: allAtts.length ? allAtts : undefined, text: `T-${t.id} “${t.title}”: ${(media.text || d.text || res.text).replace(/STATUS:.*$/is, '').trim().slice(0, 400) || 'finished a run.'}${run.status === 'done' ? `\n(${doneLine(run)})` : ''}${violation ? `\n(${violation})` : ''}${run.acked?.length ? `\n(Acknowledged ${run.acked.join(', ')}.)` : ''}` });
     if (refused) post({ who: 'system', text: `T-${t.id}: ${NAMES[agent]} reported done, but it wasn't accepted. The task stays with ${NAMES[agent]} (Ready to Resume): ${refused}` });
     m.asks = d.asks.map((a) => {
       const req = makeRequest({ id: uid(), agent, kind: a.kind, what: a.what, why: a.why, context: t.id, msgId: m.id });
@@ -1990,6 +2134,11 @@ async function runTask(t, agent, handoff = null, depth = 0) {
     ops.auditRoutine(agent, d.routine, t.id);
     if (m.asks.length) wakeLead('permission card', agent);
     await ops.handleLines(agent, d.text || res.text, t.id, true);
+    // Board and workflow lines in a run report count too (every one gets a ✓/✗).
+    await handleVerdicts(agent, d.text || res.text);
+    handleLeadLines(agent, d.text || res.text);
+    await wf.lines(agent, d.text || res.text);
+    wf.ensureResults(agent, d.text || res.text, t.id);
     } finally { ops.turnEnd(agent, m); }
   }
   await save();
@@ -2024,10 +2173,25 @@ async function runTask(t, agent, handoff = null, depth = 0) {
       render();
     }
   }
+  // The sha lock: an approval that came in during this run keeps its commit; later commits move to a follow-up branch.
+  if (t.stage === 'approval') await recheckApprovals([t]);
+  wf.refreshTruth([t.id]).then(() => render());
   // Nothing waits at Checkpoint: a done report always moves to review. It goes to the
   // reviewer now, or waits for them ("Waiting for …", with Pick reviewer for the owner).
   if (res.ok && t.stage === 'checkpoint') {
     t.stage = 'review';
+    // A reviewer's approval held for exactly this commit applies now (no second review ping).
+    const held = useHeldApproval(t, run.head, now());
+    if (held?.applied) {
+      recordReview(t, { by: held.by, verdict: 'approve', sha: held.sha, reason: 'held approval applied', at: now(), accepted: true });
+      audit('Held approval applied', t.id, `${NAMES[held.by]} at ${held.sha}`);
+      post({ who: 'system', text: `T-${t.id} “${t.title}” reached review at ${short(held.sha)}, which ${NAMES[held.by]} had already approved. It's in Approvals.` });
+      save();
+      render();
+      await pumpQueues();
+      return;
+    }
+    if (held?.dropped) t.notes.push({ at: now(), who: 'System', text: `${NAMES[t.reviewer]}'s held approval no longer applies: ${held.why}.` });
     const canReview = HEADLESS.includes(t.reviewer) && isFree(t.reviewer) && !ui.busy[t.id];
     t.reviewWaiting = !canReview;
     audit(canReview ? 'Sent for review' : 'Waiting for reviewer', t.id, NAMES[t.reviewer] || 'no reviewer set');
@@ -2229,7 +2393,7 @@ document.addEventListener('click', async (e) => {
     if (who !== t.reviewer) { audit('Reviewer changed', t.id, `${NAMES[t.reviewer] || 'none'} → ${NAMES[who]}`); t.reviewer = who; }
     if (!canRun(who) || !isFree(who)) { t.reviewWaiting = true; save(); render(); return toast(`${NAMES[who]} isn't free; T-${t.id} goes to them when they are.`); }
     save();
-    return askForTask(t, 'opinion');
+    return askForTask(t, 'opinion', true);
   }
   if (d.owneract) {
     const t = task(d.owneract);
@@ -2377,8 +2541,10 @@ document.addEventListener('click', async (e) => {
   }
   if (d.release !== undefined) {
     const rel = ui.release;
+    const allowed = wf.releaseAllowed(rel.version);
+    if (!allowed.ok) { ui.view = 'release'; toast(`Not released: ${allowed.reason}.`); return render(); }
     const r = await api.gitRelease({ version: rel.version, confirmVersion: rel.confirm, target: rel.target || repo.defaultBranch || 'main', notes: rel.notes, draft: rel.draft }).catch((err) => ({ ok: false, message: cleanErr(err.message) }));
-    if (r.ok) { audit('Owner approved a release', null, `${r.tag}${r.draft ? ' (draft)' : ''} · version typed by you`); ui.release = { version: '', confirm: '', target: '', notes: '', draft: true }; save(); }
+    if (r.ok) { wf.madeTag(rel.version); audit('Owner approved a release', null, `${r.tag}${r.draft ? ' (draft)' : ''} · version typed by you`); ui.release = { version: '', confirm: '', target: '', notes: '', draft: true }; save(); }
     toast(r.message);
     return render();
   }
@@ -2457,7 +2623,13 @@ document.addEventListener('click', async (e) => {
   if (d.locate) { settings = await api.pickBinary(d.locate); await refreshAgents(); return render(); }
   if (d.available) { delete state.agentStatus[d.available]; audit(`${NAMES[d.available]} marked available`); save(); render(); return pumpQueues(); }
   if (d.run) { const [id, a] = d.run.split(':'); return startOrQueue(task(id), a); }
-  if (d.stop) { const r = ui.running[d.stop]; if (r) await api.cancelRun(r.runId); return; }
+  if (d.stop) {
+    const r = ui.running[d.stop];
+    const t = task(d.stop);
+    if (t && r) wf.instruct(t, 'Owner', 'stop', `The Owner stopped ${NAMES[r.agent]}'s run. Check the state of the workspace before continuing, and don't redo what is already committed.`);
+    if (r) await api.cancelRun(r.runId);
+    return;
+  }
   if (d.freebuff) return openInFreebuff(task(d.freebuff));
   if (d.fbdone) return freebuffDone(task(d.fbdone));
   if (d.openws !== undefined) return api.openWorkspace(d.openws || null);
@@ -2569,7 +2741,7 @@ document.addEventListener('click', async (e) => {
     save();
     return render();
   }
-  if (d.opinion) return askForTask(task(d.opinion), 'opinion');
+  if (d.opinion) return askForTask(task(d.opinion), 'opinion', true); // the owner asked: always sent
   if (d.savekey) {
     const input = document.getElementById(`key-${d.savekey}`);
     try {
@@ -2832,6 +3004,7 @@ async function boot() {
   }
   render();
   ops.boot();
+  wf.boot();
   ops.syncLocal();
   // Update only the status panel, so a usage pause can expire without touching the draft.
   setInterval(updatePanel, 15000);

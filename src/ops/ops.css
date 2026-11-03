@@ -40,3 +40,24 @@
 .ops-attmeta { display: block; font-size: 11px; color: var(--muted); }
 .ops-up { margin-left: 6px; }
 .ops-local table { margin-top: 6px; }
+
+/* team workflow: truth card, blockers, instruction log, Jobs panel, release gate */
+.wf-truth { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.wf-card { border: 1px solid var(--line); border-radius: var(--r); padding: 4px 10px; margin: 10px 0; background: var(--panel); }
+.wf-card .kv { margin: 6px 0; }
+.wf-blocker { margin: 6px 0; font-size: 12.5px; }
+.wf-lock { margin: 8px 0; }
+.wf-modes { margin: 6px 0; gap: 8px; }
+.wf-instr .who .badge { margin-left: 4px; }
+.wf-packet summary { cursor: pointer; font-size: 12.5px; color: var(--muted); margin: 8px 0; }
+.wf-packet pre { white-space: pre-wrap; font-size: 11.5px; max-height: 360px; overflow: auto; }
+.wf-progress { margin: 0; font-size: 11px; white-space: pre-wrap; max-width: 360px; color: var(--muted); }
+.wf-checklist .wf-check { padding: 6px 8px; border-bottom: 1px solid var(--line); font-size: 12.5px; }
+.wf-check.ok > span:first-child { color: var(--good); font-weight: 700; }
+.wf-check.no > span:first-child { color: var(--bad); font-weight: 700; }
+.wf-notes { font-size: 12.5px; line-height: 1.6; }
+.wf-unmatched { color: var(--bad); }
+.wf-outside { margin: 6px 0; }
+.wf-hab { display: block; color: var(--faint); }
+.wf-hallboard { display: flex; flex-direction: column; gap: 2px; font-size: 11.5px; color: var(--muted); padding: 6px 0 0; border-top: 1px solid var(--line); margin-top: 4px; }
+.wf-release input, .wf-release #wf-override { background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: var(--r); padding: 5px 8px; }

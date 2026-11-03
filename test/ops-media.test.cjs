@@ -11,14 +11,15 @@ const { createJobs, jobStatus } = require('../electron/ops/jobs.cjs');
 const workspace = require('../electron/workspace.cjs');
 
 test('image dimensions from PNG, GIF, JPEG and WebP headers', () => {
+  const wh = (r) => (r ? { width: r.width, height: r.height } : r); // format and colour depth come along too
   const png = Buffer.alloc(32); png.writeUInt32BE(0x89504e47, 0); png.writeUInt32BE(1920, 16); png.writeUInt32BE(1080, 20);
-  assert.deepEqual(media.imageSize(png), { width: 1920, height: 1080 });
+  assert.deepEqual(wh(media.imageSize(png)), { width: 1920, height: 1080 });
   const gif = Buffer.alloc(32); gif.write('GIF89a'); gif.writeUInt16LE(640, 6); gif.writeUInt16LE(480, 8);
-  assert.deepEqual(media.imageSize(gif), { width: 640, height: 480 });
+  assert.deepEqual(wh(media.imageSize(gif)), { width: 640, height: 480 });
   const jpg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x04, 0, 0, 0xff, 0xc0, 0x00, 0x11, 0x08, 0x04, 0x38, 0x07, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
-  assert.deepEqual(media.imageSize(jpg), { width: 1920, height: 1080 });
+  assert.deepEqual(wh(media.imageSize(jpg)), { width: 1920, height: 1080 });
   const webp = Buffer.alloc(32); webp.write('RIFF'); webp.write('WEBP', 8); webp.write('VP8X', 12); webp.writeUIntLE(3839, 24, 3); webp.writeUIntLE(2159, 27, 3);
-  assert.deepEqual(media.imageSize(webp), { width: 3840, height: 2160 });
+  assert.deepEqual(wh(media.imageSize(webp)), { width: 3840, height: 2160 });
   assert.equal(media.imageSize(Buffer.from('hello world, not an image')), null);
 });
 

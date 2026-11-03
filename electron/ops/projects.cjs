@@ -20,6 +20,7 @@ function defaultSettings() {
     nextVersion: '', // set by the owner only; the lead may release/tag only this version
     versionFile: 'package.json',
     releaseCommand: '', // '' = dispatch .github/workflows/release.yml on main
+    docsPaths: '*.md, **/*.md, docs/**, release-notes/**', // what Docs and research runs may change
   };
 }
 
@@ -37,6 +38,7 @@ function cleanSettings(s = {}) {
     nextVersion: typeof s.nextVersion === 'string' && /^\d{1,4}\.\d{1,4}(\.\d{1,6})?$/.test(s.nextVersion.trim()) ? s.nextVersion.trim() : '',
     versionFile: typeof s.versionFile === 'string' && /^[A-Za-z0-9._/-]{1,120}$/.test(s.versionFile) && !s.versionFile.includes('..') ? s.versionFile : 'package.json',
     releaseCommand: typeof s.releaseCommand === 'string' ? s.releaseCommand.replace(/[\r\n\0]/g, ' ').trim().slice(0, 300) : '',
+    docsPaths: typeof s.docsPaths === 'string' && /^[A-Za-z0-9._*/,\s-]{1,300}$/.test(s.docsPaths) && !s.docsPaths.includes('..') && s.docsPaths.trim() ? s.docsPaths.trim() : d.docsPaths,
   };
 }
 

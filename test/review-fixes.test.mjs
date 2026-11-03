@@ -76,6 +76,7 @@ test('fix 13: Habitat reads ops.snapshot(); turn results always flush; CI watch 
   const main = src('src/main.js');
   assert.match(main, /ops: ops\.snapshot\(\),/);
   assert.ok(!main.includes('habitatResultsHtml'));
-  assert.equal((main.match(/\} finally \{ ops\.turnEnd\(agent, m\); \}/g) || []).length, 2);
+  // chat turns, task runs and verify-only runs
+  assert.equal((main.match(/\} finally \{ ops\.turnEnd\(agent, m\); \}/g) || []).length, 3);
   assert.ok(!src('src/habitat/actions.mjs').includes('habitatResultsHtml'));
 });

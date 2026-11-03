@@ -80,6 +80,12 @@ export function leadDecision(cmd, { lead, enabled = false, task = null, request 
       if ((task.ws || task.pr) && !powers.merge) return { ok: false, reason: 'merging to main is the Owner\'s unless "Lead may merge to main" is on' };
       return { ok: true, action: task.ws || task.pr ? 'merge' : 'approve' };
     }
+    // A task waiting for a reviewer's sign-off (in review, or stopped after CHANGES): an
+    // APPROVE from the lead here is a review verdict, not "resume". Only the assigned
+    // reviewer signs off; say so instead of quietly restarting the implementer.
+    if (reviewerCanApprove(task) || task.changesSince || task.reviewVerdict?.verdict === 'changes') {
+      return { ok: false, notReviewer: true, reason: `not the assigned reviewer (${NAMES[task.reviewer] || 'none'}) of T-${task.id}, which waits for that review${task.stage === 'implementing' ? ' (stopped after CHANGES)' : ''}; your APPROVE is recorded against its commit. Ask for VERIFY: T-${task.id} or let the reviewer sign off` };
+    }
     if (resumable) return { ok: true, action: 'resume' };
     return { ok: false, reason: `T-${task.id} isn't waiting for approval (${task.stage})` };
   }
@@ -123,14 +129,14 @@ export function leadDecision(cmd, { lead, enabled = false, task = null, request 
   return { ok: false, reason: 'unknown action' };
 }
 
-export const LEAD_VERBS = { rewrite: 'rewrote the authorship of', release: 'started the release of', tag: 'created the tag', merge: 'approved and merged', approve: 'approved', resume: 'approved resuming', changes: 'requested changes on', start: 'started', allowperm: 'approved', denyperm: 'denied', add: 'added' };
+export const LEAD_VERBS = { revert: 'reverted a commit on', mergemain: 'merged main into', rewrite: 'rewrote the authorship of', release: 'started the release of', tag: 'created the tag', merge: 'approved and merged', approve: 'approved', resume: 'approved resuming', changes: 'requested changes on', start: 'started', allowperm: 'approved', denyperm: 'denied', add: 'added' };
 // What the audit log and chat say: "Claude (lead) approved T-ABC123 …".
 export function leadLabel(lead, action, ref, extra = '') {
   return `${NAMES[lead] || lead} (lead) ${LEAD_VERBS[action] || action} ${ref}${extra ? ` ${extra}` : ''}`.trim();
 }
 // Undo is offered for deny, start, add, approve-to-resume and a decision-only approve or
 // changes; never after a completed merge or an approved permission (the AI may have acted).
-export const leadUndoable = (action) => ['denyperm', 'start', 'resume', 'add', 'approve', 'changes'].includes(action);
+export const leadUndoable = (action) => ['denyperm', 'start', 'resume', 'add', 'approve', 'changes', 'revert', 'mergemain'].includes(action);
 
 // The extra lead prompt, only while the switch is on.
 export function leadRules(lead) {
@@ -144,6 +150,10 @@ export function leadRules(lead) {
     '  START: T-<id> — start a queued task (or queue it as Start next)',
     '  APPROVE: R-<id> / DENY: R-<id> <reason> — answer a teammate\'s permission card',
     '  ADD TASK: <title> — <details> | implementer: <name> | reviewer: <name> | action: code|docs',
+    '  TASK NOTE: T-<id> <instruction> — goes into that task\'s instruction log; its runner must acknowledge it (e.g. "merge main first", "verify only")',
+    '  VERIFY: T-<id> — a verify-only run: checks are run and reported, nothing can be edited or committed (the only kind of run while a review is pending)',
+    '  MERGE MAIN: T-<id> — bring main into a hearth/ task branch (Routine, audited, undoable)',
+    '  REVERT: T-<id> <sha> <why> — revert one commit on a hearth/ task branch that is outside the task\'s scope (Routine, audited, undoable). Never main, tags or releases.',
     ...(p.merge ? ['- The Owner turned on "Lead may merge to main": APPROVE: T-<id> on a task in approval merges exactly the approved commit, only after an approving review by another AI (not you; not the local model for code). Never your own unreviewed work.'] : []),
     ...(p.release ? [`- The Owner turned on "Lead may publish releases": write RELEASE: v${p.nextVersion || '<Next version>'} to publish. Only the Owner's Next version (${p.nextVersion ? `v${p.nextVersion}` : 'not set yet, so no release'}) is allowed, and only when the version file on main already says it. You never edit or bump version numbers.`] : []),
     ...(p.tag ? [`- The Owner turned on "Lead may create tags": write TAG: v${p.nextVersion || '<Next version>'} to tag main's commit. Only v<Next version>; never another name, never force, never delete tags.`] : []),

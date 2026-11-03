@@ -7,13 +7,14 @@ const path = require('node:path');
 // Width/height from PNG, JPEG, GIF or WebP headers (no decoding).
 function imageSize(buf) {
   if (!Buffer.isBuffer(buf) || buf.length < 24) return null;
-  if (buf.readUInt32BE(0) === 0x89504e47) return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
-  if (buf.toString('ascii', 0, 3) === 'GIF') return { width: buf.readUInt16LE(6), height: buf.readUInt16LE(8) };
+  // Colour depth where it's cheap: PNG (IHDR bit depth + colour type), GIF, JPEG (SOF).
+  if (buf.readUInt32BE(0) === 0x89504e47) return { format: 'PNG', width: buf.readUInt32BE(16), height: buf.readUInt32BE(20), depth: buf[24], color: { 0: 'grey', 2: 'RGB', 3: 'palette', 4: 'grey+alpha', 6: 'RGBA' }[buf[25]] || undefined };
+  if (buf.toString('ascii', 0, 3) === 'GIF') return { format: 'GIF', width: buf.readUInt16LE(6), height: buf.readUInt16LE(8), depth: (buf[10] & 7) + 1, color: 'palette' };
   if (buf.toString('ascii', 0, 4) === 'RIFF' && buf.toString('ascii', 8, 12) === 'WEBP') {
     const kind = buf.toString('ascii', 12, 16);
-    if (kind === 'VP8X') return { width: 1 + buf.readUIntLE(24, 3), height: 1 + buf.readUIntLE(27, 3) };
-    if (kind === 'VP8L') { const b = buf.readUInt32LE(21); return { width: (b & 0x3fff) + 1, height: ((b >> 14) & 0x3fff) + 1 }; }
-    if (kind === 'VP8 ') return { width: buf.readUInt16LE(26) & 0x3fff, height: buf.readUInt16LE(28) & 0x3fff };
+    if (kind === 'VP8X') return { format: 'WEBP', width: 1 + buf.readUIntLE(24, 3), height: 1 + buf.readUIntLE(27, 3) };
+    if (kind === 'VP8L') { const b = buf.readUInt32LE(21); return { format: 'WEBP', width: (b & 0x3fff) + 1, height: ((b >> 14) & 0x3fff) + 1 }; }
+    if (kind === 'VP8 ') return { format: 'WEBP', width: buf.readUInt16LE(26) & 0x3fff, height: buf.readUInt16LE(28) & 0x3fff };
     return null;
   }
   if (buf[0] === 0xff && buf[1] === 0xd8) {
@@ -22,7 +23,7 @@ function imageSize(buf) {
       if (buf[i] !== 0xff) { i++; continue; }
       const marker = buf[i + 1];
       const len = buf.readUInt16BE(i + 2);
-      if (marker >= 0xc0 && marker <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(marker)) return { width: buf.readUInt16BE(i + 7), height: buf.readUInt16BE(i + 5) };
+      if (marker >= 0xc0 && marker <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(marker)) return { format: 'JPG', width: buf.readUInt16BE(i + 7), height: buf.readUInt16BE(i + 5), depth: buf[i + 4] * (buf[i + 9] || 1), color: { 1: 'grey', 3: 'YCbCr', 4: 'CMYK' }[buf[i + 9]] || undefined };
       i += 2 + len;
     }
   }
