@@ -2,7 +2,7 @@
 // with the user's own subscriptions (no API credit needed).
 //   Claude   -> Claude Code  (`claude -p`)          sign in: `claude auth login`
 //   ChatGPT  -> OpenAI Codex (`codex exec`)         sign in: `codex login`
-//   Gemini   -> Gemini CLI   (`gemini -p`)          sign in: run `gemini`, "Sign in with Google"
+//   Gemini   -> Antigravity CLI (`agy -p`), else Gemini CLI (`gemini -p`); sign in: run `agy` (or `gemini`)
 //   Grok     -> xAI Grok Build (`grok -p`)       sign in: `grok login` (browser OAuth, grok.com account)
 //   Mistral  -> Mistral Vibe (`vibe -p`)          sign in: `vibe --setup` (browser, Mistral account)
 //   Qwen     -> Qwen Code (`qwen -p`)             sign in: run `qwen`, choose Qwen OAuth
@@ -84,17 +84,62 @@ function childEnv() {
   return env;
 }
 
+// Gemini: Google's Antigravity CLI (agy) when it's installed anywhere on the
+// search path, otherwise the older Gemini CLI.
 function findBinary(agent, custom) {
   if (custom) return fs.existsSync(custom) ? custom : null;
-  for (const dir of searchDirs()) {
-    const p = path.join(dir, BIN[agent]);
-    try {
-      fs.accessSync(p, fs.constants.X_OK);
-      return p;
-    } catch {}
+  for (const name of agent === 'google' ? ['agy', 'gemini'] : [BIN[agent]]) {
+    for (const dir of searchDirs()) {
+      const p = path.join(dir, name);
+      try {
+        fs.accessSync(p, fs.constants.X_OK);
+        return p;
+      } catch {}
+    }
   }
   return null;
 }
+const isAgy = (file) => /^agy(\.exe)?$/i.test(path.basename(String(file || '')));
+
+// agy only takes its prompt as a command-line argument (it does not read stdin),
+// and Linux refuses any single argument over MAX_ARG_STRLEN (128 KiB, counting the
+// trailing NUL). Long prompts are cut to stay safely under that: the opening
+// instructions are kept, then the newest context; the older middle is dropped.
+const ARG_PROMPT_LIMIT = 120 * 1024;
+const ARG_TRIM_NOTE = '\n\n[… older context trimmed to fit the command-line limit …]\n\n';
+function fitBytes(buf, fromEnd) {
+  let text = buf.toString('utf8');
+  // A cut through a multi-byte character decodes as U+FFFD; drop it.
+  text = fromEnd ? text.replace(/^\uFFFD+/, '') : text.replace(/\uFFFD+$/, '');
+  return text;
+}
+function capArgPrompt(prompt, limit = ARG_PROMPT_LIMIT) {
+  const text = String(prompt || '');
+  const all = Buffer.from(text, 'utf8');
+  if (all.length <= limit) return text;
+  const head = Math.min(12 * 1024, Math.floor(limit / 4));
+  const tail = limit - head - Buffer.byteLength(ARG_TRIM_NOTE);
+  return fitBytes(all.subarray(0, head), false) + ARG_TRIM_NOTE + fitBytes(all.subarray(all.length - tail), true);
+}
+
+// How each official CLI takes images (only what that tool supports):
+//   Claude Code  reads an image path named in the prompt (its folder is added with --add-dir)
+//   Codex        -i/--image <file>
+//   agy / Gemini CLI / Qwen Code  @path references in the prompt
+// Other tools get a note that an image was attached but they can't view it here.
+function imageInputs(agent, images = [], { agy = false } = {}) {
+  const files = images.filter((f) => typeof f === 'string' && path.isAbsolute(f) && !/\s/.test(f) && fs.existsSync(f)).slice(0, 8);
+  const none = { args: [], prompt: '', pArg: '', dirs: [] };
+  if (!files.length) return none;
+  if (agent === 'anthropic') return { ...none, prompt: `\n\nAttached images (open and look at these files): ${files.join(' ')}`, dirs: [...new Set(files.map((f) => path.dirname(f)))] };
+  if (agent === 'openai') return { ...none, args: files.flatMap((f) => ['--image', f]) };
+  if (agent === 'google' || agent === 'qwen') {
+    const refs = files.map((f) => `@${f}`).join(' ');
+    return agy ? { ...none, prompt: `\n\nAttached images: ${refs}` } : { ...none, pArg: ` Attached images: ${refs}`, dirs: [...new Set(files.map((f) => path.dirname(f)))] };
+  }
+  return { ...none, prompt: `\n\n(${files.length} image${files.length > 1 ? 's were' : ' was'} attached in chat, but this tool can't view images here: ${files.map((f) => path.basename(f)).join(', ')}.)` };
+}
+
 
 function run(file, args, { cwd, input, timeoutMs = 60000, signal } = {}) {
   return new Promise((resolve) => {
@@ -158,7 +203,8 @@ function classify(agent, res, text) {
   if (/overloaded|service unavailable|internal server error|bad gateway|gateway timeout|\b50[0234]\b|ECONNRESET|ECONNREFUSED|ENOTFOUND|ETIMEDOUT|network error|fetch failed|stream disconnected/i.test(all)) {
     return { kind: 'outage', message: 'The provider is unreachable or having problems. Work so far is saved; resume when it is back.' };
   }
-  if (/not logged in|log ?in|authenticat|unauthori[sz]ed|invalid api key|\b401\b/i.test(all)) {
+  // "not eligible" is how Google refuses an account that can't use the CLI: a sign-in problem.
+  if (/not logged in|log ?in|authenticat|unauthori[sz]ed|invalid api key|\b401\b|not eligible/i.test(all)) {
     return { kind: 'auth', message: 'Not signed in. Use “Sign in” on the Agents page.' };
   }
   const tail = (res.err || res.out || '').trim().split('\n').slice(-3).join(' ').slice(0, 300);
@@ -209,8 +255,10 @@ function parseGemini(stdout) {
   const start = s.indexOf('{');
   try {
     const j = JSON.parse(s.slice(Math.max(0, start)));
-    const err = j.error ? (typeof j.error === 'string' ? j.error : j.error.message || JSON.stringify(j.error)) : null;
-    return { text: typeof j.response === 'string' ? j.response : '', error: err, sessionId: j.session_id || j.sessionId || j.stats?.session_id || null };
+    let err = j.error ? (typeof j.error === 'string' ? j.error : j.error.message || JSON.stringify(j.error)) : null;
+    // agy wraps every reply in { status, response, conversation_id }; anything but SUCCESS failed.
+    if (!err && typeof j.status === 'string' && j.status.toUpperCase() !== 'SUCCESS') err = `agy status ${j.status}`;
+    return { text: typeof j.response === 'string' ? j.response : '', error: err, sessionId: j.conversation_id || j.session_id || j.sessionId || j.stats?.session_id || null };
   } catch {
     return { text: s, error: null, sessionId: null };
   }
@@ -281,11 +329,13 @@ const uuid = () => crypto.randomUUID();
 // ('edit' is accepted as 'standard'.) extraDirs: other folders the owner granted.
 // resumeId: continue that CLI session (its own session list keeps the whole
 // conversation); on success the result carries sessionId for next time.
-async function runAgent({ agent, prompt, cwd, mode = 'read', model, timeoutMs, signal, bin, extraDirs = [], resumeId = null }) {
+async function runAgent({ agent, prompt, cwd, mode = 'read', model, timeoutMs, signal, bin, extraDirs = [], resumeId = null, images = [] }) {
   if (mode === 'edit') mode = 'standard';
-  const dirs = extraDirs.filter((d) => typeof d === 'string' && path.isAbsolute(d) && fs.existsSync(d));
+  const file = agent === 'ollama' ? null : bin || findBinary(agent);
+  const img = imageInputs(agent, images, { agy: agent === 'google' && isAgy(file) });
+  prompt = `${prompt}${img.prompt}`;
+  const dirs = [...extraDirs, ...img.dirs].filter((d, i, a) => typeof d === 'string' && path.isAbsolute(d) && fs.existsSync(d) && a.indexOf(d) === i);
   if (agent === 'ollama') return runOllama({ prompt, model, timeoutMs, signal });
-  const file = bin || findBinary(agent);
   if (!file) return { ok: false, error: { kind: 'not_installed', message: `${BIN[agent] || agent} is not installed.` } };
   if (agent === 'freebuff') {
     return { ok: false, error: { kind: 'interactive', message: 'FreeBuff only runs interactively — open it in a terminal from the task.' } };
@@ -312,7 +362,7 @@ async function runAgent({ agent, prompt, cwd, mode = 'read', model, timeoutMs, s
 
   if (agent === 'openai') {
     const outFile = path.join(os.tmpdir(), `hearth-codex-${process.pid}-${Date.now()}.txt`);
-    const args = ['exec', '--json', '--skip-git-repo-check', '--color', 'never', '-C', workdir, '-o', outFile];
+    const args = ['exec', ...img.args, '--json', '--skip-git-repo-check', '--color', 'never', '-C', workdir, '-o', outFile];
     if (mode === 'full') args.push('--dangerously-bypass-approvals-and-sandbox');
     else if (mode === 'standard') args.push('--approve-for-me');
     else args.push('-s', 'read-only');
@@ -333,10 +383,24 @@ async function runAgent({ agent, prompt, cwd, mode = 'read', model, timeoutMs, s
     return { ok: false, error: classify(agent, res, text), partial: text || null, resumeFailed: Boolean(resume) };
   }
 
+  if (agent === 'google' && isAgy(file)) {
+    // agy reads its prompt only from -p (no stdin), so long briefs are trimmed to fit.
+    const args = ['-p', capArgPrompt(prompt), '--output-format', 'json', '--mode', { read: 'plan', standard: 'accept-edits', full: 'auto' }[mode]];
+    if (resume) args.push('--conversation', resume);
+    for (const d of dirs) args.push('--add-dir', d);
+    // Full access = no permission prompts. (--sandbox would restrict it instead.)
+    if (mode === 'full') args.push('--dangerously-skip-permissions');
+    if (model) args.push('--model', model);
+    const res = await run(file, args, { cwd: workdir, timeoutMs, signal });
+    const parsed = parseGemini(res.out);
+    if (res.code === 0 && !parsed.error && parsed.text) return { ok: true, text: parsed.text, via: 'Antigravity CLI', sessionId: parsed.sessionId || resume || null };
+    return { ok: false, error: classify(agent, res, `${parsed.error || ''}\n${parsed.text}`), partial: parsed.text || null, resumeFailed: Boolean(resume) };
+  }
+
   if (agent === 'google' || agent === 'qwen') {
     // Brief comes in over stdin; -p forces headless mode and is appended to it.
     // Qwen Code is built on the Gemini CLI and takes the same flags.
-    const args = ['-p', 'Follow the instructions above.', '--output-format', 'json', '--approval-mode', { read: 'plan', standard: 'auto_edit', full: 'yolo' }[mode]];
+    const args = ['-p', `Follow the instructions above.${img.pArg}`, '--output-format', 'json', '--approval-mode', { read: 'plan', standard: 'auto_edit', full: 'yolo' }[mode]];
     if (resume) args.push('--resume', resume);
     if (dirs.length) args.push('--include-directories', dirs.join(','));
     if (model) args.push('-m', model);
@@ -425,6 +489,12 @@ async function toolStatus(agent, bin) {
     const r = await run(file, ['login', 'status'], { timeoutMs: 15000 });
     return { installed: true, signedIn: r.code === 0 && !/not logged/i.test(r.out + r.err), path: file };
   }
+  if (agent === 'google' && isAgy(file)) {
+    // agy keeps its Google sign-in to itself; asking it for /usage is the check.
+    const r = await run(file, ['-p', '/usage', '--output-format', 'json'], { timeoutMs: 30000 });
+    const parsed = parseGemini(r.out);
+    return { installed: true, signedIn: r.code === 0 && !parsed.error && !/sign in|log ?in|authenticat|not eligible/i.test(r.err), path: file, tool: 'agy' };
+  }
   if (agent === 'google') return { installed: true, signedIn: geminiSignedIn(), path: file };
   if (agent === 'xai') return { installed: true, signedIn: grokSignedIn(), path: file };
   if (agent === 'qwen') return { installed: true, signedIn: qwenSignedIn(), path: file };
@@ -486,6 +556,7 @@ async function logout(agent, bin) {
     const r = await run(file, agent === 'anthropic' ? ['auth', 'logout'] : ['logout'], { timeoutMs: 20000 });
     return r.code === 0 ? { ok: true } : { ok: false, message: (r.err || r.out || `exit ${r.code}`).trim().split('\n').slice(-1)[0] };
   }
+  if (agent === 'google' && isAgy(file)) return { ok: false, message: 'Sign out inside agy itself (run agy in a terminal); the app never holds its sign-in.' };
   if (agent === 'google') {
     // Gemini CLI has no sign-out command; its cached Google sign-in lives in
     // ~/.gemini/oauth_creds.json. Removing that file is how it signs out.
@@ -523,4 +594,4 @@ async function install(list, { fetchImpl } = {}) {
   return r.ok ? { ...r, agents: plan.agents, plan: plan.plan } : r;
 }
 
-module.exports = { runAgent, status, login, logout, install, openTerminal, findBinary, isLimit, resetHint, parseClaude, parseGemini, parseCodexEvents, parseGrok, parseVibe, lastJson, run, searchDirs, BIN, CLI_AGENTS, NPM_PACKAGE, execFile };
+module.exports = { isAgy, capArgPrompt, ARG_PROMPT_LIMIT, imageInputs, runAgent, status, login, logout, install, openTerminal, findBinary, isLimit, resetHint, parseClaude, parseGemini, parseCodexEvents, parseGrok, parseVibe, lastJson, run, searchDirs, BIN, CLI_AGENTS, NPM_PACKAGE, execFile };
