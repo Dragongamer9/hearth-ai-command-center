@@ -10,6 +10,7 @@ import { chatPlan, canOwnerSend, newRound, ownerInterrupt, stopRound, cameAfterO
 import { leadOn, parseLeadLines, leadDecision, leadLabel, leadUndoable, pickReviewer } from './lead.mjs';
 import { AGENTS, AGENT_IDS, WEB_ONLY, HEADLESS, EDITORS, API_CAPABLE, DEFAULT_ROLES, BILLING, ACCESS_NOTE, OLLAMA_NOTE, COLORS } from './registry.mjs';
 import { viewHabitat, mountHabitat, stopHabitat } from './habitat.mjs';
+import { applyHabitatLines, habitatSection, stripHabitatLines, habitatResultsHtml } from './habitat/actions.mjs';
 import { HEARTH_OS, RED_FLAGS } from './hearth.mjs';
 import { tokensToCss, pickMode } from './theme.mjs';
 import { createOps } from './ops/ui.mjs';
@@ -780,7 +781,15 @@ function habitatSnapshot() {
   };
   const brief = (t) => (t ? { id: t.id, title: t.title, branch: t.ws?.branch || '' } : null);
   const reducedOs = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
+  // Real task facts for the Habitat's garden, desk lights, moods and visits.
+  const lastTests = (t) => [...(t.runs || [])].reverse().find((r) => r.tests)?.tests || t.done?.tests || '';
+  const ciOf = (t) => { const c = ui.prs.byTask?.[t.id]?.checks; return !c ? '' : c.failed ? 'failed' : c.pending ? 'pending' : c.total && c.passed === c.total ? 'passed' : ''; };
+  const fact = (t) => ({ id: t.id, title: t.title, stage: t.stage, assignee: t.assignee, reviewer: t.reviewer, updatedAt: t.updatedAt, tests: lastTests(t), ci: ciOf(t), running: Boolean(ui.running[t.id]), merged: (t.notes || []).some((n) => /^Merged into /.test(n.text || '')), runs: (t.runs || []).slice(-6).map((r) => ({ a: r.agent, s: r.status })) });
   return {
+    tasks: state.tasks.slice(-300).map(fact),
+    chat: state.chat.slice(-12).map((m) => ({ id: m.id, who: m.who, text: String(m.text || '').slice(0, 200) })),
+    store: state.habitat || null,
+    ops: typeof opsSnapshot === 'function' ? opsSnapshot() : null, // eslint-disable-line no-undef
     reduced: settings.reduceMotion === true || reducedOs,
     agents: ids.slice(0, 12).map((a) => {
       const b = busyOn(a);
@@ -795,7 +804,32 @@ const habitatHooks = {
   snapshot: habitatSnapshot,
   openTask: (id) => { if (state.tasks.some((t) => t.id === id)) { ui.selected = id; render(); } },
   openAgent: (a) => { ui.view = 'agents'; ui.side = a; ui.expanded = a; ui.selected = null; render(); },
+  openChat: () => { ui.view = 'chat'; ui.selected = null; render(); },
+  // Habitat progress lives in the app state and is saved with it.
+  saveStore: (h) => { state.habitat = h; save(); },
+  audit: (event, detail = '') => { audit(event, null, detail); save(); },
 };
+
+// AIs acting in their Habitat with HABITAT: lines (logic in src/habitat/actions.mjs).
+// Cosmetic and Routine: no approval card; every line is audited and gets a ✓/✗ result.
+// d: the parsed reply; its HABITAT: lines are removed so @names in them don't call teammates in.
+function habitatLines(agent, d, m) {
+  const text = d.text;
+  d.text = stripHabitatLines(text);
+  const snap = habitatSnapshot();
+  const r = applyHabitatLines(state.habitat, { agent, text, ids: snap.agents.map((a) => a.id), agents: snap.agents, names: NAMES, reduced: snap.reduced, local: agent === 'ollama' });
+  if (!r.results.length) return;
+  if (r.changed) state.habitat = r.store;
+  for (const a of r.audits) audit(a.event, null, a.detail, agent);
+  if (m) { m.text = stripHabitatLines(m.text); m.results = [...(m.results || []), ...r.results]; } else post({ who: 'system', text: r.results.map((x) => `${NAMES[agent]} · ${x.line}: ${x.ok ? '✓' : '✗'} ${x.reason}`).join('\n') });
+}
+// Every chat prompt gets the AI's one-line Habitat memory; full prompts also the rules.
+function habitatPrompt(agent, resumed) {
+  const snap = habitatSnapshot();
+  const r = habitatSection(state.habitat, { agent, ids: snap.agents.map((a) => a.id), names: NAMES, local: agent === 'ollama', full: !resumed });
+  if (r.changed) state.habitat = r.store;
+  return r.text;
+}
 
 // Redraw only the panel (keeps the chat draft and scroll).
 function updatePanel() {
@@ -838,6 +872,7 @@ function chatMessage(m) {
     ${chip ? `<div class="who">${chip}<span>${esc(time(m.at))}${m.model ? ` · ${esc(m.model)}` : ''}${m.auto ? ' · posted on its own' : ''}${m.parallel ? ' · answered in parallel, independently' : ''}${m.beforeOwner ? ' · written before your newest message' : ''}</span><span class="mid">#${esc(m.id)}</span></div>` : ''}
     ${body}${attachmentsHtml(m)}${ops.resultsHtml(m)}${hist}
     ${asks}
+    ${typeof ops === 'undefined' ? habitatResultsHtml(m, esc) : '' /* eslint-disable-line no-undef */}
     ${m.leadUndo ? (() => { const e = (state.leadLog || []).find((x) => x.id === m.leadUndo); return e ? `<div class="row" style="margin-top:6px">${e.undone ? '<span class="badge">Undone</span>' : `<button class="btn small" data-leadundo="${esc(e.id)}">Undo</button>`}</div>` : ''; })() : ''}
     ${props ? `<div class="props">${props}${pending > 1 ? `<button class="btn small primary" data-addall="${m.id}" style="margin-top:4px;align-self:flex-start">Add all ${pending}</button>` : ''}</div>` : ''}
   </div>`;
@@ -1029,6 +1064,7 @@ async function chatTurn(agent, { trigger = '', canEdit = false, snapshot = null,
   const lastOwner = [...chat].reverse().find((m) => m.who === 'owner');
   const runId = uid() + uid();
   round.runs[agent] = runId;
+  prompt += habitatPrompt(agent, Boolean(sess?.sessionId));
   const res = await callAgent(agent, prompt, {
     ...(edit ? { mode: 'edit', taskId: chatId() } : { mode: 'read', taskId: state.chatWs ? chatId() : undefined }),
     runId,
@@ -1084,6 +1120,7 @@ async function chatTurn(agent, { trigger = '', canEdit = false, snapshot = null,
       state.chatSessions[skey] = { sessionId: res.sessionId, lastMsgId: (m || state.chat[state.chat.length - 1])?.id, at: now() };
     }
     if (res.resumeReset) post({ who: 'system', text: `${NAMES[agent]}'s saved CLI session couldn't continue, so it started a new one (also saved in its CLI).` });
+    habitatLines(agent, d, m);
     if (edit) {
       const cp = await api.checkpoint(chatId(), NAMES[agent], `Team chat: ${(lastOwner?.text || trigger || 'update').slice(0, 80)}`).catch(() => null);
       if (cp) {
