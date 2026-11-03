@@ -37,7 +37,6 @@ function stub(opts) {
     };
   }
   const IMG = 'data:image/svg+xml;utf8,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="480" height="270"><rect width="480" height="270" fill="#1b2838"/><rect x="24" y="24" width="432" height="40" rx="6" fill="#2a475e"/><text x="40" y="51" fill="#c7d5e0" font-family="sans-serif" font-size="18">Settings › Storage</text><rect x="24" y="84" width="300" height="18" rx="4" fill="#66c0f4"/><rect x="24" y="116" width="220" height="18" rx="4" fill="#4c6b22"/><text x="24" y="240" fill="#8f98a0" font-family="sans-serif" font-size="14">screenshot attached by Claude</text></svg>');
-  if (flows) chat.push({ id: 'C8SHOT', who: 'anthropic', at: ago(3), model: 'Claude Code', text: 'Storage page after the layout change.', attachments: [{ id: 'a1', kind: 'image', name: 'storage-page.png', path: '/tmp/x/storage-page.png', url: IMG, size: 2048 }] });
   const audit = populated ? [
     { id: 'A0', at: ago(4), actor: 'anthropic', event: 'Permission requested', taskId: null, detail: 'Claude · Push to GitHub: push hearth/k7q2ma-storage-page' },
     { id: 'A1', at: ago(30), actor: 'owner', event: 'Approval requested', taskId: 'K7Q2MA', detail: 'Claude finished; ChatGPT reviewed' },
@@ -55,6 +54,7 @@ function stub(opts) {
     { id: 'C6CLAU', who: 'anthropic', at: ago(5), auto: true, model: 'Claude Code', text: 'T-K7Q2MA “Add Settings › Storage page to Mantel”: StoragePage.qml and the settings store are in, tests pass.\n(Reported done — ready for review.)' },
     { id: 'C7CLAU', who: 'anthropic', at: ago(4), model: 'Claude Code', text: 'I\'d like to push the task branch so ChatGPT can review it on GitHub.', asks: ['R7PUSH'] },
   ] : [];
+  if (flows) chat.push({ id: 'C8SHOT', who: 'anthropic', at: ago(3), model: 'Claude Code', text: 'Storage page after the layout change.', attachments: [{ id: 'a1', kind: 'image', name: 'storage-page.png', path: '/tmp/x/storage-page.png', url: IMG, size: 2048 }] });
   const permissions = populated ? [
     { id: 'R7PUSH', agent: 'anthropic', kind: 'push', what: 'Push hearth/k7q2ma-storage-page to GitHub', why: 'So ChatGPT can review the branch and the PR checks run.', context: 'chat', msgId: 'C7CLAU', at: ago(4), status: 'pending', questions: [] },
     { id: 'R6BOOT', agent: 'xai', kind: 'boot', what: 'Change GRUB_DEFAULT handling in the image build', why: 'Needed for the theme', context: 'chat', at: ago(200), status: 'approved', decidedAt: ago(190), questions: [] },
