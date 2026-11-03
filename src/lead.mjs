@@ -6,6 +6,7 @@ import { EDITORS } from './registry.mjs';
 import { findDuplicate } from './dupes.mjs';
 import { leadMayApprove, OWNER_ONLY, getLeadPowers, leadVersionCheck } from './ops/approval.mjs';
 import { localReviewOk } from './ops/extras.mjs';
+import { reviewerCanApprove } from './owner.mjs';
 
 const CLOSED = ['approved', 'rejected'];
 const REVIEWABLE = ['checkpoint', 'testing', 'review'];
@@ -58,7 +59,8 @@ export function leadDecision(cmd, { lead, enabled = false, task = null, request 
   if (cmd.kind === 'approve' || cmd.kind === 'changes' || cmd.kind === 'start') {
     if (!task) return { ok: false, reason: `there is no task T-${cmd.id}` };
     if (CLOSED.includes(task.stage)) return { ok: false, reason: `T-${task.id} is already ${task.stage}` };
-    if ((cmd.kind === 'approve' || cmd.kind === 'changes') && task.reviewer === lead && REVIEWABLE.includes(task.stage)) return { ok: false, skip: true };
+    if (cmd.kind === 'approve' && task.reviewer === lead && reviewerCanApprove(task)) return { ok: false, skip: true };
+    if (cmd.kind === 'changes' && task.reviewer === lead && REVIEWABLE.includes(task.stage)) return { ok: false, skip: true };
   }
   if (cmd.kind === 'approve') {
     if (OWNER_ONLY_ACTIONS.includes(task.action)) return { ok: false, reason: `${task.action === 'release' ? 'releases' : 'deploys'} stay with the Owner` };

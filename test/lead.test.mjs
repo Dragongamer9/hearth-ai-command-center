@@ -36,6 +36,7 @@ test('the lead approves a reviewed task like "Approve to merge"', () => {
   assert.deepEqual(leadDecision({ kind: 'approve', id: 'ABC123' }, { ...on, task: mk({ stage: 'implementing' }), resumable: true }), { ok: true, action: 'resume' });
   assert.equal(leadDecision({ kind: 'approve', id: 'ABC123' }, { ...on, task: mk({ stage: 'implementing' }) }).ok, false);
   assert.equal(leadDecision({ kind: 'approve', id: 'ABC123' }, { ...on, task: mk({ stage: 'review', reviewer: 'anthropic' }) }).skip, true, 'its own reviewer sign-off uses applyVerdict');
+  assert.equal(leadDecision({ kind: 'approve', id: 'ABC123' }, { ...on, task: mk({ stage: 'implementing', reviewer: 'anthropic', changesSince: { sha: 'aaa' } }), resumable: true }).skip, true, 'lead-as-reviewer APPROVE after CHANGES is a sign-off, not a resume');
 });
 
 test('the lead can never approve its own work', () => {
