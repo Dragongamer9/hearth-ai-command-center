@@ -11,9 +11,10 @@ import { decideHandoff, askCard, REASON, MAX_HANDOFFS } from './handoff.mjs';
 import { ciBranches, applyCi, ciChangesText, CI_LABEL } from './ci.mjs';
 import { parseMemoryLines, memoryCard, logTask, phoneSnapshot, phoneAction, opsSnapshot as snapshotOf } from './feeds.mjs';
 import { CATEGORIES, MOVABLE, OWNER_ONLY, cleanLevels, levelPatch, setLevels } from './approval.mjs';
+import { LOCAL_PRESETS, fitCheck, resolveLocalModel, validTag, paramsOf, localMayReview, setLocalConfig, unknownMentions, capabilities, canSeeImages, splitProgress, requestedSize, belowRequested, fmtBytes, parseImageRequests, pickImageAI, checkpointReport, result as mkResult, CAPS } from './extras.mjs';
 
 let C = null; // the ctx main.js passed in
-const local = { projects: { active: 'default', list: [] }, phone: null, voice: null, usage: {}, memory: null, memoryDirty: false, testing: {}, rec: null, suggestTouched: false, projectMsg: '' };
+const local = { hw: null, jobs: [], tools: null, turn: {}, projects: { active: 'default', list: [] }, phone: null, voice: null, usage: {}, memory: null, memoryDirty: false, testing: {}, rec: null, suggestTouched: false, projectMsg: '' };
 
 const call = (name, ...a) => (typeof C?.api?.[name] === 'function' ? C.api[name](...a).catch((e) => ({ ok: false, message: String(e?.message || e) })) : Promise.resolve(null));
 const S = () => C.state();
@@ -231,7 +232,7 @@ function viewOps() {
   const tstats = st.tasks.map((t) => taskStats(t)).filter((x) => x.runs || x.handoffs).slice(0, 40);
   const totals = agentTotals(st.tasks);
   const ciTasks = st.tasks.filter((t) => t.ci && t.ci.state !== 'none');
-  return `<div class="card mb"><h3>Budget and headroom<span class="grow"></span><button class="btn small ghost" data-ops="usage">Check usage</button></h3>
+  return `${capsCard()}${jobsCard()}${toolsCard()}<div class="card mb"><h3>Budget and headroom<span class="grow"></span><button class="btn small ghost" data-ops="usage">Check usage</button></h3>
       <table class="ops-table"><thead><tr><th>AI</th><th>Headroom</th><th>Runs (5 h)</th><th>Limit hits</th><th>Reset</th><th>Based on</th></tr></thead><tbody>
       ${rows.map((a) => { const x = b[a]; return `<tr><td>${C.agentChip(a)}</td><td>${bar(x.headroom, x.out ? 'out' : x.near ? 'near' : '')}<span class="faint">${Math.round(x.headroom * 100)}%${x.out ? ' · out of usage' : x.near ? ' · near limit' : ''}</span></td><td>${x.recent} / ~${x.cap}</td><td>${x.limitHits}</td><td>${esc(x.reset || '—')}</td><td class="faint">${x.source === 'usage' ? `/usage: ${x.usedPct}% used` : x.source === 'limit' ? 'limit reported' : 'run count'}</td></tr>`; }).join('') || '<tr><td colspan="6" class="empty">No AIs linked yet.</td></tr>'}
       </tbody></table><div class="faint ops-note">New and queued tasks go to the AI with the most headroom among those with the right role; starting a long task on an AI near its limit shows a warning. Tokens or credits only where a CLI reports them.</div></div>
@@ -436,12 +437,213 @@ function stopRec() {
   C.render();
 }
 
+// ---------- action-line results (every line gets a ✓ or ✗) ----------
+function attachResult(m, r) { m.results = [...(m.results || []), r].slice(-20); }
+function actionResult(agent, line, ok, reason = '', taskId = null) {
+  const r = mkResult(line, ok, reason);
+  C.audit('Board action', taskId, `${N(agent)} · ${r.line}: ${r.ok ? '✓' : '✗'} ${r.reason}`, agent);
+  if (local.turn[agent]) { local.turn[agent].push(r); return r; }
+  const st = S();
+  const m = [...st.chat].reverse().find((x) => x.who === agent && Date.now() - Date.parse(x.at) < 10 * 60000);
+  if (m) attachResult(m, r);
+  else C.post({ who: 'system', text: `${N(agent)} · ${r.line}: ${r.ok ? '✓' : '✗'} ${r.reason}` });
+  return r;
+}
+function turnBegin(agent) { local.turn[agent] = []; }
+function turnEnd(agent, m) {
+  const list = local.turn[agent] || [];
+  delete local.turn[agent];
+  if (!list.length) return;
+  const target = m || [...S().chat].reverse().find((x) => x.who === agent);
+  if (target) for (const r of list) attachResult(target, r);
+  else C.post({ who: 'system', text: list.map((r) => `${N(agent)} · ${r.line}: ${r.ok ? '✓' : '✗'} ${r.reason}`).join('\n') });
+}
+function resultsHtml(m) {
+  if (!m.results?.length) return '';
+  return `<div class="ops-results">${m.results.map((r) => `<div class="${r.ok ? 'ok' : 'no'}"><span>${r.ok ? '✓' : '✗'}</span> <span class="mono">${esc(r.line)}</span> — ${esc(r.reason)}</div>`).join('')}</div>`;
+}
+function bodyHtml(m) {
+  const { progress, body } = splitProgress(m.text);
+  if (!progress.length) return esc(m.text);
+  return `<details class="ops-working"><summary>working… (${progress.length} step${progress.length > 1 ? 's' : ''})</summary>${progress.map((p) => `<div>${esc(p)}</div>`).join('')}</details>${esc(body)}`;
+}
+function viewActions() {
+  const rows = S().audit.filter((e) => e.event === 'Board action').slice(0, 200);
+  return `<div class="card"><h3>Board actions<span class="grow"></span><span class="faint" style="font-size:12px">every action line an AI wrote, with its outcome</span></h3>
+    ${rows.map((e) => `<div class="row ops-act ${/: ✓/.test(e.detail) ? 'ok' : 'no'}"><span class="faint">${esc(C.time(e.at))}</span>${C.agentChip(e.actor)}<span style="flex:1">${esc(e.detail)}</span>${e.taskId ? `<button class="btn small link" data-open="${esc(e.taskId)}">T-${esc(e.taskId)}</button>` : ''}</div>`).join('') || '<div class="empty">No action lines yet.</div>'}</div>`;
+}
+
+// ---------- @mentions ----------
+function mentionNotes(text) {
+  for (const u of unknownMentions(text)) C.post({ who: 'system', text: `No teammate called @${u.name}.${u.suggest.length ? ` Did you mean ${u.suggest.join(', ')}?` : ''}` });
+}
+
+// ---------- images: who can see them, sizes, upscaling ----------
+function imageNotice(agent, media) {
+  if (!media?.images?.length) return;
+  if (!canSeeImages(agent, C.method(agent) === 'api')) C.post({ who: 'system', text: `${N(agent)} can't see images, so it only got the file names (${media.images.length} image${media.images.length > 1 ? 's' : ''}).` });
+}
+function attMeta(m, a, i) {
+  if (a.kind !== 'image') return '';
+  const want = requestedSize(`${m.text || ''} ${linkedTaskText(m)}`);
+  const low = belowRequested(a, want);
+  return `<span class="ops-attmeta">${a.width ? `${a.width}×${a.height}` : 'size unknown'}${a.size ? ` · ${esc(fmtBytes(a.size))}` : ''}${low ? ` <span class="badge warn">below the asked ${want.w}×${want.h}</span>` : ''}
+    <span class="ops-up">Upscale ${['1080p', '1440p', '4k'].map((t) => `<button class="btn small link" data-ops="upscale" data-arg="${esc(m.id)}:${i}" data-val="${t}">${t === '4k' ? '4K' : t}</button>`).join('')}</span></span>`;
+}
+function linkedTaskText(m) {
+  const id = String(m.text || '').match(/\bT-([A-Z0-9]{4,10})\b/)?.[1];
+  const t = id && S().tasks.find((x) => x.id === id);
+  return t ? `${t.title} ${t.description || ''}` : '';
+}
+async function upscale(ref, target) {
+  const [mid, i] = String(ref).split(':');
+  const a = S().chat.find((x) => x.id === mid)?.attachments?.[Number(i)];
+  if (!a?.path) return;
+  C.toast(`Upscaling ${a.name} to ${target === '4k' ? '4K' : target}…`);
+  const r = await call('opsUpscale', a.path, target);
+  if (!r?.ok) return C.toast(r?.message || 'Upscaling failed.');
+  C.post({ who: 'system', text: `Upscaled ${a.name} to ${target === '4k' ? '4K' : target} with ${r.method}. The original is kept.`, attachments: [r.att] });
+  C.audit('Image upscaled', null, `${a.name} → ${target} (${r.method})`);
+  await C.save();
+  C.render();
+}
+
+// ---------- checkpoint report ----------
+function checkpointLine(agent, cp, taskId = null, extra = '') {
+  const text = checkpointReport(cp, N(agent));
+  if (!text) return null;
+  const t = taskId ? S().tasks.find((x) => x.id === taskId) : null;
+  if (t) t.notes.push({ at: C.now(), who: 'Checkpoint', text });
+  return C.post({ who: 'system', report: true, text: `${text}${extra}` });
+}
+
+// ---------- IMAGE REQUEST and BACKGROUND lines -> background jobs ----------
+function capsNow() {
+  const st = S();
+  return Object.fromEntries(C.AGENT_IDS.map((a) => [a, capabilities(a, { tasks: st.tasks, chat: st.chat, api: C.method(a) === 'api' })]));
+}
+async function handleLines(agent, text, taskId = null) {
+  const caps = capsNow();
+  for (const req of parseImageRequests(text)) {
+    const line = `IMAGE REQUEST: ${req.prompt}`;
+    const to = pickImageAI(C.EDITORS.filter((a) => a !== agent && C.canRun(a) && C.method(a) !== 'api'), caps);
+    if (!to) { actionResult(agent, line, false, 'no teammate with image tools is available', taskId); continue; }
+    const id = `IR${C.uid()}`;
+    const prompt = `Image request from ${N(agent)}${req.for ? ` (for ${req.for})` : ''}: ${req.prompt}${req.size ? `\nSize: ${req.size}` : ''}\nGenerate the image with your own image tools, save it in $HEARTH_AI_ASSETS, and end with one line: ATTACH: <its path relative to your workspace>. If you have no image tools, say so plainly and do not claim you made one.`;
+    const j = await call('opsJobStart', { agent: to, kind: 'image', title: `Image for ${N(agent)}: ${req.prompt.slice(0, 80)}`, prompt, taskId, requestId: id });
+    if (!j?.id) { actionResult(agent, line, false, j?.message || 'could not start the job', taskId); continue; }
+    S().opsRequests = [...(S().opsRequests || []), { id, from: agent, to, prompt: req.prompt, size: req.size, for: req.for, jobId: j.id, at: C.now() }].slice(-50);
+    actionResult(agent, line, true, `sent to ${N(to)}${caps[to].imageOut === true ? '' : ' (image output not verified yet)'} as job ${j.id}`, taskId);
+    local.jobs = [j, ...local.jobs];
+  }
+  for (const raw of String(text || '').split('\n')) {
+    const m = raw.replace(/^[\s*\-•`>]+/, '').match(/^BACKGROUND:\s*(.{3,2000})$/i);
+    if (!m) continue;
+    const j = await call('opsJobStart', { agent, kind: 'background', title: m[1].slice(0, 120), prompt: `Background job: ${m[1]}\nWork on it fully; your final answer is posted to the team chat. Post files with ATTACH: lines.`, taskId });
+    actionResult(agent, `BACKGROUND: ${m[1]}`, Boolean(j?.id), j?.id ? `running as job ${j.id}; the result is posted when it finishes` : j?.message || 'could not start', taskId);
+    if (j?.id) local.jobs = [j, ...local.jobs];
+  }
+}
+async function pollJobs() {
+  const list = await call('opsJobs');
+  if (!Array.isArray(list)) return;
+  local.jobs = list;
+  const st = S();
+  const seen = new Set(st.opsJobsSeen || []);
+  let changed = false;
+  for (const j of list) {
+    if (['running'].includes(j.status) || seen.has(j.id)) continue;
+    seen.add(j.id);
+    changed = true;
+    const req = (st.opsRequests || []).find((r) => r.jobId === j.id);
+    const atts = [];
+    let text = j.text || '';
+    if (j.status === 'done') {
+      for (const mm of text.matchAll(/^\s*ATTACH:\s*(\S.*)$/gim)) {
+        const r = await call('attachFromAgent', mm[1].trim(), j.base || undefined);
+        if (r?.ok) atts.push({ ...r.att, from: mm[1].trim() });
+      }
+      text = text.replace(/^\s*ATTACH:.*$/gim, '').trim();
+    }
+    const head = req ? `${N(j.agent)} answered ${N(req.from)}'s image request “${req.prompt.slice(0, 80)}”` : `Background job ${j.id} by ${N(j.agent)} (${j.title})`;
+    C.post({ who: j.status === 'done' ? j.agent : 'system', auto: true, attachments: atts.length ? atts : undefined, text: `${head}: ${j.status === 'done' ? (text.slice(0, 1500) || 'done.') : `${j.status}${j.error ? ` — ${j.error.message}` : ''}`}${req && j.status === 'done' && !atts.length ? '\n(No image came back.)' : ''}` });
+    C.audit(`Job ${j.status}`, j.taskId, `${j.id} · ${N(j.agent)} · ${j.title}`, j.agent);
+  }
+  if (changed) { st.opsJobsSeen = [...seen].slice(-200); await C.save(); C.render(); }
+}
+function jobsCard() {
+  const list = local.jobs || [];
+  return `<div class="card mb"><h3>Background jobs</h3>${list.map((j) => `<div class="row ops-act"><span class="badge ${{ running: 'accent', done: 'good', failed: 'bad', lost: 'warn', cancelled: '' }[j.status] || ''}">${esc(j.status)}</span>${C.agentChip(j.agent)}<span style="flex:1">${esc(j.title || j.kind)}</span><span class="faint">${esc(C.ago(j.startedAt))}</span>${j.status === 'running' ? `<button class="btn small ghost" data-ops="jobcancel" data-arg="${esc(j.id)}">Cancel</button>` : ''}</div>`).join('') || '<div class="empty">No background jobs. AIs start them with BACKGROUND: or IMAGE REQUEST: lines; they keep running across turns and restarts.</div>'}</div>`;
+}
+
+// ---------- capability panel ----------
+const yn = (v) => (v === true ? '<span class="badge good">yes</span>' : v === false ? '<span class="badge">no</span>' : '<span class="badge warn">unknown</span>');
+function capsCard() {
+  const st = S();
+  const rows = C.AGENT_IDS.filter((a) => CAPS[a] && (C.connected(a) || a === 'ollama'));
+  return `<div class="card mb"><h3>What each AI can do here</h3><table class="ops-table"><thead><tr><th>AI</th><th>Edits</th><th>Commands</th><th>Web</th><th>Sees images</th><th>Makes images</th><th>Image sizes</th><th>Last good run</th></tr></thead><tbody>
+    ${rows.map((a) => { const c = capabilities(a, { tasks: st.tasks, chat: st.chat, api: C.method(a) === 'api' }); return `<tr><td>${C.agentChip(a)}</td><td>${yn(c.edits)}</td><td>${yn(c.commands)}</td><td>${yn(c.web)}</td><td title="${esc(c.note || '')}">${yn(c.imageIn)}</td><td>${yn(c.imageOut)}</td><td>${c.sizes ? esc(c.sizes) : '<span class="faint">unknown</span>'}</td><td>${c.lastOk ? esc(C.ago(c.lastOk)) : '<span class="faint">none yet</span>'}</td></tr>`; }).join('')}
+  </tbody></table><div class="faint ops-note">From how the app runs each tool plus what was recorded (an image an AI attached from its own assets folder marks image output as working). Unknown means not verified, not no.</div></div>`;
+}
+function toolsCard() {
+  const t = local.tools || {};
+  return `<div class="card mb"><h3>Image tools</h3><div class="row"><span style="flex:1">Real-ESRGAN (AI upscaling)</span>${t.esrgan ? '<span class="badge good">installed</span>' : '<button class="btn small" data-ops="esrgan">Install from its GitHub release</button>'}</div>
+    <div class="row"><span style="flex:1">ffmpeg (basic resize fallback)</span>${t.ffmpeg ? '<span class="badge good">installed</span>' : '<span class="badge warn">not installed</span>'}</div></div>`;
+}
+
+// ---------- Local AI models ----------
+function syncLocal() {
+  const installed = C.cli().ollama?.models || [];
+  const r = resolveLocalModel(S().models?.ollama || null, installed, S().opsLocal?.enabled);
+  setLocalConfig({ model: r.use, allowCode: C.settings().localReviewCode === true });
+  return r;
+}
+function localMayReviewTask(t) { const r = syncLocal(); return localMayReview(t, { model: r.use, allowCode: C.settings().localReviewCode === true }); }
+function localModels() {
+  const c = C.cli().ollama || {};
+  const installed = c.models || [];
+  const st = S();
+  const enabled = st.opsLocal?.enabled || {};
+  const r = syncLocal();
+  const hw = local.hw || {};
+  const isOn = (tag) => enabled[tag] !== false;
+  const inst = (tag) => installed.some((m) => m.replace(/:latest$/, '') === tag);
+  const fitBadge = (p) => { const f = fitCheck(p, hw); return `<span class="badge ${{ 'fits-gpu': 'good', 'fits-split': 'accent', 'fits-ram': 'good', tight: 'warn', 'too-big': 'bad' }[f.fit] || ''}" title="needs ~${f.needGb ?? '?'} GB">${esc(f.label)}</span>`; };
+  const offered = installed.filter((m) => isOn(m.replace(/:latest$/, '')));
+  return `<div class="ops-local"><label>Model</label>
+    ${offered.length ? `<select data-opslocal>${offered.map((m) => `<option value="${esc(m)}" ${m === r.use ? 'selected' : ''}>${esc(m)}</option>`).join('')}</select>` : '<div class="faint">No model installed yet: press Download on one below.</div>'}
+    ${r.notice ? `<div class="policy warn">${esc(r.notice)}</div>` : ''}
+    <div class="faint ops-note">This computer: ${hw.ramGb ? `${hw.ramGb} GB RAM` : 'RAM unknown'}${hw.discrete ? ` · ${esc(hw.gpu)} graphics card ${hw.vramGb} GB` : hw.gpu ? ` · ${esc(hw.gpu)} (counts as RAM)` : ' · no graphics card memory detected'}</div>
+    <table class="ops-table"><tbody>${LOCAL_PRESETS.map((p) => `<tr><td><label class="ops-check" style="margin:0"><input type="checkbox" data-opslocalon="${esc(p.tag)}" ${isOn(p.tag) ? 'checked' : ''}> ${esc(p.label)}</label>${p.note ? `<span class="faint"> ${esc(p.note)}</span>` : ''}</td><td class="faint">~${p.sizeGb} GB</td><td>${fitBadge(p)}</td><td>${inst(p.tag) ? `<span class="badge good">installed</span> <button class="btn small link" data-ops="ollamarm" data-arg="${esc(p.tag)}">Remove</button>` : `<button class="btn small" data-ops="ollamapull" data-arg="${esc(p.tag)}">Download</button>`}</td></tr>`).join('')}
+    <tr><td colspan="3"><input type="text" id="ops-local-custom" placeholder="Custom: any Ollama model name, e.g. mistral-nemo:12b"></td><td><button class="btn small" data-ops="ollamapull" data-arg="custom">Download</button></td></tr></tbody></table>
+    ${installed.filter((m) => !LOCAL_PRESETS.some((p) => p.tag === m.replace(/:latest$/, ''))).map((m) => `<div class="row"><span class="mono" style="flex:1">${esc(m)}</span><button class="btn small link" data-ops="ollamarm" data-arg="${esc(m)}">Remove</button></div>`).join('')}
+    <label class="ops-check"><input type="checkbox" data-opslocalcode ${C.settings().localReviewCode ? 'checked' : ''}> Let the Local AI review code (7B or larger)</label>
+    <div class="faint ops-note">With a 7B or larger model the Local AI may review docs tasks${C.settings().localReviewCode ? ' and code' : ''}${paramsOf(r.use) !== null ? ` (now: ${esc(r.use)}, ${paramsOf(r.use)}B)` : ''}. Downloads run in a terminal you can see.</div></div>`;
+}
+
 // ---------- events ----------
 async function onClick(e) {
   const el = e.target.closest('[data-ops]');
   if (!el) return;
   const { ops: op, arg, val } = el.dataset;
   if (op === 'card') return answerCard(arg, val);
+  if (op === 'upscale') return upscale(arg, val);
+  if (op === 'jobcancel') { const r = await call('opsJobCancel', arg); if (r?.ok) { C.audit('Owner cancelled a job', r.job?.taskId || null, arg); await pollJobs(); } return C.render(); }
+  if (op === 'esrgan') { C.toast('Downloading Real-ESRGAN from its GitHub release…'); const r = await call('opsEsrganInstall'); C.toast(r?.message || 'Install failed.'); if (r?.ok) C.audit('Real-ESRGAN installed', null, r.message); local.tools = await call('opsUpscaleTools'); return C.render(); }
+  if (op === 'ollamapull') {
+    const tag = arg === 'custom' ? document.getElementById('ops-local-custom')?.value.trim() : arg;
+    if (!validTag(tag)) return C.toast('Type an Ollama model name like qwen2.5-coder:7b.');
+    const r = await call('opsOllamaPull', tag);
+    C.audit('Routine: Local AI model download', null, `ollama pull ${tag} (no approval needed)`);
+    return C.toast(r?.ok ? `Downloading ${tag} in ${r.terminal}. Re-check Local AI when it finishes.` : r?.message || 'Could not start the download.');
+  }
+  if (op === 'ollamarm') {
+    if (!confirm(`Remove the local model ${arg}? You can download it again later.`)) return;
+    const r = await call('opsOllamaRemove', arg);
+    if (r?.ok) C.audit('Local AI model removed', null, arg);
+    C.toast(r?.ok ? `Removed ${arg}.` : r?.message || 'Could not remove it.');
+    return C.refreshAgents?.();
+  }
   if (op === 'seen') { S().opsSeenAt = C.now(); C.audit('Owner marked the summary as seen'); await C.save(); return C.render(); }
   if (op === 'canceltests') { await call('opsTestCancel', arg); return C.toast('Stopping the test run…'); }
   if (op === 'usage') { await pollUsage(); C.toast(local.usage.google ? `agy: ${local.usage.google.usedPct}% used` : 'No CLI reported usage numbers (only agy does).'); return C.render(); }
@@ -495,6 +697,9 @@ async function onClick(e) {
 async function onChange(e) {
   const el = e.target;
   if (el.matches?.('[data-opsproject]')) { fakeSwitch(el.value); return; }
+  if (el.matches?.('[data-opslocal]')) { S().models.ollama = el.value; C.audit('Local AI model chosen', null, el.value); syncLocal(); await C.save(); return C.render(); }
+  if (el.dataset?.opslocalon) { const st = S(); st.opsLocal = st.opsLocal || { enabled: {} }; st.opsLocal.enabled = { ...(st.opsLocal.enabled || {}), [el.dataset.opslocalon]: el.checked }; C.audit('Local AI preset turned ' + (el.checked ? 'on' : 'off'), null, el.dataset.opslocalon); await C.save(); return C.render(); }
+  if (el.matches?.('[data-opslocalcode]')) { const s2 = await call('setSettings', { localReviewCode: el.checked }); if (s2 && !s2.message) { C.setSettings(s2); C.audit(`Local AI code reviews turned ${el.checked ? 'on' : 'off'}`); syncLocal(); await C.save(); } return C.render(); }
   const k = el.dataset?.opsset;
   if (!k) return;
   let patch;
@@ -532,16 +737,18 @@ function onInput(e) {
 export function createOps(ctx) {
   C = ctx;
   return {
-    views: { summary: viewSummary, ops: viewOps, project: viewProject },
-    nav: [['summary', '☾', 'While you were away'], ['ops', '▤', 'Team stats'], ['project', '▣', 'Project']],
+    views: { summary: viewSummary, ops: viewOps, project: viewProject, actions: viewActions },
+    nav: [['summary', '☾', 'While you were away'], ['ops', '▤', 'Team stats'], ['actions', '≡', 'Board actions'], ['project', '▣', 'Project']],
     titles: {
       summary: ['While you were away', 'What each AI did since you last looked, from the audit log and the board'],
       ops: ['Team stats', 'Budget and headroom, strengths, cost and time per task, and CI'],
       project: ['Project', 'Projects, project memory, tests, CI, Hearth logs and your phone'],
+      actions: ['Board actions', 'Every action line an AI wrote, and what came of it'],
     },
     summaryCard, approvalCards, approvalSettings, projectSwitcher, ciBadge, drawerPanel, voiceButton, suggestHint,
     afterRun, checkDone, handoff, recordVerdict, leadLines, auditRoutine, beforeStart, routeQueued,
     snapshot: opsSnapshot,
+    actionResult, turnBegin, turnEnd, resultsHtml, bodyHtml, mentionNotes, imageNotice, attMeta, checkpointLine, handleLines, localModels, localMayReview: localMayReviewTask, syncLocal,
     async boot() {
       setLevels(C.settings().approvalLevels);
       document.addEventListener('click', onClick);
@@ -556,7 +763,10 @@ export function createOps(ctx) {
       await refreshProjects();
       local.phone = await call('opsPhoneStatus');
       C.render();
-      setTimeout(() => { pollCi(); pollLogs(); pollUsage(); }, 4000);
+      call('opsHardware').then((h) => { if (h) local.hw = h; });
+      call('opsUpscaleTools').then((t) => { if (t) local.tools = t; });
+      setTimeout(() => { pollCi(); pollLogs(); pollUsage(); pollJobs(); }, 4000);
+      setInterval(pollJobs, 10000);
       setInterval(pollCi, 3 * 60000);
       setInterval(pollLogs, 10 * 60000);
       setInterval(pollUsage, 30 * 60000);

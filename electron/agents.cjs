@@ -146,12 +146,12 @@ function imageInputs(agent, images = [], { agy = false } = {}) {
 }
 
 
-function run(file, args, { cwd, input, timeoutMs = 60000, signal, onData } = {}) {
+function run(file, args, { cwd, input, timeoutMs = 60000, signal, onData, extraEnv = null } = {}) {
   return new Promise((resolve) => {
     let out = '';
     let err = '';
     let done = false;
-    const child = spawn(file, args, { cwd, env: childEnv(), stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(file, args, { cwd, env: extraEnv ? { ...childEnv(), ...extraEnv } : childEnv(), stdio: ['pipe', 'pipe', 'pipe'] });
     const finish = (r) => {
       if (done) return;
       done = true;
@@ -233,7 +233,8 @@ async function runOllama({ prompt, model, timeoutMs = 300000, signal }) {
     });
     const j = await r.json().catch(() => null);
     const text = j?.message?.content;
-    if (r.ok && typeof text === 'string' && text) return { ok: true, text, via: `Ollama · ${use}` };
+    // The saved model is never changed here; when it's missing the reply says which one answered.
+    if (r.ok && typeof text === 'string' && text) return { ok: true, text, via: `Ollama · ${use}`, model: use, fellBackFrom: model && model !== use ? model : null };
     return { ok: false, error: { kind: 'failed', message: (j?.error || `HTTP ${r.status}`).toString().slice(0, 300) } };
   } catch (e) {
     if (signal?.aborted) return { ok: false, error: { kind: 'cancelled', message: 'Stopped by you.' } };
@@ -335,9 +336,10 @@ const uuid = () => crypto.randomUUID();
 // resumeId: continue that CLI session (its own session list keeps the whole
 // conversation); on success the result carries sessionId for next time.
 const runTool = (...a) => run(...a);
-async function runAgent({ agent, prompt, cwd, mode = 'read', model, timeoutMs, signal, bin, extraDirs = [], resumeId = null, images = [], onData }) {
+async function runAgent({ agent, prompt, cwd, mode = 'read', model, timeoutMs, signal, bin, extraDirs = [], resumeId = null, images = [], onData, extraEnv = null }) {
   // Output activity feeds the stall watchdog (electron/ops/watchdog.cjs).
-  const run = (f, a, o) => runTool(f, a, { ...o, onData });
+  // extraEnv: e.g. HEARTH_AI_ASSETS, the AI's own folder for generated files.
+  const run = (f, a, o) => runTool(f, a, { ...o, onData, extraEnv });
   if (mode === 'edit') mode = 'standard';
   const file = agent === 'ollama' ? null : bin || findBinary(agent);
   const img = imageInputs(agent, images, { agy: agent === 'google' && isAgy(file) });

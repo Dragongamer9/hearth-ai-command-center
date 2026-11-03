@@ -31,3 +31,12 @@
 .ops-mic.rec { color: var(--bad, #e06c6c); border-color: var(--bad, #e06c6c); }
 .ops-card { margin-bottom: 8px; }
 .atts audio { width: 260px; }
+.ops-results { margin-top: 6px; font-size: 12px; display: flex; flex-direction: column; gap: 2px; }
+.ops-results .ok span:first-child { color: var(--good, #5fbf77); font-weight: 700; }
+.ops-results .no span:first-child { color: var(--bad, #e06c6c); font-weight: 700; }
+.ops-working { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+.ops-working div { padding-left: 10px; }
+.ops-act { padding: 4px 0; border-bottom: 1px solid var(--line); font-size: 12.5px; }
+.ops-attmeta { display: block; font-size: 11px; color: var(--muted); }
+.ops-up { margin-left: 6px; }
+.ops-local table { margin-top: 6px; }

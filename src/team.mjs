@@ -4,6 +4,7 @@ import { NAMES } from './chat.mjs';
 import { EDITORS } from './registry.mjs';
 import { hearthFacts } from './hearth.mjs';
 import { policyText } from './ops/approval.mjs';
+import { extrasRules } from './ops/extras.mjs';
 
 // Who takes over a task when an agent stops: lead first, then the others that can edit files.
 export function nextAgent(available, exclude = [], lead = 'anthropic') {
@@ -31,6 +32,7 @@ export function buildTaskBrief({ task, agent, summary = '', handoffFrom = null, 
     'You can do everything you normally can in your own app here: edit files, run commands, use git and the web (with your own built-in safety checks). The Command Center commits your work as a checkpoint (as Dragongamer9, no AI attribution) after you finish.',
     'Rules: stay within this task; keep changes focused; never push to main/master, merge, publish or deploy yourself (the owner presses Approve in the app for merges and releases); never pick or change a version number (the owner chooses every number); if you commit yourself, commit as Dragongamer9 with no Co-authored-by or "Generated with" lines; follow the approval levels below: routine things you just do, major things you ask about first with an ASK: line.',
     policyText(),
+    extrasRules(agent),
     hearthFacts(),
     '',
     `# Task T-${task.id}: ${task.title}`,

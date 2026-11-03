@@ -73,6 +73,7 @@ const ops = createOps({
   canRun: (a) => canRun(a), isFree: (a) => isFree(a), roleMap: () => roleMap(), moveWaiting: (a, id) => moveWaiting(a, id), assignTask: (t, a, why) => assignTask(t, a, why),
   runTask: (...a) => runTask(...a), startOrQueue: (t, a) => startOrQueue(t, a), decide: (...a) => decide(...a), sendChat: () => sendChat(),
   makeTask: (o, src) => makeTask(o, src), actionFor: (t) => actionFor(t),
+  cli: () => cli, method: (a) => method(a), refreshAgents: async () => { await refreshAgents(); render(); },
 });
 
 const uid = () => Math.random().toString(36).slice(2, 8).toUpperCase();
@@ -285,14 +286,17 @@ async function handleVerdicts(agent, text) {
   const leading = leadOn({ enabled: settings.leadActions === true, agent, lead: state.lead });
   for (const v of parseVerdicts(text)) {
     const t = state.tasks.find((x) => x.id === v.taskId);
-    if (!t) continue; // e.g. a quoted example
+    const vline = `${v.verdict === 'approve' ? 'APPROVE' : 'CHANGES'}: T-${v.taskId}`;
+    if (!t) { ops.actionResult(agent, vline, false, `unknown task id T-${v.taskId}`); continue; }
+    if (agent === 'ollama') { const lr = ops.localMayReview(t); if (!lr.ok) { ops.actionResult(agent, vline, false, lr.reason, t.id); continue; } }
     if (leading) {
       const dec = leadDecision({ kind: v.verdict, id: v.taskId, reason: v.reason }, { ...leadCtx(), task: t, resumable: actionFor(t)?.kind === 'resume' });
       if (!dec.skip) { await leadAct({ kind: v.verdict, id: v.taskId, reason: v.reason }, dec, t); continue; }
     }
     const sha = v.verdict === 'approve' && t.ws ? await api.workspaceHead(t.id).catch(() => null) : null;
     const r = applyVerdict(t, { by: agent, verdict: v.verdict, reason: v.reason, at: now(), sha });
-    if (!r.ok) { post({ who: 'system', text: `${NAMES[agent]} wrote ${v.verdict === 'approve' ? 'APPROVE' : 'CHANGES'} for T-${v.taskId}, but ${r.reason}.` }); continue; }
+    if (!r.ok) { post({ who: 'system', text: `${NAMES[agent]} wrote ${v.verdict === 'approve' ? 'APPROVE' : 'CHANGES'} for T-${v.taskId}, but ${r.reason}.` }); ops.actionResult(agent, vline, false, r.reason, t.id); continue; }
+    ops.actionResult(agent, vline, true, v.verdict === 'approve' ? 'moved to approval' : `sent back to ${NAMES[t.assignee] || 'its implementer'}`, t.id);
     ops.recordVerdict(t, v.verdict, agent);
     wakeLead(v.verdict === 'approve' ? 'task reached approval' : 'reviewer verdict', agent);
     if (v.verdict === 'approve') {
@@ -342,6 +346,11 @@ const leadCtx = () => ({ lead: state.lead, enabled: settings.leadActions === tru
 // START / APPROVE R- / DENY R- / ADD TASK lines from the lead (switch on only).
 function handleLeadLines(agent, text) {
   ops.leadLines(agent, text); // MEMORY: proposals become owner-approved cards
+  if (!leadOn({ enabled: settings.leadActions === true, agent, lead: state.lead })) {
+    // No silent no-ops: say why each board line was ignored.
+    for (const cmd of parseLeadLines(text)) ops.actionResult(agent, cmd.kind === 'add' ? `ADD TASK: ${cmd.title}` : `${{ start: 'START', allow: 'APPROVE', deny: 'DENY' }[cmd.kind]}: ${cmd.kind === 'start' ? 'T' : 'R'}-${cmd.id}`, false, agent !== state.lead ? `only the lead (${NAMES[state.lead]}) can do that` : 'ignored because the lead switch is off');
+    return;
+  }
   if (!leadOn({ enabled: settings.leadActions === true, agent, lead: state.lead })) return;
   for (const cmd of parseLeadLines(text)) {
     const t = cmd.id ? state.tasks.find((x) => x.id === cmd.id) : null;
@@ -370,12 +379,14 @@ async function leadAct(cmd, dec, t = null, request = null) {
   if (!dec.ok) {
     audit(`${NAMES[lead]} (lead) was refused`, t?.id || null, `${ref}: ${dec.reason}`, lead);
     state.leadRefusals = [...(state.leadRefusals || []), { ref, reason: dec.reason, at: now() }].slice(-8);
+    ops.actionResult(lead, `${({ allow: 'APPROVE', deny: 'DENY', add: 'ADD TASK' })[cmd.kind] || cmd.kind.toUpperCase()}: ${ref}`, false, dec.reason, t?.id || null);
     post({ who: 'system', text: `${NAMES[lead]} (lead) can't act on ${ref}: ${dec.reason}.${dec.duplicate ? ` Open T-${dec.duplicate} instead.` : ''}` });
     save();
     render();
     return;
   }
   const title = t ? ` “${t.title}”` : '';
+  ops.actionResult(lead, `${({ allow: 'APPROVE', deny: 'DENY', add: 'ADD TASK' })[cmd.kind] || cmd.kind.toUpperCase()}: ${ref}`, true, `done (${dec.action})`, t?.id || null);
   if (dec.action === 'merge') {
     if (await recheckApprovals([t])) return leadAct(cmd, { ok: false, reason: `T-${t.id} changed after its review, so it went back to review` }, t);
     const pr = ui.prs.byTask[t.id];
@@ -440,8 +451,8 @@ async function agentAttachments(parsed, base, agent) {
   const atts = [];
   for (const f of parsed.files) {
     const r = await api.attachFromAgent(f.path, base).catch((e) => ({ ok: false, message: cleanErr(e.message) }));
-    if (r?.ok) { atts.push(r.att); audit('Routine: posted an attachment', null, `${NAMES[agent]}: ${f.path} (no approval needed)`, agent); }
-    else post({ who: 'system', text: `${NAMES[agent]} tried to attach ${f.path}: ${r?.message || 'failed'}` });
+    if (r?.ok) { atts.push({ ...r.att, from: f.path }); audit('Routine: posted an attachment', null, `${NAMES[agent]}: ${f.path} (no approval needed)`, agent); }
+    ops.actionResult(agent, `ATTACH: ${f.path}`, Boolean(r?.ok), r?.ok ? 'posted' : r?.message || 'failed');
   }
   return { atts, text: parsed.text };
 }
@@ -735,7 +746,7 @@ function attachmentsHtml(m) {
     ? `<figure><audio controls preload="none" src="${esc(a.url || '')}"></audio><figcaption>${esc(a.name)}</figcaption></figure>`
     : a.kind === 'video'
     ? `<figure><video controls preload="metadata" src="${esc(a.url || '')}"></video><figcaption>${esc(a.name)}${a.duration ? ` · ${Math.round(a.duration)}s` : ''}${a.note ? ` · ${esc(a.note)}` : ''}</figcaption></figure>`
-    : `<figure><img src="${esc(a.url || '')}" alt="${esc(a.name)}" data-lightbox="${esc(m.id)}:${i}" title="Click to enlarge"><figcaption>${esc(a.name)}</figcaption></figure>`).join('')}</div>`;
+    : `<figure><img src="${esc(a.url || '')}" alt="${esc(a.name)}" data-lightbox="${esc(m.id)}:${i}" title="Click to enlarge"><figcaption>${esc(a.name)}${ops.attMeta(m, a, i)}</figcaption></figure>`).join('')}</div>`;
 }
 
 // ---------- team status panel ----------
@@ -807,13 +818,13 @@ function chatMessage(m) {
   const editing = ui.editing === m.id;
   const body = editing
     ? `<textarea id="edit-text" style="min-height:70px">${esc(m.text)}</textarea><div class="row" style="margin-top:6px"><button class="btn small primary" data-saveedit="${m.id}">Save</button><button class="btn small ghost" data-canceledit>Cancel</button></div>`
-    : `<div class="body">${m.retracted ? `Message retracted by ${esc(NAMES[m.who])}.` : esc(m.text)}${edited}</div>`;
+    : `<div class="body">${m.retracted ? `Message retracted by ${esc(NAMES[m.who])}.` : ops.bodyHtml(m)}${edited}</div>`;
   const hist = ui.showHist[m.id] && m.history?.length ? `<div class="hist">${m.history.map((h) => `${esc(time(h.at))} · ${esc(NAMES[h.by] || h.by)}${h.retracted ? ' retracted' : ' edited'} — earlier text:\n${esc(h.text)}`).join('\n\n')}</div>` : '';
   const tools = m.who !== 'system' && !editing ? `<div class="tools"><button data-editmsg="${m.id}" title="Edit (you can edit any message)">Edit</button><button data-delmsg="${m.id}" title="Delete">Delete</button></div>` : '';
   return `<div class="msg ${cls} ${m.err ? 'err' : ''} ${m.retracted ? 'retracted' : ''}">
     ${tools}
     ${chip ? `<div class="who">${chip}<span>${esc(time(m.at))}${m.model ? ` · ${esc(m.model)}` : ''}${m.auto ? ' · posted on its own' : ''}${m.parallel ? ' · answered in parallel, independently' : ''}${m.beforeOwner ? ' · written before your newest message' : ''}</span><span class="mid">#${esc(m.id)}</span></div>` : ''}
-    ${body}${attachmentsHtml(m)}${hist}
+    ${body}${attachmentsHtml(m)}${ops.resultsHtml(m)}${hist}
     ${asks}
     ${m.leadUndo ? (() => { const e = (state.leadLog || []).find((x) => x.id === m.leadUndo); return e ? `<div class="row" style="margin-top:6px">${e.undone ? '<span class="badge">Undone</span>' : `<button class="btn small" data-leadundo="${esc(e.id)}">Undo</button>`}</div>` : ''; })() : ''}
     ${props ? `<div class="props">${props}${pending > 1 ? `<button class="btn small primary" data-addall="${m.id}" style="margin-top:4px;align-self:flex-start">Add all ${pending}</button>` : ''}</div>` : ''}
@@ -871,6 +882,7 @@ async function sendChat() {
   const plan = chatPlan(text, live, ui.target, state.lead);
   const who = plan.queue;
   post({ who: 'owner', text: text.slice(0, 8000), attachments: ui.attach.length ? ui.attach : undefined });
+  ops.mentionNotes(text);
   ui.draft = '';
   ui.attach = [];
   if (/@freebuff/i.test(text)) post({ who: 'system', text: 'FreeBuff only runs interactively, so it can’t answer in chat by itself. Open it from a task, then use “Post as FreeBuff” to share what it says.' });
@@ -1001,6 +1013,7 @@ async function chatTurn(agent, { trigger = '', canEdit = false, snapshot = null,
   // Images (and video frames) posted by the owner or other AIs since this AI's last turn.
   const media = mediaFor(agent, chat, NAMES);
   if (media.note) prompt += media.note;
+  ops.imageNotice(agent, media); // never claim an AI saw an image it didn't get
   const lastOwner = [...chat].reverse().find((m) => m.who === 'owner');
   const runId = uid() + uid();
   round.runs[agent] = runId;
@@ -1021,20 +1034,25 @@ async function chatTurn(agent, { trigger = '', canEdit = false, snapshot = null,
   if (res.ok) {
     answered.push(agent);
     const d = parseDirectives(res.text);
+    ops.turnBegin(agent);
     for (const e of d.edits) {
       const r = applyEdit(state.chat, { id: e.id, by: agent, text: e.text });
       if (r.ok) audit(`${NAMES[agent]} edited its message #${e.id}`, null, '', agent);
       else post({ who: 'system', text: `${NAMES[agent]} tried to edit #${e.id}: ${r.reason}.` });
+      ops.actionResult(agent, `EDIT #${e.id}`, r.ok, r.ok ? 'message updated' : r.reason);
     }
     for (const id of d.retracts) {
       const r = applyRetract(state.chat, { id, by: agent });
       if (r.ok) audit(`${NAMES[agent]} retracted its message #${id}`, null, '', agent);
       else post({ who: 'system', text: `${NAMES[agent]} tried to retract #${id}: ${r.reason}.` });
+      ops.actionResult(agent, `RETRACT #${id}`, r.ok, r.ok ? 'message retracted' : r.reason);
     }
     let m = null;
     const posted = await agentAttachments(parseAttachLines(d.text), chatId(), agent);
     if (!d.pass && (d.text || d.asks.length || d.handoffs.length || posted.atts.length)) {
       const handoffNote = d.handoffs.map((h) => `→ handing off to ${NAMES[h.to]}${h.note ? `: ${h.note}` : ''}`).join('\n');
+      for (const h of d.handoffs) ops.actionResult(agent, `HANDOFF: @${h.to}`, canRun(h.to), canRun(h.to) ? `${NAMES[h.to]} answers next` : `${NAMES[h.to]} can't run right now`);
+      for (const p of parseProposals(d.text)) ops.actionResult(agent, `TASK: ${p.title}`, true, 'proposal card added (Add / Add & start)');
       m = post({ who: agent, attachments: posted.atts.length ? posted.atts : undefined, text: [posted.text, handoffNote].filter(Boolean).join('\n\n') || (posted.atts.length ? '' : `${NAMES[agent]} needs your permission:`), model: res.via, proposals: parseProposals(d.text), parallel: parallel || undefined, beforeOwner: late || undefined });
       m.asks = d.asks.map((a) => {
         const req = makeRequest({ id: uid(), agent, kind: a.kind, what: a.what, why: a.why, context: 'chat', msgId: m.id });
@@ -1047,6 +1065,8 @@ async function chatTurn(agent, { trigger = '', canEdit = false, snapshot = null,
     ops.auditRoutine(agent, d.routine, null);
     await handleVerdicts(agent, d.text);
     handleLeadLines(agent, d.text);
+    await ops.handleLines(agent, d.text, null); // IMAGE REQUEST / BACKGROUND
+    ops.turnEnd(agent, m);
     if (res.sessionId && settings.chatResume) {
       state.chatSessions = state.chatSessions || {};
       state.chatSessions[skey] = { sessionId: res.sessionId, lastMsgId: (m || state.chat[state.chat.length - 1])?.id, at: now() };
@@ -1056,7 +1076,7 @@ async function chatTurn(agent, { trigger = '', canEdit = false, snapshot = null,
       const cp = await api.checkpoint(chatId(), NAMES[agent], `Team chat: ${(lastOwner?.text || trigger || 'update').slice(0, 80)}`).catch(() => null);
       if (cp) {
         const pushed = await autoPush(chatId());
-        post({ who: 'system', text: `${NAMES[agent]} changed files — saved as commit ${cp.sha} (${cp.stat}) on ${state.chatWs.branch}${pushed?.ok ? ', pushed to GitHub' : pushed ? `; push failed: ${pushed.message}` : ''}.` });
+        ops.checkpointLine(agent, cp, null, ` On ${state.chatWs.branch}${pushed?.ok ? ', pushed to GitHub' : pushed ? `; push failed: ${pushed.message}` : ''}.`);
       }
     }
     // Mentions and handoffs bring teammates in after this reply.
@@ -1303,7 +1323,7 @@ function sidePanel() {
   const c = cli[a] || {};
   const m = method(a);
   const modelField = ag.kind === 'web' || a === 'freebuff' ? '' : a === 'ollama'
-    ? (c.models?.length ? `<label>Model</label><select data-model="ollama">${c.models.map((x) => `<option ${x === (state.models.ollama || c.models[0]) ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select>` : '')
+    ? ops.localModels()
     : `<label>Model <span class="faint">(blank = ${m === 'api' ? esc(prov.defaults[a] || 'default') : 'the tool’s default'})</span></label>
       <input type="text" value="${esc(state.models[a] || '')}" placeholder="${m === 'api' ? esc(prov.defaults[a] || '') : 'default'}" data-model="${a}">`;
   return `<div class="card side-panel">
@@ -1897,7 +1917,9 @@ async function runTask(t, agent, handoff = null, depth = 0) {
     audit('Checkpoint saved', t.id, 'agent reported done');
   }
   // The AI posts its own update to Team chat, with any permission it needs.
+  if (cp) ops.checkpointLine(agent, cp, t.id);
   if (res.ok) {
+    ops.turnBegin(agent);
     const media = await agentAttachments(parseAttachLines(d.text || res.text), t.id, agent);
     const m = post({ who: agent, auto: true, model: res.via, attachments: media.atts.length ? media.atts : undefined, text: `T-${t.id} “${t.title}”: ${(media.text || d.text || res.text).replace(/STATUS:.*$/is, '').trim().slice(0, 400) || 'finished a run.'}${run.status === 'done' ? `\n(${doneLine(run)})` : ''}` });
     if (refused) post({ who: 'system', text: `T-${t.id}: ${NAMES[agent]} reported done, but it wasn't accepted. The task stays with ${NAMES[agent]} (Ready to Resume): ${refused}` });
@@ -1909,6 +1931,8 @@ async function runTask(t, agent, handoff = null, depth = 0) {
     });
     ops.auditRoutine(agent, d.routine, t.id);
     if (m.asks.length) wakeLead('permission card', agent);
+    await ops.handleLines(agent, d.text || res.text, t.id);
+    ops.turnEnd(agent, m);
   }
   await save();
   delete ui.saving[t.id];
@@ -2719,6 +2743,7 @@ async function boot() {
   }
   render();
   ops.boot();
+  ops.syncLocal();
   // Update only the status panel, so a usage pause can expire without touching the draft.
   setInterval(updatePanel, 15000);
   // In the background: pick up CLI sessions started outside the app, and PR status.

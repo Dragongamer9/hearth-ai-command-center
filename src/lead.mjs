@@ -5,6 +5,7 @@ import { NAMES } from './chat.mjs';
 import { EDITORS } from './registry.mjs';
 import { findDuplicate } from './dupes.mjs';
 import { leadMayApprove, OWNER_ONLY } from './ops/approval.mjs';
+import { localReviewOk } from './ops/extras.mjs';
 
 const CLOSED = ['approved', 'rejected'];
 const REVIEWABLE = ['checkpoint', 'testing', 'review'];
@@ -62,7 +63,8 @@ export function leadDecision(cmd, { lead, enabled = false, task = null, request 
       // A lead approval always needs an independent review: never the lead's own word,
       // and the local model (no tools, can't look at the code) doesn't count for code.
       const v = task.reviewVerdict?.verdict === 'approve' ? task.reviewVerdict : null;
-      const independent = v && v.by !== lead && !(v.by === 'ollama' && task.action !== 'docs');
+      // The Local AI's review counts for docs with a 7B+ model, and for code only when the owner allowed it.
+      const independent = v && v.by !== lead && !(v.by === 'ollama' && !localReviewOk(task));
       if (!independent) {
         if (leadBuilt(task, lead)) return { ok: false, reason: `${who} built T-${task.id}, so it needs another AI's review first (or the Owner's approval). It can't approve its own work` };
         if (v?.by === lead) return { ok: false, reason: `${who} reviewed T-${task.id} itself, so it can't also merge it on its own word; the Owner approves this one` };

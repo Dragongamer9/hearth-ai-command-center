@@ -72,6 +72,8 @@ function readSettings() {
     reduceMotion: s.reduceMotion === true,
     // Approval levels: the owner's moves between Routine and Major (owner-only stays owner-only).
     approvalLevels: cleanSavedLevels(s.approvalLevels),
+    // Local AI may review code (with a 7B or larger model). Off unless the owner turns it on.
+    localReviewCode: s.localReviewCode === true,
   };
 }
 function useProject(dir) {
@@ -284,6 +286,7 @@ function registerIpc() {
     if ('theme' in patch && THEMES.includes(patch.theme)) s.theme = patch.theme;
     if ('reduceMotion' in patch) s.reduceMotion = patch.reduceMotion === true;
     if ('approvalLevels' in patch) s.approvalLevels = cleanSavedLevels(patch.approvalLevels);
+    if ('localReviewCode' in patch) s.localReviewCode = patch.localReviewCode === true;
     writeSettings(s);
     return s;
   });
@@ -409,6 +412,8 @@ function registerIpc() {
       // Only files from the app's attachments folder are ever passed to a tool.
       images: (Array.isArray(opts.images) ? opts.images : []).filter((f) => typeof f === 'string' && attachments.inside(f, [attachments.attachDir(worktreeRoot())])).slice(0, 8),
       onData: wd ? wd.touch : undefined,
+      // Each AI's own folder for generated files (images etc.), inside its workspace.
+      extraEnv: opsApi ? opsApi.assetsEnv(agent, cwd) : undefined,
     };
     try {
       const resumeId = typeof opts.resumeId === 'string' ? opts.resumeId : null;
@@ -501,7 +506,7 @@ function registerIpc() {
   // ---- chat attachments (images / videos) ----
   const withFrames = async (r) => {
     if (!r.ok) return r;
-    const att = { ...r.att, url: pathToFileURL(r.att.path).href };
+    const att = { ...r.att, url: pathToFileURL(r.att.path).href, ...(r.att.kind === 'image' && opsApi ? opsApi.imageInfo(r.att.path) : {}) };
     if (att.kind === 'video') {
       const f = await attachments.extractFrames(att.path, { ffmpeg: gitops.find('ffmpeg'), count: 4 });
       Object.assign(att, { frames: f.frames, duration: f.duration, note: f.note });

@@ -16,6 +16,9 @@ const memory = require('./memory.cjs');
 const usage = require('./usage.cjs');
 const { createWatchdog } = require('./watchdog.cjs');
 const { createPhone } = require('./phone.cjs');
+const media = require('./media.cjs');
+const { createJobs } = require('./jobs.cjs');
+const { spawn } = require('node:child_process');
 
 function exec(file, args, { cwd, timeoutMs = 60000, env, maxBuffer = 16 * 1024 * 1024 } = {}) {
   return new Promise((resolve) => {
@@ -49,6 +52,18 @@ function register(d) {
   const projectDir = () => readSettings().project;
   const memFile = (dir = projectDir()) => (dir ? path.join(dir, memory.MEMORY_REL) : null);
   const readMemory = () => { try { return fs.readFileSync(memFile(), 'utf8'); } catch { return ''; } };
+  // HEARTH_AI_ASSETS: <workspace>/.hearth-ai/assets/<agent>/, one folder per AI so names never clash.
+  const assetsEnv = (agent, cwd) => {
+    if (!cwd || !/^[a-z]+$/.test(String(agent))) return undefined;
+    const dir = path.join(cwd, '.hearth-ai', 'assets', agent);
+    try { fs.mkdirSync(dir, { recursive: true }); } catch { return undefined; }
+    // Never shows up in git status of the project folder (local exclude, not committed).
+    try {
+      const ex = path.join(cwd, '.git', 'info', 'exclude');
+      if (fs.existsSync(path.dirname(ex)) && !(fs.existsSync(ex) && /^\.hearth-ai\/$/m.test(fs.readFileSync(ex, 'utf8')))) fs.appendFileSync(ex, '\n.hearth-ai/\n');
+    } catch {}
+    return { HEARTH_AI_ASSETS: dir };
+  };
 
   // ---- projects ----
   const listProjects = () => {
@@ -281,8 +296,114 @@ function register(d) {
   handle('ops:phonePush', (snap) => { if (snap && typeof snap === 'object') phoneSnap = JSON.parse(redact(JSON.stringify(snap)).slice(0, 2e6)); return true; });
   phone.boot();
 
+  // ---- this computer (Local AI model fit) and Ollama models ----
+  handle('ops:hardware', async () => {
+    const nv = gitops.find('nvidia-smi');
+    const r = nv ? await exec(nv, ['--query-gpu=memory.total', '--format=csv,noheader,nounits'], { timeoutMs: 8000 }) : { out: '' };
+    return media.parseHardware({ totalBytes: os.totalmem(), nvidiaMiB: r.ok ? r.out : '', amdVramBytes: media.readAmdVram() });
+  });
+  const TAG = /^[a-z0-9][a-z0-9._-]*(\/[a-z0-9][a-z0-9._-]*)?(:[A-Za-z0-9._-]+)?$/;
+  // Download: `ollama pull` in a visible terminal (routine, no approval).
+  handle('ops:ollamaPull', (tag) => {
+    if (!TAG.test(String(tag || ''))) return { ok: false, message: 'That isn\'t an Ollama model name.' };
+    const bin = gitops.find('ollama');
+    if (!bin) return { ok: false, message: 'Ollama is not installed.' };
+    return agents.openTerminal(bin, ['pull', String(tag)], os.homedir(), { hold: true });
+  });
+  // Remove: only after the owner confirmed in the window.
+  handle('ops:ollamaRemove', async (tag) => {
+    if (!TAG.test(String(tag || ''))) return { ok: false, message: 'That isn\'t an Ollama model name.' };
+    const bin = gitops.find('ollama');
+    if (!bin) return { ok: false, message: 'Ollama is not installed.' };
+    const r = await exec(bin, ['rm', String(tag)], { timeoutMs: 60000 });
+    return r.ok ? { ok: true } : { ok: false, message: r.err.split('\n')[0] };
+  });
+
+  // ---- upscaling an image attachment (Real-ESRGAN, or ffmpeg as a basic resize) ----
+  handle('ops:upscaleTools', () => ({ esrgan: media.findEsrgan(gitops.find, dataDir()), ffmpeg: gitops.find('ffmpeg') }));
+  handle('ops:upscale', async (file, target) => {
+    const h = media.TARGETS[String(target)];
+    const root = attachments.attachDir(worktreeRoot());
+    if (!h || typeof file !== 'string' || !attachments.inside(file, [root])) return { ok: false, message: 'Only attachments can be upscaled.' };
+    const esr = media.findEsrgan(gitops.find, dataDir());
+    const ff = gitops.find('ffmpeg');
+    const out = path.join(os.tmpdir(), `hearth-up-${crypto.randomBytes(4).toString('hex')}`);
+    const final = `${out}-${target}.png`;
+    let method = null;
+    if (esr) {
+      const r = await exec(esr, media.esrganArgs(file, `${out}-x4.png`), { timeoutMs: 600000 });
+      if (r.ok && fs.existsSync(`${out}-x4.png`)) {
+        if (ff && (await exec(ff, media.ffmpegScaleArgs(`${out}-x4.png`, final, h), { timeoutMs: 120000 })).ok) method = 'Real-ESRGAN';
+        else { fs.renameSync(`${out}-x4.png`, final); method = 'Real-ESRGAN (4x)'; }
+      }
+    }
+    if (!method && ff && (await exec(ff, media.ffmpegScaleArgs(file, final, h), { timeoutMs: 120000 })).ok) method = 'basic resize (not AI upscaling)';
+    try { fs.rmSync(`${out}-x4.png`, { force: true }); } catch {}
+    if (!method) return { ok: false, message: 'Install Real-ESRGAN (button in the chat) or ffmpeg to upscale.' };
+    const base = path.basename(file).replace(/^[0-9a-f]{10}-/, '').replace(/\.\w+$/, '');
+    const saved = attachments.saveFromPath(worktreeRoot(), final, {});
+    try { fs.rmSync(final, { force: true }); } catch {}
+    if (!saved.ok) return saved;
+    const att = { ...saved.att, name: `${base}-${target}.png`, url: pathToFileURL(saved.att.path).href, ...media.imageInfo(saved.att.path) };
+    return { ok: true, att, method };
+  });
+  // One-click Real-ESRGAN from its official GitHub release, into the app's own folder (no root).
+  handle('ops:esrganInstall', async () => {
+    const unzip = gitops.find('unzip');
+    if (!unzip) return { ok: false, message: 'unzip is needed to unpack Real-ESRGAN.' };
+    const rel = await fetch(`https://api.github.com/repos/${media.ESRGAN_REPO}/releases/latest`, { headers: { Accept: 'application/vnd.github+json' } }).then((r) => r.json()).catch(() => null);
+    const asset = media.pickEsrganAsset(rel);
+    if (!asset || !/^https:\/\/github\.com\//.test(asset.url)) return { ok: false, message: 'No Linux build found in the latest Real-ESRGAN release.' };
+    const res = await fetch(asset.url).catch(() => null);
+    if (!res?.ok) return { ok: false, message: 'Download failed.' };
+    const buf = Buffer.from(await res.arrayBuffer());
+    const sha = crypto.createHash('sha256').update(buf).digest('hex');
+    if (asset.sha256 && sha !== asset.sha256) return { ok: false, message: 'Checksum mismatch; nothing was installed.' };
+    const dir = media.toolsDir(dataDir());
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const zip = path.join(dir, asset.name);
+    fs.writeFileSync(zip, buf);
+    const u = await exec(unzip, ['-o', '-j', zip, '-d', dir], { timeoutMs: 120000 });
+    fs.rmSync(zip, { force: true });
+    if (!u.ok) return { ok: false, message: `Unpacking failed: ${u.err.split('\n')[0]}` };
+    try { fs.chmodSync(path.join(dir, 'realesrgan-ncnn-vulkan'), 0o755); } catch {}
+    return { ok: Boolean(media.findEsrgan(() => null, dataDir())), verified: Boolean(asset.sha256), sha256: sha, message: asset.sha256 ? 'Installed; checksum verified.' : 'Installed; the release publishes no checksum, so it could not be verified.' };
+  });
+
+  // ---- background jobs (survive turns and restarts) ----
+  const jobs = createJobs({
+    dir: path.join(dataDir(), 'jobs'),
+    spawnRunner: (jobFile) => {
+      const child = spawn(process.execPath, [path.join(__dirname, 'job-runner.cjs'), jobFile], { detached: true, stdio: 'ignore', env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' } });
+      child.unref();
+      return child.pid;
+    },
+  });
+  handle('ops:jobs', () => jobs.list());
+  handle('ops:jobCancel', (id) => jobs.cancel(String(id)));
+  handle('ops:jobStart', (spec) => {
+    if (!spec || typeof spec !== 'object') throw new Error('bad job');
+    const s = readSettings();
+    let cwd = s.project || os.homedir();
+    let mode = 'read';
+    const tid = typeof spec.taskId === 'string' ? spec.taskId : null;
+    let base = null;
+    try {
+      if (tid && fs.existsSync(taskDir(tid))) { cwd = taskDir(tid); mode = s.access; base = tid; }
+      else if (fs.existsSync(taskDir('CHATROOM'))) { cwd = taskDir('CHATROOM'); mode = s.access; base = 'CHATROOM'; } // the team chat's own worktree
+    } catch {}
+    const agent = String(spec.agent || '');
+    return jobs.start({
+      agent, base, kind: String(spec.kind || 'job').slice(0, 20), title: String(spec.title || '').slice(0, 200), taskId: tid, requestId: typeof spec.requestId === 'string' ? spec.requestId.slice(0, 20) : null,
+      prompt: memory.withMemory(String(spec.prompt || '').slice(0, 20000), readMemory()), cwd, mode, bin: s.bins[agent], extraDirs: s.extraDirs, extraEnv: assetsEnv(agent, cwd),
+    });
+  });
+
   // Helpers for main.cjs.
   return {
+    assetsEnv: (agent, cwd) => assetsEnv(agent, cwd),
+    imageInfo: (file) => media.imageInfo(file),
     withMemory: (prompt) => memory.withMemory(prompt, readMemory()),
     // Stall watchdog for an editing run in a task worktree.
     watchdog(cwd, onStall) {

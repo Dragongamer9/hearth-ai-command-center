@@ -38,11 +38,26 @@ function stub() {
     { id: 'HOX1Y2Z3', type: 'handoff', taskId: 'GR0003', status: 'pending', text: 'T-GR0003 “Theme the GRUB boot menu (keep it visible)” crashed again after 2 hand-offs. Who should continue it?', options: [{ value: 'to:anthropic', label: 'Hand to Claude' }, { value: 'leave', label: 'Leave it with me' }] },
     { id: 'MMA1B2C3', type: 'memory', status: 'pending', by: 'Claude', proposal: 'The Storage page stores drive choices in ~/.config/mantel/storage.json.', text: 'Claude proposes adding to PROJECT.md: The Storage page stores drive choices in ~/.config/mantel/storage.json.', options: [{ value: 'approve', label: 'Approve', primary: true }, { value: 'deny', label: 'Deny' }] },
   ];
-  const state = { version: 1, tasks, audit, models: {}, chat: [{ id: 'C1', who: 'owner', at: ago(500), text: 'Storage page and Wi-Fi fix today, please.' }], permissions: [{ id: 'R1NET', agent: 'google', kind: 'network', what: 'Download the GRUB theme spec from gnu.org', why: 'To check the format', context: 'chat', at: ago(30), status: 'pending', questions: [] }], chatSessions: {},
+  const IMG = 'data:image/svg+xml;utf8,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="480" height="270"><rect width="480" height="270" fill="#1b2838"/><rect x="24" y="24" width="432" height="40" rx="6" fill="#2a475e"/><text x="40" y="50" fill="#c7d5e0" font-size="16" font-family="sans-serif">Settings › Storage</text></svg>');
+  audit.unshift(
+    { id: 'B1', at: ago(8), actor: 'anthropic', event: 'Board action', taskId: 'ST0002', detail: 'Claude · APPROVE: T-ST0002: ✗ ignored because the lead switch is off' },
+    { id: 'B2', at: ago(8), actor: 'anthropic', event: 'Board action', taskId: null, detail: 'Claude · ATTACH: shots/storage.png: ✓ posted' },
+    { id: 'B3', at: ago(7), actor: 'openai', event: 'Board action', taskId: 'GR0099', detail: 'ChatGPT · CHANGES: T-GR0099: ✗ unknown task id T-GR0099' },
+    { id: 'B4', at: ago(6), actor: 'mistral', event: 'Board action', taskId: null, detail: 'Mistral · IMAGE REQUEST: a cozy hearth icon: ✓ sent to Gemini (image output not verified yet) as job J1A2B3C4D' },
+  );
+  const chat = [
+    { id: 'C1', who: 'owner', at: ago(500), text: 'Storage page and Wi-Fi fix today, please. Screenshots at 1080p.' },
+    { id: 'C2', who: 'anthropic', at: ago(9), model: 'Claude Code', text: 'PROGRESS: reading mantel/storage\nPROGRESS: running npm test (44 passed)\nThe Storage page is ready for review (T-ST0002). Screenshot at 1080p as asked.\nAPPROVE: T-ST0002', results: [{ line: 'APPROVE: T-ST0002', ok: false, reason: 'ignored because the lead switch is off' }, { line: 'ATTACH: shots/storage.png', ok: true, reason: 'posted' }], attachments: [{ id: 'a1', kind: 'image', name: 'storage.png', path: '/tmp/x/storage.png', url: IMG, size: 204800, width: 1280, height: 720 }] },
+    { id: 'C3', who: 'system', report: true, at: ago(9), text: 'Checkpoint 1a2b3c4 (Claude): 3 files changed — mantel/storage/StoragePage.qml, mantel/storage/store.js, test/storage.test.js.' },
+    { id: 'C4', who: 'mistral', at: ago(6), model: 'Mistral Vibe', text: 'I need an icon for the docs page but I have no image tools.\nIMAGE REQUEST: a cozy hearth icon | size: 1024x1024 | for: T-DC0004', results: [{ line: 'IMAGE REQUEST: a cozy hearth icon', ok: true, reason: 'sent to Gemini (image output not verified yet) as job J1A2B3C4D' }] },
+    { id: 'C5', who: 'owner', at: ago(5), text: '@localai can you double-check the docs wording? @gemni too' },
+    { id: 'C6', who: 'system', at: ago(5), text: 'No teammate called @gemni. Did you mean @gemini, @qwen, @grok?' },
+  ];
+  const state = { version: 1, tasks, audit, models: { ollama: 'qwen2.5-coder:14b' }, chat, permissions: [{ id: 'R1NET', agent: 'google', kind: 'network', what: 'Download the GRUB theme spec from gnu.org', why: 'To check the format', context: 'chat', at: ago(30), status: 'pending', questions: [] }], chatSessions: {},
     agentStatus: { xai: { outUntil: new Date(Date.now() + 50 * 60000).toISOString(), reason: 'resets in 50 min' } }, autoHandoff: true, roles: {}, lead: 'anthropic', disabled: {}, setupDismissed: true, opsCards, opsSeenAt: ago(720),
     opsLog: [{ ev: 'verdict', builder: 'anthropic', reviewer: 'openai', verdict: 'approve', kind: 'ui' }, { ev: 'verdict', builder: 'openai', reviewer: 'google', verdict: 'changes', kind: 'code' }], opsUsage: { google: { usedPct: 84, reset: 'resets in 2 hours' } } };
   const settings = { project: '/home/owner/Projects/hearth-os', projects: ['/home/owner/Projects/hearth-os'], connection: { anthropic: 'cli', openai: 'cli', xai: 'cli', mistral: 'cli', perplexity: 'api', deepseek: 'api' }, bins: {}, access: 'standard', extraDirs: [], autoPush: false, chatEdits: true, chatResume: true, theme: 'dark', approvalLevels: {} };
-  const agents = { anthropic: { installed: true, signedIn: true, path: '/usr/bin/claude' }, openai: { installed: true, signedIn: true, path: '/usr/bin/codex' }, google: { installed: true, signedIn: true, path: '/usr/bin/agy', tool: 'agy' }, xai: { installed: true, signedIn: true, path: '/usr/bin/grok' }, mistral: { installed: true, signedIn: true, path: '/usr/bin/vibe' }, ollama: { installed: false }, freebuff: { installed: false } };
+  const agents = { ollama: { installed: true, signedIn: true, models: ['qwen2.5-coder:3b', 'qwen2.5-coder:7b', 'llama3.1:8b'] }, anthropic: { installed: true, signedIn: true, path: '/usr/bin/claude' }, openai: { installed: true, signedIn: true, path: '/usr/bin/codex' }, google: { installed: true, signedIn: true, path: '/usr/bin/agy', tool: 'agy' }, xai: { installed: true, signedIn: true, path: '/usr/bin/grok' }, mistral: { installed: true, signedIn: true, path: '/usr/bin/vibe' }, freebuff: { installed: false } };
   const projects = { active: 'default', list: [
     { id: 'default', name: 'hearth-os', dir: '/home/owner/Projects/hearth-os', settings: { testCommand: null, testTimeoutMin: 15, stallMin: 20, ciWatch: true, logsOn: true, logsRepo: 'Dragongamer9/hearth-logs' } },
     { id: 'b7c1d2e3', name: 'beacon', dir: '/home/owner/HearthProjects/beacon', settings: { testCommand: 'cargo test', testTimeoutMin: 30, stallMin: 20, ciWatch: true, logsOn: false, logsRepo: '' } },
@@ -77,6 +92,9 @@ function stub() {
     opsPhoneEnable: () => { phone = { ...phone, enabled: true, running: true, urls: ['http://192.168.1.42:8787/'] }; return ok(phone); },
     opsPhoneNewCode: () => { phone = { ...phone, pairing: { code: '482913', expires: Date.now() + 300000 } }; return ok(phone); },
     opsPhonePush: () => ok(true),
+    opsHardware: () => ok({ ramGb: 32, vramGb: 12, discrete: true, gpu: 'NVIDIA' }),
+    opsUpscaleTools: () => ok({ esrgan: null, ffmpeg: '/usr/bin/ffmpeg' }),
+    opsJobs: () => ok([{ id: 'J1A2B3C4D', base: null, kind: 'image', agent: 'google', title: 'Image for Mistral: a cozy hearth icon', taskId: 'DC0004', requestId: 'IR1', startedAt: ago(6), status: 'running', finishedAt: null, text: null, error: null }, { id: 'J9F8E7D6C', base: null, kind: 'background', agent: 'openai', title: 'Research GRUB theme formats', taskId: null, requestId: null, startedAt: ago(90), status: 'lost', finishedAt: null, text: null, error: { kind: 'lost', message: 'The job stopped without a result.' } }]),
     opsTestRun: () => ok({ status: 'passed', log: '# pass 42', command: 'npm test', ms: 90000 }),
   };
   window.__ops = { state };
@@ -182,6 +200,32 @@ await page.click('[data-ops="level"][data-arg="install"][data-val="routine"]'); 
 check(await page.locator('[data-ops="level"][data-arg="install"][data-val="routine"].on').count() === 1, 'moving a category is saved');
 await page.click('[data-ops="level"][data-arg="install"][data-val="major"]'); await page.waitForTimeout(300);
 await shot('settings-approval-levels');
+
+// Team requests: action results, progress block, attachment size flag, checkpoint report, unknown @name.
+await nav('chat');
+const log = await page.textContent('#chat-log');
+check(log.includes('ignored because the lead switch is off') && log.includes('posted'), 'action lines show their results');
+check(await page.locator('.ops-working').count() >= 1, 'progress lines are folded into a working… block');
+check(log.includes('1280×720') && log.includes('below the asked 1920×1080'), 'attachment size and the below-requested flag');
+check(await page.locator('[data-ops="upscale"]').count() >= 3, 'upscale buttons on an image');
+check(log.includes('Checkpoint 1a2b3c4'), 'checkpoint report in chat');
+check(log.includes('No teammate called @gemni'), 'unknown @name note');
+check(log.includes('Background job J9F8E7D6C') , 'a lost job is reported after a restart');
+await page.click('.ops-working summary'); await page.waitForTimeout(200);
+await shot('chat-action-results-and-attachment-details');
+await nav('actions');
+check((await text()).includes('unknown task id T-GR0099'), 'Board actions view lists outcomes');
+await shot('board-actions');
+await nav('ops');
+check((await text()).includes('What each AI can do here') && (await text()).includes('Background jobs'), 'capability panel and jobs');
+await shot('capabilities-and-jobs', { full: true });
+await nav('agents');
+await page.click('tr[data-expand="ollama"] td:first-child'); await page.waitForTimeout(400);
+const side = await page.textContent('.side-panel');
+check(side.includes('fits on the graphics card') && side.includes('fits using graphics card + RAM') && side.includes('too big for this computer'), 'Local AI presets with fit labels');
+check(side.includes("qwen2.5-coder:14b isn't installed"), 'fallback notice keeps the saved choice');
+await page.locator('.side-panel').scrollIntoViewIfNeeded();
+await shot('local-ai-models', { full: true });
 
 await browser.close();
 console.log(errors.length ? `Page errors:\n${errors.join('\n')}` : 'No page errors.');

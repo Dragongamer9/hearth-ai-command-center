@@ -5,6 +5,7 @@ import { leadRules } from './lead.mjs';
 import { ATTACH_RULE } from './media.mjs';
 import { CATEGORIES, splitAsks, policyText } from './ops/approval.mjs';
 import { waitingSection, refusalSection } from './ops/leadwake.mjs';
+import { extrasRules } from './ops/extras.mjs';
 
 export const NAMES = { owner: 'Owner', system: 'System', ...Object.fromEntries(AGENT_IDS.map((a) => [a, AGENTS[a].name])) };
 const ACTIONS = ['code', 'docs', 'merge', 'release', 'deploy'];
@@ -87,7 +88,7 @@ export function chatRules(agent, lead, { leadActions = false } = {}) {
     '- The reviewer must differ from the implementer. The local AI cannot implement (it can only review).',
     '- If you are the assigned REVIEWER of a task: when it is ready for the Owner write APPROVE: T-<task id> <short note>; to send it back write CHANGES: T-<task id> <what must be fixed>. Only the assigned reviewer counts, and APPROVE only moves it to Owner approval.',
     ...(leadActions ? ['- With the lead switch on, APPROVE moves the task to the approval stage, where the lead (if allowed) or the Owner approves it.'] : []),
-    ...(agent === 'ollama' ? [] : [ATTACH_RULE]),
+    ...(agent === 'ollama' ? [] : [ATTACH_RULE, extrasRules(agent)]),
     '- To fix one of YOUR OWN earlier messages, write a line: EDIT #<message id>: <the corrected full text>',
     '- To take back one of YOUR OWN earlier messages, write a line: RETRACT #<message id>',
     '- To hand the conversation to a teammate, write a line: HANDOFF: @<name> <what they should do>',
@@ -135,7 +136,7 @@ function transcript(messages, max) {
   let used = 0;
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
-    if (m.who === 'system' || m.deleted) continue;
+    if ((m.who === 'system' && !m.report) || m.deleted) continue; // checkpoint reports are shown to the AIs
     const body = m.retracted ? '(retracted)' : m.text;
     const line = `[#${m.id || '?'}] ${NAMES[m.who] || m.who}${m.edited ? ' (edited)' : ''}: ${body}`;
     if (used + line.length > max) break;
