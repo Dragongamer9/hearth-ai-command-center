@@ -6,11 +6,12 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 
-// null = automatic: `npm test` when package.json has a real test script; '' = none.
-function resolveTestCommand(setting, dir) {
+// null = automatic: `npm test` when the BASE branch's package.json (origin/main, not the
+// task's own copy, which the AI controls) has a real test script; '' = none.
+function resolveTestCommand(setting, dir, basePkgText = null) {
   if (typeof setting === 'string') return setting.trim() || null;
   try {
-    const pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'));
+    const pkg = JSON.parse(basePkgText !== null ? basePkgText : fs.readFileSync(path.join(dir, 'package.json'), 'utf8'));
     const t = pkg?.scripts?.test;
     if (typeof t === 'string' && t.trim() && !/no test specified/i.test(t)) return 'npm test';
   } catch {}
@@ -42,6 +43,24 @@ function tail(text, max = 64000) {
   const s = String(text || '');
   return s.length > max ? `…[earlier output trimmed]\n${s.slice(-max)}` : s;
 }
+
+// A task that changes how tests run is flagged on its card ("tests changed by this task").
+const TEST_CONFIG = /(^|\/)(jest|vitest|playwright|cypress|karma|ava|mocha)\.config\.[cm]?[jt]s$|(^|\/)\.mocharc|(^|\/)\.nycrc|(^|\/)(pytest\.ini|tox\.ini|setup\.cfg|conftest\.py|noxfile\.py)$|(^|\/)\.github\/workflows\/|(^|\/)Makefile$/;
+function testConfigChanges(files = [], basePkgText = '', headPkgText = '') {
+  const out = files.filter((f) => TEST_CONFIG.test(f));
+  if (files.includes('package.json')) {
+    const scripts = (t) => { try { const s = JSON.parse(t).scripts || {}; return JSON.stringify(Object.fromEntries(Object.entries(s).filter(([k]) => /^(pre|post)?test/.test(k)))); } catch { return null; } };
+    if (scripts(basePkgText) !== scripts(headPkgText)) out.push('package.json (test scripts)');
+  }
+  return out;
+}
+// Keep the output tail, but nothing token-like goes back to an AI or the screen.
+function redactTokens(text) {
+  return String(text || '')
+    .replace(/\b((?:api[_-]?key|token|secret|password|passwd|auth|bearer|access[_-]?key)[\w-]*)(\s*[:=]\s*|\s+)["']?[^\s"']{6,}/gi, '$1$2[REDACTED]')
+    .replace(/\b[A-Za-z0-9+/_-]{40,}={0,2}/g, '[REDACTED]');
+}
+const needsDeps = (command, dir) => /^(npm|npx|yarn|pnpm)\b/.test(command) && !fs.existsSync(path.join(dir, 'node_modules')) && !/\b(npm (ci|install|i)|yarn install|pnpm install)\b/.test(command);
 
 function verdict({ code, timedOut, cancelled, spawnError }) {
   if (cancelled) return 'not run';
@@ -81,4 +100,4 @@ function runTests({ command, cwd, timeoutMs = 15 * 60000, signal, env = process.
   });
 }
 
-module.exports = { resolveTestCommand, cleanEnv, runTests, tail, verdict };
+module.exports = { resolveTestCommand, testConfigChanges, redactTokens, needsDeps, cleanEnv, runTests, tail, verdict };

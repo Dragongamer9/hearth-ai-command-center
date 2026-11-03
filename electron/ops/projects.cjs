@@ -13,8 +13,8 @@ function defaultSettings() {
   return {
     testCommand: null, // null = automatic (npm test when package.json has one), '' = none
     testTimeoutMin: 15,
-    stallMin: 20, // no output and no file changes for this long = stalled (0 = off)
-    ciWatch: true,
+    stallMin: 45, // no output and no file changes for this long = stalled (0 = off); Claude -p is quiet while it builds
+    ciWatch: false, // the owner turns it on
     logsOn: false,
     logsRepo: '',
     nextVersion: '', // set by the owner only; the lead may release/tag only this version
@@ -31,7 +31,7 @@ function cleanSettings(s = {}) {
     testCommand: s.testCommand === null || s.testCommand === undefined ? null : String(s.testCommand).replace(/[\r\n\0]/g, ' ').trim().slice(0, 300),
     testTimeoutMin: clampInt(s.testTimeoutMin, 1, 120, d.testTimeoutMin),
     stallMin: clampInt(s.stallMin, 0, 240, d.stallMin),
-    ciWatch: s.ciWatch === undefined ? d.ciWatch : s.ciWatch === true,
+    ciWatch: s.ciWatch === true,
     logsOn: s.logsOn === true,
     logsRepo: typeof s.logsRepo === 'string' && REPO_RE.test(s.logsRepo.trim()) ? s.logsRepo.trim() : '',
     nextVersion: typeof s.nextVersion === 'string' && /^\d{1,4}\.\d{1,4}(\.\d{1,6})?$/.test(s.nextVersion.trim()) ? s.nextVersion.trim() : '',
@@ -78,23 +78,53 @@ function stateFileFor(dataDir, id) {
 
 function createProjects(dataDir) {
   const file = path.join(dataDir, 'ops-projects.json');
+  const bak = `${file}.bak`;
   let reg = null;
+  let notice = null;
+  let lastHash = null;
+  const hash = (t) => crypto.createHash('sha256').update(String(t)).digest('hex');
+  const parse = (f) => { const raw = fs.readFileSync(f, 'utf8'); const j = JSON.parse(raw); if (!j || !Array.isArray(j.list)) throw new Error('bad shape'); return { j, raw }; };
 
+  // Atomic, and the previous good copy is kept as .bak.
   function write() {
     fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+    try { parse(file); fs.copyFileSync(file, bak); } catch {}
+    const data = JSON.stringify(reg, null, 2);
     const tmp = `${file}.tmp-${process.pid}`;
-    fs.writeFileSync(tmp, JSON.stringify(reg, null, 2), { mode: 0o600 });
+    const fd = fs.openSync(tmp, 'w', 0o600);
+    try { fs.writeSync(fd, data); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
     fs.renameSync(tmp, file);
+    lastHash = hash(data);
   }
 
-  function load(legacyDir) {
+  // A file that fails to parse is never overwritten: the .bak is restored, or (if that is
+  // bad too) the broken file is kept aside and the owner is told.
+  function load(legacyDir, legacyList = []) {
     let j = null;
-    let existed = false;
-    try { j = JSON.parse(fs.readFileSync(file, 'utf8')); existed = true; } catch {}
+    const exists = fs.existsSync(file);
+    try { const p = parse(file); j = p.j; lastHash = hash(p.raw); } catch {
+      if (exists) {
+        try { const b = parse(bak); j = b.j; fs.copyFileSync(file, `${file}.corrupt-${Date.now()}`); fs.copyFileSync(bak, file); lastHash = hash(b.raw); notice = 'Your projects file was damaged; the last good copy was restored.'; }
+        catch { const aside = `${file}.corrupt-${Date.now()}`; fs.renameSync(file, aside); notice = `Your projects file was damaged and no good copy existed; it was kept at ${aside}.`; }
+      }
+    }
     reg = normalize(j, legacyDir);
-    if (!existed) write(); // first start with projects: record the migration once
+    // Folders from the old Settings list become projects too (nothing is lost).
+    let added = false;
+    for (const d of legacyList || []) if (typeof d === 'string' && path.isAbsolute(d) && !reg.list.some((p) => p.dir === d)) { reg.list.push(newProject(d)); added = true; }
+    if (!fs.existsSync(file) || added) write();
     return reg;
   }
+  function newProject(dir, name) {
+    let id;
+    do { id = crypto.randomBytes(4).toString('hex'); } while (reg && reg.list.some((p) => p.id === id));
+    return cleanProject({ id, name: name || path.basename(dir), dir, createdAt: new Date().toISOString(), settings: defaultSettings() });
+  }
+  // Changed on disk by something other than the app (e.g. an AI)? The owner decides.
+  function changedOnDisk() {
+    try { return hash(fs.readFileSync(file, 'utf8')) !== lastHash; } catch { return false; }
+  }
+  function keepDisk() { const p = parse(file); reg = normalize(p.j, null); lastHash = hash(p.raw); return reg; }
 
   const get = () => reg || load(null);
   const active = () => get().list.find((p) => p.id === get().active);
@@ -104,9 +134,7 @@ function createProjects(dataDir) {
     if (!dir || !path.isAbsolute(dir)) throw new Error('bad folder');
     const have = get().list.find((p) => p.dir === dir);
     if (have) return have;
-    let id;
-    do { id = crypto.randomBytes(4).toString('hex'); } while (byId(id));
-    const p = cleanProject({ id, name: name || path.basename(dir), dir, createdAt: new Date().toISOString(), settings: defaultSettings() });
+    const p = newProject(dir, name);
     get().list.push(p);
     write();
     return p;
@@ -148,7 +176,7 @@ function createProjects(dataDir) {
     return p;
   }
 
-  return { load, get, active, byId, add, setDir, switchTo, rename, setSettings, stateFile: (id) => stateFileFor(dataDir, id), file };
+  return { notice: () => notice, changedOnDisk, keepDisk, discardDisk: () => write(), load, get, active, byId, add, setDir, switchTo, rename, setSettings, stateFile: (id) => stateFileFor(dataDir, id), file };
 }
 
 module.exports = { createProjects, defaultSettings, cleanSettings, migrate, normalize, stateFileFor, REPO_RE, LEGACY_STATE };

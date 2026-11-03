@@ -62,7 +62,12 @@ function readAmdVram() {
 
 // Upscale targets (height). Real-ESRGAN makes 4x, then ffmpeg resizes to the target if present.
 const TARGETS = { '1080p': 1080, '1440p': 1440, '4k': 2160 };
-function esrganArgs(input, output) { return ['-i', input, '-o', output, '-s', '4', '-n', 'realesrgan-x4plus']; }
+// -m points at the models folder unpacked next to the program.
+function esrganArgs(input, output, bin = null) {
+  const args = ['-i', input, '-o', output, '-s', '4', '-n', 'realesrgan-x4plus'];
+  if (bin) args.push('-m', path.join(path.dirname(bin), 'models'));
+  return args;
+}
 function ffmpegScaleArgs(input, output, height) { return ['-y', '-i', input, '-vf', `scale=-2:${height}:flags=lanczos`, output]; }
 
 // Real-ESRGAN's official Linux build from its GitHub release.
@@ -74,10 +79,17 @@ function pickEsrganAsset(release) {
   return { name: a.name, url: a.browser_download_url, sha256: m ? m[1] : null };
 }
 const toolsDir = (dataDir) => path.join(dataDir, 'tools', 'realesrgan');
-function findEsrgan(find, dataDir) {
-  const own = path.join(toolsDir(dataDir), 'realesrgan-ncnn-vulkan');
-  try { fs.accessSync(own, fs.constants.X_OK); return own; } catch {}
-  return find('realesrgan-ncnn-vulkan');
+// The unpacked program: at the top of the folder or one level down (zip layouts differ).
+function esrganIn(dir) {
+  const cands = [path.join(dir, 'realesrgan-ncnn-vulkan')];
+  try { for (const d of fs.readdirSync(dir)) cands.push(path.join(dir, d, 'realesrgan-ncnn-vulkan')); } catch {}
+  for (const c of cands) { try { fs.accessSync(c, fs.constants.X_OK); if (fs.statSync(c).isFile()) return c; } catch {} }
+  return null;
 }
+function findEsrgan(find, dataDir) {
+  return esrganIn(toolsDir(dataDir)) || find('realesrgan-ncnn-vulkan');
+}
+// No published checksum: the owner must confirm an unverified download.
+const needsConfirm = (asset) => !asset?.sha256;
 
-module.exports = { imageSize, imageInfo, parseHardware, readAmdVram, TARGETS, esrganArgs, ffmpegScaleArgs, ESRGAN_REPO, pickEsrganAsset, toolsDir, findEsrgan, tmp: () => os.tmpdir() };
+module.exports = { esrganIn, needsConfirm, imageSize, imageInfo, parseHardware, readAmdVram, TARGETS, esrganArgs, ffmpegScaleArgs, ESRGAN_REPO, pickEsrganAsset, toolsDir, findEsrgan, tmp: () => os.tmpdir() };

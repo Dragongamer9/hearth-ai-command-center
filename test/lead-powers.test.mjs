@@ -21,7 +21,7 @@ test('each switch off: merge, release and tag are refused', () => {
   setLeadPowers(OFF);
   assert.equal(leadMayApprove({ kind: 'merge', what: 'merge hearth/x into main' }).ok, false);
   setLeadPowers({ ...OFF, merge: true });
-  assert.equal(leadMayApprove({ kind: 'merge', what: 'merge hearth/x into main' }).ok, true, 'merge cards become the lead\'s with the switch');
+  assert.equal(leadMayApprove({ kind: 'merge', what: 'merge hearth/x into main' }).ok, false, 'merge cards are never the lead\'s; lead merges go through APPROVE: T-<id>');
   setLeadPowers({});
 });
 

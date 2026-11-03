@@ -15,10 +15,10 @@ export const CATEGORIES = {
   outside: { label: 'Commands outside the project workspace', level: 'major' },
   command: { label: 'Other risky commands', level: 'major' },
   delete: { label: "Delete files outside the AI's own branch or worktree", level: 'major' },
-  secrets: { label: 'Anything touching secrets, keys or credentials', level: 'major' },
+  secrets: { label: 'Anything touching secrets, keys or credentials', level: 'major', fixed: true },
   network: { label: "Network access beyond the AI's own tool", level: 'major' },
   push: { label: "Push anywhere except the lead's allowed task and release branches", level: 'major' },
-  boot: { label: 'Boot-critical change (the owner answers; the lead cannot)', level: 'major', ownerAnswers: true },
+  boot: { label: 'Boot-critical change (the owner answers; the lead cannot)', level: 'major', ownerAnswers: true, fixed: true },
   other: { label: 'Anything else an AI asks about', level: 'major' },
   // Owner-only, always
   merge: { label: 'Merge to main', level: 'owner' },
@@ -29,7 +29,8 @@ export const CATEGORIES = {
 };
 export const LEVELS = ['routine', 'major', 'owner'];
 export const OWNER_ONLY = Object.keys(CATEGORIES).filter((k) => CATEGORIES[k].level === 'owner');
-export const MOVABLE = Object.keys(CATEGORIES).filter((k) => CATEGORIES[k].level !== 'owner' && k !== 'other');
+// boot and secrets are fixed Major (nothing may ever leave a device unable to start).
+export const MOVABLE = Object.keys(CATEGORIES).filter((k) => CATEGORIES[k].level !== 'owner' && k !== 'other' && !CATEGORIES[k].fixed);
 export const DEFAULT_LEVELS = Object.fromEntries(Object.entries(CATEGORIES).map(([k, c]) => [k, c.level]));
 
 // The owner's saved choices, merged over the defaults. Owner-only stays owner-only;
@@ -68,11 +69,24 @@ const ROUTINE_WORDS = [
   ['edit', /\b(edit|change|commit|modify)\b.*\b(my|own|this|the task'?s?)\b.*\b(branch|worktree|files?)\b/i],
   ['read', /\b(read|open|look at|inspect)\b.*\b(files?|code|project|repo)\b/i],
 ];
+// Dangerous commands upgrade any ask, whatever kind the AI named.
+const DANGER = [
+  ['merge', /\bpush\b[^\n]*\b(main|master)\b|\b(main|master)\b[^\n]*\bpush\b/i],
+  ['push', /\bpush\b[^\n]*(--force|\s-f\b|--mirror|--delete|\+refs|:refs)/i],
+  ['boot', /\/boot\b|\bgrub|\bsystemd|systemctl|\bdd\s+(if|of)=|\bmkfs|\/etc\/|initramfs|bootloader|efibootmgr/i],
+  ['delete', /\brm\s+-[a-z]*[rf]|\bshred\b|\bwipefs\b/i],
+  ['install', /\b(curl|wget)\b[^|\n]*\|\s*(sudo\s+)?(ba|z)?sh\b/i],
+  ['command', /\bsudo\b|\bchmod\s+-R\b|\bchown\s+-R\b/i],
+];
+const RANK = (k, levels = current) => (k === 'other' ? 1.5 : ({ owner: 4, major: CATEGORIES[k]?.fixed ? 3 : 2, routine: 1 })[levelOf(k, levels)] || 2);
 export function classifyAsk(ask) {
-  const kind = CATEGORIES[ask?.kind] ? ask.kind : 'other';
+  const named = CATEGORIES[ask?.kind] ? ask.kind : 'other';
+  const what = String(ask?.what || '');
+  let kind = named;
+  for (const [k, re] of DANGER) if (re.test(what) && RANK(k) > RANK(kind)) kind = k;
   if (kind !== 'other') return kind;
   const text = `${ask?.what || ''} ${ask?.why || ''}`;
-  if (MAJOR_WORDS.test(ask?.what || '')) return 'other';
+  if (MAJOR_WORDS.test(what)) return 'other';
   for (const [k, re] of ROUTINE_WORDS) if (re.test(text)) return k;
   return 'other';
 }
@@ -92,7 +106,9 @@ export function splitAsks(asks = [], levels = current) {
 
 // What the lead (switch on) may answer: major categories except secrets, boot and
 // "other"; pushes only to hearth/ or release/ branches, with no main, tags or force.
-export const LEAD_NEVER = ['secrets', 'boot', 'other'];
+// The lead never answers these cards, whatever its switches: lead merges go only through
+// APPROVE: T-<id> (reviewed, exact commit); releases and tags only through RELEASE:/TAG: lines.
+export const LEAD_NEVER = ['secrets', 'boot', 'other', 'merge', 'release', 'tag', 'version', 'settings'];
 export const VERSION_RE = /^\d{1,4}\.\d{1,4}(\.\d{1,6})?$/;
 // The owner's lead switches (off by default) and the owner-set Next version. Set from
 // Settings and the Project page only; no AI line, card or lead action changes them.
@@ -125,7 +141,6 @@ export function leadMayApprove(request, levels = current) {
   if (!request) return { ok: false, reason: 'no request' };
   const kind = CATEGORIES[request.kind] ? request.kind : 'other';
   const lv = levelOf(kind, levels);
-  if (kind === 'merge' && powers.merge) return { ok: true, note: 'merge to main through the approved-commit path' };
   if (lv === 'owner' || LEAD_NEVER.includes(kind)) return { ok: false, reason: `${kind} requests stay with the Owner` };
   if (kind === 'push') return pushTargetsOk(request.what);
   if (DANGEROUS_PUSH.test(String(request.what || '')) && /\bpush\b/i.test(String(request.what || ''))) return { ok: false, reason: `${kind} requests that push to main, tags or with force stay with the Owner` };

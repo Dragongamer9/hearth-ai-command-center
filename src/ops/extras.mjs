@@ -182,6 +182,17 @@ export function checkpointReport(cp, who = '') {
   return `Checkpoint ${String(cp.sha).slice(0, 7)}${who ? ` (${who})` : ''}: ${n} file${n === 1 ? '' : 's'} changed${first ? ` — ${first}${files.length > 4 ? `, +${files.length - 4} more` : ''}` : ''}.`;
 }
 
+// ---------- the app's test gate ----------
+// With a test command, only "passed" counts. "not run (no dependencies installed)" is
+// accepted as done (labelled, so it doesn't loop); a cancelled run is not a pass.
+export function testGate(r = {}) {
+  if (r.status === 'passed' || !r.command) return { accept: true };
+  if (r.status === 'not run' && r.reason === 'no dependencies installed') return { accept: true };
+  if (r.status === 'failed') return { accept: false };
+  return { accept: false, note: `The tests didn't run${r.reason ? ` (${r.reason})` : ''}, so the done report wasn't accepted. Report done again to run them.` };
+}
+export const testLabel = (run) => (run?.appTests === 'not run' && run?.testReason ? `not run (${run.testReason})` : run?.appTests || 'not run');
+
 // ---------- action-line results ----------
 export const ACTION_RE = /^(APPROVE|CHANGES|DENY|START|ADD TASK|TASK|ATTACH|EDIT|HANDOFF|IMAGE REQUEST|BACKGROUND)\b/i;
 export function result(line, ok, reason = '') {

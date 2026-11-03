@@ -72,9 +72,9 @@ test('checkpoints never commit .hearth-ai/, even if .gitignore is edited; they l
   fs.writeFileSync(path.join(dir, 'b.txt'), 'b');
   const cp = await workspace.checkpoint(dir, { message: 'work' });
   assert.ok(cp.sha);
-  assert.deepEqual(cp.files.sort(), ['.gitignore', 'b.txt']);
-  assert.match(fs.readFileSync(path.join(dir, '.gitignore'), 'utf8'), /^\.hearth-ai\/$/m);
-  fs.writeFileSync(path.join(dir, '.gitignore'), ''); // the owner or an AI edits it away
+  assert.deepEqual(cp.files.sort(), ['b.txt'], 'the tracked .gitignore is never edited');
+  assert.equal(fs.existsSync(path.join(dir, '.gitignore')), false);
+  fs.writeFileSync(path.join(dir, '.gitignore'), '!.hearth-ai/\n'); // the owner or an AI edits it
   fs.writeFileSync(path.join(dir, 'c.txt'), 'c');
   const cp2 = await workspace.checkpoint(dir, { message: 'more' });
   assert.ok(!cp2.files.some((f) => f.startsWith('.hearth-ai')));

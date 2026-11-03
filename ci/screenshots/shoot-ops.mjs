@@ -67,7 +67,7 @@ function stub() {
   const ok = async (v) => v;
   const base = {
     loadState: () => ok(JSON.parse(JSON.stringify(state))), saveState: () => ok(true),
-    appInfo: () => ok({ appVersion: '0.8.0', hearthOs: null, dataPath: '/home/owner/.config/Hearth AI Command Center', electron: '45.0.0', packaged: true }),
+    appInfo: () => ok({ appVersion: '0.9.0', hearthOs: null, dataPath: '/home/owner/.config/Hearth AI Command Center', electron: '45.0.0', packaged: true }),
     backups: () => ok({ recoveredFrom: null, backups: [] }),
     providerStatus: () => ok({ encryption: true, weakEncryption: false, defaults: {}, keys: {} }),
     settings: () => ok(settings), setSettings: (p) => { Object.assign(settings, p); return ok({ ...settings }); },
@@ -92,7 +92,7 @@ function stub() {
     opsPhoneEnable: () => { phone = { ...phone, enabled: true, running: true, urls: ['http://192.168.1.42:8787/'] }; return ok(phone); },
     opsPhoneNewCode: () => { phone = { ...phone, pairing: { code: '482913', expires: Date.now() + 300000 } }; return ok(phone); },
     opsPhonePush: () => ok(true),
-    opsIdentityDefault: () => ok({ saved: null, suggested: { name: 'Dragongamer9', email: 'Dragongamer9@users.noreply.github.com' } }),
+    opsIdentityDefault: () => ok({ saved: null, suggested: { name: 'Dragongamer9', email: 'Dragongamer9@users.noreply.github.com', emails: ['Dragongamer9@users.noreply.github.com', '43799111+Dragongamer9@users.noreply.github.com', 'game305.cl@gmail.com'] } }),
     opsCheckTask: () => ok({ ok: false, problems: ['f00dbab is authored by Claude <noreply@anthropic.com>', 'f00dbab has an AI attribution line'] }),
     opsHardware: () => ok({ ramGb: 32, vramGb: 12, discrete: true, gpu: 'NVIDIA' }),
     opsUpscaleTools: () => ok({ esrgan: null, ffmpeg: '/usr/bin/ffmpeg' }),
@@ -131,6 +131,12 @@ const shot = async (label, { full = false } = {}) => {
 const nav = async (v) => { await page.click(`.side [data-nav="${v}"]`); await page.waitForTimeout(300); };
 const text = () => page.textContent('.main');
 
+// First run after the upgrade: the owner confirms the identity (suggested, never auto-saved).
+check(await page.locator('.ops-overlay').count() === 1, 'first-run identity prompt');
+check((await page.inputValue('#ops-first-emails')).includes('43799111+Dragongamer9@users.noreply.github.com'), 'owner emails suggested');
+await shot('first-run-owner-identity');
+await page.click('[data-ops="identitylater"]'); await page.waitForTimeout(300);
+check((await text()).includes("Your owner identity isn't confirmed"), 'banner until it is confirmed');
 await nav('overview');
 check((await text()).includes('While you were away'), 'Overview has the While you were away card');
 await shot('overview-while-you-were-away');
@@ -201,7 +207,7 @@ check((await text()).includes('Approval levels') && (await text()).includes('Own
 check((await text()).includes('Settings stay yours so no AI can give itself more power'), 'settings explanation');
 check((await text()).includes('Lead may merge to main') && (await text()).includes('Lead may publish releases (only the version you set)') && (await text()).includes('Lead may create tags (only the version you set)'), 'lead switches');
 check(await page.locator('[data-opslead]:checked').count() === 0, 'lead switches are off by default');
-check((await page.inputValue('#ops-identity')).includes('Dragongamer9 <Dragongamer9@users.noreply.github.com>'), 'owner identity suggested from git config');
+check((await page.inputValue('#ops-identity-name')) === 'Dragongamer9' && (await page.inputValue('#ops-identity-emails')).includes('game305.cl@gmail.com'), 'owner identity suggested from git config');
 await page.click('[data-ops="level"][data-arg="install"][data-val="routine"]'); await page.waitForTimeout(300);
 check(await page.locator('[data-ops="level"][data-arg="install"][data-val="routine"].on').count() === 1, 'moving a category is saved');
 await page.click('[data-ops="level"][data-arg="install"][data-val="major"]'); await page.waitForTimeout(300);
@@ -239,6 +245,13 @@ check(side.includes('fits on the graphics card') && side.includes('fits using gr
 check(side.includes("qwen2.5-coder:14b isn't installed"), 'fallback notice keeps the saved choice');
 await page.locator('.side-panel').scrollIntoViewIfNeeded();
 await shot('local-ai-models', { full: true });
+
+// The merged app at 0.9.0: team ops and the Habitat together.
+await nav('habitat');
+await page.waitForSelector('#habitat canvas', { timeout: 10000 });
+await page.waitForTimeout(2500);
+check(await page.locator('.side [data-nav="summary"]').count() === 1 && await page.locator('.side [data-nav="habitat"]').count() === 1, 'ops and Habitat in one app');
+await shot('habitat-with-team-ops-0.9.0');
 
 await browser.close();
 console.log(errors.length ? `Page errors:\n${errors.join('\n')}` : 'No page errors.');

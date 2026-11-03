@@ -359,6 +359,6 @@ test('pet and new icons are well formed; Habitat stays offline and saves through
   assert.doesNotMatch(life, /Math\.random/, 'no random judgement in the saved progress or moods');
   assert.match(ui, /saveStore: \(h\) => \{ state\.habitat = h; save\(\); \}/);
   assert.match(ui, /store: state\.habitat \|\| null/);
-  assert.match(ui, /ops: typeof opsSnapshot === 'function' \? opsSnapshot\(\) : null/);
+  assert.match(ui, /ops: ops\.snapshot\(\),/, 'the Habitat reads opsSnapshot() through ops.snapshot()');
   assert.match(hab, /Reset Habitat progress/);
 });

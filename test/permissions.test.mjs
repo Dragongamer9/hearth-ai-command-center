@@ -18,7 +18,7 @@ test('directives are pulled out of a reply; the rest stays as the message', () =
   assert.deepStrictEqual(d.retracts, ['ZZ99YY']);
   assert.deepStrictEqual(d.handoffs, [{ to: 'google', note: 'check the Decky docs' }]);
   assert.deepStrictEqual(d.asks[0], { kind: 'push', what: 'push hearth/task-k7q2ma to GitHub', why: 'so ChatGPT can review the branch' });
-  assert.equal(d.asks[1].kind, 'other');
+  assert.equal(d.asks[1].kind, 'delete', 'rm -rf is a delete, whatever the AI called it');
   assert.equal(d.asks[1].what, 'rm -rf build/ in the repo root');
   assert.equal(d.pass, false);
   assert.equal(parseDirectives('PASS').pass, true);

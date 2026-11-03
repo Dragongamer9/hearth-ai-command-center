@@ -10,7 +10,7 @@ import { chatPlan, canOwnerSend, newRound, ownerInterrupt, stopRound, cameAfterO
 import { leadOn, parseLeadLines, leadDecision, leadLabel, leadUndoable, pickReviewer } from './lead.mjs';
 import { AGENTS, AGENT_IDS, WEB_ONLY, HEADLESS, EDITORS, API_CAPABLE, DEFAULT_ROLES, BILLING, ACCESS_NOTE, OLLAMA_NOTE, COLORS } from './registry.mjs';
 import { viewHabitat, mountHabitat, stopHabitat } from './habitat.mjs';
-import { applyHabitatLines, habitatSection, stripHabitatLines, habitatResultsHtml } from './habitat/actions.mjs';
+import { applyHabitatLines, habitatSection, stripHabitatLines } from './habitat/actions.mjs';
 import { HEARTH_OS, RED_FLAGS } from './hearth.mjs';
 import { tokensToCss, pickMode } from './theme.mjs';
 import { createOps } from './ops/ui.mjs';
@@ -338,7 +338,7 @@ const approvedSha = (t) => (t.reviewVerdict?.verdict === 'approve' && t.reviewVe
 function doneBadge(t) {
   if (!t.done) return '';
   const cls = { passed: 'good', failed: 'bad' }[t.done.tests] || '';
-  return `${t.done.sha ? `<span class="badge mono" title="Reported done at this commit">${esc(short(t.done.sha))}</span>` : ''}<span class="badge ${cls}">${esc(TEST_LABEL[t.done.tests] || 'tests not run')}</span>`;
+  return `${t.done.sha ? `<span class="badge mono" title="Reported done at this commit">${esc(short(t.done.sha))}</span>` : ''}<span class="badge ${cls}">${esc(TEST_LABEL[t.done.tests] || 'tests not run')}</span>${t.done.testsChanged ? '<span class="badge warn">tests changed by this task</span>' : ''}`;
 }
 
 // ---------- the lead acting for the owner ----------
@@ -789,7 +789,7 @@ function habitatSnapshot() {
     tasks: state.tasks.slice(-300).map(fact),
     chat: state.chat.slice(-12).map((m) => ({ id: m.id, who: m.who, text: String(m.text || '').slice(0, 200) })),
     store: state.habitat || null,
-    ops: typeof opsSnapshot === 'function' ? opsSnapshot() : null, // eslint-disable-line no-undef
+    ops: ops.snapshot(), // finished tasks, failures, per-AI budget, CI per task
     reduced: settings.reduceMotion === true || reducedOs,
     agents: ids.slice(0, 12).map((a) => {
       const b = busyOn(a);
@@ -872,7 +872,6 @@ function chatMessage(m) {
     ${chip ? `<div class="who">${chip}<span>${esc(time(m.at))}${m.model ? ` · ${esc(m.model)}` : ''}${m.auto ? ' · posted on its own' : ''}${m.parallel ? ' · answered in parallel, independently' : ''}${m.beforeOwner ? ' · written before your newest message' : ''}</span><span class="mid">#${esc(m.id)}</span></div>` : ''}
     ${body}${attachmentsHtml(m)}${ops.resultsHtml(m)}${hist}
     ${asks}
-    ${typeof ops === 'undefined' ? habitatResultsHtml(m, esc) : '' /* eslint-disable-line no-undef */}
     ${m.leadUndo ? (() => { const e = (state.leadLog || []).find((x) => x.id === m.leadUndo); return e ? `<div class="row" style="margin-top:6px">${e.undone ? '<span class="badge">Undone</span>' : `<button class="btn small" data-leadundo="${esc(e.id)}">Undo</button>`}</div>` : ''; })() : ''}
     ${props ? `<div class="props">${props}${pending > 1 ? `<button class="btn small primary" data-addall="${m.id}" style="margin-top:4px;align-self:flex-start">Add all ${pending}</button>` : ''}</div>` : ''}
   </div>`;
@@ -1082,7 +1081,9 @@ async function chatTurn(agent, { trigger = '', canEdit = false, snapshot = null,
   if (res.ok) {
     answered.push(agent);
     const d = parseDirectives(res.text);
+    let m = null;
     ops.turnBegin(agent);
+    try { // results always attach, even if something below throws
     for (const e of d.edits) {
       const r = applyEdit(state.chat, { id: e.id, by: agent, text: e.text });
       if (r.ok) audit(`${NAMES[agent]} edited its message #${e.id}`, null, '', agent);
@@ -1095,7 +1096,6 @@ async function chatTurn(agent, { trigger = '', canEdit = false, snapshot = null,
       else post({ who: 'system', text: `${NAMES[agent]} tried to retract #${id}: ${r.reason}.` });
       ops.actionResult(agent, `RETRACT #${id}`, r.ok, r.ok ? 'message retracted' : r.reason);
     }
-    let m = null;
     const posted = await agentAttachments(parseAttachLines(d.text), chatId(), agent);
     if (!d.pass && (d.text || d.asks.length || d.handoffs.length || posted.atts.length)) {
       const handoffNote = d.handoffs.map((h) => `→ handing off to ${NAMES[h.to]}${h.note ? `: ${h.note}` : ''}`).join('\n');
@@ -1113,8 +1113,8 @@ async function chatTurn(agent, { trigger = '', canEdit = false, snapshot = null,
     ops.auditRoutine(agent, d.routine, null);
     await handleVerdicts(agent, d.text);
     handleLeadLines(agent, d.text);
-    await ops.handleLines(agent, d.text, null); // IMAGE REQUEST / BACKGROUND
-    ops.turnEnd(agent, m);
+    await ops.handleLines(agent, d.text, null, Boolean(edit)); // IMAGE REQUEST / BACKGROUND (jobs edit only if this turn could)
+    } finally { ops.turnEnd(agent, m); }
     if (res.sessionId && settings.chatResume) {
       state.chatSessions = state.chatSessions || {};
       state.chatSessions[skey] = { sessionId: res.sessionId, lastMsgId: (m || state.chat[state.chat.length - 1])?.id, at: now() };
@@ -1791,9 +1791,9 @@ function render() {
       <div class="top"><div><h1>${esc(title)}</h1><div class="sub">${esc(sub)}</div></div><div class="grow"></div>
         ${updBadge}<span class="badge warn">Beta</span>
         <button class="btn primary" data-new>＋ New task</button></div>
-      ${views[ui.view]()}
+      ${ops.banner()}${views[ui.view]()}
     </main>
-  </div>${drawer()}${modal()}`;
+  </div>${drawer()}${modal()}${ops.overlay()}`;
   const main = document.querySelector('.main');
   if (main && ui.keepScroll) main.scrollTop = scroll;
   ui.keepScroll = false;
@@ -1968,9 +1968,11 @@ async function runTask(t, agent, handoff = null, depth = 0) {
   // The AI posts its own update to Team chat, with any permission it needs.
   if (cp) ops.checkpointLine(agent, cp, t.id);
   if (res.ok) {
+    let m = null;
     ops.turnBegin(agent);
+    try {
     const media = await agentAttachments(parseAttachLines(d.text || res.text), t.id, agent);
-    const m = post({ who: agent, auto: true, model: res.via, attachments: media.atts.length ? media.atts : undefined, text: `T-${t.id} “${t.title}”: ${(media.text || d.text || res.text).replace(/STATUS:.*$/is, '').trim().slice(0, 400) || 'finished a run.'}${run.status === 'done' ? `\n(${doneLine(run)})` : ''}` });
+    m = post({ who: agent, auto: true, model: res.via, attachments: media.atts.length ? media.atts : undefined, text: `T-${t.id} “${t.title}”: ${(media.text || d.text || res.text).replace(/STATUS:.*$/is, '').trim().slice(0, 400) || 'finished a run.'}${run.status === 'done' ? `\n(${doneLine(run)})` : ''}` });
     if (refused) post({ who: 'system', text: `T-${t.id}: ${NAMES[agent]} reported done, but it wasn't accepted. The task stays with ${NAMES[agent]} (Ready to Resume): ${refused}` });
     m.asks = d.asks.map((a) => {
       const req = makeRequest({ id: uid(), agent, kind: a.kind, what: a.what, why: a.why, context: t.id, msgId: m.id });
@@ -1980,8 +1982,8 @@ async function runTask(t, agent, handoff = null, depth = 0) {
     });
     ops.auditRoutine(agent, d.routine, t.id);
     if (m.asks.length) wakeLead('permission card', agent);
-    await ops.handleLines(agent, d.text || res.text, t.id);
-    ops.turnEnd(agent, m);
+    await ops.handleLines(agent, d.text || res.text, t.id, true);
+    } finally { ops.turnEnd(agent, m); }
   }
   await save();
   delete ui.saving[t.id];
@@ -2265,12 +2267,16 @@ document.addEventListener('click', async (e) => {
     if (r.ok) ui.prs.byTask[d.prrefresh] = r.pr; else toast(r.message);
     return render();
   }
-  if (d.useproject) { settings = await api.useProject(d.useproject); state.chatWs = null; await refreshGit(); return render(); }
+  // A folder is a project with its own board: switching reloads the window (saved first, never after).
+  if (d.useproject) { await save(); settings = await api.useProject(d.useproject); if (settings.projectSwitched) return location.reload(); state.chatWs = null; await refreshGit(); return render(); }
   if (d.clone !== undefined) {
     const input = document.getElementById('clone-input').value.trim();
     if (!input) return;
     toast('Cloning…');
+    audit('Cloning a project', null, input);
+    await save();
     const r = await api.gitClone(input).catch((err) => ({ ok: false, message: cleanErr(err.message) }));
+    if (r.ok && r.settings?.projectSwitched) return location.reload();
     if (r.ok) { settings = await api.settings(); state.chatWs = null; await refreshGit(); audit('Cloned project', null, r.dir); save(); }
     toast(r.ok ? `Cloned to ${r.dir} — it's now the active project.` : `Clone failed: ${r.message}`);
     return render();
@@ -2449,7 +2455,7 @@ document.addEventListener('click', async (e) => {
   if (d.fbdone) return freebuffDone(task(d.fbdone));
   if (d.openws !== undefined) return api.openWorkspace(d.openws || null);
   if (d.pickproject !== undefined) {
-    try { settings = await api.pickProject(); state.chatWs = null; await refreshGit(); } catch (err) { toast(cleanErr(err.message)); }
+    try { await save(); settings = await api.pickProject(); if (settings.projectSwitched) return location.reload(); state.chatWs = null; await refreshGit(); } catch (err) { toast(cleanErr(err.message)); }
     return render();
   }
   if (d.autohandoff !== undefined) { state.autoHandoff = !state.autoHandoff; save(); return render(); }

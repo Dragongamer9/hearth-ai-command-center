@@ -99,7 +99,7 @@ contextBridge.exposeInMainWorld('hearth', {
   opsRewriteTask: (taskId, byLead) => ipcRenderer.invoke('ops:rewriteTask', taskId, byLead === true),
   opsCheckTask: (taskId) => ipcRenderer.invoke('ops:checkTask', taskId),
   opsLeadRelease: (kind, version) => ipcRenderer.invoke('ops:leadRelease', kind, version),
-  opsReleaseStatus: (version) => ipcRenderer.invoke('ops:releaseStatus', version),
+  opsReleaseStatus: (version, since) => ipcRenderer.invoke('ops:releaseStatus', version, since),
   opsHardware: () => ipcRenderer.invoke('ops:hardware'),
   opsOllamaPull: (tag) => ipcRenderer.invoke('ops:ollamaPull', tag),
   opsOllamaRemove: (tag) => ipcRenderer.invoke('ops:ollamaRemove', tag),
@@ -109,6 +109,14 @@ contextBridge.exposeInMainWorld('hearth', {
   opsJobs: () => ipcRenderer.invoke('ops:jobs'),
   opsJobStart: (spec) => ipcRenderer.invoke('ops:jobStart', spec),
   opsJobCancel: (id) => ipcRenderer.invoke('ops:jobCancel', id),
+  opsDiskPending: () => ipcRenderer.invoke('ops:diskPending'),
+  opsDiskResolve: (which, choice) => ipcRenderer.invoke('ops:diskResolve', which, choice),
+  onOpsDiskChange: (cb) => {
+    const listener = (_e, a) => cb(a);
+    ipcRenderer.on('ops:diskChange', listener);
+    return () => ipcRenderer.removeListener('ops:diskChange', listener);
+  },
+  opsPhoneHost: (ip) => ipcRenderer.invoke('ops:phoneHost', ip),
   opsPhoneStatus: () => ipcRenderer.invoke('ops:phoneStatus'),
   opsPhoneEnable: () => ipcRenderer.invoke('ops:phoneEnable'),
   opsPhoneDisable: () => ipcRenderer.invoke('ops:phoneDisable'),

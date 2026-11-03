@@ -5,12 +5,19 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 
-const alive = (pid) => { if (!pid) return false; try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
+const ID_RE = /^J[0-9A-F]{8}$/;
+// A pid only counts as this job's process if /proc says it is our runner for this job file
+// (pids get reused after a restart).
+function ownsPid(pid, jobFile, readCmd = (p) => fs.readFileSync(`/proc/${p}/cmdline`, 'utf8')) {
+  if (!pid) return false;
+  try { const cmd = readCmd(pid); return cmd.includes('job-runner.cjs') && cmd.includes(jobFile); } catch { return false; }
+}
+const alive = (pid, jobFile) => ownsPid(pid, jobFile);
 
 function jobStatus(job, result, isAlive = alive) {
   if (job.status === 'cancelled') return 'cancelled';
   if (result) return result.ok ? 'done' : 'failed';
-  return isAlive(job.pid) ? 'running' : 'lost';
+  return isAlive(job.pid, job.file) ? 'running' : 'lost';
 }
 
 function createJobs({ dir, spawnRunner, isAlive = alive }) {
@@ -22,7 +29,7 @@ function createJobs({ dir, spawnRunner, isAlive = alive }) {
 
   function start(spec) {
     const id = `J${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
-    const job = { id, status: 'running', startedAt: new Date().toISOString(), ...spec, resultFile: resFile(id) };
+    const job = { id, status: 'running', startedAt: new Date().toISOString(), startedMs: Date.now(), ...spec, file: file(id), resultFile: resFile(id) };
     write(id, job);
     job.pid = spawnRunner(file(id));
     write(id, job);
@@ -39,9 +46,11 @@ function createJobs({ dir, spawnRunner, isAlive = alive }) {
     return names.map((n) => read(path.join(dir, n))).filter(Boolean).map(view).sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt))).slice(0, 50);
   }
   function cancel(id) {
+    if (!ID_RE.test(String(id))) return { ok: false, message: 'No such job.' };
     const job = read(file(String(id)));
     if (!job) return { ok: false, message: 'No such job.' };
-    try { process.kill(-job.pid, 'SIGTERM'); } catch { try { process.kill(job.pid, 'SIGTERM'); } catch {} }
+    // Signal only if that pid is still this job's runner.
+    if (isAlive(job.pid, job.file)) { try { process.kill(-job.pid, 'SIGTERM'); } catch { try { process.kill(job.pid, 'SIGTERM'); } catch {} } }
     job.status = 'cancelled';
     job.cancelledAt = new Date().toISOString();
     write(job.id, job);
@@ -50,4 +59,4 @@ function createJobs({ dir, spawnRunner, isAlive = alive }) {
   return { start, list, cancel };
 }
 
-module.exports = { createJobs, jobStatus, alive };
+module.exports = { createJobs, jobStatus, alive, ownsPid, ID_RE };

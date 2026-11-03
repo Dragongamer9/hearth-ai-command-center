@@ -6,7 +6,7 @@ const MAX_CHARS = 8000;
 
 const RULES = [
   '- Commits only as Dragongamer9 <Dragongamer9@users.noreply.github.com>. No Co-authored-by, Claude-Session or "Generated with" lines, no AI author.',
-  '- Releases and version numbers are the owner\'s. Never pick, bump or apply a version number; never tag or publish.',
+  '- Releases and version numbers are the owner\'s. Never pick, bump or apply a version number. Releases and tags only for the owner\'s Next version, and only with the owner\'s lead switches on.',
   '- Settings must be remembered and must never change by themselves.',
   '- Nothing reaches main without the owner\'s approval.',
 ];

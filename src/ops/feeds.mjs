@@ -35,7 +35,7 @@ export function phoneSnapshot({ state, names = {}, project = '', startLabel = ()
     names,
     at: new Date().toISOString(),
     waiting: {
-      permissions: (state.permissions || []).filter((p) => p.status === 'pending').map((p) => ({ id: p.id, agent: p.agent, kind: p.kind, what: p.what, why: p.why })),
+      permissions: (state.permissions || []).filter((p) => p.status === 'pending').map((p) => ({ id: p.id, agent: p.agent, kind: p.kind, what: p.what, why: p.why, computerOnly: PHONE_NEVER_APPROVE.includes(p.kind) })),
       approvals: tasks.filter((t) => t.stage === 'approval').map((t) => ({ id: t.id, title: t.title, assignee: t.assignee, tests: t.done?.tests ? `tests ${t.done.tests}` : null })),
       cards: (state.opsCards || []).filter((c) => c.status === 'pending').map((c) => ({ id: c.id, text: c.text, options: c.options })),
     },
@@ -44,6 +44,13 @@ export function phoneSnapshot({ state, names = {}, project = '', startLabel = ()
   };
 }
 
+// Owner-only kinds and boot-critical changes are approved on the computer only.
+export const PHONE_NEVER_APPROVE = ['merge', 'release', 'tag', 'version', 'settings', 'boot'];
+export function phoneMayDecide(request, value) {
+  if (!request || request.status !== 'pending') return { ok: false, reason: 'no such pending request' };
+  if (value === 'approved' && PHONE_NEVER_APPROVE.includes(request.kind)) return { ok: false, reason: `${request.kind} requests can only be approved on the computer` };
+  return { ok: true };
+}
 const ID = /^[A-Za-z0-9]{2,16}$/;
 // A phone request -> one normalized action, or null.
 export function phoneAction(a) {

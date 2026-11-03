@@ -348,9 +348,3 @@ export function habitatSection(store, { agent, ids = [], names = {}, now = Date.
   return { text: parts.filter((p, i) => i === 0 || p).join('\n'), store: changed ? s : store, changed };
 }
 
-// ✓ / ✗ lines under a chat message (the same shape the team-ops results use).
-export function habitatResultsHtml(m, esc) {
-  const list = (m.results || []).filter((r) => /^HABITAT:/i.test(r.line));
-  if (!list.length) return '';
-  return `<div class="hab-results">${list.map((r) => `<div class="${r.ok ? 'ok' : 'no'}"><span>${r.ok ? '✓' : '✗'}</span> <span class="mono">${esc(r.line)}</span> — ${esc(r.reason)}</div>`).join('')}</div>`;
-}

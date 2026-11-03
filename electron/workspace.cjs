@@ -57,20 +57,12 @@ function cleanMessage(message) {
 // Commit whatever is in the worktree. Returns null when nothing changed.
 // (author is who worked on it, recorded in the app's audit log — not in git.)
 // The app's own files (.hearth-ai/: attachments, assets, jobs) are never committed, even
-// if .gitignore is edited: they're excluded from the add and unstaged before committing.
+// if .gitignore says otherwise: they're excluded from the add and unstaged before committing.
 const APP_DIR = '.hearth-ai';
-function ensureIgnored(dir) {
-  const f = path.join(dir, '.gitignore');
-  let s = '';
-  try { s = fs.readFileSync(f, 'utf8'); } catch {}
-  if (/^\/?\.hearth-ai\/?\s*$/m.test(s)) return false;
-  fs.writeFileSync(f, `${s}${s && !s.endsWith('\n') ? '\n' : ''}# Hearth AI Command Center: attachments, assets, jobs\n.hearth-ai/\n`);
-  return true;
-}
 
 async function checkpoint(dir, { message }) {
   if (!fs.existsSync(dir)) return null;
-  try { ensureIgnored(dir); } catch {}
+  // Never edits the tracked .gitignore: .hearth-ai/ is excluded here and in the shared exclude file.
   await git(dir, ['add', '-A', '--', '.', `:(exclude)${APP_DIR}`]);
   await git(dir, ['rm', '-r', '--cached', '--quiet', '--ignore-unmatch', '--', APP_DIR]);
   const staged = await git(dir, ['diff', '--cached', '--stat']);
@@ -106,4 +98,4 @@ async function head(dir) {
   return r.ok && r.out ? r.out : null;
 }
 
-module.exports = { ensureIgnored, APP_DIR, head, isRepo, ensureWorktree, checkpoint, summary, git, slug, cleanMessage, ownerIdentity };
+module.exports = { APP_DIR, head, isRepo, ensureWorktree, checkpoint, summary, git, slug, cleanMessage, ownerIdentity };

@@ -192,7 +192,7 @@ test('approval: ATTACH never prompts, routine asks never become cards, major one
     assert.equal(d.asks.length, 0, line);
     assert.equal(d.routine.length, 1, line);
   }
-  for (const [line, kind] of [['ASK: install | apt install ffmpeg | needed', 'install'], ['ASK: outside | edit ~/.bashrc', 'outside'], ['ASK: delete | delete build/ on main', 'delete'], ['ASK: secrets | read ~/.config/gh/hosts.yml', 'secrets'], ['ASK: network | curl an external API', 'network'], ['ASK: push | push hearth/x to GitHub', 'push'], ['ASK: merge | merge into main', 'merge'], ['ASK: version | set version 0.6.53', 'version'], ['ASK: other | post a screenshot after rm -rf build', 'other']]) {
+  for (const [line, kind] of [['ASK: install | apt install ffmpeg | needed', 'install'], ['ASK: outside | edit ~/.bashrc', 'outside'], ['ASK: delete | delete build/ on main', 'delete'], ['ASK: secrets | read ~/.config/gh/hosts.yml', 'secrets'], ['ASK: network | curl an external API', 'network'], ['ASK: push | push hearth/x to GitHub', 'push'], ['ASK: merge | merge into main', 'merge'], ['ASK: version | set version 0.6.53', 'version'], ['ASK: other | post a screenshot after rm -rf build', 'delete']]) {
     const d = parseDirectives(line);
     assert.equal(d.asks.length, 1, line);
     assert.equal(d.asks[0].kind, kind, line);

@@ -4,9 +4,11 @@
 // tags, app settings) can never be saved as anything else.
 const MOVABLE = {
   attach: 'routine', read: 'routine', tests: 'routine', edit: 'routine', review: 'routine', screenshot: 'routine',
-  install: 'major', outside: 'major', command: 'major', delete: 'major', secrets: 'major', network: 'major', push: 'major', boot: 'major',
+  install: 'major', outside: 'major', command: 'major', delete: 'major', network: 'major', push: 'major',
 };
 const OWNER_ONLY = ['merge', 'release', 'version', 'tag', 'settings'];
+// boot and secrets are fixed Major: never movable to Routine.
+const FIXED = ['boot', 'secrets'];
 
 // Saved = only the owner's differences from the defaults.
 function cleanSavedLevels(saved) {
@@ -19,4 +21,4 @@ function cleanSavedLevels(saved) {
   return out;
 }
 
-module.exports = { MOVABLE, OWNER_ONLY, cleanSavedLevels };
+module.exports = { MOVABLE, OWNER_ONLY, FIXED, cleanSavedLevels };

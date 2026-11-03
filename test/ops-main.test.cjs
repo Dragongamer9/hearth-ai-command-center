@@ -209,7 +209,7 @@ test('phone: LAN-only addresses and hosts, one-time codes, hashed tokens', () =>
   assert.equal(phone.cookieToken('a=1; hearth_phone=AAAAAAAAAAAAAAAAAAAAAAAA; b=2'), 'AAAAAAAAAAAAAAAAAAAAAAAA');
 });
 
-test('phone server: pairing gives a cookie, only its hash is stored, actions need the header, forget clears all', async () => {
+test('phone server: pairing gives a cookie, only its hash is stored, actions need the header, forget clears all', { skip: phone.lanInterfaces().length ? false : 'no LAN interface here' }, async () => {
   const d = tmp();
   const file = path.join(d, 'ops-phone.json');
   const actions = [];
@@ -217,8 +217,9 @@ test('phone server: pairing gives a cookie, only its hash is stored, actions nee
   const st = await ph.enable();
   assert.equal(st.running, true);
   const port = st.port;
+  const host = new URL(st.urls[0]).hostname; // bound to the LAN interface only, never 0.0.0.0
   const req = (method, p, body, headers = {}) => new Promise((resolve, reject) => {
-    const r = http.request({ host: '127.0.0.1', port, path: p, method, headers: { Host: `127.0.0.1:${port}`, 'Content-Type': 'application/json', ...headers } }, (res) => {
+    const r = http.request({ host, port, path: p, method, headers: { Host: `${host}:${port}`, 'Content-Type': 'application/json', ...headers } }, (res) => {
       let s = '';
       res.on('data', (c) => { s += c; });
       res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: s }));

@@ -4,7 +4,7 @@ import { buildWorld, roomOf, stepActor, newActor, behaviourOf } from '../src/hab
 import { migrateStore, reconcile, resetStore, gardenState, applyUnlocks, layoutOf, boardNotes, JOURNAL_MAX, canPlace } from '../src/habitat/life.mjs';
 import {
   parseHabitatLines, stripHabitatLines, applyHabitatLines, undoLast, setLock, freeOwnerProps, clearBoard, clearJournal,
-  habitatSection, habitatSummary, describeRoom, habitatResultsHtml, MAX_PER_TURN, MAX_PER_HOUR, SUMMARY_MAX,
+  habitatSection, habitatSummary, describeRoom, MAX_PER_TURN, MAX_PER_HOUR, SUMMARY_MAX,
 } from '../src/habitat/actions.mjs';
 
 const IDS = ['anthropic', 'google', 'openai', 'xai'];
@@ -263,10 +263,9 @@ test('memory line stays short; look includes the room and recent journal entries
   assert.ok(describeRoom(st, 'anthropic', { ids: IDS }).includes('door is at 2,3'));
 });
 
-test('results render as ✓/✗ lines and the store round-trips', () => {
+test('results come back as ✓/✗ entries (shown by the team-ops results) and the store round-trips', () => {
   const r = run(base().s, 'HABITAT: emote happy\nHABITAT: emote angry');
-  const html = habitatResultsHtml({ results: [...r.results, { ok: true, line: 'TASK: x', reason: 'other branch' }] }, esc);
-  assert.equal((html.match(/✓/g) || []).length, 1); assert.equal((html.match(/✗/g) || []).length, 1);
+  assert.equal(r.results.filter((x) => x.ok).length, 1); assert.equal(r.results.filter((x) => !x.ok).length, 1);
   assert.equal(r.store.rev, migrateStore(JSON.parse(JSON.stringify(r.store))).rev);
   assert.ok(r.store.rev > 0);
   assert.deepEqual(migrateStore(JSON.parse(JSON.stringify(r.store))).life.events, r.store.life.events);

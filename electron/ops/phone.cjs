@@ -10,6 +10,7 @@ const crypto = require('node:crypto');
 const { PHONE_HTML } = require('./phone-page.cjs');
 
 const CODE_TTL_MS = 5 * 60000;
+const TOKEN_TTL_MS = 30 * 24 * 3600e3; // server-side expiry, refreshed on use
 const MAX_TRIES = 5;
 
 function isLanAddress(ip) {
@@ -52,37 +53,59 @@ function cookieToken(header) {
   return m ? m[1] : null;
 }
 
-function lanUrls(port, ifaces = os.networkInterfaces()) {
+function lanInterfaces(ifaces = os.networkInterfaces()) {
   const out = [];
-  for (const list of Object.values(ifaces || {})) for (const i of list || []) {
-    if (i.family === 'IPv4' && !i.internal && isLanAddress(i.address)) out.push(`http://${i.address}:${port}/`);
+  for (const [name, list] of Object.entries(ifaces || {})) for (const i of list || []) {
+    if (i.family === 'IPv4' && !i.internal && isLanAddress(i.address)) out.push({ name, address: i.address });
   }
   return out;
 }
+function lanUrls(port, ifaces = os.networkInterfaces()) {
+  return lanInterfaces(ifaces).map((i) => `http://${i.address}:${port}/`);
+}
+// The address to bind: the owner's chosen LAN interface if it still exists, else the first one.
+function pickHost(saved, ifaces = os.networkInterfaces()) {
+  const list = lanInterfaces(ifaces);
+  return list.find((i) => i.address === saved)?.address || list[0]?.address || null;
+}
+// Collects a JSON body up to `max` bytes; always settles (null when too big or broken).
+function readJson(req, max = 65536) {
+  return new Promise((resolve) => {
+    let s = '';
+    let done = false;
+    const finish = (v) => { if (!done) { done = true; resolve(v); } };
+    req.on('data', (d) => { if (done) return; s += d; if (s.length > max) { finish(null); req.destroy(); } });
+    req.on('end', () => { try { finish(JSON.parse(s || '{}')); } catch { finish(null); } });
+    req.on('error', () => finish(null));
+    req.on('close', () => finish(null));
+  });
+}
+const tokenValid = (dev, now = Date.now()) => Boolean(dev) && (!dev.expires || dev.expires > now);
 
 function createPhone({ file, getSnapshot, onAction, log = () => {} }) {
-  let cfg = { enabled: false, port: 8787, devices: [] };
+  let cfg = { enabled: false, port: 8787, host: null, devices: [] };
   try { cfg = { ...cfg, ...JSON.parse(fs.readFileSync(file, 'utf8')) }; } catch {}
   if (!Array.isArray(cfg.devices)) cfg.devices = [];
   let server = null;
   let pairing = null;
-  const save = () => fs.writeFileSync(file, JSON.stringify({ enabled: cfg.enabled === true, port: cfg.port, devices: cfg.devices }, null, 2), { mode: 0o600 });
+  const save = () => fs.writeFileSync(file, JSON.stringify({ enabled: cfg.enabled === true, port: cfg.port, host: cfg.host || null, devices: cfg.devices }, null, 2), { mode: 0o600 });
 
   const authed = (req) => {
     const t = cookieToken(req.headers.cookie);
     if (!t) return null;
     const h = hashToken(t);
-    return cfg.devices.find((d) => d.hash.length === h.length && crypto.timingSafeEqual(Buffer.from(d.hash), Buffer.from(h))) || null;
+    const dev = cfg.devices.find((d) => d.hash.length === h.length && crypto.timingSafeEqual(Buffer.from(d.hash), Buffer.from(h))) || null;
+    if (!tokenValid(dev)) return null; // expired after 30 days without use
+    const before = dev.expires || 0;
+    dev.expires = Date.now() + TOKEN_TTL_MS;
+    if (dev.expires - before > 3600e3) save(); // refresh on use (saved at most hourly)
+    return dev;
   };
   const json = (res, code, body, headers = {}) => {
     res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...headers });
     res.end(JSON.stringify(body));
   };
-  const readBody = (req) => new Promise((resolve) => {
-    let s = '';
-    req.on('data', (d) => { s += d; if (s.length > 65536) req.destroy(); });
-    req.on('end', () => { try { resolve(JSON.parse(s || '{}')); } catch { resolve(null); } });
-  });
+  const readBody = (req) => readJson(req);
 
   async function route(req, res) {
     if (!isLanAddress(req.socket.remoteAddress) || !hostOk(req.headers.host)) { res.writeHead(403); return res.end('Local network only.'); }
@@ -101,7 +124,7 @@ function createPhone({ file, getSnapshot, onAction, log = () => {} }) {
       if (!r.ok) return json(res, 401, { ok: false, message: r.reason });
       pairing = null; // one-time
       const token = crypto.randomBytes(32).toString('base64url');
-      const dev = { id: crypto.randomBytes(4).toString('hex'), name: String(body?.name || 'Phone').replace(/[^\w .-]/g, '').slice(0, 40) || 'Phone', hash: hashToken(token), pairedAt: new Date().toISOString(), lastSeen: null };
+      const dev = { id: crypto.randomBytes(4).toString('hex'), name: String(body?.name || 'Phone').replace(/[^\w .-]/g, '').slice(0, 40) || 'Phone', hash: hashToken(token), pairedAt: new Date().toISOString(), lastSeen: null, expires: Date.now() + TOKEN_TTL_MS };
       cfg.devices.push(dev);
       save();
       log('Phone paired', dev.name);
@@ -129,7 +152,10 @@ function createPhone({ file, getSnapshot, onAction, log = () => {} }) {
         s.on('error', (e) => {
           if (e.code === 'EADDRINUSE' && port < (Number(cfg.port) || 8787) + 10) { port++; tryListen(); } else { log('Phone view could not start', e.message); resolve({ ...status(), error: e.message }); }
         });
-        s.listen(port, '0.0.0.0', () => { server = s; cfg.port = port; resolve(status()); });
+        // Only on the chosen LAN interface, never 0.0.0.0.
+        const host = pickHost(cfg.host);
+        if (!host) { resolve({ ...status(), error: 'No local network connection found.' }); return; }
+        s.listen(port, host, () => { server = s; cfg.port = port; cfg.boundHost = host; resolve(status()); });
       };
       tryListen();
     });
@@ -145,7 +171,9 @@ function createPhone({ file, getSnapshot, onAction, log = () => {} }) {
       enabled: cfg.enabled === true,
       running: Boolean(server),
       port: cfg.port,
-      urls: server ? lanUrls(cfg.port) : [],
+      urls: server && cfg.boundHost ? [`http://${cfg.boundHost}:${cfg.port}/`] : [],
+      host: cfg.host || null,
+      interfaces: lanInterfaces(),
       devices: cfg.devices.map((d) => ({ id: d.id, name: d.name, pairedAt: d.pairedAt, lastSeen: d.lastSeen })),
       pairing: pairing && Date.now() < pairing.expires ? { code: pairing.code, expires: pairing.expires } : null,
     };
@@ -157,6 +185,13 @@ function createPhone({ file, getSnapshot, onAction, log = () => {} }) {
     // "Turn off and forget devices"
     forget() { cfg.enabled = false; cfg.devices = []; save(); stop(); return status(); },
     newCode() { if (!server) return status(); pairing = newPairing(); return status(); },
+    async setHost(ip) {
+      if (!lanInterfaces().some((i) => i.address === ip)) return { ...status(), error: 'That address is not one of this computer\'s local network interfaces.' };
+      cfg.host = ip;
+      save();
+      if (server) { stop(); return start(); }
+      return status();
+    },
     removeDevice(id) { cfg.devices = cfg.devices.filter((d) => d.id !== id); save(); return status(); },
     boot() { return cfg.enabled === true ? start() : Promise.resolve(status()); },
     stop,
@@ -164,4 +199,4 @@ function createPhone({ file, getSnapshot, onAction, log = () => {} }) {
   };
 }
 
-module.exports = { createPhone, isLanAddress, hostOk, hashToken, newPairing, tryPair, cookieToken, lanUrls, CODE_TTL_MS, MAX_TRIES };
+module.exports = { readJson, tokenValid, pickHost, lanInterfaces, TOKEN_TTL_MS, createPhone, isLanAddress, hostOk, hashToken, newPairing, tryPair, cookieToken, lanUrls, CODE_TTL_MS, MAX_TRIES };

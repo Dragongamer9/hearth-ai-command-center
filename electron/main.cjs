@@ -47,10 +47,23 @@ const worktreeRoot = () => path.join(dataDir(), 'workspaces');
 const historyFile = () => path.join(dataDir(), 'chat-history.json');
 const runs = new Map(); // runId -> AbortController
 
+// Settings live in memory and are written only through IPC. If settings.json changes on
+// disk outside the app (an AI editing it), nothing is applied until the owner decides.
+let settingsMem = null;
+let settingsHash = null;
+const hashText = (t) => require('node:crypto').createHash('sha256').update(String(t)).digest('hex');
+function loadSettingsFile() {
+  try { const t = fs.readFileSync(settingsFile(), 'utf8'); settingsHash = hashText(t); return JSON.parse(t); } catch { return {}; }
+}
+const settingsDisk = {
+  changed: () => { try { return hashText(fs.readFileSync(settingsFile(), 'utf8')) !== settingsHash; } catch { return false; } },
+  keep: () => { settingsMem = loadSettingsFile(); return readSettings(); },
+  discard: () => { writeSettings(settingsMem || {}); return readSettings(); },
+};
 // Main-side settings: the renderer can never hand us an arbitrary path to run in.
 function readSettings() {
-  let s = {};
-  try { s = JSON.parse(fs.readFileSync(settingsFile(), 'utf8')); } catch {}
+  if (settingsMem === null) settingsMem = loadSettingsFile();
+  const s = settingsMem;
   return {
     project: typeof s.project === 'string' ? s.project : null,
     projects: Array.isArray(s.projects) ? s.projects.filter((p) => typeof p === 'string') : (typeof s.project === 'string' ? [s.project] : []),
@@ -93,7 +106,12 @@ function useProject(dir) {
 }
 function writeSettings(s) {
   fs.mkdirSync(dataDir(), { recursive: true, mode: 0o700 });
-  fs.writeFileSync(settingsFile(), JSON.stringify(s, null, 2), { mode: 0o600 });
+  const data = JSON.stringify(s, null, 2);
+  const tmp = `${settingsFile()}.tmp-${process.pid}`;
+  fs.writeFileSync(tmp, data, { mode: 0o600 });
+  fs.renameSync(tmp, settingsFile());
+  settingsMem = JSON.parse(data);
+  settingsHash = hashText(data);
 }
 const TASK_ID = /^[A-Z0-9]{4,10}$/; // 'CHATROOM' is the team chat's own workspace
 function taskDir(taskId) {
@@ -274,12 +292,12 @@ function registerIpc() {
       const init = await gitops.initRepo(dir);
       if (!init.ok) throw new Error(`Couldn't start git here: ${init.message}`);
     }
-    return useProject(dir);
+    return opsApi ? opsApi.useFolder(dir) : useProject(dir);
   });
   handle('settings:useProject', (dir) => {
     const s = readSettings();
     if (!s.projects.includes(dir)) throw new Error('Unknown project.');
-    return useProject(dir);
+    return opsApi ? opsApi.useFolder(dir) : useProject(dir);
   });
   handle('settings:set', (patch) => {
     if (!patch || typeof patch !== 'object') throw new Error('bad settings');
@@ -735,7 +753,7 @@ function registerIpc() {
   handle('git:clone', async (input) => {
     if (!gitops.find('git')) return { ok: false, message: 'git is not installed.' };
     const r = await gitops.clone(String(input), path.join(os.homedir(), 'HearthProjects'));
-    if (r.ok) useProject(r.dir);
+    if (r.ok) r.settings = opsApi ? opsApi.useFolder(r.dir) : useProject(r.dir);
     return r;
   });
 
@@ -749,7 +767,7 @@ function registerIpc() {
 // Team ops (projects, project memory, test runs, CI, logs, voice, phone): electron/ops/.
 function registerOps() {
   opsApi = ops.register({
-    handle, dataDir, readSettings, useProject, taskDir, worktreeRoot, gitops, workspace, agents, attachments, redact, send, dialog,
+    handle, dataDir, readSettings, useProject, settingsDisk, taskDir, worktreeRoot, gitops, workspace, agents, attachments, redact, send, dialog,
     getWindow: () => mainWindow,
     setStore: (file) => { store = createStore(file); lastLoad = { recoveredFrom: null }; },
   });
@@ -770,7 +788,7 @@ app.whenReady().then(() => {
   Menu.setApplicationMenu(null);
   secrets = createSecretStore({ safeStorage, dir: dataDir() });
   // The active project's board (the data from before projects is the default project, in the same file).
-  store = createStore(ops.stateFile(dataDir(), readSettings().project));
+  store = createStore(ops.stateFile(dataDir(), readSettings().project, readSettings().projects));
   history = createHistory(historyFile());
   openWeb = web.createWebWindows({ BrowserWindow, shell, iconPath: path.join(__dirname, '..', 'dist', 'icon.png') });
   theme.watchTheme((t) => send('theme:changed', t));

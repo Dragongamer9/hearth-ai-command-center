@@ -99,8 +99,7 @@ export function leadDecision(cmd, { lead, enabled = false, task = null, request 
     if (cmd.kind === 'allow') {
       if (request.agent === lead) return { ok: false, reason: `${who} can't approve its own request R-${request.id}` };
       const may = leadMayApprove(request);
-      const ownerOnly = OWNER_ONLY_PERMISSIONS.includes(request.kind) && !(request.kind === 'merge' && powers.merge);
-      if (ownerOnly || !may.ok) return { ok: false, reason: may.reason || `${request.kind} requests stay with the Owner` };
+      if (OWNER_ONLY_PERMISSIONS.includes(request.kind) || !may.ok) return { ok: false, reason: may.reason || `${request.kind} requests stay with the Owner` };
     }
     return { ok: true, action: cmd.kind === 'allow' ? 'allowperm' : 'denyperm' };
   }
@@ -147,7 +146,7 @@ export function leadRules(lead) {
     ...(p.release ? [`- The Owner turned on "Lead may publish releases": write RELEASE: v${p.nextVersion || '<Next version>'} to publish. Only the Owner's Next version (${p.nextVersion ? `v${p.nextVersion}` : 'not set yet, so no release'}) is allowed, and only when the version file on main already says it. You never edit or bump version numbers.`] : []),
     ...(p.tag ? [`- The Owner turned on "Lead may create tags": write TAG: v${p.nextVersion || '<Next version>'} to tag main's commit. Only v<Next version>; never another name, never force, never delete tags.`] : []),
     `- Limits that always hold: you cannot approve your own work (a task you built needs another AI\'s review first, or the Owner) or your own permission requests; version numbers, app settings, deploys${owned.length ? `, ${owned.join(', ')}` : ''} and boot permission requests stay with the Owner; new tasks go through the duplicate check. Everything you do is shown to the Owner; merges, releases and tags can't be undone.`,
-    `- Permission cards you MAY answer (approval levels): install software, commands outside the workspace or other risky commands, deleting files, network access, and pushes to hearth/ or release/ branches only (no main, no tags, no force). ${p.merge ? '' : 'Merge, '}Release, boot-critical, version, tag, settings and secrets requests stay with the Owner. Answer the cards marked for you in your NEXT reply with APPROVE: R-<id> or DENY: R-<id> <reason>; do not defer them to the Owner.`,
+    `- Permission cards you MAY answer (approval levels): install software, commands outside the workspace or other risky commands, deleting files, network access, and pushes to hearth/ or release/ branches only (no main, no tags, no force). Merge, release, tag, boot-critical, version, settings and secrets requests stay with the Owner. Answer the cards marked for you in your NEXT reply with APPROVE: R-<id> or DENY: R-<id> <reason>; do not defer them to the Owner.`,
   ].join('\n');
 }
 

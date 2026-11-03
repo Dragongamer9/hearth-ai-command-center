@@ -9,12 +9,12 @@ import { inferKind, outcomes, score, suggest, KINDS } from './strength.mjs';
 import { taskStats, agentTotals, fmtMs } from './stats.mjs';
 import { decideHandoff, askCard, REASON, MAX_HANDOFFS } from './handoff.mjs';
 import { ciBranches, applyCi, ciChangesText, CI_LABEL } from './ci.mjs';
-import { parseMemoryLines, memoryCard, logTask, phoneSnapshot, phoneAction, opsSnapshot as snapshotOf } from './feeds.mjs';
+import { parseMemoryLines, memoryCard, logTask, phoneSnapshot, phoneAction, phoneMayDecide, opsSnapshot as snapshotOf } from './feeds.mjs';
 import { CATEGORIES, MOVABLE, OWNER_ONLY, cleanLevels, levelPatch, setLevels, setLeadPowers } from './approval.mjs';
-import { LOCAL_PRESETS, fitCheck, resolveLocalModel, validTag, paramsOf, localMayReview, setLocalConfig, unknownMentions, capabilities, canSeeImages, splitProgress, requestedSize, belowRequested, fmtBytes, parseImageRequests, pickImageAI, checkpointReport, result as mkResult, CAPS } from './extras.mjs';
+import { testGate, testLabel, LOCAL_PRESETS, fitCheck, resolveLocalModel, validTag, paramsOf, localMayReview, setLocalConfig, unknownMentions, capabilities, canSeeImages, splitProgress, requestedSize, belowRequested, fmtBytes, parseImageRequests, pickImageAI, checkpointReport, result as mkResult, CAPS } from './extras.mjs';
 
 let C = null; // the ctx main.js passed in
-const local = { guard: {}, identity: null, release: null, hw: null, jobs: [], tools: null, turn: {}, projects: { active: 'default', list: [] }, phone: null, voice: null, usage: {}, memory: null, memoryDirty: false, testing: {}, rec: null, suggestTouched: false, projectMsg: '' };
+const local = { disk: {}, diskNotice: null, identityLater: false, guard: {}, identity: null, release: null, hw: null, jobs: [], tools: null, turn: {}, projects: { active: 'default', list: [] }, phone: null, voice: null, usage: {}, memory: null, memoryDirty: false, testing: {}, rec: null, suggestTouched: false, projectMsg: '' };
 
 const call = (name, ...a) => (typeof C?.api?.[name] === 'function' ? C.api[name](...a).catch((e) => ({ ok: false, message: String(e?.message || e) })) : Promise.resolve(null));
 const S = () => C.state();
@@ -64,9 +64,21 @@ async function checkDone(t, run, agent) {
   run.testCommand = r.command || null;
   run.testMs = r.ms || 0;
   run.testLog = String(r.log || '').slice(-20000);
-  if (t.done) t.done.tests = r.status;
+  run.testReason = r.reason || null;
+  run.testsChanged = r.testsChanged?.length ? r.testsChanged : undefined;
+  if (t.done) { t.done.tests = r.status; t.done.testsChanged = run.testsChanged; }
+  if (run.testsChanged) C.audit('Tests changed by this task', t.id, run.testsChanged.join(', '), agent);
   C.audit(r.status === 'passed' ? 'Tests passed' : r.status === 'failed' ? 'Tests failed' : 'Tests not run', t.id, `${r.command || 'no test command'} at ${short(run.head)}${r.ms ? ` · ${fmtMs(r.ms)}` : ''}${run.claimedTests && run.claimedTests !== r.status ? ` (the AI said: ${run.claimedTests})` : ''}`, agent);
-  if (r.status !== 'failed') return null;
+  const gate = testGate(r);
+  if (gate.accept) return null;
+  if (gate.note) {
+    run.status = 'continue';
+    run.refused = true;
+    delete t.done;
+    t.notes.push({ at: C.now(), who: 'Tests', text: gate.note, err: true });
+    C.audit('Done report refused', t.id, gate.note, agent);
+    return gate.note;
+  }
   const lines = String(r.log || '').trim().split('\n').slice(-15).join('\n');
   const note = `The app ran \`${r.command}\` at ${short(run.head)} and it failed, so the done report wasn't accepted. Fix the failing tests and report done again.\n\nLast lines:\n${lines}`;
   run.status = 'continue';
@@ -258,7 +270,7 @@ function drawerPanel(t) {
   const last = (t.runs || []).filter((r) => r.appTests || r.testLog).slice(-1)[0];
   const parts = [];
   if (local.testing[t.id]) parts.push(`<div class="policy warn"><span class="dot pulse"></span> The app is running the tests at the reported commit… <button class="btn small ghost" data-ops="canceltests" data-arg="${esc(t.id)}">Cancel</button></div>`);
-  if (last) parts.push(`<details class="ops-log"><summary><span class="badge ${{ passed: 'good', failed: 'bad' }[last.appTests] || ''}">App tests: ${esc(last.appTests || 'not run')}</span> <span class="mono faint">${esc(last.testCommand || 'no test command')} · ${esc(short(last.head))}</span>${last.claimedTests && last.claimedTests !== last.appTests ? ` <span class="faint">(the AI said ${esc(last.claimedTests)})</span>` : ''}</summary><pre>${esc(last.testLog || '')}</pre></details>`);
+  if (last) parts.push(`<details class="ops-log"><summary><span class="badge ${{ passed: 'good', failed: 'bad' }[last.appTests] || ''}">App tests: ${esc(testLabel(last))}</span>${last.testsChanged ? `<span class="badge warn" title="${esc(last.testsChanged.join(', '))}">tests changed by this task</span>` : ''} <span class="mono faint">${esc(last.testCommand || 'no test command')} · ${esc(short(last.head))}</span>${last.claimedTests && last.claimedTests !== last.appTests ? ` <span class="faint">(the AI said ${esc(last.claimedTests)})</span>` : ''}</summary><pre>${esc(last.testLog || '')}</pre></details>`);
   if (t.ci && t.ci.state !== 'none') parts.push(`<div class="row">${ciBadge(t)}<span class="mono faint">${esc(short(t.ci.sha))}</span>${t.ci.url?.startsWith('https://github.com/') ? `<a class="btn small link" href="${esc(t.ci.url)}" target="_blank">Open run ↗</a>` : ''}</div>${t.ci.log ? `<details class="ops-log"><summary>CI log tail</summary><pre>${esc(t.ci.log)}</pre></details>` : ''}`);
   if (t.handoffs?.length) parts.push(`<div class="faint ops-note">Hand-offs: ${t.handoffs.map((h) => `${esc(N(h.from))} → ${esc(N(h.to))} (${esc(REASON[h.kind] || h.kind)})`).join(' · ')}</div>`);
   if (t.ws) {
@@ -278,7 +290,9 @@ function projectSwitcher() {
 function phoneBlock() {
   const ph = local.phone;
   if (!ph) return '<div class="empty">Phone view isn\'t available in this build.</div>';
-  return `<p class="muted ops-note">A LAN-only web page served by this app: see the board and chat, approve or deny, start tasks, answer cards and get notified. Off by default, never reachable from the internet, no third-party service. Merging into main stays on this computer.</p>
+  return `<p class="muted ops-note">A LAN-only web page served by this app: see the board and chat, approve or deny, start tasks, answer cards and get notified. Off by default, never reachable from the internet, no third-party service. Merging into main and owner-only requests stay on this computer.</p>
+    <div class="policy warn">It is plain HTTP on your local network: anyone on the same network can see the traffic. Use it only on a network you trust. Paired phones are signed out after 30 days without use.</div>
+    ${(ph.interfaces || []).length ? `<label class="ops-field"><span>Network interface</span><select data-opsphonehost>${ph.interfaces.map((i) => `<option value="${esc(i.address)}" ${i.address === (ph.host || ph.interfaces[0].address) ? 'selected' : ''}>${esc(i.name)} · ${esc(i.address)}</option>`).join('')}</select></label>` : ''}
     ${ph.running ? `<div class="policy ok">On at ${ph.urls.map((u) => `<span class="mono">${esc(u)}</span>`).join(' or ') || `port ${esc(ph.port)}`} (your local network only).</div>
       ${ph.pairing ? `<div class="ops-code" aria-label="Pairing code">${esc(ph.pairing.code)}</div><div class="faint ops-note">Open the address on your phone and enter this one-time code. It expires in 5 minutes.</div>` : '<button class="btn small primary" data-ops="phonecode">Show pairing code</button>'}
       <div class="sect">Paired devices</div>${ph.devices.map((d) => `<div class="row"><span style="flex:1">${esc(d.name)} <span class="faint">· paired ${esc(C.ago(d.pairedAt))}${d.lastSeen ? ` · seen ${esc(C.ago(d.lastSeen))}` : ''}</span></span><button class="btn small ghost" data-ops="phoneremove" data-arg="${esc(d.id)}">Remove</button></div>`).join('') || '<div class="empty">No phone paired yet.</div>'}
@@ -400,7 +414,11 @@ async function onPhone(raw) {
   const via = ` (from ${String(raw.device || 'phone').slice(0, 40)})`;
   const t = a.id ? S().tasks.find((x) => x.id === a.id) : null;
   C.audit('Phone action', t?.id || null, `${a.type}${a.value && a.type !== 'chat' ? ` ${a.value}` : ''}${via}`);
-  if (a.type === 'decide') return C.decide(a.id, a.value, `Owner${via}`);
+  if (a.type === 'decide') {
+    const may = phoneMayDecide((S().permissions || []).find((p) => p.id === a.id), a.value);
+    if (!may.ok) { C.audit('Phone action refused', null, `${a.id}: ${may.reason}${via}`); C.post({ who: 'system', text: `From the phone: ${may.reason}.` }); await C.save(); return C.render(); }
+    return C.decide(a.id, a.value, `Owner${via}`);
+  }
   if (a.type === 'approve' && t?.stage === 'approval') return fakeClick({ approve: t.id }); // never merges; merge stays on the computer
   if (a.type === 'changes' && t?.stage === 'approval') return fakeClick({ changes: t.id });
   if (a.type === 'start' && t && ['start', 'resume'].includes(C.actionFor(t)?.kind)) return fakeClick({ owneract: t.id });
@@ -529,7 +547,7 @@ function capsNow() {
   const st = S();
   return Object.fromEntries(C.AGENT_IDS.map((a) => [a, capabilities(a, { tasks: st.tasks, chat: st.chat, api: C.method(a) === 'api' })]));
 }
-async function handleLines(agent, text, taskId = null) {
+async function handleLines(agent, text, taskId = null, canEdit = false) {
   const caps = capsNow();
   for (const req of parseImageRequests(text)) {
     const line = `IMAGE REQUEST: ${req.prompt}`;
@@ -537,7 +555,7 @@ async function handleLines(agent, text, taskId = null) {
     if (!to) { actionResult(agent, line, false, 'no teammate with image tools is available', taskId); continue; }
     const id = `IR${C.uid()}`;
     const prompt = `Image request from ${N(agent)}${req.for ? ` (for ${req.for})` : ''}: ${req.prompt}${req.size ? `\nSize: ${req.size}` : ''}\nGenerate the image with your own image tools, save it in $HEARTH_AI_ASSETS, and end with one line: ATTACH: <its path relative to your workspace>. If you have no image tools, say so plainly and do not claim you made one.`;
-    const j = await call('opsJobStart', { agent: to, kind: 'image', title: `Image for ${N(agent)}: ${req.prompt.slice(0, 80)}`, prompt, taskId, requestId: id });
+    const j = await call('opsJobStart', { canEdit, agent: to, kind: 'image', title: `Image for ${N(agent)}: ${req.prompt.slice(0, 80)}`, prompt, taskId, requestId: id });
     if (!j?.id) { actionResult(agent, line, false, j?.message || 'could not start the job', taskId); continue; }
     S().opsRequests = [...(S().opsRequests || []), { id, from: agent, to, prompt: req.prompt, size: req.size, for: req.for, jobId: j.id, at: C.now() }].slice(-50);
     actionResult(agent, line, true, `sent to ${N(to)}${caps[to].imageOut === true ? '' : ' (image output not verified yet)'} as job ${j.id}`, taskId);
@@ -546,7 +564,7 @@ async function handleLines(agent, text, taskId = null) {
   for (const raw of String(text || '').split('\n')) {
     const m = raw.replace(/^[\s*\-•`>]+/, '').match(/^BACKGROUND:\s*(.{3,2000})$/i);
     if (!m) continue;
-    const j = await call('opsJobStart', { agent, kind: 'background', title: m[1].slice(0, 120), prompt: `Background job: ${m[1]}\nWork on it fully; your final answer is posted to the team chat. Post files with ATTACH: lines.`, taskId });
+    const j = await call('opsJobStart', { canEdit, agent, kind: 'background', title: m[1].slice(0, 120), prompt: `Background job: ${m[1]}\nWork on it fully; your final answer is posted to the team chat. Post files with ATTACH: lines.`, taskId });
     actionResult(agent, `BACKGROUND: ${m[1]}`, Boolean(j?.id), j?.id ? `running as job ${j.id}; the result is posted when it finishes` : j?.message || 'could not start', taskId);
     if (j?.id) local.jobs = [j, ...local.jobs];
   }
@@ -635,10 +653,10 @@ function syncPowers() {
   return setLeadPowers({ merge: s.leadMerge === true, release: s.leadRelease === true, tag: s.leadTag === true, nextVersion: p?.settings?.nextVersion || '' });
 }
 function watchRelease(version) {
-  local.release = { version, last: '' };
+  local.release = { version, last: '', since: new Date(Date.now() - 60000).toISOString() };
   const tick = async () => {
     if (!local.release || local.release.version !== version) return;
-    const r = await call('opsReleaseStatus', version);
+    const r = await call('opsReleaseStatus', version, local.release.since);
     if (!r?.ok) return;
     const now = r.released ? 'released' : r.run ? `${r.run.status}${r.run.conclusion ? ` (${r.run.conclusion})` : ''}` : 'waiting';
     if (now !== local.release.last) {
@@ -654,14 +672,35 @@ function watchRelease(version) {
   setTimeout(tick, 15000);
 }
 const idText = (id) => (id ? `${id.name} <${id.email}>` : '');
-function identityCard() {
+function identityFields(prefix) {
   const s = C.settings();
-  const saved = s.ownerIdentity;
-  const sug = local.identity?.suggested;
+  const id = s.ownerIdentity || local.identity?.suggested || null;
+  return `<label class="ops-field"><span>Name</span><input type="text" id="${prefix}-name" value="${esc(id?.name || '')}" placeholder="e.g. Dragongamer9"></label>
+    <label class="ops-field"><span>Your emails, one per line (the first is used for new commits)</span><textarea id="${prefix}-emails" class="mono" style="min-height:70px">${esc((id?.emails || (id?.email ? [id.email] : [])).join('\n'))}</textarea></label>`;
+}
+function identityCard() {
+  const saved = C.settings().ownerIdentity;
   return `<div class="card mb ops-identity"><h3>Owner identity for every commit</h3>
-    <p class="muted ops-note">Every commit the app or any AI makes (checkpoints, AI commits in task branches, merges, releases and tags) is made as you. AI attribution lines are stripped, and nothing is pushed, merged, released or tagged if a commit has another author or such a line.</p>
-    ${saved ? '' : `<div class="policy warn">Set your identity once${sug ? `; your git config says ${esc(idText(sug))}` : ''}.</div>`}
-    <div class="row"><input type="text" id="ops-identity" style="flex:1" value="${esc(idText(saved) || idText(sug))}" placeholder="Name <email>, e.g. Dragongamer9 <Dragongamer9@users.noreply.github.com>"><button class="btn small primary" data-ops="identity">Save</button></div></div>`;
+    <p class="muted ops-note">Every commit the app or any AI makes (checkpoints, AI commits in task branches, merges, releases and tags) is made as you. AI attribution lines are stripped, and nothing is pushed, merged, released or tagged if a commit has another author or such a line. Merge commits GitHub made for you (committer GitHub &lt;noreply@github.com&gt;) count as yours.</p>
+    ${saved ? '' : '<div class="policy warn">Not confirmed yet: these are suggestions from your git config. Check them and press Confirm.</div>'}
+    ${identityFields('ops-identity')}
+    <div class="row"><button class="btn small primary" data-ops="identity" data-arg="ops-identity">${saved ? 'Save' : 'Confirm'}</button></div></div>`;
+}
+// First run after the upgrade: a blocking prompt until the owner confirms (never auto-saved).
+function overlay() {
+  if (!C || C.settings().ownerIdentity || local.identityLater || !C.api) return '';
+  return `<div class="modal-bg ops-overlay"><div class="modal"><h2>Who should every commit be from?</h2>
+    <p class="muted" style="font-size:12.5px">The app now makes every commit (yours and the AIs') as you, and checks commits before anything is pushed, merged, released or tagged. These suggestions come from your git config; nothing is saved until you confirm.</p>
+    ${identityFields('ops-first')}
+    <div class="row" style="justify-content:flex-end;margin-top:12px"><button class="btn ghost" data-ops="identitylater">Later</button><button class="btn primary" data-ops="identity" data-arg="ops-first">Confirm</button></div></div></div>`;
+}
+function banner() {
+  if (!C) return '';
+  const out = [];
+  if (!C.settings().ownerIdentity) out.push('<div class="policy warn ops-banner">Your owner identity isn\'t confirmed, so nothing can be pushed, merged, released or tagged yet. <button class="btn small" data-ops="identityopen">Set it now</button></div>');
+  for (const which of Object.keys(local.disk || {}).filter((k) => local.disk[k])) out.push(`<div class="policy warn ops-banner">${which === 'settings' ? 'Settings' : 'Project settings (Next version, test command…)'} changed outside the app — keep or discard? Nothing was applied. <button class="btn small" data-ops="diskkeep" data-arg="${which}">Keep the change</button><button class="btn small primary" data-ops="diskdiscard" data-arg="${which}">Discard it</button></div>`);
+  if (local.diskNotice) out.push(`<div class="policy warn ops-banner">${esc(local.diskNotice)} <button class="btn small ghost" data-ops="noticeok">OK</button></div>`);
+  return out.join('');
 }
 function leadPowersCard() {
   const s = C.settings();
@@ -679,13 +718,27 @@ async function onClick(e) {
   const { ops: op, arg, val } = el.dataset;
   if (op === 'card') return answerCard(arg, val);
   if (op === 'identity') {
-    const raw = document.getElementById('ops-identity')?.value || '';
-    const m = raw.match(/^\s*([^<>]+?)\s*<([^<>\s]+@[^<>\s]+\.[^<>\s]+)>\s*$/);
-    if (!m) return C.toast('Write it as Name <email>.');
-    const s2 = await call('setSettings', { ownerIdentity: { name: m[1], email: m[2] } });
-    if (s2 && !s2.message) { C.setSettings(s2); await call('opsIdentityApply'); C.audit('Owner identity set', null, `${m[1]} <${m[2]}>`); await C.save(); C.toast('Saved. Every commit is made as you.'); }
+    const name = document.getElementById(`${arg}-name`)?.value.trim() || '';
+    const emails = (document.getElementById(`${arg}-emails`)?.value || '').split(/[\s,]+/).filter((e) => /^[^\s<>@]+@[^\s<>@]+\.[^\s<>@]+$/.test(e));
+    if (!name || !emails.length) return C.toast('Give your name and at least one email.');
+    const s2 = await call('setSettings', { ownerIdentity: { name, emails } });
+    if (s2 && !s2.message && s2.ownerIdentity) { C.setSettings(s2); await call('opsIdentityApply'); C.audit('Owner identity confirmed', null, `${name} <${emails.join('>, <')}>`); await C.save(); C.toast('Saved. Every commit is made as you.'); }
     return C.render();
   }
+  if (op === 'identitylater') { local.identityLater = true; return C.render(); }
+  if (op === 'identityopen') { local.identityLater = false; return C.render(); }
+  if (op === 'diskkeep' || op === 'diskdiscard') {
+    const r = await call('opsDiskResolve', arg, op === 'diskkeep' ? 'keep' : 'discard');
+    if (r?.ok) {
+      local.disk[arg] = false;
+      if (r.settings) C.setSettings(r.settings);
+      if (r.list) { local.projects = { active: r.active, list: r.list }; syncPowers(); }
+      C.audit(`Owner ${op === 'diskkeep' ? 'kept' : 'discarded'} a ${arg} change made outside the app`);
+      await C.save();
+    }
+    return C.render();
+  }
+  if (op === 'noticeok') { local.diskNotice = null; return C.render(); }
   if (op === 'checkauthor') { local.guard[arg] = await call('opsCheckTask', arg); return C.render(); }
   if (op === 'rewrite') {
     const r = await call('opsRewriteTask', arg, false);
@@ -765,6 +818,7 @@ async function onChange(e) {
   if (el.matches?.('[data-opsproject]')) { fakeSwitch(el.value); return; }
   if (el.matches?.('[data-opslocal]')) { S().models.ollama = el.value; C.audit('Local AI model chosen', null, el.value); syncLocal(); await C.save(); return C.render(); }
   if (el.dataset?.opslocalon) { const st = S(); st.opsLocal = st.opsLocal || { enabled: {} }; st.opsLocal.enabled = { ...(st.opsLocal.enabled || {}), [el.dataset.opslocalon]: el.checked }; C.audit('Local AI preset turned ' + (el.checked ? 'on' : 'off'), null, el.dataset.opslocalon); await C.save(); return C.render(); }
+  if (el.matches?.('[data-opsphonehost]')) { const r = await call('opsPhoneHost', el.value); if (r) local.phone = r; C.audit('Phone view interface chosen', null, el.value); await C.save(); return C.render(); }
   if (el.dataset?.opslead) {
     const k = el.dataset.opslead;
     if (el.checked && !confirm({ leadMerge: 'Let the lead merge approved, independently reviewed work into main on its own?', leadRelease: 'Let the lead publish releases (only the Next version you set)?', leadTag: 'Let the lead create tags (only v<Next version>)?' }[k])) { el.checked = false; return; }
@@ -821,7 +875,7 @@ export function createOps(ctx) {
     summaryCard, approvalCards, approvalSettings, projectSwitcher, ciBadge, drawerPanel, voiceButton, suggestHint,
     afterRun, checkDone, handoff, recordVerdict, leadLines, auditRoutine, beforeStart, routeQueued,
     snapshot: opsSnapshot,
-    syncPowers, watchRelease, actionResult, turnBegin, turnEnd, resultsHtml, bodyHtml, mentionNotes, imageNotice, attMeta, checkpointLine, handleLines, localModels, localMayReview: localMayReviewTask, syncLocal,
+    overlay, banner, syncPowers, watchRelease, actionResult, turnBegin, turnEnd, resultsHtml, bodyHtml, mentionNotes, imageNotice, attMeta, checkpointLine, handleLines, localModels, localMayReview: localMayReviewTask, syncLocal,
     async boot() {
       setLevels(C.settings().approvalLevels);
       document.addEventListener('click', onClick);
@@ -836,6 +890,9 @@ export function createOps(ctx) {
       await refreshProjects();
       syncPowers();
       local.identity = await call('opsIdentityDefault');
+      const dp = await call('opsDiskPending');
+      if (dp) { local.disk = { settings: Boolean(dp.settings), projects: Boolean(dp.projects) }; local.diskNotice = dp.notice || null; }
+      C.api?.onOpsDiskChange?.((e) => { if (e?.which) { local.disk[e.which] = true; C.render(); } });
       local.phone = await call('opsPhoneStatus');
       C.render();
       call('opsHardware').then((h) => { if (h) local.hw = h; });
