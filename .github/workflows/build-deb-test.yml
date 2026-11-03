@@ -41,6 +41,12 @@ jobs:
             grep -q 'hearth-ai-command-center' /tmp/hearth-deb-contents.txt
             test "$(stat -c%s "$pkg")" -gt 50000000
           done
+      - name: Checksums cover the .deb (what in-app .deb updates verify against)
+        run: |
+          set -euo pipefail
+          (cd release && sha256sum *.deb) | tee release/SHA256SUMS.txt
+          grep -qE '^[0-9a-f]{64}  .*\.deb$' release/SHA256SUMS.txt
+          node -e "const u=require('./electron/updater-deb.cjs');const fs=require('fs');const s=u.parseSums(fs.readFileSync('release/SHA256SUMS.txt','utf8'));const f=fs.readdirSync('release').find(x=>x.endsWith('.deb'));const r=u.verify(fs.readFileSync('release/'+f),f,s);if(!r.ok){console.error(r.message);process.exit(1)}console.log('verified',f)"
       - uses: actions/upload-artifact@v4
         with:
           name: Hearth-AI-Command-Center-DEB-test

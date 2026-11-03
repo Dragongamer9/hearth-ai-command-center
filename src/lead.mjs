@@ -4,13 +4,17 @@
 import { NAMES } from './chat.mjs';
 import { EDITORS } from './registry.mjs';
 import { findDuplicate } from './dupes.mjs';
+import { leadMayApprove, OWNER_ONLY, getLeadPowers, leadVersionCheck } from './ops/approval.mjs';
+import { localReviewOk } from './ops/extras.mjs';
 
 const CLOSED = ['approved', 'rejected'];
 const REVIEWABLE = ['checkpoint', 'testing', 'review'];
 // Always the owner's: releases and deploys, and the AIs' own merge/release/boot requests.
 const OWNER_ONLY_ACTIONS = ['release', 'deploy'];
-// push, command and outside too: otherwise the lead could approve `git push origin main --tags`.
-const OWNER_ONLY_PERMISSIONS = ['release', 'merge', 'boot', 'push', 'command', 'outside'];
+// The approval policy (src/ops/approval.mjs): owner-only categories and boot-critical
+// changes, and any request that touches main, tags or force-pushes (e.g. `git push origin
+// main --tags`), are never the lead's. Other major requests the lead may answer.
+export const OWNER_ONLY_PERMISSIONS = [...OWNER_ONLY, 'boot'];
 
 export const leadOn = ({ enabled = false, agent, lead } = {}) => enabled === true && Boolean(agent) && agent === lead;
 
@@ -24,6 +28,10 @@ export function parseLeadLines(text) {
     const line = clean(raw);
     let m = line.match(/^START\s*:\s*T-([A-Z0-9]{4,12})\b/i);
     if (m) { out.push({ kind: 'start', id: m[1].toUpperCase() }); continue; }
+    m = line.match(/^REWRITE\s*:\s*T-([A-Z0-9]{4,12})\b/i);
+    if (m) { out.push({ kind: 'rewrite', id: m[1].toUpperCase() }); continue; }
+    m = line.match(/^(RELEASE|TAG)\s*:\s*(v?\S+)/i);
+    if (m) { out.push({ kind: m[1].toLowerCase(), id: null, version: m[2].replace(/[.,;]+$/, '') }); continue; }
     m = line.match(/^(APPROVE|APPROVED|ALLOW|DENY|DENIED)\s*:\s*R-([A-Z0-9]{4,12})\b[\s:—–-]*(.*)$/i);
     if (m) { out.push({ kind: /^(DENY|DENIED)$/i.test(m[1]) ? 'deny' : 'allow', id: m[2].toUpperCase(), reason: m[3].trim().slice(0, 500) }); continue; }
     m = line.match(/^ADD\s+TASK\s*:\s*(.+)$/i);
@@ -44,7 +52,7 @@ export function leadBuilt(task, lead) {
 
 // May the lead take this owner action? Returns { ok, action } or { ok: false, reason }.
 // skip: true means it is the lead's own reviewer sign-off, handled by applyVerdict.
-export function leadDecision(cmd, { lead, enabled = false, task = null, request = null, tasks = [], resumable = false } = {}) {
+export function leadDecision(cmd, { lead, enabled = false, task = null, request = null, tasks = [], resumable = false, powers = getLeadPowers() } = {}) {
   const who = `${NAMES[lead] || 'The lead'} (lead)`;
   if (!enabled) return { ok: false, ignored: true, reason: 'the lead switch is off' };
   if (cmd.kind === 'approve' || cmd.kind === 'changes' || cmd.kind === 'start') {
@@ -59,12 +67,15 @@ export function leadDecision(cmd, { lead, enabled = false, task = null, request 
       // A lead approval always needs an independent review: never the lead's own word,
       // and the local model (no tools, can't look at the code) doesn't count for code.
       const v = task.reviewVerdict?.verdict === 'approve' ? task.reviewVerdict : null;
-      const independent = v && v.by !== lead && !(v.by === 'ollama' && task.action !== 'docs');
+      // The Local AI's review counts for docs with a 7B+ model, and for code only when the owner allowed it.
+      const independent = v && v.by !== lead && !(v.by === 'ollama' && !localReviewOk(task));
       if (!independent) {
         if (leadBuilt(task, lead)) return { ok: false, reason: `${who} built T-${task.id}, so it needs another AI's review first (or the Owner's approval). It can't approve its own work` };
         if (v?.by === lead) return { ok: false, reason: `${who} reviewed T-${task.id} itself, so it can't also merge it on its own word; the Owner approves this one` };
         return { ok: false, reason: `T-${task.id} needs an approving review from an AI that can read the code (not the local model) before the lead can approve it` };
       }
+      // Merging into main is the Owner's unless his "Lead may merge to main" switch is on.
+      if ((task.ws || task.pr) && !powers.merge) return { ok: false, reason: 'merging to main is the Owner\'s unless "Lead may merge to main" is on' };
       return { ok: true, action: task.ws || task.pr ? 'merge' : 'approve' };
     }
     if (resumable) return { ok: true, action: 'resume' };
@@ -87,9 +98,19 @@ export function leadDecision(cmd, { lead, enabled = false, task = null, request 
     if (request.status !== 'pending') return { ok: false, reason: `R-${request.id} was already answered` };
     if (cmd.kind === 'allow') {
       if (request.agent === lead) return { ok: false, reason: `${who} can't approve its own request R-${request.id}` };
-      if (OWNER_ONLY_PERMISSIONS.includes(request.kind)) return { ok: false, reason: `${request.kind} requests stay with the Owner` };
+      const may = leadMayApprove(request);
+      if (OWNER_ONLY_PERMISSIONS.includes(request.kind) || !may.ok) return { ok: false, reason: may.reason || `${request.kind} requests stay with the Owner` };
     }
     return { ok: true, action: cmd.kind === 'allow' ? 'allowperm' : 'denyperm' };
+  }
+  if (cmd.kind === 'rewrite') {
+    if (!powers.merge) return { ok: false, reason: 'only the Owner can confirm an authorship rewrite unless "Lead may merge to main" is on' };
+    if (!task?.ws) return { ok: false, reason: `T-${cmd.id} has no task branch` };
+    return { ok: true, action: 'rewrite' };
+  }
+  if (cmd.kind === 'release' || cmd.kind === 'tag') {
+    const c = leadVersionCheck(cmd.kind, cmd.version, powers);
+    return c.ok ? { ok: true, action: cmd.kind, version: c.version } : { ok: false, reason: c.reason };
   }
   if (cmd.kind === 'add') {
     if (OWNER_ONLY_ACTIONS.includes(cmd.action) || cmd.action === 'merge') return { ok: false, reason: `${cmd.action} tasks stay with the Owner` };
@@ -100,7 +121,7 @@ export function leadDecision(cmd, { lead, enabled = false, task = null, request 
   return { ok: false, reason: 'unknown action' };
 }
 
-export const LEAD_VERBS = { merge: 'approved and merged', approve: 'approved', resume: 'approved resuming', changes: 'requested changes on', start: 'started', allowperm: 'approved', denyperm: 'denied', add: 'added' };
+export const LEAD_VERBS = { rewrite: 'rewrote the authorship of', release: 'started the release of', tag: 'created the tag', merge: 'approved and merged', approve: 'approved', resume: 'approved resuming', changes: 'requested changes on', start: 'started', allowperm: 'approved', denyperm: 'denied', add: 'added' };
 // What the audit log and chat say: "Claude (lead) approved T-ABC123 …".
 export function leadLabel(lead, action, ref, extra = '') {
   return `${NAMES[lead] || lead} (lead) ${LEAD_VERBS[action] || action} ${ref}${extra ? ` ${extra}` : ''}`.trim();
@@ -112,6 +133,8 @@ export const leadUndoable = (action) => ['denyperm', 'start', 'resume', 'add', '
 // The extra lead prompt, only while the switch is on.
 export function leadRules(lead) {
   const n = NAMES[lead] || 'the lead';
+  const p = getLeadPowers();
+  const owned = [!p.merge && 'merging to main', !p.release && 'releases', !p.tag && 'tags'].filter(Boolean);
   return [
     `- The Owner has let you, ${n}, take his Task board actions. Write one line per action:`,
     '  APPROVE: T-<id> <note> — approve a task waiting for Owner approval (does what "Approve to merge" does) or approve resuming a stopped task',
@@ -119,7 +142,11 @@ export function leadRules(lead) {
     '  START: T-<id> — start a queued task (or queue it as Start next)',
     '  APPROVE: R-<id> / DENY: R-<id> <reason> — answer a teammate\'s permission card',
     '  ADD TASK: <title> — <details> | implementer: <name> | reviewer: <name> | action: code|docs',
-    '- Limits that always hold: you cannot approve your own work (a task you built needs another AI\'s review first, or the Owner) or your own permission requests; releases, deploys, version numbers, tags and merge/release/boot permission requests stay with the Owner; new tasks go through the duplicate check. Everything you do is shown to the Owner, who can undo it.',
+    ...(p.merge ? ['- The Owner turned on "Lead may merge to main": APPROVE: T-<id> on a task in approval merges exactly the approved commit, only after an approving review by another AI (not you; not the local model for code). Never your own unreviewed work.'] : []),
+    ...(p.release ? [`- The Owner turned on "Lead may publish releases": write RELEASE: v${p.nextVersion || '<Next version>'} to publish. Only the Owner's Next version (${p.nextVersion ? `v${p.nextVersion}` : 'not set yet, so no release'}) is allowed, and only when the version file on main already says it. You never edit or bump version numbers.`] : []),
+    ...(p.tag ? [`- The Owner turned on "Lead may create tags": write TAG: v${p.nextVersion || '<Next version>'} to tag main's commit. Only v<Next version>; never another name, never force, never delete tags.`] : []),
+    `- Limits that always hold: you cannot approve your own work (a task you built needs another AI\'s review first, or the Owner) or your own permission requests; version numbers, app settings, deploys${owned.length ? `, ${owned.join(', ')}` : ''} and boot permission requests stay with the Owner; new tasks go through the duplicate check. Everything you do is shown to the Owner; merges, releases and tags can't be undone.`,
+    `- Permission cards you MAY answer (approval levels): install software, commands outside the workspace or other risky commands, deleting files, network access, and pushes to hearth/ or release/ branches only (no main, no tags, no force). Merge, release, tag, boot-critical, version, settings and secrets requests stay with the Owner. Answer the cards marked for you in your NEXT reply with APPROVE: R-<id> or DENY: R-<id> <reason>; do not defer them to the Owner.`,
   ].join('\n');
 }
 

@@ -21,6 +21,9 @@ const { createHistory } = require('./history.cjs');
 const theme = require('./theme.cjs');
 const web = require('./webapps.cjs');
 const { LIVE_PROVIDERS } = require('./validate.cjs');
+const { cleanSavedLevels } = require('./ops/approval.cjs');
+const { cleanIdentity } = require('./ops/identity.cjs');
+const ops = require('./ops/index.cjs');
 
 // No Hearth OS version pin: the app never changes, bumps, publishes or deploys
 // Hearth OS versions (the owner picks every number). It only shows which Hearth
@@ -45,10 +48,23 @@ const worktreeRoot = () => path.join(dataDir(), 'workspaces');
 const historyFile = () => path.join(dataDir(), 'chat-history.json');
 const runs = new Map(); // runId -> AbortController
 
+// Settings live in memory and are written only through IPC. If settings.json changes on
+// disk outside the app (an AI editing it), nothing is applied until the owner decides.
+let settingsMem = null;
+let settingsHash = null;
+const hashText = (t) => require('node:crypto').createHash('sha256').update(String(t)).digest('hex');
+function loadSettingsFile() {
+  try { const t = fs.readFileSync(settingsFile(), 'utf8'); settingsHash = hashText(t); return JSON.parse(t); } catch { return {}; }
+}
+const settingsDisk = {
+  changed: () => { try { return hashText(fs.readFileSync(settingsFile(), 'utf8')) !== settingsHash; } catch { return false; } },
+  keep: () => { settingsMem = loadSettingsFile(); return readSettings(); },
+  discard: () => { writeSettings(settingsMem || {}); return readSettings(); },
+};
 // Main-side settings: the renderer can never hand us an arbitrary path to run in.
 function readSettings() {
-  let s = {};
-  try { s = JSON.parse(fs.readFileSync(settingsFile(), 'utf8')); } catch {}
+  if (settingsMem === null) settingsMem = loadSettingsFile();
+  const s = settingsMem;
   return {
     project: typeof s.project === 'string' ? s.project : null,
     projects: Array.isArray(s.projects) ? s.projects.filter((p) => typeof p === 'string') : (typeof s.project === 'string' ? [s.project] : []),
@@ -68,6 +84,18 @@ function readSettings() {
     leadGitHub: s.leadGitHub === true,
     theme: THEMES.includes(s.theme) ? s.theme : 'hearth',
     textSize: TEXT_SIZES.includes(s.textSize) ? s.textSize : 100,
+    // Habitat page: characters stay in place. Off unless the owner turns it on (the OS setting also counts).
+    reduceMotion: s.reduceMotion === true,
+    // Approval levels: the owner's moves between Routine and Major (owner-only stays owner-only).
+    approvalLevels: cleanSavedLevels(s.approvalLevels),
+    // Local AI may review code (with a 7B or larger model). Off unless the owner turns it on.
+    localReviewCode: s.localReviewCode === true,
+    // The lead's extra powers: each off unless the owner turns it on.
+    leadMerge: s.leadMerge === true,
+    leadRelease: s.leadRelease === true,
+    leadTag: s.leadTag === true,
+    // Every commit is made as this identity (set once by the owner).
+    ownerIdentity: cleanIdentity(s.ownerIdentity),
   };
 }
 function useProject(dir) {
@@ -80,7 +108,12 @@ function useProject(dir) {
 }
 function writeSettings(s) {
   fs.mkdirSync(dataDir(), { recursive: true, mode: 0o700 });
-  fs.writeFileSync(settingsFile(), JSON.stringify(s, null, 2), { mode: 0o600 });
+  const data = JSON.stringify(s, null, 2);
+  const tmp = `${settingsFile()}.tmp-${process.pid}`;
+  fs.writeFileSync(tmp, data, { mode: 0o600 });
+  fs.renameSync(tmp, settingsFile());
+  settingsMem = JSON.parse(data);
+  settingsHash = hashText(data);
 }
 const TASK_ID = /^[A-Z0-9]{4,10}$/; // 'CHATROOM' is the team chat's own workspace
 function taskDir(taskId) {
@@ -92,6 +125,7 @@ let store = null;
 let history = null;
 let openWeb = null;
 let lastLoad = { recoveredFrom: null };
+let opsApi = null; // electron/ops/index.cjs
 
 function readState() {
   lastLoad = store.load();
@@ -264,12 +298,12 @@ function registerIpc() {
       const init = await gitops.initRepo(dir);
       if (!init.ok) throw new Error(`Couldn't start git here: ${init.message}`);
     }
-    return useProject(dir);
+    return opsApi ? opsApi.useFolder(dir) : useProject(dir);
   });
   handle('settings:useProject', (dir) => {
     const s = readSettings();
     if (!s.projects.includes(dir)) throw new Error('Unknown project.');
-    return useProject(dir);
+    return opsApi ? opsApi.useFolder(dir) : useProject(dir);
   });
   handle('settings:set', (patch) => {
     if (!patch || typeof patch !== 'object') throw new Error('bad settings');
@@ -285,6 +319,11 @@ function registerIpc() {
       if (!TEXT_SIZES.includes(patch.textSize)) throw new Error('Invalid text size');
       s.textSize = patch.textSize;
     }
+    if ('reduceMotion' in patch) s.reduceMotion = patch.reduceMotion === true;
+    if ('approvalLevels' in patch) s.approvalLevels = cleanSavedLevels(patch.approvalLevels);
+    if ('localReviewCode' in patch) s.localReviewCode = patch.localReviewCode === true;
+    for (const k of ['leadMerge', 'leadRelease', 'leadTag']) if (k in patch) s[k] = patch[k] === true;
+    if ('ownerIdentity' in patch) s.ownerIdentity = cleanIdentity(patch.ownerIdentity);
     writeSettings(s);
     mainWindow.webContents.setZoomFactor(s.textSize / 100);
     return s;
@@ -356,7 +395,8 @@ function registerIpc() {
   handle('agents:run', async (opts) => {
     if (!opts || typeof opts !== 'object') throw new Error('bad request');
     const agent = validateProvider(opts.agent);
-    const prompt = validatePrompt(opts.prompt);
+    // Every AI reads the project memory (.hearth-ai/PROJECT.md) at the start of each run.
+  const prompt = opsApi ? opsApi.withMemory(validatePrompt(opts.prompt)) : validatePrompt(opts.prompt);
     let mode = opts.mode === 'edit' ? 'edit' : 'read';
     const runId = typeof opts.runId === 'string' && /^[A-Za-z0-9]{4,20}$/.test(opts.runId) ? opts.runId : null;
     const s = readSettings();
@@ -396,6 +436,8 @@ function registerIpc() {
 
     const controller = new AbortController();
     if (runId) runs.set(runId, controller);
+    // No output and no file changes for the project's stall time: stopped as 'stalled'.
+    const wd = mode !== 'read' && taskId && opsApi ? opsApi.watchdog(cwd, () => controller.abort()) : null;
     const base = {
       agent,
       cwd,
@@ -407,6 +449,9 @@ function registerIpc() {
       extraDirs: s.extraDirs,
       // Only files from the app's attachments folder are ever passed to a tool.
       images: (Array.isArray(opts.images) ? opts.images : []).filter((f) => typeof f === 'string' && attachments.inside(f, [attachments.attachDir(worktreeRoot())])).slice(0, 8),
+      onData: wd ? wd.touch : undefined,
+      // Each AI's own folder for generated files (images etc.), inside its workspace.
+      extraEnv: opsApi ? opsApi.assetsEnv(agent, cwd) : undefined,
     };
     try {
       const resumeId = typeof opts.resumeId === 'string' ? opts.resumeId : null;
@@ -416,6 +461,7 @@ function registerIpc() {
         r = await agents.runAgent({ ...base, prompt: validatePrompt(opts.fallbackPrompt) });
         r.resumeReset = true;
       }
+      if (wd?.stalled) r = { ok: false, error: { kind: 'stalled', message: `No output and no file changes for ${opsApi.stallMinutes()} minutes, so the run was stopped. Progress is checkpointed.` }, partial: r.partial || null };
       r = cleanResult(r);
       if (r.ok && r.sessionId) {
         try {
@@ -424,6 +470,7 @@ function registerIpc() {
       }
       return r;
     } finally {
+      wd?.stop();
       if (runId) runs.delete(runId);
     }
   });
@@ -497,7 +544,7 @@ function registerIpc() {
   // ---- chat attachments (images / videos) ----
   const withFrames = async (r) => {
     if (!r.ok) return r;
-    const att = { ...r.att, url: pathToFileURL(r.att.path).href };
+    const att = { ...r.att, url: pathToFileURL(r.att.path).href, ...(r.att.kind === 'image' && opsApi ? opsApi.imageInfo(r.att.path) : {}) };
     if (att.kind === 'video') {
       const f = await attachments.extractFrames(att.path, { ffmpeg: gitops.find('ffmpeg'), count: 4 });
       Object.assign(att, { frames: f.frames, duration: f.duration, note: f.note });
@@ -593,6 +640,7 @@ function registerIpc() {
     // single Approve-to-merge step, without the owner's confirmation box. Never a release.
     if (opts?.byLead === true) {
       if (s.leadActions !== true) return { ok: false, message: 'The lead switch is off.' };
+      if (s.leadMerge !== true) return { ok: false, message: 'Lead may merge to main is off.' };
       if (!sha) return { ok: false, message: 'No approved commit recorded; the lead cannot merge it.' };
       return gitops.mergeApproved(s.project, branch, sha);
     }
@@ -682,6 +730,7 @@ function registerIpc() {
     const sha = typeof opts?.sha === 'string' ? opts.sha : null;
     if (opts?.byLead === true) {
       if (s.leadActions !== true) return { ok: false, message: 'The lead switch is off.' };
+      if (s.leadMerge !== true) return { ok: false, message: 'Lead may merge to main is off.' };
       if (!sha) return { ok: false, message: 'No approved commit recorded; the lead cannot merge it.' };
       return gitops.prMerge(s.project, n, sha);
     }
@@ -715,7 +764,7 @@ function registerIpc() {
   handle('git:clone', async (input) => {
     if (!gitops.find('git')) return { ok: false, message: 'git is not installed.' };
     const r = await gitops.clone(String(input), path.join(os.homedir(), 'HearthProjects'));
-    if (r.ok) useProject(r.dir);
+    if (r.ok) r.settings = opsApi ? opsApi.useFolder(r.dir) : useProject(r.dir);
     return r;
   });
 
@@ -723,6 +772,17 @@ function registerIpc() {
   handle('updater:check', () => updater.check());
   handle('updater:download', () => updater.download());
   handle('updater:install', () => updater.install());
+  handle('updater:restart', () => updater.restart());
+  registerOps();
+}
+
+// Team ops (projects, project memory, test runs, CI, logs, voice, phone): electron/ops/.
+function registerOps() {
+  opsApi = ops.register({
+    handle, dataDir, readSettings, useProject, settingsDisk, taskDir, worktreeRoot, gitops, workspace, agents, attachments, redact, send, dialog,
+    getWindow: () => mainWindow,
+    setStore: (file) => { store = createStore(file); lastLoad = { recoveredFrom: null }; },
+  });
 }
 
 app.on('second-instance', () => {
@@ -739,7 +799,8 @@ process.on('uncaughtException', (e) => {
 app.whenReady().then(() => {
   Menu.setApplicationMenu(null);
   secrets = createSecretStore({ safeStorage, dir: dataDir() });
-  store = createStore(stateFile());
+  // The active project's board (the data from before projects is the default project, in the same file).
+  store = createStore(ops.stateFile(dataDir(), readSettings().project, readSettings().projects));
   history = createHistory(historyFile());
   openWeb = web.createWebWindows({ BrowserWindow, shell, iconPath: path.join(__dirname, '..', 'dist', 'icon.png') });
   theme.watchTheme((t) => send('theme:changed', t));
@@ -753,6 +814,7 @@ app.whenReady().then(() => {
 
 app.on('before-quit', () => {
   for (const c of runs.values()) c.abort();
+  opsApi?.stop();
 });
 
 app.on('window-all-closed', () => {

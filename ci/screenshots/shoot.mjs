@@ -9,7 +9,7 @@ const OUT = process.env.OUT_DIR || 'shots';
 mkdirSync(OUT, { recursive: true });
 
 function stub(opts) {
-  const { scenario, theme = 'hearth', hearthTheme = null, flows = false } = opts;
+  const { scenario, theme = 'hearth', hearthTheme = null, flows = false, habitat = false, habitatDay = false, habitatActions = false } = opts;
   const populated = scenario !== 'fresh';
   const ago = (m) => new Date(Date.now() - m * 60000).toISOString();
   const pol = (warn = []) => ({ ok: true, block: [], warn });
@@ -36,6 +36,35 @@ function stub(opts) {
       return new Promise((r) => setTimeout(() => r({ ok: true, text: 'Plan: I take the layout; Gemini reviews.', via: 'Claude Code' }), 4500));
     };
   }
+  if (habitat) {
+    // Habitat scene: Claude and Gemini work at their desks (runs never finish here).
+    // Claude's last run failed its tests, so its desk light is red.
+    tasks.unshift(
+      { id: 'HB0001', title: 'Settings › Storage: drive health panel', description: '', assignee: 'anthropic', reviewer: 'google', action: 'code', stage: 'intake', notes: [], runs: [{ agent: 'anthropic', status: 'continue', tests: 'failed', output: 'TESTS: FAILED', at: ago(35) }], policy: pol(), createdAt: ago(30), updatedAt: ago(30) },
+      { id: 'HB0002', title: 'Mantel dock: remember pinned apps', description: '', assignee: 'google', reviewer: 'anthropic', action: 'code', stage: 'intake', notes: [], runs: [], policy: pol(), createdAt: ago(25), updatedAt: ago(25) },
+    );
+    // Finished work the garden and trophy shelf grow from (one merged into main).
+    for (const [i, a] of ['anthropic', 'google', 'openai', 'anthropic', 'google', 'ollama'].entries()) {
+      tasks.push({ id: `HD000${i}`, title: `Finished habitat task ${i + 1}`, description: '', assignee: a, reviewer: 'openai', action: 'code', stage: 'approved', decision: 'approved', notes: i === 0 ? [{ who: 'System', text: 'Merged into main (abc9999). Pushed main to GitHub.', at: ago(500) }] : [], runs: [{ agent: a, status: 'done', tests: 'passed', output: 'STATUS: DONE', at: ago(600 + i) }], policy: pol(), createdAt: ago(900), updatedAt: ago(400 + i) });
+    }
+    window.__runImpl = () => new Promise(() => {});
+  }
+  if (habitatDay) {
+    // Claude finishes HB0003 after 3 s; Gemini then reviews it (and keeps reviewing).
+    tasks.unshift({ id: 'HB0003', title: 'Storage page: drive temperature', description: '', assignee: 'anthropic', reviewer: 'google', action: 'code', stage: 'intake', notes: [], runs: [], policy: pol(), createdAt: ago(20), updatedAt: ago(20) });
+    window.__runImpl = (o) => {
+      if (String(o.title || '').startsWith('Review:')) return new Promise(() => {});
+      if (o.taskId === 'HB0003') return new Promise((r) => setTimeout(() => r({ ok: true, text: 'Drive temperature added to the Storage page.\nTESTS: PASSED\nSTATUS: DONE', via: 'Claude Code' }), 3000));
+      return new Promise(() => {});
+    };
+  }
+  if (habitatActions) {
+    // Claude answers the owner in team chat with a few HABITAT: lines.
+    window.__runImpl = (o) => {
+      if (String(o.thread || '').includes('anthropic')) return new Promise((r) => setTimeout(() => r({ ok: true, via: 'Claude Code', text: 'Good idea, a short break before the next Storage task.\nHABITAT: place lamp at 4,0\nHABITAT: lamp on\nHABITAT: note Storage page shipped\nHABITAT: coffee with @gemini' }), 1200));
+      return new Promise(() => {});
+    };
+  }
   const IMG = 'data:image/svg+xml;utf8,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="480" height="270"><rect width="480" height="270" fill="#1b2838"/><rect x="24" y="24" width="432" height="40" rx="6" fill="#2a475e"/><text x="40" y="51" fill="#c7d5e0" font-family="sans-serif" font-size="18">Settings › Storage</text><rect x="24" y="84" width="300" height="18" rx="4" fill="#66c0f4"/><rect x="24" y="116" width="220" height="18" rx="4" fill="#4c6b22"/><text x="24" y="240" fill="#8f98a0" font-family="sans-serif" font-size="14">screenshot attached by Claude</text></svg>');
   const audit = populated ? [
     { id: 'A0', at: ago(4), actor: 'anthropic', event: 'Permission requested', taskId: null, detail: 'Claude · Push to GitHub: push hearth/k7q2ma-storage-page' },
@@ -60,9 +89,13 @@ function stub(opts) {
     { id: 'R6BOOT', agent: 'xai', kind: 'boot', what: 'Change GRUB_DEFAULT handling in the image build', why: 'Needed for the theme', context: 'chat', at: ago(200), status: 'approved', decidedAt: ago(190), questions: [] },
   ] : [];
   // In the 0.7.0 flows Claude isn't waiting on a permission card, so it can take turns and tasks.
-  if (flows) for (const p of permissions) if (p.agent === 'anthropic') { p.status = 'approved'; p.decidedAt = ago(2); }
+  if (flows || habitat) for (const p of permissions) if (p.agent === 'anthropic') { p.status = 'approved'; p.decidedAt = ago(2); }
   const state = { version: 1, tasks, audit, models: {}, chat, permissions, chatSessions: {}, agentStatus: flows ? {} : populated ? { openai: { outUntil: new Date(Date.now() + 3600000).toISOString(), reason: 'usage limit reached' } } : {}, autoHandoff: true, roles: {}, lead: 'anthropic', disabled: {}, setupDismissed: populated };
-  const settings = { project: populated ? '/home/owner/Projects/hearth-os' : null, projects: populated ? ['/home/owner/Projects/hearth-os', '/home/owner/Projects/beacon'] : [], connection: { anthropic: 'cli', openai: 'cli', xai: 'cli', mistral: 'cli', perplexity: 'api', deepseek: 'api' }, bins: {}, access: 'standard', extraDirs: populated ? ['/home/owner/Games'] : [], autoPush: true, chatEdits: true, chatResume: true, theme };
+  // Saved Habitat progress from earlier sessions (loaded through the normal state).
+  if (habitat) state.habitat = { v: 1, finished: 28, growth: 28, counted: [], ai: { anthropic: { done: 12, approvals: 9 }, google: { done: 6, approvals: 4 } }, pet: { name: '' } };
+  // Claude unlocked a lantern earlier and put it away (it can place it with HABITAT: place lamp).
+  if (habitatActions) state.habitat.ai.anthropic.stored = ['lantern'];
+  const settings = { ownerIdentity: { name: 'Dragongamer9', email: 'Dragongamer9@users.noreply.github.com', emails: ['Dragongamer9@users.noreply.github.com'] }, project: populated ? '/home/owner/Projects/hearth-os' : null, projects: populated ? ['/home/owner/Projects/hearth-os', '/home/owner/Projects/beacon'] : [], connection: { anthropic: 'cli', openai: 'cli', xai: 'cli', mistral: 'cli', perplexity: 'api', deepseek: 'api' }, bins: {}, access: 'standard', extraDirs: populated ? ['/home/owner/Games'] : [], autoPush: true, chatEdits: true, chatResume: true, theme };
   let xaiChecks = 0;
   const agents = populated
     ? { anthropic: { installed: true, signedIn: true, path: '/usr/bin/claude' }, openai: { installed: true, signedIn: true, path: '/usr/bin/codex' }, google: { installed: true, signedIn: true, path: '/usr/bin/gemini' }, xai: { installed: true, signedIn: false, path: '/home/owner/.grok/bin/grok' }, mistral: { installed: false, signedIn: false }, qwen: { installed: true, signedIn: false, path: '/usr/bin/qwen' }, perplexity: {}, deepseek: {}, ollama: { installed: true, models: ['llama3.2'] }, freebuff: { installed: true, signedIn: null, path: '/usr/bin/freebuff' } }
@@ -127,7 +160,7 @@ const browser = await chromium.launch();
 const errors = [];
 const check = (cond, msg) => { if (!cond) errors.push(`check failed: ${msg}`); };
 async function session(name, opts, steps) {
-  const ctx = await browser.newContext({ viewport: { width: 1600, height: 1000 }, bypassCSP: true, colorScheme: opts.theme === 'light' ? 'light' : 'dark' });
+  const ctx = await browser.newContext({ viewport: { width: 1600, height: 1000 }, bypassCSP: true, colorScheme: opts.theme === 'light' ? 'light' : 'dark', reducedMotion: opts.reducedMotion ? 'reduce' : 'no-preference' });
   await ctx.addInitScript(stub, opts);
   const page = await ctx.newPage();
   page.on('pageerror', (e) => errors.push(`${name}: ${e.message}`));
@@ -265,6 +298,162 @@ await session('070', { scenario: 'populated', theme: 'dark', flows: true }, asyn
   await page.click('[data-attach]'); await page.waitForTimeout(300);
   check((await page.textContent('.chat-input')).includes('owner-photo.png'), 'owner attachment pending');
   await shot('chat-image-attachments');
+});
+
+// 6) Habitat: some AIs at their desks, one typing, one asleep, some locked out. Saved as habitat-*.png.
+const habitatScene = async ({ page, nav }) => {
+  for (const [id, a] of [['HB0001', 'anthropic'], ['HB0002', 'google']]) {
+    await nav('board'); await page.click(`[data-open="${id}"]`); await page.waitForTimeout(300);
+    await page.click(`[data-run="${id}:${a}"]`); await page.waitForTimeout(500);
+    await page.keyboard.press('Escape');
+  }
+  await nav('chat');
+  await page.fill('#chat-text', '@perplexity find sources on GRUB theme formats'); await page.keyboard.press('Enter'); await page.waitForTimeout(500);
+  await nav('habitat');
+  await page.waitForSelector('#habitat canvas');
+  await page.waitForTimeout(4500); // let them walk to their places
+  const beh = (id) => page.evaluate((x) => document.querySelector('#habitat canvas').habitat.behaviour(x), id);
+  const act = (id) => page.evaluate((x) => document.querySelector('#habitat canvas').habitat.actor(x), id);
+  check((await beh('anthropic'))?.mode === 'desk', 'Claude works at its desk');
+  check((await beh('anthropic'))?.monitor?.id === 'HB0001', 'Claude’s monitor shows its task id');
+  check((await beh('anthropic'))?.star === true, 'the lead has a star');
+  check((await beh('google'))?.mode === 'desk', 'Gemini works at its desk');
+  check((await beh('openai'))?.mode === 'sleep', 'ChatGPT is out of usage and asleep');
+  check((await beh('xai'))?.door === 'locked', 'Grok is signed out: door locked');
+  check((await beh('perplexity'))?.icon === 'bubble', 'Perplexity is typing in team chat');
+  return { beh, act };
+};
+const H_ = (fn, ...args) => `document.querySelector('#habitat canvas').habitat.${fn}(${args.map((a) => JSON.stringify(a)).join(',')})`;
+await session('habitat', { scenario: 'populated', theme: 'dark', habitat: true }, async ({ page, shot, nav }) => {
+  const { act } = await habitatScene({ page, nav });
+  const claude = await act('anthropic');
+  check(claude.pose === 'sit' && claude.mode === 'desk', 'Claude is sitting at the desk');
+  check((await page.evaluate(() => getComputedStyle(document.querySelector('#habitat canvas')).imageRendering)) === 'pixelated', 'canvas is pixelated');
+  await shot('desks-typing-asleep-locked');
+  // Night: the real clock decides; here it is set to 22:30 local time.
+  await page.evaluate(() => document.querySelector('#habitat canvas').habitat.setClock(new Date(2026, 10, 2, 22, 30).getTime()));
+  await page.waitForTimeout(600);
+  check((await page.evaluate(H_('light')))?.phase === 'night', 'night lighting at 22:30');
+  check((await page.evaluate(H_('deskLight', 'anthropic'))) === 'red', 'Claude’s desk light is red (its last run failed its tests)');
+  const st = await page.evaluate(H_('store'));
+  check(st.finished >= 34 && st.growth >= 34, `garden grew from finished tasks (${st.finished})`);
+  check(Boolean(st.trophies['first-merge']) && Boolean(st.trophies['done-10']), 'trophy shelf: first merge and 10 tasks');
+  check((st.ai.anthropic?.props || []).length === 2, 'Claude unlocked two room props');
+  check((await page.evaluate(H_('extras', 'anthropic'))).length === 2, 'Claude’s unlocked props are in its room');
+  check((await page.evaluate(H_('pet'))) !== null, 'the pet is there');
+  await shot('night-red-desk-light-garden-trophies');
+  // Name the pet in the small dialog; it is saved.
+  const pet = await page.evaluate(H_('pet'));
+  await page.mouse.click(pet.page.x, pet.page.y); await page.waitForTimeout(300);
+  await page.fill('.hab-pop .hab-input', 'Ember');
+  await page.click('.hab-pop [data-hab="savepet"]'); await page.waitForTimeout(300);
+  check((await page.evaluate(H_('store'))).pet.name === 'Ember', 'pet name saved');
+  const at = await page.evaluate(() => document.querySelector('#habitat canvas').habitat.at('anthropic'));
+  await page.mouse.move(at.x, at.y); await page.waitForTimeout(300);
+  const tip = await page.textContent('.hab-tip');
+  check(tip.includes('HB0001') && tip.includes('drive health') && tip.includes('hearth/hb0001'), 'tooltip shows the task title and branch');
+  await shot('tooltip-task-and-branch');
+  // Habitat options menu opens (reset asks to confirm; not pressed here).
+  await page.click('[data-hab="menu"]'); await page.waitForTimeout(200);
+  await page.click('.hab-pop [data-hab="askreset"]'); await page.waitForTimeout(200);
+  check((await page.textContent('.hab-pop')).includes('Reset Habitat progress?'), 'reset asks for confirmation');
+  await page.click('.hab-pop [data-hab="close"]');
+  await page.mouse.click(at.x, at.y); await page.waitForTimeout(400);
+  check(await page.locator('.drawer').count() >= 1 || (await page.textContent('body')).includes('Settings › Storage: drive health panel'), 'clicking a working AI opens its task');
+  await page.keyboard.press('Escape');
+});
+await session('habitat-day', { scenario: 'populated', theme: 'dark', habitat: true, habitatDay: true }, async ({ page, shot, nav }) => {
+  await nav('board'); await page.click('[data-open="HB0003"]'); await page.waitForTimeout(300);
+  await page.click('[data-run="HB0003:anthropic"]'); await page.waitForTimeout(300);
+  await page.keyboard.press('Escape');
+  await nav('habitat');
+  await page.waitForSelector('#habitat canvas');
+  await page.evaluate(() => document.querySelector('#habitat canvas').habitat.setClock(new Date(2026, 10, 2, 13, 0).getTime()));
+  // Claude reports done -> review: Claude walks a paper over to Gemini's desk.
+  await page.waitForFunction(() => document.querySelector('#habitat canvas')?.habitat.visits().some((v) => v.kind === 'review-visit'), null, { timeout: 15000 }).catch(() => {});
+  const visits = await page.evaluate(H_('visits'));
+  check(visits.some((v) => v.kind === 'review-visit' && v.from === 'anthropic' && v.to === 'google'), 'builder -> reviewer visit');
+  await page.waitForTimeout(900);
+  const claude = await page.evaluate(H_('actor', 'anthropic'));
+  check(Boolean(claude.errand) || (await page.evaluate(H_('effects'))).includes('paper'), 'Claude carries the paper to Gemini');
+  check((await page.evaluate(H_('light')))?.phase === 'day', 'day lighting at 13:00');
+  await shot('day-builder-visits-reviewer');
+  // Idle AIs on a coffee break chat in the break room.
+  await page.evaluate(H_('breakFor', ['ollama', 'perplexity', 'freebuff', 'qwen']));
+  await page.waitForFunction(() => document.querySelector('#habitat canvas').habitat.kitchenIds().length >= 2, null, { timeout: 25000 }).catch(() => {});
+  await page.waitForTimeout(800);
+  const inKitchen = await page.evaluate(H_('kitchenIds'));
+  check(inKitchen.length >= 2, `two or more AIs in the break room (${inKitchen.join(',')})`);
+  check((await page.evaluate(H_('effects'))).includes('paper') || (await page.evaluate(H_('actor', 'anthropic'))).goal !== 'errand', 'the paper reached Gemini’s desk');
+  await shot('day-break-room-garden-pet');
+  // Rearrange Claude's room: move one unlocked prop to another free tile; saved.
+  const before = await page.evaluate(H_('extras', 'anthropic'));
+  const rr = await page.evaluate(H_('roomRect', 'anthropic'));
+  const room = await page.evaluate(H_('room', 'anthropic'));
+  await page.mouse.click(room.x, room.y); await page.waitForTimeout(200);
+  await page.click('.hab-pop [data-hab="rearrange"]'); await page.waitForTimeout(200);
+  const p0 = await page.evaluate(([x, y]) => document.querySelector('#habitat canvas').habitat.tile(x, y), [before[0].x, before[0].y]);
+  await page.mouse.click(p0.x, p0.y); await page.waitForTimeout(150);
+  for (const [lx, ly] of [[4, 2], [4, 1], [0, 1], [0, 2], [3, 3], [1, 3]]) {
+    const gy = rr.side === 'top' ? rr.y0 + ly : rr.y0 + 3 - ly;
+    const q = await page.evaluate(([x, y]) => document.querySelector('#habitat canvas').habitat.tile(x, y), [rr.x0 + lx, gy]);
+    await page.mouse.click(q.x, q.y); await page.waitForTimeout(150);
+    if ((await page.textContent('.hab-pop')).includes('Moved and saved')) break;
+  }
+  const after = await page.evaluate(H_('extras', 'anthropic'));
+  check(JSON.stringify(after) !== JSON.stringify(before), 'a prop moved on the room grid');
+  check(JSON.stringify((await page.evaluate(H_('store'))).ai.anthropic.props.map((p) => [p.x, p.y])) === JSON.stringify(after.map((p) => [p.lx, p.ly])), 'the new layout is saved');
+  await shot('day-rearrange-room');
+  await page.click('.hab-pop [data-hab="done"]');
+  // A note on the message board opens what it shows.
+  const note = await page.evaluate(H_('note', 0));
+  await page.mouse.click(note.x, note.y); await page.waitForTimeout(400);
+  check(await page.locator('#chat-text').count() === 1 || await page.locator('.drawer').count() >= 1, 'clicking a board note opens it');
+});
+await session('habitat-light', { scenario: 'populated', theme: 'light', habitat: true, reducedMotion: true }, async ({ page, shot, nav }) => {
+  const { act } = await habitatScene({ page, nav });
+  const p = await act('ollama');
+  await page.waitForTimeout(2500);
+  const q = await act('ollama');
+  check(p.x === q.x && p.y === q.y && !p.path.length, 'reduced motion: idle AIs stay in place');
+  check((await page.evaluate(H_('weather'))) === 'clear', 'reduced motion: no weather');
+  const pa = await page.evaluate(H_('pet')); await page.waitForTimeout(1200); const pb = await page.evaluate(H_('pet'));
+  check(pa.x === pb.x && pa.y === pb.y, 'reduced motion: the pet stays put');
+  await shot('light-reduced-motion');
+});
+// 7) AIs act in their Habitat: HABITAT: lines in a team chat reply get ✓ in chat and show in the Habitat.
+await session('habitat-actions', { scenario: 'populated', theme: 'dark', habitat: true, habitatActions: true }, async ({ page, shot, nav }) => {
+  await nav('chat');
+  await page.fill('#chat-text', '@claude take a short break in the Habitat'); await page.keyboard.press('Enter');
+  await page.waitForFunction(() => document.querySelectorAll('.ops-results .ok').length >= 4, null, { timeout: 15000 }).catch(() => {});
+  check(await page.locator('.ops-results .ok').count() >= 4, `four Habitat lines got a ✓ in chat (${await page.locator('.ops-results .ok').count()})`);
+  check(!(await page.textContent('#chat-log')).includes('break before the next Storage task.\nHABITAT'), 'HABITAT lines are shown as results, not as reply text');
+  await page.locator('.ops-results').last().scrollIntoViewIfNeeded();
+  await shot('chat-habitat-lines-checked');
+  await nav('audit');
+  check((await page.textContent('.main')).includes('Claude placed a lantern in its room'), 'audit log: Claude placed a lantern in its room');
+  await nav('habitat');
+  await page.waitForSelector('#habitat canvas');
+  await page.evaluate(() => document.querySelector('#habitat canvas').habitat.setClock(new Date(2026, 10, 2, 19, 0).getTime()));
+  await page.waitForFunction(() => { const k = document.querySelector('#habitat canvas').habitat.kitchenIds(); return k.includes('anthropic') && k.includes('google'); }, null, { timeout: 25000 }).catch(() => {});
+  await page.waitForTimeout(800);
+  const st = await page.evaluate(H_('store'));
+  check(st.ai.anthropic.props.some((p) => p.kind === 'lantern' && p.x === 4 && p.y === 0), 'the lantern is placed in Claude’s room and saved');
+  check((await page.evaluate(H_('extras', 'anthropic'))).some((p) => p.kind === 'lantern'), 'the lantern is drawn in the room');
+  check(st.ai.anthropic.lamp === 'on', 'Claude’s lamp is on');
+  check(st.board.anthropic?.text === 'Storage page shipped', 'Claude’s note is pinned on the hall board');
+  check((await page.evaluate(H_('life'))).some((e) => e.kind === 'coffee' && e.with === 'google'), 'the coffee meeting played');
+  const kitchen = await page.evaluate(H_('kitchenIds'));
+  check(kitchen.includes('anthropic') && kitchen.includes('google'), `Claude and Gemini meet in the break room (${kitchen.join(',')})`);
+  check((await page.evaluate(H_('journal', 'anthropic'))).some((e) => e.text === 'had coffee with Gemini'), 'Claude’s journal remembers the coffee');
+  await shot('lamp-note-coffee');
+  const room = await page.evaluate(H_('room', 'anthropic'));
+  await page.mouse.click(room.x, room.y); await page.waitForTimeout(300);
+  const pop = await page.textContent('.hab-pop');
+  check(pop.includes('placed lantern at 4,0') && pop.includes('Lock room'), 'room details show the journal and the lock');
+  await shot('room-journal-and-lock');
+  await page.click('.hab-pop [data-hab="lock"]'); await page.waitForTimeout(200);
+  check((await page.evaluate(H_('store'))).locks.anthropic === true, 'the owner locked Claude’s room (saved)');
 });
 
 await browser.close();

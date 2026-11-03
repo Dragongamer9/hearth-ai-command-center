@@ -56,11 +56,18 @@ function cleanMessage(message) {
 
 // Commit whatever is in the worktree. Returns null when nothing changed.
 // (author is who worked on it, recorded in the app's audit log — not in git.)
+// The app's own files (.hearth-ai/: attachments, assets, jobs) are never committed, even
+// if .gitignore says otherwise: they're excluded from the add and unstaged before committing.
+const APP_DIR = '.hearth-ai';
+
 async function checkpoint(dir, { message }) {
   if (!fs.existsSync(dir)) return null;
-  await git(dir, ['add', '-A']);
+  // Never edits the tracked .gitignore: .hearth-ai/ is excluded here and in the shared exclude file.
+  await git(dir, ['add', '-A', '--', '.', `:(exclude)${APP_DIR}`]);
+  await git(dir, ['rm', '-r', '--cached', '--quiet', '--ignore-unmatch', '--', APP_DIR]);
   const staged = await git(dir, ['diff', '--cached', '--stat']);
   if (!staged.out) return null;
+  const names = await git(dir, ['diff', '--cached', '--name-only']);
   const id = await ownerIdentity(dir);
   const r = await git(dir, [
     '-c', `user.name=${id.name}`, '-c', `user.email=${id.email}`,
@@ -68,7 +75,7 @@ async function checkpoint(dir, { message }) {
   ]);
   if (!r.ok) throw new Error(`Checkpoint failed: ${r.err}`);
   const sha = await git(dir, ['rev-parse', '--short', 'HEAD']);
-  return { sha: sha.out, stat: staged.out.split('\n').slice(-1)[0] };
+  return { sha: sha.out, stat: staged.out.split('\n').slice(-1)[0], files: names.out.split('\n').filter(Boolean).slice(0, 200) };
 }
 
 // What has been done on this task's branch so far — shared with the next agent.
@@ -91,4 +98,4 @@ async function head(dir) {
   return r.ok && r.out ? r.out : null;
 }
 
-module.exports = { head, isRepo, ensureWorktree, checkpoint, summary, git, slug, cleanMessage, ownerIdentity };
+module.exports = { APP_DIR, head, isRepo, ensureWorktree, checkpoint, summary, git, slug, cleanMessage, ownerIdentity };
