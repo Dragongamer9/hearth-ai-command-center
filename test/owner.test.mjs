@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { parseVerdicts, applyVerdict, ownerAction, requestChanges, reviewBaseline, checkDoneAfterReview, claimsDone, testResult, approvalStale, clearStaleApproval } from '../src/owner.mjs';
+import { waitingForLead } from '../src/ops/leadwake.mjs';
+import { taskRunState } from '../src/team.mjs';
 
 const mk = (o = {}) => ({ id: 'ABC123', title: 'T', stage: 'review', assignee: 'anthropic', reviewer: 'xai', action: 'code', policy: { ok: true, block: [], warn: [] }, notes: [], runs: [], ...o });
 
@@ -31,6 +33,37 @@ test('CHANGES sends it back to the implementer with the reason', () => {
   assert.match(t.notes.at(-1).text, /CHANGES REQUESTED: add a test/);
   assert.equal(t.changesSince.by, 'xai');
   assert.equal(applyVerdict(mk(), { by: 'xai', verdict: 'changes', reason: '' }).ok, false);
+});
+
+test('request-changes → fix → approve clears the old flag and leaves owner approval, not stopped (continue)', () => {
+  const t = mk({ runs: [{ agent: 'anthropic', status: 'continue' }], ws: { branch: 'hearth/abc123' } });
+  applyVerdict(t, { by: 'xai', verdict: 'changes', reason: 'derive locations from the store', at: 'T1' });
+  reviewBaseline(t, 'aaa1111');
+  assert.equal(t.stage, 'implementing');
+  const stuckBtn = ownerAction(t, { canRun: () => true });
+  assert.equal(stuckBtn.kind, 'resume', 'stuck as Ready to Resume while the old flag is set');
+  assert.match(stuckBtn.reason, /stopped \(continue\)/);
+  const stuck = waitingForLead({ tasks: [t], lead: 'google', editors: ['anthropic'] });
+  assert.equal(stuck.tasks[0].stage, 'stopped (continue)');
+  assert.match(stuck.tasks[0].verdict, /changes requested: derive locations from the store/);
+  assert.equal(applyVerdict(t, { by: 'xai', verdict: 'approve', reason: 'fixed', at: 'T2', sha: 'aaa1111' }).ok, false, 'same commit as the review is not a fix');
+  assert.match(applyVerdict(t, { by: 'xai', verdict: 'approve', reason: 'fixed', at: 'T2', sha: null }).reason, /can't be approved until its branch head can be read/);
+  assert.equal(t.stage, 'implementing');
+  assert.equal(t.changesSince.sha, 'aaa1111');
+  const r = applyVerdict(t, { by: 'xai', verdict: 'approve', reason: 'fixed at dde8f12', at: 'T3', sha: 'bbb2222' });
+  assert.deepEqual(r, { ok: true, stage: 'approval' });
+  assert.equal(t.changesSince, undefined);
+  assert.deepEqual(t.reviewVerdict, { by: 'xai', verdict: 'approve', reason: 'fixed at dde8f12', at: 'T3', sha: 'bbb2222' });
+  const a = ownerAction(t);
+  assert.equal(a.kind, 'approve');
+  assert.equal(a.label, 'Approve to merge');
+  assert.match(a.reason, /Grok approved bbb2222: fixed at dde8f12/);
+  assert.doesNotMatch(a.reason, /stopped \(continue\)/);
+  assert.equal(taskRunState(t), null, 'the board no longer reads Ready to Resume');
+  const moved = waitingForLead({ tasks: [t], lead: 'google', editors: ['anthropic'] });
+  assert.equal(moved.tasks[0].stage, 'approval');
+  assert.match(moved.tasks[0].verdict, /approved by xai at bbb2222/);
+  assert.doesNotMatch(moved.tasks[0].verdict, /changes requested/);
 });
 
 test('owner buttons: Approve to merge, Approve to resume, Approve to start', () => {

@@ -21,6 +21,17 @@ export function parseVerdicts(text) {
   return found;
 }
 
+// After CHANGES, the task sits in implementing and the board reads
+// "stopped (continue)" until the assigned reviewer APPROVEs a newer commit.
+// That approval clears the old flag and moves the task to owner approval.
+export function afterChanges(task) {
+  return Boolean(task?.changesSince) || task?.reviewVerdict?.verdict === 'changes';
+}
+export function reviewerCanApprove(task) {
+  if (!task || CLOSED.includes(task.stage) || task.stage === 'approval') return false;
+  return REVIEWABLE.includes(task.stage) || (task.stage === 'implementing' && afterChanges(task));
+}
+
 // A verdict from `by`. Only the task's assigned reviewer counts. Mutates the task.
 export function applyVerdict(task, { by, verdict, reason = '', at = new Date().toISOString(), sha = null }) {
   if (!task) return { ok: false, reason: 'no such task' };
@@ -28,11 +39,18 @@ export function applyVerdict(task, { by, verdict, reason = '', at = new Date().t
   if (CLOSED.includes(task.stage)) return { ok: false, reason: `T-${task.id} is already ${task.stage}` };
   if (verdict === 'approve') {
     if (task.stage === 'approval') return { ok: false, reason: `T-${task.id} is already waiting for owner approval` };
-    if (!REVIEWABLE.includes(task.stage)) return { ok: false, reason: `T-${task.id} isn't ready for review yet (${task.stage})` };
+    if (!reviewerCanApprove(task)) return { ok: false, reason: `T-${task.id} isn't ready for review yet (${task.stage})` };
     if (task.policy && !task.policy.ok) return { ok: false, reason: `T-${task.id} is blocked by the policy check` };
+    const since = task.changesSince;
+    if (since?.sha) {
+      if (!sha) return { ok: false, reason: `T-${task.id} can't be approved until its branch head can be read (needed to check the fix since ${short(since.sha)})` };
+      if (sha === since.sha) return { ok: false, reason: `T-${task.id} has no new commit since changes were requested (still at ${short(since.sha)})` };
+    }
     task.stage = 'approval';
     // The approval is for this exact commit; a later change clears it.
     task.reviewVerdict = { by, verdict, reason, at, sha: sha || null };
+    delete task.changesSince;
+    delete task.reviewWaiting;
   } else if (verdict === 'changes') {
     if (!reason) return { ok: false, reason: 'CHANGES needs a reason' };
     if (task.stage === 'intake') return { ok: false, reason: `T-${task.id} hasn't started yet` };

@@ -67,7 +67,9 @@ export const RUN_STATES = {
 export function taskRunState(task, { running = false, saving = false } = {}) {
   if (running) return 'running';
   if (saving) return 'saving';
-  if (['approved', 'rejected'].includes(task.stage)) return null;
+  // Owner approval is waiting on the owner. A previous "continue" run must not
+  // keep the board on Ready to Resume after the reviewer has signed off.
+  if (['approved', 'rejected', 'approval'].includes(task.stage)) return null;
   const last = (task.runs || []).slice(-1)[0];
   if (!last) return null;
   if (['limit', 'outage', 'timeout', 'auth', 'not_installed'].includes(last.status)) return last.status;

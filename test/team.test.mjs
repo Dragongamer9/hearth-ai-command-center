@@ -36,6 +36,7 @@ test('task run states', () => {
   assert.equal(taskRunState(t('done')), null);
   assert.equal(taskRunState(t('done'), { running: true }), 'running');
   assert.equal(taskRunState(t('done'), { saving: true }), 'saving');
+  assert.equal(taskRunState({ stage: 'approval', runs: [{ status: 'continue' }] }), null, 'owner approval is not still Ready to Resume');
 });
 test('restart recovery marks in-flight runs interrupted and keeps everything else', () => {
   const state = { tasks: [
