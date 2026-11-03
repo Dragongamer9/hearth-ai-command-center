@@ -11,6 +11,9 @@ const { spawnSync, execFileSync } = require('node:child_process');
 const HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'hearth-inst-home-'));
 process.env.HOME = HOME;
 delete process.env.XDG_DATA_HOME;
+// Only /usr/bin and /bin on PATH, so a Codex, Grok or other tool already installed in
+// a user folder on this machine can't change what discovery and status checks find.
+process.env.PATH = '/usr/bin:/bin';
 const installer = require('../electron/installer.cjs');
 const agents = require('../electron/agents.cjs');
 

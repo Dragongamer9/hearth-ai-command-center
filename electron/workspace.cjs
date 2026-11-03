@@ -84,4 +84,11 @@ async function summary(dir, baseSha) {
   ].filter(Boolean).join('\n\n').slice(0, 6000);
 }
 
-module.exports = { isRepo, ensureWorktree, checkpoint, summary, git, slug, cleanMessage, ownerIdentity };
+// Current commit of a task branch (full sha; shown short), or null.
+async function head(dir) {
+  if (!fs.existsSync(dir)) return null;
+  const r = await git(dir, ['rev-parse', 'HEAD']);
+  return r.ok && r.out ? r.out : null;
+}
+
+module.exports = { head, isRepo, ensureWorktree, checkpoint, summary, git, slug, cleanMessage, ownerIdentity };

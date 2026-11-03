@@ -99,3 +99,165 @@ test('a plain folder can start being tracked without changing its files', async 
   assert.ok(await g.isRepo(dir));
   assert.equal(fs.readFileSync(path.join(dir, 'notes.txt'), 'utf8'), 'hello');
 });
+function branchWith(run, proj, name, file, text, from = 'main') {
+  run('checkout', '-q', '-b', name, from);
+  fs.writeFileSync(path.join(proj, file), text);
+  run('add', '.');
+  run(...ID, 'commit', '-qm', `${name} work`);
+  run('checkout', '-q', 'main');
+}
+
+test('update from main brings a task branch up to date in its worktree; conflicts change nothing', async () => {
+  const { tmp, proj, run } = setup();
+  branchWith(run, proj, 'hearth/u1-ok', 'u1.txt', 'u1\n');
+  branchWith(run, proj, 'hearth/u2-clash', 'a.txt', 'branch side\n');
+  fs.writeFileSync(path.join(proj, 'a.txt'), 'main side\n');
+  run(...ID, 'commit', '-qam', 'main moves on');
+  run('push', '-q', 'origin', 'main');
+  const mainBefore = run('rev-parse', 'main');
+  const wt1 = path.join(tmp, 'wt1');
+  const wt2 = path.join(tmp, 'wt2');
+  run('worktree', 'add', '-q', wt1, 'hearth/u1-ok');
+  run('worktree', 'add', '-q', wt2, 'hearth/u2-clash');
+
+  const ok = await g.updateFromMain(proj, wt1);
+  assert.ok(ok.ok, ok.message);
+  assert.equal(ok.changed, true);
+  assert.equal(fs.readFileSync(path.join(wt1, 'a.txt'), 'utf8'), 'main side\n');
+  assert.ok(fs.existsSync(path.join(wt1, 'u1.txt')));
+  assert.equal((await g.updateFromMain(proj, wt1)).changed, false, 'second time: already up to date');
+
+  const before2 = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: wt2 }).toString().trim();
+  const bad = await g.updateFromMain(proj, wt2);
+  assert.equal(bad.ok, false);
+  assert.deepEqual(bad.conflicts, ['a.txt']);
+  assert.match(bad.message, /Conflicts with main in a\.txt/);
+  assert.equal(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: wt2 }).toString().trim(), before2);
+  assert.equal(execFileSync('git', ['status', '--porcelain'], { cwd: wt2 }).toString().trim(), '');
+  assert.equal(run('rev-parse', 'main'), mainBefore, 'main is never changed');
+});
+
+test('release branch merges several approved tasks, reports conflicts, never touches main', async () => {
+  const { proj, remote, run } = setup();
+  branchWith(run, proj, 'hearth/r1-one', 'one.txt', '1\n');
+  branchWith(run, proj, 'hearth/r2-two', 'two.txt', '2\n');
+  branchWith(run, proj, 'hearth/r3-clash', 'one.txt', 'other\n');
+  const mainBefore = run('rev-parse', 'main');
+  const r = await g.releaseBranch(proj, 'release/tasks-test', ['hearth/r1-one', 'hearth/r2-two', 'hearth/r3-clash']);
+  assert.ok(r.ok, r.message);
+  assert.deepEqual(r.merged, ['hearth/r1-one', 'hearth/r2-two']);
+  assert.equal(r.conflicts.length, 1);
+  assert.equal(r.conflicts[0].branch, 'hearth/r3-clash');
+  assert.deepEqual(r.conflicts[0].files, ['one.txt']);
+  assert.match(r.message, /Conflict: hearth\/r3-clash in one\.txt/);
+  assert.match(r.message, /Main was not changed/);
+  assert.ok(r.pushed);
+  assert.ok(remoteHas(remote, 'refs/heads/release/tasks-test'));
+  assert.equal(execFileSync('git', ['--git-dir', remote, 'show', 'release/tasks-test:two.txt']).toString(), '2\n');
+  assert.equal(run('rev-parse', 'main'), mainBefore);
+  assert.equal(execFileSync('git', ['--git-dir', remote, 'rev-parse', 'main']).toString().trim(), mainBefore);
+  assert.equal(run('branch', '--show-current'), 'main');
+  assert.equal((await g.releaseBranch(proj, 'release/tasks-test', ['hearth/r1-one'])).ok, false, 'never overwrites');
+  assert.equal((await g.releaseBranch(proj, 'main', ['hearth/r1-one'])).ok, false);
+  assert.equal((await g.releaseBranch(proj, 'release/x', ['main'])).ok, false);
+});
+
+test('lead GitHub: only task and release branches, main protected, no tags', async () => {
+  assert.equal(g.leadGitAllowed('fetch').ok, true);
+  assert.equal(g.leadGitAllowed('pull').ok, true);
+  assert.equal(g.leadGitAllowed('push', 'hearth/abc123-x').ok, true);
+  assert.equal(g.leadGitAllowed('push', 'release/next').ok, true);
+  for (const b of ['main', 'master', 'develop', 'v0.7.0', 'refs/tags/v1', 'hearth/../main', '']) assert.equal(g.leadGitAllowed('push', b).ok, false, b);
+  for (const op of ['tag', 'release', 'merge-main']) assert.match(g.leadGitAllowed(op).reason, /stays with the Owner/);
+
+  const { proj, remote, run } = setup();
+  run(...ID, 'tag', 'v9.9.9');
+  branchWith(run, proj, 'hearth/l1-one', 'l1.txt', '1\n');
+  branchWith(run, proj, 'hearth/l2-two', 'l2.txt', '2\n');
+  branchWith(run, proj, 'hearth/l3-clash', 'l1.txt', 'other\n');
+  const mainBefore = run('rev-parse', 'main');
+  const p = await g.leadPush(proj, 'hearth/l1-one');
+  assert.ok(p.ok, p.message);
+  assert.match(p.message, /Pushed hearth\/l1-one \([0-9a-f]+\)/);
+  assert.equal((await g.leadPush(proj, 'main')).ok, false);
+  const i1 = await g.integrateIntoRelease(proj, 'release/next', 'hearth/l1-one');
+  assert.ok(i1.ok, i1.message);
+  assert.ok(i1.pushed);
+  const i2 = await g.integrateIntoRelease(proj, 'release/next', 'hearth/l2-two');
+  assert.ok(i2.ok, i2.message);
+  assert.equal(execFileSync('git', ['--git-dir', remote, 'show', 'release/next:l2.txt']).toString(), '2\n');
+  const i3 = await g.integrateIntoRelease(proj, 'release/next', 'hearth/l3-clash');
+  assert.equal(i3.ok, false);
+  assert.deepEqual(i3.conflicts, ['l1.txt']);
+  assert.equal((await g.integrateIntoRelease(proj, 'main', 'hearth/l1-one')).ok, false, 'never onto main');
+  const f = await g.leadFetch(proj);
+  assert.ok(f.ok, f.message);
+  assert.equal(run('rev-parse', 'main'), mainBefore, 'main untouched');
+  assert.equal(execFileSync('git', ['--git-dir', remote, 'rev-parse', 'main']).toString().trim(), mainBefore);
+  assert.equal(remoteHas(remote, 'refs/tags/v9.9.9'), false, 'no tags are ever pushed');
+});
+
+test('merges use the approved commit: a branch that moved after approval is refused', async () => {
+  const { proj, remote, run } = setup();
+  branchWith(run, proj, 'hearth/m1-approved', 'm1.txt', 'approved\n');
+  const approved = run('rev-parse', 'hearth/m1-approved');
+  assert.equal(approved.length, 40);
+  run('checkout', '-q', 'hearth/m1-approved');
+  fs.writeFileSync(path.join(proj, 'm1.txt'), 'added after approval\n');
+  run(...ID, 'commit', '-qam', 'late change');
+  run('checkout', '-q', 'main');
+  const mainBefore = run('rev-parse', 'main');
+  const moved = await g.mergeApproved(proj, 'hearth/m1-approved', approved);
+  assert.equal(moved.ok, false);
+  assert.match(moved.message, /changed after it was approved/);
+  assert.equal(run('rev-parse', 'main'), mainBefore, 'nothing merged');
+  assert.equal((await g.mergeApproved(proj, 'hearth/m1-approved', 'abc1234')).ok, false, 'a short or bad sha is refused');
+  const now = run('rev-parse', 'hearth/m1-approved');
+  const ok = await g.mergeApproved(proj, 'hearth/m1-approved', now);
+  assert.ok(ok.ok, ok.message);
+  assert.equal(execFileSync('git', ['--git-dir', remote, 'show', 'main:m1.txt']).toString(), 'added after approval\n');
+});
+
+test('combine merges exactly the approved commits, not later ones', async () => {
+  const { proj, run } = setup();
+  branchWith(run, proj, 'hearth/r9-one', 'r9.txt', 'approved\n');
+  const approved = run('rev-parse', 'hearth/r9-one');
+  run('checkout', '-q', 'hearth/r9-one');
+  fs.writeFileSync(path.join(proj, 'r9.txt'), 'later\n');
+  run(...ID, 'commit', '-qam', 'later');
+  run('checkout', '-q', 'main');
+  branchWith(run, proj, 'hearth/r9-two', 'r9b.txt', 'two\n');
+  const r = await g.releaseBranch(proj, 'release/tasks-sha', [{ branch: 'hearth/r9-one', sha: approved }, 'hearth/r9-two']);
+  assert.ok(r.ok, r.message);
+  assert.equal(execFileSync('git', ['show', 'release/tasks-sha:r9.txt'], { cwd: proj }).toString(), 'approved\n');
+});
+
+test('gh pr merge is pinned to the approved commit with --match-head-commit', async () => {
+  const { tmp, proj } = setup();
+  const bin = path.join(tmp, 'bin');
+  fs.mkdirSync(bin);
+  const log = path.join(tmp, 'gh.log');
+  fs.writeFileSync(path.join(bin, 'gh'), `#!/bin/sh\nif [ "$1 $2" = "pr view" ]; then echo '{"number":7,"state":"OPEN","baseRefName":"main","headRefName":"hearth/x","statusCheckRollup":[]}'; exit 0; fi\necho "$@" >> '${log}'\n`, { mode: 0o755 });
+  const old = process.env.PATH;
+  process.env.PATH = `${bin}:${old}`;
+  try {
+    const sha = 'a'.repeat(40);
+    const r = await g.prMerge(proj, 7, sha);
+    assert.ok(r.ok, r.message);
+    assert.equal(fs.readFileSync(log, 'utf8').trim(), `pr merge 7 --merge --match-head-commit ${sha}`);
+    assert.equal((await g.prMerge(proj, 7, 'abc')).ok, false);
+  } finally { process.env.PATH = old; }
+});
+
+test('every push leaves tags behind (--no-follow-tags), including task branches and main merges', async () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'electron', 'git.cjs'), 'utf8');
+  const pushes = [...src.matchAll(/git\([^)]*\['push'[^\]]*\]/g)].map((m) => m[0]);
+  assert.ok(pushes.length >= 4, pushes.join('\n'));
+  for (const p of pushes) assert.match(p, /--no-follow-tags/, p);
+  const { proj, remote, run } = setup();
+  branchWith(run, proj, 'hearth/t9-tagged', 't9.txt', 't\n');
+  run(...ID, 'tag', '-a', 'v0.9.9', '-m', 'tag', 'hearth/t9-tagged');
+  assert.ok((await g.pushBranch(proj, 'hearth/t9-tagged')).ok);
+  assert.ok((await g.mergeApproved(proj, 'hearth/t9-tagged', run('rev-parse', 'hearth/t9-tagged'))).ok);
+  assert.equal(remoteHas(remote, 'refs/tags/v0.9.9'), false);
+});

@@ -62,3 +62,53 @@ test('proposals for Gemini and local AI', () => {
   assert.deepStrictEqual(out[0], { title: 'Research boot loaders', assignee: 'google', reviewer: 'ollama', action: 'docs' });
   assert.equal(out[1].assignee, 'none'); // the local model can't implement
 });
+
+import { buildDelta, chatRules, authProblem, makeHold, holdLifted, HOLD_BADGES, LOCAL_RULES } from '../src/chat.mjs';
+
+test('the local model is told it has no tools, even when chat editing is on', () => {
+  for (const chatEdits of [false, true]) {
+    const p = buildPrompt('ollama', [], { chatEdits, project: '/repo' });
+    assert.match(p, /You are the local model\. You only see the text in this prompt and have NO tools/);
+    assert.doesNotMatch(p, /you can do everything you normally can/);
+  }
+  assert.match(buildPrompt('openai', [], { chatEdits: true }), /you can do everything you normally can/);
+});
+
+test('the local model must not echo teammates or claim work it cannot do (full and continuing prompts)', () => {
+  const msgs = [{ id: 'A1', who: 'anthropic', text: 'I cloned the repo.' }];
+  for (const p of [buildPrompt('ollama', msgs), buildDelta('ollama', msgs)]) {
+    assert.match(p, /Never repeat, reword or continue what a teammate already said/);
+    assert.match(p, /reply PASS/);
+    assert.match(p, /Never say you did, checked, cloned, ran, tested, pushed or started anything/);
+    assert.match(p, /say it is their report/);
+  }
+  assert.doesNotMatch(buildPrompt('openai', msgs), /Speak only for yourself, the local model/);
+  assert.equal(LOCAL_RULES.length, 3);
+});
+
+test('sign-in and key failures become a quiet hold, everything else still posts', () => {
+  assert.deepEqual(authProblem({ kind: 'auth', message: 'Not signed in.' }), { badge: 'needs sign-in', message: 'Not signed in.' });
+  assert.equal(authProblem({ kind: 'auth', message: 'invalid' }, { method: 'api' }).badge, 'API key rejected');
+  assert.equal(authProblem({ kind: 'no_key', message: 'x' }).badge, 'needs API key');
+  assert.equal(authProblem({ kind: 'failed', message: 'Your account is not eligible' }).badge, 'needs sign-in');
+  assert.equal(authProblem({ kind: 'limit', message: 'quota' }), null);
+  assert.equal(authProblem({ kind: 'outage', message: '503' }), null);
+  for (const b of ['needs sign-in', 'needs API key', 'API key rejected']) assert.ok(HOLD_BADGES.includes(b));
+});
+
+test('the hold is recorded once and only lifts when sign-in or the key changes', () => {
+  const p = authProblem({ kind: 'auth', message: 'Not signed in.' });
+  const h = makeHold(p, { signedIn: true, at: 'T1' });
+  assert.equal(makeHold(p, { signedIn: false, at: 'T2' }, h), h, 'the same failure again keeps the first hold (no second badge)');
+  assert.equal(holdLifted(h, { method: 'cli', signedIn: true }), false, 'a status check that already said "signed in" proves nothing');
+  assert.equal(holdLifted(makeHold(p, { signedIn: false }), { method: 'cli', signedIn: true }), true, 'signing in lifts it');
+  const k = makeHold(authProblem({ kind: 'auth', message: 'bad' }, { method: 'api' }), { hasKey: true });
+  assert.equal(holdLifted(k, { method: 'api', hasKey: true }), false, 'same saved key: stays rejected after refresh');
+  assert.equal(holdLifted(k, { method: 'api', hasKey: false }), true);
+});
+
+test('reviewers are told how to sign off and who reviews each task', () => {
+  assert.match(chatRules('xai', 'anthropic'), /APPROVE: T-<task id>/);
+  assert.match(chatRules('xai', 'anthropic'), /CHANGES: T-<task id>/);
+  assert.match(buildPrompt('xai', [], { board: [{ id: 'ABC123', title: 'T', stage: 'Review', assignee: 'anthropic', reviewer: 'xai', queue: 'next up' }] }), /T-ABC123 .*reviewer Grok.*next up/);
+});

@@ -59,3 +59,19 @@ test('missing key and freebuff are refused without a network call', async () => 
   assert.equal((await callProvider({ ...base, apiKey: null, provider: 'openai', fetchImpl })).error.kind, 'no_key');
   assert.equal((await callProvider({ ...base, provider: 'freebuff', fetchImpl })).error.kind, 'unsupported');
 });
+
+const { testKey } = require('../electron/providers.cjs');
+test('API key Test sends one tiny prompt and never returns provider text', async () => {
+  let sent;
+  const good = await testKey({ ...base, provider: 'mistral', fetchImpl: async (_u, init) => { sent = JSON.parse(init.body); return res(200, { choices: [{ message: { content: base.apiKey } }] }); } });
+  assert.deepStrictEqual(good, { ok: true });
+  assert.deepStrictEqual(sent.messages, [{ role: 'user', content: 'Hi' }]);
+  const bad = await testKey({ ...base, provider: 'mistral', fetchImpl: async () => res(401, { error: { message: base.apiKey } }) });
+  assert.equal(bad.ok, false);
+  assert.equal(bad.error.kind, 'auth');
+  assert.match(bad.error.message, /rejected this key/);
+  assert.ok(!JSON.stringify(bad).includes(base.apiKey));
+  let called = false;
+  assert.equal((await testKey({ ...base, provider: 'mistral', apiKey: null, fetchImpl: async () => { called = true; } })).error.kind, 'no_key');
+  assert.equal(called, false);
+});

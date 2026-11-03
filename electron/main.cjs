@@ -6,12 +6,14 @@ const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
 const { validateState, validateProvider, validateApiKey, validateModel, validatePrompt } = require('./validate.cjs');
-const { callProvider, DEFAULT_MODELS } = require('./providers.cjs');
+const { testKey, callProvider, DEFAULT_MODELS } = require('./providers.cjs');
 const { createSecretStore } = require('./secrets.cjs');
 const { createUpdater } = require('./updater.cjs');
 const agents = require('./agents.cjs');
 const workspace = require('./workspace.cjs');
 const gitops = require('./git.cjs');
+const attachments = require('./attachments.cjs');
+const { pathToFileURL } = require('node:url');
 const { createStore, redact, redactDeep } = require('./store.cjs');
 const bridge = require('./bridge.cjs');
 const imports = require('./imports.cjs');
@@ -59,6 +61,10 @@ function readSettings() {
     chatEdits: s.chatEdits !== false,
     // Keep one CLI session per AI for the team chat, so it's resumable in that AI's own CLI.
     chatResume: s.chatResume !== false,
+    // The lead AI may take the owner's Task board actions. Off unless the owner turns it on.
+    leadActions: s.leadActions === true,
+    // Lead handles GitHub (pull, combine, push branches). Off until the owner turns it on.
+    leadGitHub: s.leadGitHub === true,
     theme: THEMES.includes(s.theme) ? s.theme : 'hearth',
   };
 }
@@ -206,6 +212,10 @@ function registerIpc() {
     return true;
   });
 
+  handle('providers:test', (provider, model) => {
+    const p = validateProvider(provider, { liveOnly: true });
+    return testKey({ provider: p, apiKey: secrets.get(p), model: validateModel(model || DEFAULT_MODELS[p]), timeoutMs: 30000 });
+  });
   handle('providers:ask', async (provider, model, prompt) => {
     const p = validateProvider(provider);
     if (p === 'freebuff') {
@@ -262,6 +272,8 @@ function registerIpc() {
     if ('autoPush' in patch) s.autoPush = Boolean(patch.autoPush);
     if ('chatEdits' in patch) s.chatEdits = Boolean(patch.chatEdits);
     if ('chatResume' in patch) s.chatResume = Boolean(patch.chatResume);
+    if ('leadActions' in patch) s.leadActions = patch.leadActions === true;
+    if ('leadGitHub' in patch) s.leadGitHub = patch.leadGitHub === true;
     if ('theme' in patch && THEMES.includes(patch.theme)) s.theme = patch.theme;
     writeSettings(s);
     return s;
@@ -382,6 +394,8 @@ function registerIpc() {
       signal: controller.signal,
       bin: s.bins[agent],
       extraDirs: s.extraDirs,
+      // Only files from the app's attachments folder are ever passed to a tool.
+      images: (Array.isArray(opts.images) ? opts.images : []).filter((f) => typeof f === 'string' && attachments.inside(f, [attachments.attachDir(worktreeRoot())])).slice(0, 8),
     };
     try {
       const resumeId = typeof opts.resumeId === 'string' ? opts.resumeId : null;
@@ -468,6 +482,37 @@ function registerIpc() {
     taskDir(taskId);
     return workspace.ensureWorktree({ project: s.project, root: worktreeRoot(), taskId, title: String(title).slice(0, 200) });
   });
+  handle('workspace:head', (taskId) => workspace.head(taskDir(taskId)));
+  // ---- chat attachments (images / videos) ----
+  const withFrames = async (r) => {
+    if (!r.ok) return r;
+    const att = { ...r.att, url: pathToFileURL(r.att.path).href };
+    if (att.kind === 'video') {
+      const f = await attachments.extractFrames(att.path, { ffmpeg: gitops.find('ffmpeg'), count: 4 });
+      Object.assign(att, { frames: f.frames, duration: f.duration, note: f.note });
+    }
+    return { ok: true, att };
+  };
+  handle('attach:save', (name, data) => withFrames(attachments.saveBuffer(worktreeRoot(), String(name || ''), Buffer.from(data instanceof ArrayBuffer ? new Uint8Array(data) : data || []))));
+  handle('attach:pick', async () => {
+    const r = await dialog.showOpenDialog(mainWindow, { title: 'Attach images or videos', properties: ['openFile', 'multiSelections'], filters: [{ name: 'Images and videos', extensions: Object.keys(attachments.TYPES) }] });
+    if (r.canceled) return [];
+    const out = [];
+    for (const f of r.filePaths.slice(0, 10)) out.push(await withFrames(attachments.saveFromPath(worktreeRoot(), f)));
+    return out;
+  });
+  // An AI's ATTACH line: relative to its workspace; only files inside the project,
+  // the task workspaces or the attachments folder.
+  handle('attach:fromAgent', (rel, baseTaskId) => {
+    const s = readSettings();
+    let base = s.project;
+    try { if (baseTaskId && fs.existsSync(taskDir(String(baseTaskId)))) base = taskDir(String(baseTaskId)); } catch {}
+    if (!base) return { ok: false, message: 'No workspace.' };
+    // Only a plain relative path inside the workspace: no absolute paths, no "..".
+    const where = attachments.agentPath(base, rel);
+    if (!where.ok) return where;
+    return withFrames(attachments.saveFromPath(worktreeRoot(), where.file, { roots: [s.project, worktreeRoot()] }));
+  });
   handle('workspace:checkpoint', (taskId, author, message) =>
     workspace.checkpoint(taskDir(taskId), { author: String(author).slice(0, 40), message: String(message).slice(0, 300) }));
   handle('workspace:summary', (taskId, baseSha) => {
@@ -525,11 +570,21 @@ function registerIpc() {
     return gitops.pushBranch(s.project, String(branch));
   });
   // Only called from the Approve flow in the UI (owner click).
-  handle('git:mergeApproved', async (taskId) => {
+  handle('git:mergeApproved', async (taskId, opts = {}) => {
     const s = readSettings();
     const dir = taskDir(taskId);
     if (!s.project || !fs.existsSync(dir)) return { ok: false, message: 'This task has no workspace to merge.' };
     const branch = (await workspace.git(dir, ['branch', '--show-current'])).out;
+    // Only the approved commit is merged: the task branch must still be exactly there.
+    const sha = typeof opts?.sha === 'string' ? opts.sha : null;
+    if (sha !== null && (await workspace.git(dir, ['rev-parse', 'HEAD'])).out !== sha) return { ok: false, message: 'The task branch changed after it was approved. Nothing was merged; review it again.' };
+    // The lead's approval (only while the owner's switch is on, checked here) is the same
+    // single Approve-to-merge step, without the owner's confirmation box. Never a release.
+    if (opts?.byLead === true) {
+      if (s.leadActions !== true) return { ok: false, message: 'The lead switch is off.' };
+      if (!sha) return { ok: false, message: 'No approved commit recorded; the lead cannot merge it.' };
+      return gitops.mergeApproved(s.project, branch, sha);
+    }
     const confirm = dialog.showMessageBoxSync(mainWindow, {
       type: 'warning',
       message: `Merge ${branch} into the main branch and push it to GitHub?`,
@@ -539,7 +594,55 @@ function registerIpc() {
       cancelId: 1,
     });
     if (confirm !== 0) return { ok: false, message: 'Cancelled.' };
-    return gitops.mergeApproved(s.project, branch);
+    return gitops.mergeApproved(s.project, branch, sha);
+  });
+  // The lead as integrator: fetch, push task/release branches, merge an approved task
+  // onto the release branch. Uses your own git/gh sign-in; never main, tags or releases.
+  handle('git:leadSync', async (op, arg) => {
+    const s = readSettings();
+    if (!s.project) return { ok: false, message: 'Pick a project first.' };
+    // Checked here, not trusted from the page: only while the owner's toggle is on.
+    if (s.leadGitHub !== true) return { ok: false, message: 'Lead handles GitHub is off.' };
+    if (op === 'fetch') return gitops.leadFetch(s.project);
+    const dir = taskDir(String(arg || ''));
+    if (!fs.existsSync(dir)) return { ok: false, message: 'This task has no workspace.' };
+    const branch = (await workspace.git(dir, ['branch', '--show-current'])).out;
+    if (op === 'push') return gitops.leadPush(s.project, branch);
+    if (op === 'integrate') return gitops.integrateIntoRelease(s.project, 'release/next', branch);
+    return { ok: false, message: gitops.leadGitAllowed(String(op)).reason };
+  });
+  // Bring a task branch up to date with main (inside its worktree; main is untouched).
+  handle('git:updateFromMain', async (taskId) => {
+    const s = readSettings();
+    const dir = taskDir(taskId);
+    if (!s.project || !fs.existsSync(dir)) return { ok: false, message: 'This task has no workspace.' };
+    return gitops.updateFromMain(s.project, dir);
+  });
+  // Combine several approved task branches into one release branch (never main).
+  // The name is a date stamp: version numbers are always the owner's to choose.
+  handle('git:releaseBranch', async (taskIds) => {
+    const s = readSettings();
+    if (!s.project) return { ok: false, message: 'Pick a project first.' };
+    // Each entry: { id, sha } with the approved commit. Workspaces with unsaved changes or
+    // that moved past their approval are refused (nothing is snapshotted for you).
+    const branches = [];
+    const problems = [];
+    for (const e of (Array.isArray(taskIds) ? taskIds : []).slice(0, 30)) {
+      const id = String(e && typeof e === 'object' ? e.id : e);
+      const sha = e && typeof e === 'object' && typeof e.sha === 'string' ? e.sha : null;
+      const dir = taskDir(id);
+      if (!fs.existsSync(dir)) continue;
+      if ((await workspace.git(dir, ['status', '--porcelain'])).out) { problems.push(`T-${id} has unsaved changes`); continue; }
+      const head = (await workspace.git(dir, ['rev-parse', 'HEAD'])).out;
+      if (sha && head !== sha) { problems.push(`T-${id} changed after it was approved`); continue; }
+      const b = (await workspace.git(dir, ['branch', '--show-current'])).out;
+      if (b) branches.push(sha ? { branch: b, sha } : b);
+    }
+    if (problems.length) return { ok: false, message: `Not combined: ${problems.join('; ')}. Nothing was changed.` };
+    const d = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    const name = `release/tasks-${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+    return gitops.releaseBranch(s.project, name, branches);
   });
   handle('git:openPr', async (taskId, title, body) => {
     const s = readSettings();
@@ -561,10 +664,16 @@ function registerIpc() {
     return gitops.prView(s.project, branch);
   });
   // Only from the owner's Approve click; a native confirmation is the last gate.
-  handle('git:prMerge', async (number) => {
+  handle('git:prMerge', async (number, opts = {}) => {
     const s = readSettings();
     if (!s.project) return { ok: false, message: 'Pick a project first.' };
     const n = Number(number);
+    const sha = typeof opts?.sha === 'string' ? opts.sha : null;
+    if (opts?.byLead === true) {
+      if (s.leadActions !== true) return { ok: false, message: 'The lead switch is off.' };
+      if (!sha) return { ok: false, message: 'No approved commit recorded; the lead cannot merge it.' };
+      return gitops.prMerge(s.project, n, sha);
+    }
     const confirm = dialog.showMessageBoxSync(mainWindow, {
       type: 'warning',
       message: `Merge pull request #${n} on GitHub?`,
@@ -574,7 +683,7 @@ function registerIpc() {
       cancelId: 1,
     });
     if (confirm !== 0) return { ok: false, message: 'Cancelled.' };
-    return gitops.prMerge(s.project, n);
+    return gitops.prMerge(s.project, n, sha);
   });
   // Releases: separate explicit approval, version typed by the owner twice.
   handle('git:release', async (o) => {

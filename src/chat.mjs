@@ -1,6 +1,8 @@
 // Team chat helpers (pure, unit tested).
 import { AGENTS, AGENT_IDS, DEFAULT_ROLES, EDITORS, aliasOf } from './registry.mjs';
 import { hearthFacts } from './hearth.mjs';
+import { leadRules } from './lead.mjs';
+import { ATTACH_RULE } from './media.mjs';
 
 export const NAMES = { owner: 'Owner', system: 'System', ...Object.fromEntries(AGENT_IDS.map((a) => [a, AGENTS[a].name])) };
 const ACTIONS = ['code', 'docs', 'merge', 'release', 'deploy'];
@@ -40,7 +42,9 @@ export function teamContext({ agent, roster = [], lead = 'anthropic', board = []
     'ABOUT THE HEARTH AI COMMAND CENTER (facts, not suggestions):',
     '- It is a desktop app (Electron, Linux AppImage) on the Owner\'s own computer. It coordinates several AIs on the Owner\'s software projects, mainly Hearth OS.',
     `- Shared project folder (a git repo): ${project || 'not chosen yet'}.`,
-    chatEdits
+    agent === 'ollama'
+      ? '- You are the local model. You only see the text in this prompt and have NO tools: you cannot open files, run commands, use git, browse, change Settings or start tasks, whatever is enabled for the others. You can discuss, plan and review text that is pasted here.'
+      : chatEdits
       ? '- In this chat you can do everything you normally can in your own app: read and edit files, run commands, use git and search or read websites (with your own built-in safety checks). Your current directory is the team chat\'s own git branch/worktree of the project, so your edits never touch the main branch directly. After every reply the Command Center commits your changes as a checkpoint.'
       : '- In this chat you can read the project (your current directory) and search the web, but not change files.',
     `- Folders on the Owner\'s computer you may also use: ${extraDirs.length ? extraDirs.join(', ') : 'none granted yet (the Owner can add some in Settings)'}.`,
@@ -53,14 +57,14 @@ export function teamContext({ agent, roster = [], lead = 'anthropic', board = []
     ...roster.map((r) => `- ${NAMES[r.id]}${r.id === agent ? ' (you)' : ''}${r.id === lead ? ' [LEAD]' : ''}: ${roleOf(r)} — ${r.status}`),
     '',
     board.length ? 'OPEN TASKS ON THE BOARD:' : 'The task board is empty.',
-    ...board.slice(0, 15).map((t) => `- T-${t.id} "${t.title}" — ${t.stage}, implementer ${NAMES[t.assignee] || 'none'}${t.state ? `, ${t.state}` : ''}`),
+    ...board.slice(0, 15).map((t) => `- T-${t.id} "${t.title}" — ${t.stage}, implementer ${NAMES[t.assignee] || 'none'}${t.reviewer && t.reviewer !== 'none' ? `, reviewer ${NAMES[t.reviewer] || t.reviewer}` : ''}${t.state ? `, ${t.state}` : ''}${t.queue ? `, ${t.queue}` : ''}`),
     pending.length ? '\nPERMISSION REQUESTS WAITING FOR THE OWNER:' : '',
     ...pending.map((p) => `- R-${p.id} by ${NAMES[p.agent]}: ${PERMISSION_KINDS[p.kind] || p.kind} — ${p.what}`),
   ].filter((l) => l !== '').join('\n');
 }
 
 // The chat-room rules every AI gets (how to post, edit, hand off and ask).
-export function chatRules(agent, lead) {
+export function chatRules(agent, lead, { leadActions = false } = {}) {
   const editors = EDITORS.map((a) => AGENTS[a].mention[0]).join('|');
   return [
     'HOW TO BEHAVE:',
@@ -68,15 +72,19 @@ export function chatRules(agent, lead) {
       ? '- You are the LEAD: when the Owner asks for work, break it down and assign it to the best-suited teammates by their roles. Keep the plan short.'
       : `- ${NAMES[lead]} is the lead. Build on the lead's plan and the other replies instead of repeating them; disagree when you have a reason.`,
     '- Be concise. Do not ask the Owner for facts that are stated above. If you have nothing useful to add, reply with exactly: PASS',
+    ...(agent === 'ollama' ? LOCAL_RULES : []),
     '- Mention a teammate with @name (e.g. @gemini) to ask them something; they will answer after you.',
     '- To put work on the board, write one line per task in exactly this format (the Owner gets Add / Add & start buttons):',
     `TASK: <title> | implementer: ${editors} | reviewer: ${editors}|local | action: code|docs|merge|release|deploy`,
     '- The reviewer must differ from the implementer. The local AI cannot implement (it can only review).',
+    '- If you are the assigned REVIEWER of a task: when it is ready for the Owner write APPROVE: T-<task id> <short note>; to send it back write CHANGES: T-<task id> <what must be fixed>. Only the assigned reviewer counts, and APPROVE only moves it to Owner approval.',
+    ...(agent === 'ollama' ? [] : [ATTACH_RULE]),
     '- To fix one of YOUR OWN earlier messages, write a line: EDIT #<message id>: <the corrected full text>',
     '- To take back one of YOUR OWN earlier messages, write a line: RETRACT #<message id>',
     '- To hand the conversation to a teammate, write a line: HANDOFF: @<name> <what they should do>',
     `- BEFORE any risky action (${Object.keys(PERMISSION_KINDS).filter((k) => k !== 'other').join(', ')} — i.e. pushing, merging, releasing, deleting files, boot-critical changes, running commands outside the workspace) you MUST ask the Owner and stop until they answer. Write one line: ASK: <push|merge|release|delete|boot|outside|command|other> | <exactly what you want to do> | <why>`,
     '- After an ASK line, do NOT do that action in this reply. The Owner answers Approve / Deny / Ask why; you will be told the answer.',
+    ...(leadActions && agent === lead ? [leadRules(lead)] : []),
   ].join('\n');
 }
 
@@ -87,7 +95,7 @@ export function buildPrompt(agent, messages, ctx = {}) {
     `You are ${NAMES[agent]} in the Hearth AI Command Center team chat with the Owner and the other AIs. Everyone sees every message. Messages show their id like [#AB12CD].`,
     teamContext({ ...ctx, agent }),
     '',
-    chatRules(agent, lead),
+    chatRules(agent, lead, { leadActions: ctx.leadActions === true }),
     '',
     '--- Chat so far ---',
     ...lines,
@@ -101,6 +109,8 @@ export function buildDelta(agent, newMessages, ctx = {}) {
   const lines = transcript(newMessages, MAX_TRANSCRIPT_CHARS);
   return [
     `(Hearth AI Command Center team chat — continuing. You are ${NAMES[agent]}. Same rules as before; red-flag rules still apply.)`,
+    ...(agent === 'ollama' ? LOCAL_RULES : []),
+    ctx.leadActions === true && agent === (ctx.lead || 'anthropic') ? leadRules(agent) : '',
     ctx.pending?.length ? `Waiting for the Owner: ${ctx.pending.map((p) => `R-${p.id} (${NAMES[p.agent]}: ${p.what})`).join('; ')}` : '',
     '--- New messages since your last turn ---',
     ...(lines.length ? lines : ['(none)']),
@@ -230,4 +240,38 @@ export function decideRequest(list, id, decision, at = new Date().toISOString())
 // AIs with an unanswered request are blocked until the owner answers.
 export function blockedAgents(list = []) {
   return [...new Set(list.filter((r) => r.status === 'pending').map((r) => r.agent))];
+}
+
+// Extra rules for the local model, which has no tools and tends to echo the room.
+export const LOCAL_RULES = [
+  '- Speak only for yourself, the local model. Never repeat, reword or continue what a teammate already said, and never write lines for the Owner or another AI. If your point is already made, reply PASS.',
+  '- Never say you did, checked, cloned, ran, tested, pushed or started anything, and never promise to: you have no tools. When something needs doing, name the teammate who can do it, as a suggestion.',
+  '- When you mention what a teammate reported, say it is their report (e.g. "Claude says the tests pass"), not something you saw.',
+];
+
+// ---- quiet sign-in problems ----
+// A turn that failed because the AI is not signed in or its key is missing/refused is
+// a status, not a chat line: the app records a "sign-in hold" once and shows a badge.
+export const HOLD_BADGES = ['needs sign-in', 'needs API key', 'API key rejected'];
+
+export function authProblem(error, { method = 'cli' } = {}) {
+  if (!error || typeof error !== 'object') return null;
+  const kind = String(error.kind || '');
+  const message = String(error.message || '').slice(0, 300);
+  if (kind === 'no_key') return { badge: 'needs API key', message };
+  if (kind === 'auth') return { badge: method === 'api' ? 'API key rejected' : /api key/i.test(message) ? 'needs API key' : 'needs sign-in', message };
+  if (/not signed in|not logged in|not eligible|sign[- ]?in required/i.test(message) && ['failed', 'error'].includes(kind)) return { badge: 'needs sign-in', message };
+  return null;
+}
+
+// The hold remembers what the status checks said when the run failed, so a later
+// refresh only lifts it when sign-in or the key really changed.
+export function makeHold(problem, { signedIn = false, hasKey = false, at = null } = {}, prev = null) {
+  if (prev && prev.badge === problem.badge) return prev;
+  return { badge: problem.badge, message: problem.message || '', at, signedIn: Boolean(signedIn), hasKey: Boolean(hasKey) };
+}
+
+export function holdLifted(hold, { method = 'cli', signedIn = false, hasKey = false } = {}) {
+  if (!hold) return true;
+  return method === 'api' ? Boolean(hasKey) !== hold.hasKey : Boolean(signedIn) !== hold.signedIn;
 }
