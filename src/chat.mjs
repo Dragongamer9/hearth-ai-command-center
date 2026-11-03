@@ -45,6 +45,7 @@ export function teamContext({ agent, roster = [], lead = 'anthropic', board = []
       : '- In this chat you can read the project (your current directory) and search the web, but not change files.',
     `- Folders on the Owner\'s computer you may also use: ${extraDirs.length ? extraDirs.join(', ') : 'none granted yet (the Owner can add some in Settings)'}.`,
     '- Bigger work goes in TASKS: each task gets its own git branch and worktree, every run is checkpointed, and another AI can continue if one runs out of usage.',
+    '- Each AI works through its own task queue one at a time. When an AI runs out of usage, the task it was on continues with the next free AI of the same kind of role (coding, research or review), and tasks still waiting in its queue move to free AIs with that role.',
     '- Merging into the main branch and releases only happen when the Owner presses Approve in the app (a release also needs the version typed by the Owner). Never push to main/master yourself. Never claim something was pushed or done unless it really was (a checkpoint commit shows it).',
     '- Every conversation is saved in the app\'s history and in your own CLI\'s session list, so the Owner can resume it later in your own app.',
     hearthFacts(),
@@ -53,7 +54,7 @@ export function teamContext({ agent, roster = [], lead = 'anthropic', board = []
     ...roster.map((r) => `- ${NAMES[r.id]}${r.id === agent ? ' (you)' : ''}${r.id === lead ? ' [LEAD]' : ''}: ${roleOf(r)} — ${r.status}`),
     '',
     board.length ? 'OPEN TASKS ON THE BOARD:' : 'The task board is empty.',
-    ...board.slice(0, 15).map((t) => `- T-${t.id} "${t.title}" — ${t.stage}, implementer ${NAMES[t.assignee] || 'none'}${t.state ? `, ${t.state}` : ''}`),
+    ...board.slice(0, 15).map((t) => `- T-${t.id} "${t.title}" — ${t.stage}, implementer ${NAMES[t.assignee] || 'none'}${t.state ? `, ${t.state}` : ''}${t.queue ? `, queue ${t.queue}` : ''}`),
     pending.length ? '\nPERMISSION REQUESTS WAITING FOR THE OWNER:' : '',
     ...pending.map((p) => `- R-${p.id} by ${NAMES[p.agent]}: ${PERMISSION_KINDS[p.kind] || p.kind} — ${p.what}`),
   ].filter((l) => l !== '').join('\n');

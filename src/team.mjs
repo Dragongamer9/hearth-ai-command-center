@@ -10,6 +10,141 @@ export function nextAgent(available, exclude = [], lead = 'anthropic') {
   return order.find((a) => EDITORS.includes(a) && available.includes(a) && !exclude.includes(a)) || null;
 }
 
+// Kinds of work, read from the role text on the Agents page (the defaults or
+// whatever the owner typed). Matching stays on those words.
+const ROLE_TESTS = [
+  ['code', /\b(cod(?:e|ing)|implement(?:ation|ing|er)?|debug(?:ging)?|fix(?:es)?)\b/i],
+  ['research', /\b(research|documents?|docs|fact-?check(?:ing)?|screenshots?)\b/i],
+  ['review', /\b(reviews?|reviewing|second opinions?|reasoning)\b/i],
+  ['lead', /\b(leads?|coordinator)\b/i],
+];
+
+const ROLE_LABEL = { code: 'coding', research: 'research', review: 'review', lead: 'lead' };
+
+export function roleKinds(text) {
+  return ROLE_TESTS.filter(([, re]) => re.test(String(text || ''))).map(([kind]) => kind);
+}
+
+export function roleLabel(kind) {
+  return ROLE_LABEL[kind] || String(kind || '');
+}
+
+// What a queued task needs. Merges, releases and deploys stay with the owner.
+export function taskNeeds(task) {
+  if (!task || ['merge', 'release', 'deploy'].includes(task.action)) return null;
+  if (task.stage === 'review') return 'review';
+  if (task.action === 'docs') return 'research';
+  return 'code';
+}
+
+const QUEUE_STAGES = new Set(['intake', 'implementing']);
+
+// Tasks an AI will actually work: open, policy-clear, file-editing, not waiting on the owner.
+export function isQueued(task) {
+  if (!task || task.policy?.ok !== true) return false;
+  if (!QUEUE_STAGES.has(task.stage)) return false;
+  if (!task.assignee || task.assignee === 'none') return false;
+  if (!EDITORS.includes(task.assignee)) return false;
+  return taskNeeds(task) != null;
+}
+
+// One AI's queue, oldest first. queuedAt (set when a task is moved) wins over createdAt
+// so a handoff lands where it was placed instead of jumping by its original date.
+export function agentQueue(tasks, agent) {
+  return (tasks || [])
+    .filter((t) => t.assignee === agent && isQueued(t))
+    .slice()
+    .sort((a, b) => {
+      const ka = String(a.queuedAt || a.createdAt || '');
+      const kb = String(b.queuedAt || b.createdAt || '');
+      if (ka < kb) return -1;
+      if (ka > kb) return 1;
+      return String(a.id).localeCompare(String(b.id));
+    });
+}
+
+// The task to start on its own: a usage handoff parked with resumeNext, otherwise
+// the front of the queue if it has never been started. An unfinished task in front
+// stays put until the owner presses Continue — the ones behind it wait.
+export function nextAutoTask(tasks, agent) {
+  const q = agentQueue(tasks, agent);
+  const parked = q.find((t) => t.resumeNext);
+  if (parked) return parked;
+  const first = q[0];
+  if (!first) return null;
+  const started = (first.runs || []).some((r) => r.status && r.status !== 'running');
+  return started ? null : first;
+}
+
+function ranked(available, { need, roles = {}, exclude = [], editors = EDITORS, lead = 'anthropic' } = {}) {
+  const pool = editors.filter((a) => available.includes(a) && !exclude.includes(a));
+  const matched = need ? pool.filter((a) => roleKinds(roles[a] || '').includes(need)) : [];
+  const roleMatched = matched.length > 0;
+  const base = roleMatched ? matched : pool;
+  return base.slice().sort((a, b) => {
+    const aLead = a === lead;
+    const bLead = b === lead;
+    if (aLead !== bLead) {
+      if (roleMatched) return aLead ? 1 : -1;
+      return aLead ? -1 : 1;
+    }
+    return editors.indexOf(a) - editors.indexOf(b);
+  });
+}
+
+// Next free file-editing AI for this kind of work. A role match beats the lead.
+// With no match, same order as nextAgent: the lead, then the other editors.
+export function nextForRole(available, opts = {}) {
+  return ranked(available, opts)[0] || null;
+}
+
+// When `agent` runs out of usage, every task still waiting (not the one in
+// progress) moves to the next free AI whose role matches. Several free matches
+// share the tasks, so each of them still works one queue. Never the reviewer.
+// Does not mutate tasks.
+export function reassignWaiting({ tasks, agent, available, roles = {}, currentId = null, editors = EDITORS, lead = 'anthropic' } = {}) {
+  const waiting = agentQueue(tasks, agent).filter((t) => t.id !== currentId);
+  const load = {};
+  const moves = [];
+  for (const task of waiting) {
+    const need = taskNeeds(task);
+    if (!need) continue;
+    const exclude = [agent];
+    if (task.reviewer && task.reviewer !== 'none') exclude.push(task.reviewer);
+    const order = ranked(available, { need, roles, exclude, editors, lead });
+    if (!order.length) continue;
+    const to = order.slice().sort((a, b) => ((load[a] || 0) - (load[b] || 0)) || (order.indexOf(a) - order.indexOf(b)))[0];
+    load[to] = (load[to] || 0) + 1;
+    moves.push({ id: task.id, from: agent, to, need });
+  }
+  return moves;
+}
+
+function stamp(tasks, agent, at, end) {
+  let mark = '';
+  for (const t of agentQueue(tasks, agent)) {
+    const k = String(t.queuedAt || t.createdAt || '');
+    if (!k) continue;
+    if (!mark || (end ? k > mark : k < mark)) mark = k;
+  }
+  if (!mark) return at;
+  const ms = Date.parse(mark);
+  if (Number.isNaN(ms)) return at;
+  const next = new Date(ms + (end ? 1 : -1)).toISOString();
+  if (end) return next > at ? next : at;
+  return next;
+}
+
+// Place a moved task after everything the recipient already has.
+export function queuedAtEnd(tasks, agent, at) {
+  return stamp(tasks, agent, at, true);
+}
+
+// Place an in-progress handoff ahead of the recipient's queue.
+export function queuedAtFront(tasks, agent, at) {
+  return stamp(tasks, agent, at, false);
+}
+
 // "STATUS: DONE" / "STATUS: CONTINUE ..." line the agent ends with.
 export function parseStatus(text) {
   const m = String(text || '').match(/STATUS:\s*(DONE|CONTINUE)/i);

@@ -43,7 +43,7 @@ Then pick a **shared project folder** (any git repo) in Settings.
 ## Using it
 - **Team chat:** everyone sees every message; Claude leads and answers first. `@claude` / `@chatgpt` / `@gemini` / `@local` talks to one AI. Ask them to split up work and their `TASK:` proposals become one-click *Add to board* cards. FreeBuff can't reply on its own, so paste what it says with *Post as FreeBuff*.
 - **Tasks:** *Start with Claude/ChatGPT* runs the agent in that task's own git branch and working copy. Every run is committed as a checkpoint. *Hand off to…* or *Continue in FreeBuff* lets another agent continue from the same files.
-- **Out of usage:** the task is checkpointed and handed to the next free agent automatically.
+- **Task queue:** each AI works its tasks one after another. When one runs out of usage, the task it was on is checkpointed and continued by the next free AI with the same kind of role, and tasks still waiting in its queue move the same way.
 - **AIs work like in their own apps:** in chat and tasks they can edit files, run commands, use git and the web, with each tool's own safety checks. Full access is an opt-in.
 - **GitHub:** connect with GitHub's own sign-in. You can pull, clone and push, and every checkpoint is backed up to its own branch.
 - **Approvals:** `main` only changes when you click **Approve & merge into main**.

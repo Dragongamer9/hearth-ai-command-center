@@ -48,7 +48,7 @@ The Control Room (Agents page) shows for each AI:
 - how it's paid for
 - whether it's out of usage
 
-When an AI hits its usage limit, it's marked *Out of usage*. Its task is saved and handed to the next free AI, starting with the lead.
+When an AI hits its usage limit, it's marked *Out of usage*. The task it was on is saved and handed to the next free AI with the same kind of role (coding, research, or review). Tasks still waiting in its queue move the same way. The lead is the fallback when nobody else has that role.
 
 ## Sources
 - Anthropic: https://code.claude.com/docs/en/legal-and-compliance

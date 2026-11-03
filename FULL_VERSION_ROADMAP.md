@@ -22,5 +22,5 @@
 ## Not yet
 - FreeBuff can't be driven automatically (no non-interactive mode found), so its work is hands-on in a terminal.
 - No GitHub PR/CI tracking; approved merges/releases/deploys are recorded, not executed.
-- Agents run one task at a time each; no queue or scheduler yet.
+- Each AI works its own queue one task at a time (the next starts when the current one is done). There is no clock or calendar scheduler.
 - Out-of-usage reset time is estimated (1 h) unless the provider states it.

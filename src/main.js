@@ -1,7 +1,7 @@
 import './styles.css';
 import { policyCheck } from './policy.mjs';
 import { recipients, buildPrompt, buildDelta, parseProposals, parseDirectives, applyEdit, applyRetract, makeRequest, decideRequest, blockedAgents, mentions, NAMES, PERMISSION_KINDS } from './chat.mjs';
-import { buildTaskBrief, nextAgent, parseStatus, taskRunState, recoverInterrupted, RUN_STATES } from './team.mjs';
+import { buildTaskBrief, nextAgent, nextForRole, nextAutoTask, agentQueue, isQueued, reassignWaiting, queuedAtEnd, queuedAtFront, roleLabel, taskNeeds, parseStatus, taskRunState, recoverInterrupted, RUN_STATES } from './team.mjs';
 import { AGENTS, AGENT_IDS, WEB_ONLY, HEADLESS, EDITORS, API_CAPABLE, DEFAULT_ROLES, BILLING, ACCESS_NOTE, OLLAMA_NOTE } from './registry.mjs';
 import { HEARTH_OS, RED_FLAGS } from './hearth.mjs';
 import { tokensToCss, pickMode } from './theme.mjs';
@@ -42,7 +42,7 @@ const MAX_HOPS = 6;
 
 // ---------- state ----------
 let state = { version: 1, tasks: [], audit: [], models: {}, chat: [], agentStatus: {}, autoHandoff: true, roles: {}, lead: 'anthropic', disabled: {}, permissions: [], chatSessions: {} };
-let ui = { view: 'overview', selected: null, modal: null, busy: {}, draft: '', target: 'all', typing: null, running: {}, saving: {}, changes: {}, expanded: null, side: 'anthropic', signin: {}, installOllama: false, editing: null, showHist: {}, hist: { q: '', provider: 'all', source: 'all', list: [], sel: null, stats: null, kind: 'auto', scanning: false }, prs: { list: [], loaded: false, msg: '', byTask: {} }, release: { version: '', confirm: '', target: '', notes: '', draft: true } };
+let ui = { view: 'overview', selected: null, modal: null, busy: {}, draft: '', target: 'all', typing: null, running: {}, saving: {}, changes: {}, expanded: null, side: 'anthropic', signin: {}, installOllama: false, editing: null, showHist: {}, kick: {}, hist: { q: '', provider: 'all', source: 'all', list: [], sel: null, stats: null, kind: 'auto', scanning: false }, prs: { list: [], loaded: false, msg: '', byTask: {} }, release: { version: '', confirm: '', target: '', notes: '', draft: true } };
 let backups = { recoveredFrom: null, backups: [] };
 let settings = { project: null, projects: [], connection: { anthropic: 'cli', openai: 'cli', xai: 'cli', mistral: 'cli', perplexity: 'api', deepseek: 'api' }, bins: {}, access: 'standard', extraDirs: [], autoPush: true, chatEdits: true, chatResume: true, theme: 'hearth' };
 let gh = { git: null, gh: null, ghUser: null };
@@ -156,6 +156,25 @@ function statusOf(a) {
 const statusText = (a) => statusOf(a).text;
 const statusBadge = (a) => { const s = statusOf(a); return `<span class="badge ${s.cls}">${s.live ? '<span class="dot pulse"></span>' : ''}${esc(s.text)}</span>`; };
 
+function queueLine(t) {
+  const q = agentQueue(state.tasks, t.assignee);
+  const n = q.findIndex((x) => x.id === t.id) + 1;
+  if (n < 1 || q.length < 2) return '';
+  return `<span class="k">Queue</span><span>${n} of ${q.length} for ${esc(AGENTS[t.assignee].name)} — one at a time</span>`;
+}
+
+function queueBadge(t) {
+  if (ui.running[t.id]) return '';
+  if (t.resumeNext) return '<span class="badge accent" title="This AI will take it when they finish their current task">Next up</span>';
+  if (!isQueued(t)) return '';
+  const q = agentQueue(state.tasks, t.assignee);
+  if (q.length < 2) return '';
+  const n = q.findIndex((x) => x.id === t.id) + 1;
+  if (n < 1) return '';
+  const label = n === 1 ? 'Next in queue' : `Queued ${n} of ${q.length}`;
+  return `<span class="badge" title="${esc(AGENTS[t.assignee]?.name || '')} works one task at a time">${label}</span>`;
+}
+
 function runBadge(t) {
   const st = taskRunState(t, { running: Boolean(ui.running[t.id]), saving: Boolean(ui.saving?.[t.id]) });
   if (!st) return '';
@@ -199,13 +218,14 @@ function viewOverview() {
           const b = busyOn(a);
           const t = b ? state.tasks.find((x) => x.id === b[0]) : null;
           const assigned = state.tasks.filter((x) => x.assignee === a && !['approved', 'rejected'].includes(x.stage)).length;
+          const q = agentQueue(state.tasks, a);
           const last = [...state.chat].reverse().find((m) => m.who === a);
-          const what = t ? `T-${t.id} ${t.title}` : ui.typing === a ? 'replying in team chat' : last ? `said: ${last.text.replace(/\s+/g, ' ').slice(0, 80)}` : assigned ? `${assigned} task${assigned > 1 ? 's' : ''} assigned` : 'idle';
+          const what = t ? `T-${t.id} ${t.title}` : ui.typing === a ? 'replying in team chat' : q.length ? `next in queue: T-${q[0].id} ${q[0].title}${q.length > 1 ? ` (+${q.length - 1} more)` : ''}` : last ? `said: ${last.text.replace(/\s+/g, ' ').slice(0, 80)}` : assigned ? `${assigned} task${assigned > 1 ? 's' : ''} assigned` : 'idle';
           return `<div class="w">${avatar(a)}<div style="min-width:90px"><b style="color:var(--strong)">${esc(AGENTS[a].name)}</b>${a === state.lead ? ' <span class="faint">★</span>' : ''}<div>${statusBadge(a)}</div></div><span class="what" title="${esc(what)}">${esc(what)}</span><div class="load" title="${assigned} assigned"><div style="width:${Math.min(100, assigned * 25)}%"></div></div></div>`;
         }).join('')}</div>
       </div>
       <div class="card"><h3>Active work<span class="grow"></span><button class="btn small link" data-nav="board">Board →</button></h3>
-        ${active.map((t) => `<div class="task" data-open="${t.id}"><div class="t">${esc(t.title)}</div><div class="meta">${stageBadge(t)}${runBadge(t)}${agentChip(t.assignee)}${t.pr ? `<span class="badge accent">PR #${esc(t.pr.number || '')}</span>` : ''}</div></div>`).join('') || '<div class="empty">Nothing in progress. Start a task, or ask the team in Team chat.</div>'}
+        ${active.map((t) => `<div class="task" data-open="${t.id}"><div class="t">${esc(t.title)}</div><div class="meta">${stageBadge(t)}${runBadge(t)}${queueBadge(t)}${agentChip(t.assignee)}${t.pr ? `<span class="badge accent">PR #${esc(t.pr.number || '')}</span>` : ''}</div></div>`).join('') || '<div class="empty">Nothing in progress. Start a task, or ask the team in Team chat.</div>'}
       </div>
       <div class="card"><h3>Quick actions</h3>
         <div class="quick">
@@ -303,7 +323,11 @@ function chatCtx() {
     extraDirs: settings.extraDirs,
     pending: pendingAsks(),
     roster: AGENT_IDS.map((id) => ({ id, role: state.roles[id] || DEFAULT_ROLES[id], status: statusText(id) })),
-    board: openTasks().map((t) => ({ id: t.id, title: t.title, stage: STAGES[t.stage], assignee: t.assignee, state: RUN_STATES[taskRunState(t, { running: Boolean(ui.running[t.id]) })] })),
+    board: openTasks().map((t) => {
+      const q = agentQueue(state.tasks, t.assignee);
+      const i = q.findIndex((x) => x.id === t.id);
+      return { id: t.id, title: t.title, stage: STAGES[t.stage], assignee: t.assignee, state: RUN_STATES[taskRunState(t, { running: Boolean(ui.running[t.id]) })], queue: i >= 0 && q.length > 1 ? `${i + 1} of ${q.length}` : '' };
+    }),
   };
 }
 
@@ -512,7 +536,9 @@ async function runRoom(queue, { trigger = '', allow = [], hops = 0 } = {}) {
       const sub = liveAgents().find((x) => ![...answered, ...queue, agent].includes(x)) || null;
       const still = queue.filter(canRun);
       const after = sub ? ` ${NAMES[sub]} is picking up its turn.` : still.length ? ` ${still.map((x) => NAMES[x]).join(' and ')} will carry on.` : ' No other agent is free right now.';
-      post({ who: 'system', text: `${NAMES[agent]} is out of usage${res.error.reset ? ` (${res.error.reset})` : ''}.${after}` });
+      const runningNow = busyOn(agent);
+      const moved = moveQueueFrom(agent, runningNow && !String(runningNow[0]).startsWith('CHAT') ? runningNow[0] : null);
+      post({ who: 'system', text: `${NAMES[agent]} is out of usage${res.error.reset ? ` (${res.error.reset})` : ''}.${after}${moved}` });
       if (sub) queue.push(sub);
     } else {
       post({ who: agent, text: `${res.error.kind}: ${res.error.message}`, err: true });
@@ -521,6 +547,7 @@ async function runRoom(queue, { trigger = '', allow = [], hops = 0 } = {}) {
   }
   ui.typing = null;
   render();
+  await drainKicks();
 }
 
 function trimChat() {
@@ -573,19 +600,19 @@ function addProposal(msgId, i) {
 
 function viewBoard() {
   const recentRuns = state.tasks.flatMap((t) => (t.runs || []).filter((r) => r.status !== 'running').map((r) => ({ ...r, task: t }))).sort((a, b) => String(b.at).localeCompare(String(a.at))).slice(0, 6);
-  const load = AGENT_IDS.map((a) => [a, state.tasks.filter((t) => t.assignee === a && !['approved', 'rejected'].includes(t.stage)).length]).filter(([a, n]) => n || connected(a));
+  const load = AGENT_IDS.map((a) => [a, state.tasks.filter((t) => t.assignee === a && !['approved', 'rejected'].includes(t.stage)).length, agentQueue(state.tasks, a).length]).filter(([a, n]) => n || connected(a));
   return `<div class="board mb">${COLUMNS.map((c) => {
     const items = state.tasks.filter((t) => c.stages.includes(t.stage));
     return `<div class="col"><div class="col-h">${esc(c.title)}<span class="n">${items.length}</span></div>
       ${items.map((t) => `<div class="task ${ui.selected === t.id ? 'sel' : ''}" data-open="${t.id}">
         <div class="t">${esc(t.title)}</div>
-        <div class="meta">${stageBadge(t)}${runBadge(t)}${agentChip(t.assignee)}${t.pr ? `<span class="badge accent">PR #${esc(t.pr.number || '')}</span>` : ''}</div>
+        <div class="meta">${stageBadge(t)}${runBadge(t)}${queueBadge(t)}${agentChip(t.assignee)}${t.pr ? `<span class="badge accent">PR #${esc(t.pr.number || '')}</span>` : ''}</div>
       </div>`).join('') || `<div class="empty">${{ Intake: 'New tasks land here after the policy check.', 'In progress': 'Nothing being built.', Verify: 'Nothing waiting for tests or review.', 'Owner approval': 'Nothing waiting for you.', Closed: 'No decisions yet.' }[c.title]}</div>`}
     </div>`;
   }).join('')}</div>
   <div class="grid three">
     <div class="card"><h3>Team load</h3>
-      ${load.map(([a, n]) => `<div class="row" style="padding:4px 0">${agentChip(a)}<span style="flex:1"></span><span class="faint" style="font-size:12px">${n} open</span><div class="load"><div style="width:${Math.min(100, n * 25)}%"></div></div></div>`).join('') || '<div class="empty">No AIs linked yet.</div>'}
+      ${load.map(([a, n, qn]) => `<div class="row" style="padding:4px 0">${agentChip(a)}<span style="flex:1"></span><span class="faint" style="font-size:12px">${n} open${qn ? ` · ${qn} queued` : ''}</span><div class="load"><div style="width:${Math.min(100, n * 25)}%"></div></div></div>`).join('') || '<div class="empty">No AIs linked yet.</div>'}
     </div>
     <div class="card"><h3>Recent runs</h3>
       ${recentRuns.map((r) => `<div class="row" style="padding:4px 0;font-size:12.5px;cursor:pointer" data-open="${r.task.id}">${agentChip(r.agent)}<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.task.title)}</span><span class="badge ${['done', 'ok'].includes(r.status) ? 'good' : ['limit', 'outage'].includes(r.status) ? 'warn' : ''}">${esc(r.status)}</span></div>`).join('') || '<div class="empty">No runs yet.</div>'}
@@ -765,12 +792,13 @@ function viewAgents() {
     const ag = AGENTS[a];
     const b = busyOn(a);
     const assigned = state.tasks.filter((t) => t.assignee === a && !['approved', 'rejected'].includes(t.stage)).length;
+    const queued = agentQueue(state.tasks, a).length;
     const open = ui.expanded === a;
     return `<tr class="click ${open ? 'open' : ''}" data-expand="${a}">
       <td><div class="nm">${avatar(a)}<div><b>${esc(ag.name)}</b>${a === state.lead ? ' <span class="faint">★ lead</span>' : ''}<small>${esc(ag.vendor)} · ${esc(ag.tool)}</small></div></div></td>
       <td>${kindPill(a)}</td>
       <td>${ag.kind === 'web' ? '<span class="faint">you sign in on their site</span>' : statusBadge(a)}</td>
-      <td class="muted">${b ? `<a href="#" data-open="${b[0].startsWith('CHAT') ? '' : b[0]}">${b[0].startsWith('CHAT') ? 'team chat' : `T-${esc(b[0])}`}</a>` : ag.kind === 'web' ? '—' : assigned ? `${assigned} assigned` : 'idle'}</td>
+      <td class="muted">${b ? `<a href="#" data-open="${b[0].startsWith('CHAT') ? '' : b[0]}">${b[0].startsWith('CHAT') ? 'team chat' : `T-${esc(b[0])}`}</a>` : ag.kind === 'web' ? '—' : queued ? `${queued} in queue` : assigned ? `${assigned} assigned` : 'idle'}</td>
       <td class="muted" style="font-size:12px">${ag.kind === 'web' ? 'web window' : method(a) === 'api' ? 'API key' : ag.kind === 'local' ? 'local' : ag.kind === 'manual' ? 'terminal' : 'your account'}</td>
       <td style="text-align:right;white-space:nowrap">${agentActions(a)} <span class="faint">${open ? '▴' : '▾'}</span></td>
     </tr>${open ? `<tr class="detail-row"><td colspan="6">${ag.kind === 'web' ? `<p class="muted" style="margin:0">${esc(ACCESS_NOTE[a])} Use the Open button: it shows ${esc(ag.vendor)}’s own site in a sandboxed window with its own sign-in. ${ag.export ? `Your chats: ${esc(ag.export)}.` : ''}</p>` : agentDetail(a)}</td></tr>` : ''}`;
@@ -968,10 +996,10 @@ function viewSettings() {
     </div>
     <div class="card"><h3>Shared workspace</h3>
       <div class="kv"><span class="k">Project folder</span><span class="mono" style="word-break:break-all">${esc(settings.project || 'Not set')}</span></div>
-      <p class="muted" style="font-size:12.5px;line-height:1.5">A git repository all agents share. Each task gets its own branch and working copy; every run is committed as a checkpoint (as you, with no AI attribution) so nothing is lost.</p>
+      <p class="muted" style="font-size:12.5px;line-height:1.5">A git repository all agents share. Each task gets its own branch and working copy; every run is committed as a checkpoint (as you, with no AI attribution) so nothing is lost. Each AI works its own tasks one after another.</p>
       <div class="row"><button class="btn small primary" data-pickproject>${settings.project ? 'Change folder' : 'Choose folder'}</button></div>
       <div class="sep"></div>
-      <label style="display:flex;gap:10px;align-items:center;margin:0;cursor:pointer;color:var(--text)"><input type="checkbox" data-autohandoff ${state.autoHandoff ? 'checked' : ''}> Hand a task to the next free agent when one runs out of usage</label>
+      <label style="display:flex;gap:10px;align-items:center;margin:0;cursor:pointer;color:var(--text)"><input type="checkbox" data-autohandoff ${state.autoHandoff ? 'checked' : ''}> When an AI runs out of usage, hand the task it was on and the ones still in its queue to the next free AI with the same kind of role</label>
     </div>
     <div class="card"><h3>What the AIs may do</h3>
       <label style="display:flex;gap:10px;align-items:flex-start;margin:6px 0;cursor:pointer;font-size:13px;color:var(--text)"><input type="radio" name="access" data-access="standard" ${settings.access !== 'full' ? 'checked' : ''}><span><b>Like their own apps (recommended)</b><br><span class="muted">Edit files, run commands, use git and the web — each with its own built-in safety checks.</span></span></label>
@@ -1020,9 +1048,11 @@ function workControls(t) {
     return `<div class="policy info" style="display:flex;align-items:center;gap:10px">${agentChip(running.agent)} is working in the shared workspace…<span style="flex:1"></span><button class="btn small danger" data-stop="${t.id}">Stop</button></div>`;
   }
   const others = EDITORS.filter((a) => a !== t.assignee && connected(a));
+  const ahead = busyOn(t.assignee);
+  const waitingTurn = ahead && ahead[0] !== t.id;
   const ws = t.ws ? `<div class="kv"><span class="k">Workspace</span><span><span class="mono" style="font-size:11.5px">${esc(t.ws.branch)}</span> <button class="btn small link" data-openws="${t.id}">Open folder</button></span></div>` : '';
   return `${ws}<div class="row" style="margin:8px 0">
-      ${EDITORS.includes(t.assignee) ? `<button class="btn primary small" data-run="${t.id}:${t.assignee}" ${canRun(t.assignee) ? '' : 'disabled'}>${t.runs?.length ? 'Continue' : 'Start'} with ${esc(AGENTS[t.assignee].name)}</button>` : ''}
+      ${EDITORS.includes(t.assignee) ? `<button class="btn primary small" data-run="${t.id}:${t.assignee}" ${canRun(t.assignee) && !waitingTurn ? '' : 'disabled'}>${waitingTurn ? `In ${esc(AGENTS[t.assignee].name)}’s queue` : `${t.runs?.length ? 'Continue' : 'Start'} with ${esc(AGENTS[t.assignee].name)}`}</button>` : ''}
       ${others.map((a) => `<button class="btn small" data-run="${t.id}:${a}" ${canRun(a) ? '' : 'disabled'}>Hand off to ${esc(AGENTS[a].name)}</button>`).join('')}
       <button class="btn small" data-freebuff="${t.id}">Continue in FreeBuff</button>
       ${t.freebuffOpen ? `<button class="btn small primary" data-fbdone="${t.id}">FreeBuff finished — checkpoint</button>` : ''}
@@ -1048,13 +1078,14 @@ function drawer() {
   return `<div class="drawer">
     <div class="row"><span class="mono faint">T-${esc(t.id)}</span><span style="flex:1"></span><button class="btn ghost small" data-close>Close ✕</button></div>
     <h2>${esc(t.title)}</h2>
-    <div class="row">${stageBadge(t)}${runBadge(t)}<span class="badge">${esc(ACTIONS[t.action])}</span></div>
+    <div class="row">${stageBadge(t)}${runBadge(t)}${queueBadge(t)}<span class="badge">${esc(ACTIONS[t.action])}</span></div>
     ${pol}
     ${asks.map(askCard).join('')}
     <div class="kv">
       <span class="k">Stage</span><span>${esc(STAGES[t.stage])}</span>
       <span class="k">Implementer</span><span>${agentChip(t.assignee)}</span>
       <span class="k">Reviewer</span><span>${agentChip(t.reviewer)}</span>
+      ${queueLine(t)}
       <span class="k">Created</span><span>${esc(time(t.createdAt))}</span>
     </div>
     ${t.description ? `<div class="note">${esc(t.description)}</div>` : ''}
@@ -1211,24 +1242,104 @@ async function askForTask(t, kind) {
   render();
 }
 
+function roleMap() {
+  return Object.fromEntries(AGENT_IDS.map((a) => [a, state.roles[a] || DEFAULT_ROLES[a]]));
+}
+
+function assignTask(t, agent, detail) {
+  if (!t || t.assignee === agent) return false;
+  const prev = t.assignee;
+  t.assignee = agent;
+  if (t.reviewer === agent) t.reviewer = HEADLESS.find((a) => a !== agent && canRun(a)) || HEADLESS.find((a) => a !== agent) || 'none';
+  audit(`Handed off to ${NAMES[agent]}`, t.id, detail || `from ${NAMES[prev] || 'unassigned'}`);
+  return true;
+}
+
+function moveSentence(moves) {
+  if (!moves.length) return '';
+  const by = new Map();
+  for (const m of moves) {
+    if (!by.has(m.to)) by.set(m.to, []);
+    by.get(m.to).push(`T-${m.id}`);
+  }
+  return [...by.entries()].map(([to, ids]) => `${ids.join(', ')} → ${NAMES[to]}`).join('; ');
+}
+
+// Move every task still waiting on an AI that just ran out. The task they were
+// inside is left for the caller (it continues from the checkpoint).
+function applyQueueMoves(moves) {
+  const at = now();
+  const cursor = {};
+  const applied = [];
+  for (const m of moves) {
+    const task = state.tasks.find((x) => x.id === m.id);
+    if (!task || task.assignee !== m.from || task.reviewer === m.to || ui.running[task.id]) continue;
+    const base = cursor[m.to] || queuedAtEnd(state.tasks, m.to, at);
+    const stamp = cursor[m.to] ? new Date(Date.parse(cursor[m.to]) + 1).toISOString() : base;
+    cursor[m.to] = stamp;
+    task.queuedAt = stamp;
+    task.assignee = m.to;
+    task.notes = task.notes || [];
+    task.notes.push({ at, who: 'System', text: `${NAMES[m.from]} ran out of usage. This task was still in their queue, so it moved to ${NAMES[m.to]} (${roleLabel(m.need)}).` });
+    audit(`Queued task moved to ${NAMES[m.to]}`, task.id, `${NAMES[m.from]} out of usage · ${roleLabel(m.need)}`);
+    applied.push(m);
+  }
+  return applied;
+}
+
+function moveQueueFrom(agent, currentId = null) {
+  if (!state.autoHandoff) return '';
+  delete ui.kick[agent];
+  const moves = applyQueueMoves(reassignWaiting({
+    tasks: state.tasks, agent, currentId, available: liveEditors(), roles: roleMap(), lead: state.lead,
+  }));
+  // The AI who received a task starts it when they are free (drainKicks).
+  for (const m of moves) ui.kick[m.to] = true;
+  const sentence = moveSentence(moves);
+  return sentence ? ` Queue: ${sentence}.` : '';
+}
+
+// After a task is finished, start the next one this AI has not touched yet.
+// Seen-ids stop a task that never leaves the queue from being started again.
+async function pumpQueue(agent, seen = []) {
+  if (seen.length >= 40) {
+    toast(`${NAMES[agent]}’s queue paused after 40 tasks. Press Start when you want the next one.`);
+    return;
+  }
+  if (!settings.project || !canRun(agent) || blocked().includes(agent) || busyOn(agent) || ui.typing === agent) return;
+  const next = nextAutoTask(state.tasks, agent);
+  if (!next || seen.includes(next.id)) return;
+  delete ui.kick[agent];
+  toast(`${NAMES[agent]} is starting the next queued task: T-${next.id}.`);
+  await runTask(next, agent, null, 0, [...seen, next.id]);
+}
+
+async function drainKicks() {
+  const agents = Object.keys(ui.kick).filter((a) => ui.kick[a]);
+  for (const agent of agents) {
+    if (busyOn(agent) || ui.typing === agent || !canRun(agent) || blocked().includes(agent)) continue;
+    delete ui.kick[agent];
+    await pumpQueue(agent);
+  }
+}
+
 // Run (or continue) a task with an agent in the shared workspace. Progress is
-// checkpointed after every run; if the agent runs out of usage the next free
-// agent picks up from the checkpoint automatically.
-async function runTask(t, agent, handoff = null, depth = 0) {
-  if (ui.running[t.id] || !canRun(agent)) return;
+// checkpointed after every run. Each AI works its queue one task at a time;
+// if it runs out of usage, the task it was on continues with the next free AI
+// of the same kind of role, and the tasks still waiting move the same way.
+async function runTask(t, agent, handoff = null, depth = 0, queueSeen = []) {
+  if (!t || ui.running[t.id] || !canRun(agent)) return;
+  const other = busyOn(agent);
+  if (other && other[0] !== t.id) return;
   const waitingOn = pendingAsks().find((p) => p.agent === agent);
   if (waitingOn) return toast(`${NAMES[agent]} is waiting for your answer on R-${waitingOn.id} first.`);
+  delete t.resumeNext;
   try {
     t.ws = t.ws || (await api.ensureWorkspace(t.id, t.title));
   } catch (e) {
     return toast(cleanErr(e.message));
   }
-  if (t.assignee !== agent) {
-    const prev = t.assignee;
-    t.assignee = agent;
-    if (t.reviewer === agent) t.reviewer = HEADLESS.find((a) => a !== agent && canRun(a)) || HEADLESS.find((a) => a !== agent) || 'none';
-    audit(`Handed off to ${NAMES[agent]}`, t.id, handoff ? `${NAMES[handoff.from]}: ${handoff.reason}` : `from ${NAMES[prev] || 'unassigned'}`);
-  }
+  if (t.assignee !== agent) assignTask(t, agent, handoff ? `${NAMES[handoff.from]}: ${handoff.reason}` : undefined);
   if (t.stage === 'intake') { t.stage = 'implementing'; audit('Work started', t.id, NAMES[agent]); }
   const summary = await api.workspaceSummary(t.id, t.ws.baseSha).catch(() => '');
   const prompt = buildTaskBrief({ task: t, agent, summary, handoffFrom: handoff?.from, reason: handoff?.reason });
@@ -1292,16 +1403,42 @@ async function runTask(t, agent, handoff = null, depth = 0) {
     await save();
     render();
   }
+  if (res.ok && run.status === 'done') await pumpQueue(agent, queueSeen);
   if (!res.ok && res.error.kind === 'limit') {
-    const next = nextAgent(liveEditors(), [agent], state.lead);
-    if (next && state.autoHandoff && depth < 3) {
+    const roles = roleMap();
+    const need = taskNeeds(t) || 'code';
+    const exclude = [agent];
+    if (t.reviewer && t.reviewer !== 'none') exclude.push(t.reviewer);
+    const moved = moveQueueFrom(agent, t.id);
+    const next = nextForRole(liveEditors(), { need, roles, exclude, lead: state.lead });
+    const busy = next && busyOn(next);
+    if (next && state.autoHandoff && depth < 3 && busy && busy[0] !== t.id) {
+      t.resumeNext = true;
+      t.queuedAt = queuedAtFront(state.tasks.filter((x) => x.id !== t.id), next, now());
+      assignTask(t, next, `${NAMES[agent]}: ran out of usage`);
+      ui.kick[next] = true;
+      t.notes.push({ at: now(), who: 'System', text: `${NAMES[agent]} ran out of usage. Progress is saved${cp ? ` (checkpoint ${cp.sha})` : ''}. ${NAMES[next]} is busy, so this task is next in their queue.` });
+      post({ who: 'system', text: `${NAMES[agent]} ran out of usage on T-${t.id}. ${NAMES[next]} will continue it when they are free.${moved}` });
+      toast(`${NAMES[agent]} ran out of usage — ${NAMES[next]} will continue T-${t.id} when they finish their current task.`);
+      await save();
+      render();
+    } else if (next && state.autoHandoff && depth < 3) {
+      delete ui.kick[next];
+      post({ who: 'system', text: `${NAMES[agent]} ran out of usage on T-${t.id}. ${NAMES[next]} is continuing it.${moved}` });
       toast(`${NAMES[agent]} ran out of usage — ${NAMES[next]} is continuing from the checkpoint.`);
-      return runTask(t, next, { from: agent, reason: 'ran out of usage' }, depth + 1);
+      await save();
+      const others = drainKicks();
+      await runTask(t, next, { from: agent, reason: 'ran out of usage' }, depth + 1);
+      await others;
+      return;
+    } else {
+      t.notes.push({ at: now(), who: 'System', text: `${NAMES[agent]} ran out of usage. Progress is saved${cp ? ` (checkpoint ${cp.sha})` : ''}. ${next ? `Hand it to ${NAMES[next]}` : 'No other agent with the right role is free'} — or continue in FreeBuff.${moved ? ` ${moved.trim()}` : ''}` });
+      if (moved) post({ who: 'system', text: `${NAMES[agent]} ran out of usage on T-${t.id}.${moved}` });
+      await save();
+      render();
     }
-    t.notes.push({ at: now(), who: 'System', text: `${NAMES[agent]} ran out of usage. Progress is saved${cp ? ` (checkpoint ${cp.sha})` : ''}. ${next ? `Hand it to ${NAMES[next]}` : 'No other agent is free'} — or continue in FreeBuff.` });
-    save();
-    render();
   }
+  await drainKicks();
 }
 
 async function openInFreebuff(t) {
@@ -1609,7 +1746,21 @@ document.addEventListener('click', async (e) => {
     const t = addProposal(id, Number(i));
     await save();
     render();
-    if (t && t.policy.ok) return runTask(t, t.assignee);
+    if (t && t.policy.ok) {
+      if (!EDITORS.includes(t.assignee) || !canRun(t.assignee)) {
+        toast(`${AGENTS[t.assignee] ? NAMES[t.assignee] : 'That AI'} can’t start this yet. It’s on the board.`);
+        return;
+      }
+      if (busyOn(t.assignee) || ui.typing === t.assignee) {
+        t.resumeNext = true;
+        t.queuedAt = queuedAtFront(state.tasks.filter((x) => x.id !== t.id), t.assignee, now());
+        ui.kick[t.assignee] = true;
+        save();
+        toast(`${NAMES[t.assignee]} is busy. T-${t.id} is next in their queue and starts when they are free.`);
+        return render();
+      }
+      return runTask(t, t.assignee);
+    }
     if (t) toast('Added, but the policy check blocked it — open it to see why.');
     return;
   }
@@ -1631,8 +1782,30 @@ document.addEventListener('click', async (e) => {
   }
   if (d.recheck !== undefined) { await refreshAgents(); await refreshProviders(); toast('Agent status refreshed.'); ui.keepScroll = true; return render(); }
   if (d.locate) { settings = await api.pickBinary(d.locate); await refreshAgents(); return render(); }
-  if (d.available) { delete state.agentStatus[d.available]; audit(`${NAMES[d.available]} marked available`); save(); return render(); }
-  if (d.run) { const [id, a] = d.run.split(':'); return runTask(task(id), a); }
+  if (d.available) {
+    delete state.agentStatus[d.available];
+    audit(`${NAMES[d.available]} marked available`);
+    save();
+    render();
+    return drainKicks();
+  }
+  if (d.run) {
+    const [id, a] = d.run.split(':');
+    const t = task(id);
+    if (!t) return;
+    const b = busyOn(a);
+    if ((b && b[0] !== id) || ui.typing === a) {
+      if (t.assignee !== a) assignTask(t, a, `queued behind ${b ? `T-${b[0]}` : 'team chat'}`);
+      t.resumeNext = true;
+      t.queuedAt = queuedAtFront(state.tasks.filter((x) => x.id !== t.id), a, now());
+      ui.kick[a] = true;
+      save();
+      render();
+      toast(`${NAMES[a]} is busy. T-${t.id} is next in their queue and starts when they are free.`);
+      return;
+    }
+    return runTask(t, a);
+  }
   if (d.stop) { const r = ui.running[d.stop]; if (r) await api.cancelRun(r.runId); return; }
   if (d.freebuff) return openInFreebuff(task(d.freebuff));
   if (d.fbdone) return freebuffDone(task(d.fbdone));
@@ -1785,6 +1958,7 @@ document.addEventListener('click', async (e) => {
     try {
       const s = await api.restoreBackup(Number(d.restore));
       state = { models: {}, chat: [], agentStatus: {}, autoHandoff: true, permissions: [], chatSessions: {}, ...s };
+      ui.kick = {};
       backups = await api.backups();
       toast('Earlier save restored.');
     } catch (err) { toast(cleanErr(err.message)); }
