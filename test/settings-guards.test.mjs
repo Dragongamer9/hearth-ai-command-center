@@ -2,6 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { runInNewContext } from 'node:vm';
 
 const ui = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
 const main = readFileSync(new URL('../electron/main.cjs', import.meta.url), 'utf8');
@@ -61,4 +62,39 @@ test('text size is opt-in, validated, persisted and restored on renderer load', 
   assert.match(ui, /e.ctrlKey && !e.altKey && !e.metaKey/);
   assert.match(ui, /e.preventDefault\(\);\s*changeTextSize/);
   assert.match(ui, /textSizeChange = textSizeChange.then/);
+});
+
+test('saved text size survives unrelated edits and is reapplied on renderer recovery', () => {
+  let saved = { textSize: 100, theme: 'hearth' };
+  let zoom = 1;
+  let setSettings;
+  let restore;
+  const context = {
+    TEXT_SIZES: [100, 115, 130, 150], THEMES: ['hearth'],
+    readSettings: () => structuredClone(saved),
+    writeSettings: (value) => { saved = structuredClone(value); },
+    handle: (_name, handler) => { setSettings = handler; },
+    mainWindow: { webContents: {
+      setZoomFactor: (value) => { zoom = value; },
+      on: (_event, handler) => { restore = handler; },
+    } },
+  };
+  runInNewContext(between(main, "handle('settings:set',", "handle('settings:addDir'"), context);
+  for (const size of [100, 115, 130, 150]) {
+    setSettings({ textSize: size });
+    assert.equal(saved.textSize, size);
+    assert.equal(zoom, size / 100);
+  }
+  setSettings({ chatResume: false });
+  assert.equal(saved.textSize, 150);
+  for (const invalid of [0, 125, '150', null]) {
+    assert.throws(() => setSettings({ textSize: invalid }), /Invalid text size/);
+    assert.equal(saved.textSize, 150);
+    assert.equal(zoom, 1.5);
+  }
+  zoom = 1;
+  runInNewContext(between(main, "mainWindow.webContents.on('did-finish-load'", "mainWindow.once('ready-to-show'"), context);
+  restore();
+  assert.equal(zoom, 1.5);
+  assert.equal(saved.textSize, 150);
 });

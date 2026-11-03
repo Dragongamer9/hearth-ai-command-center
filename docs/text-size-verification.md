@@ -12,7 +12,7 @@ Validation:
 
 - `npm run build:web`: passed.
 - `npm run check`: passed.
-- `node --test test/settings-guards.test.mjs`: 7/7 passed.
+- `node --test test/settings-guards.test.mjs`: 8/8 passed. The added runtime test executes the real settings handler and renderer-load callback with an in-memory settings store: all four sizes apply, unrelated edits preserve 150%, invalid values leave the saved choice unchanged, and renderer recovery restores 150%. This does not exercise disk I/O.
 - `node --test test/*.test.*`: 183/185 passed. Existing failures concern shared-workspace commit email and Gemini sign-out.
 - `npm test`: Node 20 treats its quoted glob literally; used shell expansion for the full suite above.
 
