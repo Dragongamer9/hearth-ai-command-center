@@ -2,6 +2,7 @@ import './styles.css';
 import { policyCheck } from './policy.mjs';
 import { recipients, buildPrompt, buildDelta, parseProposals, parseDirectives, applyEdit, applyRetract, makeRequest, decideRequest, blockedAgents, mentions, NAMES, PERMISSION_KINDS } from './chat.mjs';
 import { buildTaskBrief, nextAgent, parseStatus, taskRunState, recoverInterrupted, RUN_STATES } from './team.mjs';
+import { parseVerdicts, applyVerdict, ownerAction } from './owner.mjs';
 import { AGENTS, AGENT_IDS, WEB_ONLY, HEADLESS, EDITORS, API_CAPABLE, DEFAULT_ROLES, BILLING, ACCESS_NOTE, OLLAMA_NOTE } from './registry.mjs';
 import { HEARTH_OS, RED_FLAGS } from './hearth.mjs';
 import { tokensToCss, pickMode } from './theme.mjs';
@@ -174,6 +175,39 @@ function stageBadge(t) {
 const pendingAsks = () => state.permissions.filter((p) => p.status === 'pending');
 const openTasks = () => state.tasks.filter((t) => !['approved', 'rejected'].includes(t.stage));
 
+// What (if anything) a task is waiting on the owner for: one button + reason.
+const actionFor = (t) => ownerAction(t, { permissions: state.permissions, running: Boolean(ui.running[t.id]), saving: Boolean(ui.saving?.[t.id]), canRun, free: liveEditors() });
+const waitingTasks = () => openTasks().filter(actionFor);
+function ownerButton(t, small = true) {
+  const a = actionFor(t);
+  if (!a) return '';
+  return `<div class="owner-act"><button class="btn primary${small ? ' small' : ''}" data-owneract="${t.id}">${esc(a.label)}</button><span class="why">${esc(a.reason)}</span></div>`;
+}
+
+// Reviewer sign-off lines (APPROVE: T-… / CHANGES: T-… <reason>) from an AI reply.
+// Only the task's assigned reviewer counts. CHANGES restarts the implementer.
+function handleVerdicts(agent, text) {
+  const restart = [];
+  for (const v of parseVerdicts(text)) {
+    const t = state.tasks.find((x) => x.id === v.taskId);
+    if (!t) continue; // e.g. a quoted example like T-XXXXXX
+    const r = applyVerdict(t, { by: agent, verdict: v.verdict, reason: v.reason, at: now() });
+    if (!r.ok) { post({ who: 'system', text: `${NAMES[agent]} wrote ${v.verdict === 'approve' ? 'APPROVE' : 'CHANGES'} for T-${v.taskId}, but ${r.reason}.` }); continue; }
+    if (v.verdict === 'approve') {
+      audit('Reviewer approved', t.id, `${NAMES[agent]}${v.reason ? `: ${v.reason}` : ''} — now waiting for owner approval`, agent);
+      post({ who: 'system', text: `${NAMES[agent]} approved T-${t.id} “${t.title}”. It's in Approvals, waiting for you. Nothing is merged until you press Approve.` });
+    } else {
+      audit('Reviewer requested changes', t.id, `${NAMES[agent]}: ${v.reason}`, agent);
+      const who = t.assignee;
+      const go = EDITORS.includes(who) && canRun(who) && !ui.running[t.id];
+      post({ who: 'system', text: `${NAMES[agent]} sent T-${t.id} “${t.title}” back to ${NAMES[who] || 'its implementer'}: ${v.reason}${go ? ` — ${NAMES[who]} is starting on it.` : ''}` });
+      if (go) restart.push(t);
+    }
+  }
+  if (restart.length) { save(); render(); }
+  for (const t of restart) runTask(t, t.assignee);
+}
+
 // ---------- views ----------
 function viewOverview() {
   const open = openTasks();
@@ -303,7 +337,7 @@ function chatCtx() {
     extraDirs: settings.extraDirs,
     pending: pendingAsks(),
     roster: AGENT_IDS.map((id) => ({ id, role: state.roles[id] || DEFAULT_ROLES[id], status: statusText(id) })),
-    board: openTasks().map((t) => ({ id: t.id, title: t.title, stage: STAGES[t.stage], assignee: t.assignee, state: RUN_STATES[taskRunState(t, { running: Boolean(ui.running[t.id]) })] })),
+    board: openTasks().map((t) => ({ id: t.id, title: t.title, stage: STAGES[t.stage], assignee: t.assignee, reviewer: t.reviewer, state: RUN_STATES[taskRunState(t, { running: Boolean(ui.running[t.id]) })] })),
   };
 }
 
@@ -490,6 +524,7 @@ async function runRoom(queue, { trigger = '', allow = [], hops = 0 } = {}) {
           return req.id;
         });
       }
+      handleVerdicts(agent, d.text);
       if (res.sessionId && settings.chatResume) {
         state.chatSessions = state.chatSessions || {};
         state.chatSessions[skey] = { sessionId: res.sessionId, lastMsgId: (m || state.chat[state.chat.length - 1])?.id, at: now() };
@@ -579,7 +614,8 @@ function viewBoard() {
     return `<div class="col"><div class="col-h">${esc(c.title)}<span class="n">${items.length}</span></div>
       ${items.map((t) => `<div class="task ${ui.selected === t.id ? 'sel' : ''}" data-open="${t.id}">
         <div class="t">${esc(t.title)}</div>
-        <div class="meta">${stageBadge(t)}${runBadge(t)}${agentChip(t.assignee)}${t.pr ? `<span class="badge accent">PR #${esc(t.pr.number || '')}</span>` : ''}</div>
+        <div class="meta">${actionFor(t) ? '<span class="badge warn">Waiting for you</span>' : ''}${stageBadge(t)}${runBadge(t)}${agentChip(t.assignee)}${t.pr ? `<span class="badge accent">PR #${esc(t.pr.number || '')}</span>` : ''}</div>
+        ${ownerButton(t)}
       </div>`).join('') || `<div class="empty">${{ Intake: 'New tasks land here after the policy check.', 'In progress': 'Nothing being built.', Verify: 'Nothing waiting for tests or review.', 'Owner approval': 'Nothing waiting for you.', Closed: 'No decisions yet.' }[c.title]}</div>`}
     </div>`;
   }).join('')}</div>
@@ -616,6 +652,7 @@ function viewApprovals() {
       ${waiting.map((t) => `<div class="task" style="cursor:default">
         <div class="t">${esc(t.title)}</div>
         <div class="meta" style="margin-bottom:8px">${agentChip(t.assignee)}<span class="faint" style="font-size:12px">reviewed by</span>${agentChip(t.reviewer)}<span class="badge">${esc(ACTIONS[t.action])}</span>${t.pr ? `<a class="badge accent" href="${esc(t.pr.url)}" target="_blank">PR #${esc(t.pr.number)}</a>` : ''}</div>
+        ${t.reviewVerdict?.verdict === 'approve' ? `<div class="policy ok">${esc(NAMES[t.reviewVerdict.by])} approved the review${t.reviewVerdict.reason ? `: ${esc(t.reviewVerdict.reason)}` : '.'}</div>` : ''}
         ${t.policy.warn.length ? `<div class="policy warn">${t.policy.warn.map(esc).join('<br>')}</div>` : ''}
         <div class="row">${approveButtons(t)}
           <button class="btn small" data-changes="${t.id}">Request changes</button>
@@ -1051,6 +1088,7 @@ function drawer() {
     <div class="row">${stageBadge(t)}${runBadge(t)}<span class="badge">${esc(ACTIONS[t.action])}</span></div>
     ${pol}
     ${asks.map(askCard).join('')}
+    ${['resume', 'start', 'signin'].includes(actionFor(t)?.kind) ? ownerButton(t) : ''}
     <div class="kv">
       <span class="k">Stage</span><span>${esc(STAGES[t.stage])}</span>
       <span class="k">Implementer</span><span>${agentChip(t.assignee)}</span>
@@ -1118,6 +1156,7 @@ const TITLES = {
 
 function render() {
   const waiting = state.tasks.filter((t) => t.stage === 'approval').length + pendingAsks().length;
+  const boardWaiting = waitingTasks().length;
   const views = { github: viewGithub, chat: viewChat, overview: viewOverview, board: viewBoard, approvals: viewApprovals, agents: viewAgents, history: viewHistory, audit: viewAudit, settings: viewSettings };
   const [title, sub] = TITLES[ui.view];
   const updBadge = upd.status?.state === 'available' || upd.status?.state === 'ready' ? '<span class="badge accent" data-nav="settings" style="cursor:pointer">Update available</span>' : '';
@@ -1126,7 +1165,7 @@ function render() {
   <div class="shell">
     <aside class="side">
       <div class="brand"><img src="./icon.png" alt=""><div><b>Hearth AI</b><span>Command Center</span></div></div>
-      ${NAV.map(([id, ico, label]) => `<button class="nav ${ui.view === id ? 'on' : ''}" data-nav="${id}"><span class="ico">${ico}</span>${label}${id === 'approvals' && waiting ? `<span class="count warn">${waiting}</span>` : ''}${id === 'chat' && ui.typing ? '<span class="count">…</span>' : ''}</button>`).join('')}
+      ${NAV.map(([id, ico, label]) => `<button class="nav ${ui.view === id ? 'on' : ''}" data-nav="${id}"><span class="ico">${ico}</span>${label}${id === 'approvals' && waiting ? `<span class="count warn">${waiting}</span>` : ''}${id === 'board' && boardWaiting ? `<span class="count warn" title="Tasks waiting for you">${boardWaiting}</span>` : ''}${id === 'chat' && ui.typing ? '<span class="count">…</span>' : ''}</button>`).join('')}
       <div class="spacer"></div>
       <div class="pin">Working on <b>Hearth OS ${esc(HEARTH_OS.line)}</b><br>Debian · Mantel · Steam Game Mode<br><span class="faint">App v${esc(info.appVersion)} · standalone</span></div>
     </aside>
@@ -1199,7 +1238,7 @@ async function askForTask(t, kind) {
   const who = t.reviewer;
   let summary = '';
   if (t.ws) summary = await api.workspaceSummary(t.id, t.ws.baseSha).catch(() => '');
-  const prompt = `You are an independent reviewer (${NAMES[who]}) in the Hearth AI Command Center. Look at the task's workspace (your current directory) and the shared progress below. List concerns, missing tests, and whether the owner should approve. Be concise. Do not modify files.\n\n${buildTaskBrief({ task: t, agent: who, summary })}`;
+  const prompt = `You are an independent reviewer (${NAMES[who]}) in the Hearth AI Command Center. Look at the task's workspace (your current directory) and the shared progress below. List concerns, missing tests, and whether the owner should approve. Be concise. Do not modify files. End with exactly one line: "APPROVE: T-${t.id}" if it is ready for the owner, or "CHANGES: T-${t.id} <what must be fixed>" to send it back to the implementer.\n\n${buildTaskBrief({ task: t, agent: who, summary })}`;
   ui.busy[t.id] = kind;
   render();
   const res = await callAgent(who, prompt, { mode: 'read', taskId: t.ws ? t.id : undefined, title: `Review: ${t.title}`, thread: `review-${t.id}`, historyText: `Independent review of T-${t.id}: ${t.title}` });
@@ -1209,6 +1248,7 @@ async function askForTask(t, kind) {
   audit(res.ok ? `${name} reviewed` : `${name} review failed`, t.id, '', who);
   save();
   render();
+  if (res.ok) handleVerdicts(who, res.text);
 }
 
 // Run (or continue) a task with an agent in the shared workspace. Progress is
@@ -1435,7 +1475,7 @@ async function syncHistory(quiet = false) {
   if (ui.view === 'history') render();
 }
 
-const CLICK = '[data-nav],[data-new],[data-open],[data-close],[data-cancel],[data-create],[data-advance],[data-approve],[data-reject],[data-changes],[data-note],[data-delete],[data-savekey],[data-rmkey],[data-ask],[data-export],[data-reset],[data-upd],[data-opinion],[data-modalbg],[data-sendchat],[data-target],[data-addprop],[data-addall],[data-clearchat],[data-method],[data-login],[data-recheck],[data-locate],[data-available],[data-run],[data-stop],[data-freebuff],[data-fbdone],[data-openws],[data-pickproject],[data-autohandoff],[data-restore],[data-install],[data-installall],[data-installollama],[data-startprop],[data-showchanges],[data-dismisssetup],[data-signin],[data-disconnect],[data-toggleagent],[data-ghlogin],[data-gitrefresh],[data-useproject],[data-clone],[data-gitpull],[data-pushbranch],[data-openpr],[data-approvemerge],[data-approvepr],[data-access],[data-togglesetting],[data-adddir],[data-removedir],[data-expand],[data-opensignin],[data-openweb],[data-openexport],[data-makelead],[data-decide],[data-editmsg],[data-delmsg],[data-saveedit],[data-canceledit],[data-togglehist],[data-checkin],[data-histscan],[data-histimport],[data-histopen],[data-histresume],[data-histweb],[data-histwebin],[data-histremove],[data-prlist],[data-prrefresh],[data-release],[data-theme]';
+const CLICK = '[data-nav],[data-new],[data-owneract],[data-open],[data-close],[data-cancel],[data-create],[data-advance],[data-approve],[data-reject],[data-changes],[data-note],[data-delete],[data-savekey],[data-rmkey],[data-ask],[data-export],[data-reset],[data-upd],[data-opinion],[data-modalbg],[data-sendchat],[data-target],[data-addprop],[data-addall],[data-clearchat],[data-method],[data-login],[data-recheck],[data-locate],[data-available],[data-run],[data-stop],[data-freebuff],[data-fbdone],[data-openws],[data-pickproject],[data-autohandoff],[data-restore],[data-install],[data-installall],[data-installollama],[data-startprop],[data-showchanges],[data-dismisssetup],[data-signin],[data-disconnect],[data-toggleagent],[data-ghlogin],[data-gitrefresh],[data-useproject],[data-clone],[data-gitpull],[data-pushbranch],[data-openpr],[data-approvemerge],[data-approvepr],[data-access],[data-togglesetting],[data-adddir],[data-removedir],[data-expand],[data-opensignin],[data-openweb],[data-openexport],[data-makelead],[data-decide],[data-editmsg],[data-delmsg],[data-saveedit],[data-canceledit],[data-togglehist],[data-checkin],[data-histscan],[data-histimport],[data-histopen],[data-histresume],[data-histweb],[data-histwebin],[data-histremove],[data-prlist],[data-prrefresh],[data-release],[data-theme]';
 
 document.addEventListener('click', async (e) => {
   const el = e.target.closest(CLICK);
@@ -1632,6 +1672,18 @@ document.addEventListener('click', async (e) => {
   if (d.recheck !== undefined) { await refreshAgents(); await refreshProviders(); toast('Agent status refreshed.'); ui.keepScroll = true; return render(); }
   if (d.locate) { settings = await api.pickBinary(d.locate); await refreshAgents(); return render(); }
   if (d.available) { delete state.agentStatus[d.available]; audit(`${NAMES[d.available]} marked available`); save(); return render(); }
+  if (d.owneract) {
+    const t = task(d.owneract);
+    const a = t && actionFor(t);
+    if (!a) return render();
+    if (a.kind === 'resume' || (a.kind === 'start' && canRun(a.agent))) {
+      audit(a.kind === 'resume' ? 'Owner approved resume' : 'Owner started task', t.id, NAMES[a.agent]);
+      return runTask(t, a.agent);
+    }
+    if (a.kind === 'signin') { ui.view = 'agents'; ui.side = a.agent; ui.selected = null; return render(); }
+    ui.selected = t.id; // approve / permission / policy: decide in the task panel
+    return render();
+  }
   if (d.run) { const [id, a] = d.run.split(':'); return runTask(task(id), a); }
   if (d.stop) { const r = ui.running[d.stop]; if (r) await api.cancelRun(r.runId); return; }
   if (d.freebuff) return openInFreebuff(task(d.freebuff));

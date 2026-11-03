@@ -312,3 +312,8 @@ tr.open td { background: var(--accent-soft); }
 .install-all-text { flex: 1; min-width: 260px; font-size: 13px; }
 .install-all-text .faint { font-size: 12px; margin-top: 3px; line-height: 1.45; }
 .install-all-opt { display: flex; gap: 8px; align-items: center; margin: 8px 0 0; font-size: 12.5px; cursor: pointer; text-transform: none; letter-spacing: 0; }
+
+/* Task waiting for the owner: one clear button with the reason */
+.owner-act { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--line); }
+.owner-act .why { font-size: 11.5px; color: var(--muted); line-height: 1.4; }
+.drawer .owner-act { border-top: 0; padding-top: 0; }
