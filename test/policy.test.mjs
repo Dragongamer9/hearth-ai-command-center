@@ -104,3 +104,45 @@ test('owner Confirm version clears an AI-proposed version block; AIs cannot', ()
   const policySrc = readFileSync(new URL('../src/policy.mjs', import.meta.url), 'utf8');
   assert.match(policySrc, /An AI proposed a version; ask the owner which number to use\./);
 });
+
+test('confirming a different number rewrites every version mention in the task', () => {
+  const task = {
+    id: 'JQQPMX',
+    title: 'Release 1.2 version file and notes',
+    description: 'Set the version to 1.2.0. Add release-notes/v1.2.0.md with one item.',
+    assignee: 'openai',
+    reviewer: 'xai',
+    action: 'docs',
+    notes: [],
+  };
+  task.policy = policyCheck(task, { source: 'Claude' });
+  assert.ok(isVersionBlock(task));
+  const r = confirmOwnerVersion(task, { version: '1.3.0', by: 'Owner', at: 'T' });
+  assert.equal(r.ok, true);
+  assert.equal(r.version, '1.3.0');
+  assert.equal(task.title, 'Release 1.3.0 version file and notes');
+  assert.match(task.description, /Set the version to 1\.3\.0/);
+  assert.match(task.description, /release-notes\/v1\.3\.0\.md/);
+  assert.doesNotMatch(`${task.title}\n${task.description}`, /1\.2(?:\.0)?/);
+  assert.ok(task.policy.ok);
+  assert.match(task.policy.warn.join(), /chosen by you: 1\.3\.0/);
+});
+
+test('confirming 1.2.0 does not turn an existing 1.2.0 into 1.2.0.0', () => {
+  const task = {
+    id: 'JQQPMX',
+    title: 'Release 1.2 version file and notes',
+    description: 'Set the version to 1.2.0. Add release-notes/v1.2.0.md.',
+    assignee: 'openai',
+    reviewer: 'xai',
+    action: 'docs',
+    notes: [],
+  };
+  task.policy = policyCheck(task, { source: 'Claude' });
+  const r = confirmOwnerVersion(task, { version: '1.2.0', by: 'Owner', at: 'T' });
+  assert.equal(r.ok, true);
+  assert.equal(task.title, 'Release 1.2.0 version file and notes');
+  assert.equal(task.description, 'Set the version to 1.2.0. Add release-notes/v1.2.0.md.');
+  assert.doesNotMatch(`${task.title}\n${task.description}`, /1\.2\.0\.0/);
+  assert.ok(task.policy.ok);
+});

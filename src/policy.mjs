@@ -62,11 +62,21 @@ export function policyCheck(task, { source = 'Owner' } = {}) {
 }
 
 const VERSION_NUM = /^\d{1,4}\.\d{1,4}(?:\.\d{1,4})?$/;
+// Complete tokens only: 1.2 must not match the 1.2 inside 1.2.0.
+const BARE_VERSION = /\bv?(\d+\.\d+(?:\.\d+)?)(?!\.\d)/gi;
 export function isVersionBlock(task) {
   return (task?.policy?.block || []).some((b) => /Only the owner picks version numbers/i.test(b));
 }
-function rewriteVersions(text, version) {
-  return String(text || '').replace(/\b((?:v|version\s+|release\s+|hearth\s*os\s+|update\s+))(\d+\.\d+(?:\.\d+)?)\b/gi, (_, p) => `${p}${version}`);
+function versionTokens(text) {
+  const found = new Set(mentionedVersions(text));
+  for (const m of String(text || '').matchAll(BARE_VERSION)) found.add(m[1]);
+  return [...found].sort((a, b) => b.length - a.length || b.localeCompare(a));
+}
+function rewriteVersions(text, version, from) {
+  const alts = [...new Set(from)].filter(Boolean).sort((a, b) => b.length - a.length).map((o) => o.replace(/\./g, '\\.'));
+  if (!alts.length) return String(text || '');
+  const re = new RegExp(`\\b(v?)(${alts.join('|')})(?!\\.\\d)`, 'gi');
+  return String(text || '').replace(re, (_, p) => `${p}${version}`);
 }
 // Owner-only. The dialog in main.js is the only caller, and it always passes
 // by: 'Owner'. An AI name, a lead line, or any other by-value is refused.
@@ -78,8 +88,9 @@ export function confirmOwnerVersion(task, { version, by, at = new Date().toISOSt
   if (!isVersionBlock(task)) return { ok: false, reason: 'This task is not waiting on a version number' };
   const v = String(version || '').trim().replace(/^v/i, '');
   if (!VERSION_NUM.test(v)) return { ok: false, reason: 'Write the exact version you want (MAJOR.MINOR)' };
-  let title = rewriteVersions(task.title, v);
-  let description = rewriteVersions(task.description, v);
+  const from = versionTokens(`${task.title}\n${task.description}`);
+  let title = rewriteVersions(task.title, v, from);
+  let description = rewriteVersions(task.description, v, from);
   if (!mentionedVersions(`${title}\n${description}`).length) {
     description = [description, `Version ${v}.`].filter(Boolean).join('\n').trim();
   }
