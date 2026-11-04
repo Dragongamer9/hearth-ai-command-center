@@ -128,7 +128,8 @@ const shot = async (label, { full = false } = {}) => {
   await page.screenshot({ path: f, fullPage: full });
   console.log('saved', f);
 };
-const nav = async (v) => { await page.click(`.side [data-nav="${v}"]`); await page.waitForTimeout(300); };
+// Pages used less often sit under More in the sidebar: open it first when needed.
+const nav = async (v) => { const sel = `.side [data-nav="${v}"]`; if (!(await page.locator(sel).count())) { await page.click('.side [data-ui="more"]'); await page.waitForTimeout(150); } await page.click(sel); await page.waitForTimeout(300); };
 const text = () => page.textContent('.main');
 
 // First run after the upgrade: the owner confirms the identity (suggested, never auto-saved).
@@ -250,7 +251,9 @@ await shot('local-ai-models', { full: true });
 await nav('habitat');
 await page.waitForSelector('#habitat canvas', { timeout: 10000 });
 await page.waitForTimeout(2500);
+await page.click('.side [data-ui="more"]'); await page.waitForTimeout(150);
 check(await page.locator('.side [data-nav="summary"]').count() === 1 && await page.locator('.side [data-nav="habitat"]').count() === 1, 'ops and Habitat in one app');
+await page.keyboard.press('Escape');
 await shot('habitat-with-team-ops-0.9.0');
 
 await browser.close();

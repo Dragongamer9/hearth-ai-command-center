@@ -376,7 +376,7 @@ export function createWorkflow(C) {
     nav: [['jobs', '◷', 'Jobs'], ['release', '⚑', 'Release gate']],
     titles: { jobs: ['Jobs', 'Every background job: status, progress, output files, restarts survived; Cancel and Retry'], release: ['Release gate', 'The exact commit, tasks, notes and checklist before any tag or release'] },
     views: { jobs: viewJobs, release: viewRelease },
-    refreshTruth, facts, truthBadges, truthCard, truthLine, gate, modeBrief, prepare, snapshot, enforce, assets, instruct, captureChat, closeVerify, acks, lines, undoRevert, verify, verifyTests, ensureResults, packet, blockersHtml, blockerBadge, drawerExtras, overviewCard, pollTags, madeTag, releaseAllowed, pollJobs,
+    refreshTruth, facts, truthBadges, truthCard, truthLine, gate, modeBrief, prepare, snapshot, enforce, assets, instruct, captureChat, closeVerify, acks, lines, undoRevert, verify, verifyTests, ensureResults, packet, blockersHtml, blockerBadge, drawerExtras, overviewCard, pollTags, madeTag, releaseAllowed, pollJobs, jobsRunning: () => (local.jobs || []).filter((j) => j.status === 'running').length,
     defaultMode: W.defaultMode,
     boot() {
       document.addEventListener('click', onClick);
@@ -384,7 +384,7 @@ export function createWorkflow(C) {
       // Live: re-read git facts every 30 s (redrawn on the board only, never over a draft).
       setInterval(() => refreshTruth().then(() => { const u = C.ui(); if (u.view === 'board' && !u.selected && !u.modal) C.render(); }), 30000);
       setInterval(pollTags, 5 * 60000);
-      setInterval(() => { pollJobs().then(() => { if (C.ui().view === 'jobs') C.render(); }); }, 10000);
+      setInterval(() => { pollJobs().then(() => { const u = C.ui(); if (u.view === 'jobs' || (u.panel === 'jobs' && document.activeElement?.id !== 'chat-text')) C.render(); }); }, 10000);
     },
   };
 }

@@ -1,7 +1,7 @@
 /* Team ops (src/ops/ui.mjs). Uses the app's theme tokens. */
 .ops-stats { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; }
-.ops-stats > div { background: var(--panel-2); border-radius: var(--r); padding: 8px 10px; display: flex; flex-direction: column; }
-.ops-stats b { font-size: 20px; color: var(--strong); }
+.ops-stats > div { background: var(--panel-2); border-radius: 12px; padding: 8px 10px; display: flex; flex-direction: column; }
+.ops-stats b { font: 500 22px/1.2 var(--serif, inherit); color: var(--strong); }
 .ops-stats span { font-size: 12px; color: var(--muted); }
 .ops-stats .warn b { color: var(--warn); }
 .ops-stats .bad b { color: var(--bad, #e06c6c); }
@@ -31,9 +31,7 @@
 .ops-mic.rec { color: var(--bad, #e06c6c); border-color: var(--bad, #e06c6c); }
 .ops-card { margin-bottom: 8px; }
 .atts audio { width: 260px; }
-.ops-results { margin-top: 6px; font-size: 12px; display: flex; flex-direction: column; gap: 2px; }
-.ops-results .ok span:first-child { color: var(--good, #5fbf77); font-weight: 700; }
-.ops-results .no span:first-child { color: var(--bad, #e06c6c); font-weight: 700; }
+/* .ops-results (the ✓/✗ rail under a message) is styled in styles.css */
 .ops-working { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
 .ops-working div { padding-left: 10px; }
 .ops-act { padding: 4px 0; border-bottom: 1px solid var(--line); font-size: 12.5px; }

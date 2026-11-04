@@ -29,7 +29,8 @@ test("the owner's input is never blocked by AI activity", () => {
   const src = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
   const send = src.slice(src.indexOf('async function sendChat()'), src.indexOf('// The room.'));
   assert.doesNotMatch(send, /ui\.typing|typingNow\(\)|isTyping\(/, 'sendChat must not wait for typing AIs');
-  assert.match(src, /<button class="btn primary" data-sendchat>Send<\/button>/, 'Send is never disabled');
+  assert.match(src, /<button class="send" data-sendchat title="Send \(Enter\)" aria-label="Send">/, 'Send is never disabled');
+  assert.doesNotMatch(src, /data-sendchat[^>]*disabled/);
   assert.doesNotMatch(src, /id="chat-text"[^>]*disabled/);
   assert.match(src, /data-stopround/, 'there is a Stop control');
 });

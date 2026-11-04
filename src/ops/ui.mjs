@@ -3,6 +3,7 @@
 // logs, phone), approval levels in Settings, voice notes, and the hooks main.js calls
 // around task runs. main.js passes its helpers in through createOps(ctx).
 import './ops.css';
+import { icon } from '../icons.mjs';
 import { describeMedia } from '../media.mjs';
 import { classifyFailure, BLOCKER_LABEL } from './workflow.mjs';
 import { budgets as computeBudgets, pickByHeadroom, nearLimitWarning } from './budget.mjs';
@@ -345,16 +346,20 @@ function viewProject() {
 }
 
 function approvalSettings() {
+  return `${levelsCard()}${leadPowersCard()}${identityCard()}`;
+}
+// Settings › Approvals & safety shows the levels; Team & lead powers and Owner identity show the other two cards.
+function levelsCard() {
   const lv = cleanLevels(C.settings().approvalLevels);
   const item = (k) => `<div class="row ops-lv"><span style="flex:1">${esc(CATEGORIES[k].label)}</span>${OWNER_ONLY.includes(k) ? '<span class="badge warn">Owner-only</span>'
     : `<button class="chip ${lv[k] === 'routine' ? 'on' : ''}" data-ops="level" data-arg="${k}" data-val="routine">Routine</button><button class="chip ${lv[k] === 'major' ? 'on' : ''}" data-ops="level" data-arg="${k}" data-val="major">Major</button>`}</div>`;
   return `<div class="card mb ops-levels"><h3>Approval levels</h3>
     <p class="muted ops-note">Routine actions never ask (they are still recorded in the Audit log). Major ones ask you, or the lead while “lead acts for me” is on (never for boot-critical changes or anything touching main, tags or force-pushes). Owner-only ones always need you, except merges, releases and tags when you turn on the lead's switch below. Settings stay yours so no AI can give itself more power. Every AI is told this policy.</p>
-    <div class="grid two"><div><div class="sect">Routine or major (you choose)</div>${MOVABLE.map(item).join('')}</div><div><div class="sect">Always yours</div>${OWNER_ONLY.map(item).join('')}</div></div></div>${leadPowersCard()}${identityCard()}`;
+    <div class="grid two"><div><div class="sect">Routine or major (you choose)</div>${MOVABLE.map(item).join('')}</div><div><div class="sect">Always yours</div>${OWNER_ONLY.map(item).join('')}</div></div></div>`;
 }
 
 function voiceButton() {
-  return `<button class="btn ghost ops-mic ${local.rec ? 'rec' : ''}" data-opsmic title="Hold to record a voice note (transcribed on this computer only)">${local.rec ? '● Recording… release to send' : '🎙'}</button>`;
+  return `<button class="btn ghost ops-mic ${local.rec ? 'rec' : ''}" data-opsmic title="Hold to record a voice note (transcribed on this computer only)">${local.rec ? '● Recording… release to send' : icon('mic', 'sm')}</button>`;
 }
 
 function suggestHint() {
@@ -418,7 +423,7 @@ async function pollUsage() {
 async function pushPhone() {
   if (!local.phone?.running) return;
   const st = S();
-  await call('opsPhonePush', phoneSnapshot({ state: { ...st, opsCards: cards() }, names: C.NAMES, project: local.projects.list.find((x) => x.id === local.projects.active)?.name || '', startLabel: (t) => { const a = C.actionFor(t); return a && ['start', 'resume'].includes(a.kind) ? a.label : null; } }));
+  await call('opsPhonePush', phoneSnapshot({ state: { ...st, opsCards: cards() }, names: C.NAMES, project: local.projects.list.find((x) => x.id === local.projects.active)?.name || '', startLabel: (t) => { const a = C.actionFor(t); return a && ['start', 'resume'].includes(a.kind) ? a.label : null; }, team: C.team ? C.team() : [] }));
 }
 async function onPhone(raw) {
   const a = phoneAction(raw);
@@ -887,7 +892,7 @@ export function createOps(ctx) {
       project: ['Project', 'Projects, project memory, tests, CI, Hearth logs and your phone'],
       actions: ['Board actions', 'Every action line an AI wrote, and what came of it'],
     },
-    summaryCard, approvalCards, approvalSettings, projectSwitcher, ciBadge, drawerPanel, voiceButton, suggestHint,
+    summaryCard, summaryData, approvalCards, approvalSettings, levelsCard, leadPowersCard, identityCard, phoneBlock, capsCard, toolsCard, projectsList: () => local.projects, projectSwitcher, ciBadge, drawerPanel, voiceButton, suggestHint,
     afterRun, checkDone, handoff, recordVerdict, leadLines, auditRoutine, beforeStart, routeQueued,
     snapshot: opsSnapshot,
     overlay, banner, syncPowers, docsPaths, watchRelease, actionResult, turnBegin, turnEnd, turnResults, resultsHtml, bodyHtml, mentionNotes, imageNotice, attMeta, checkpointLine, handleLines, localModels, localMayReview: localMayReviewTask, syncLocal,

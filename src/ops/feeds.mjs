@@ -28,11 +28,13 @@ export function logTask(l) {
 
 const COLS = [['Intake', ['intake']], ['In progress', ['implementing', 'checkpoint']], ['Verify', ['testing', 'review']], ['Owner approval', ['approval']]];
 
-export function phoneSnapshot({ state, names = {}, project = '', startLabel = () => null }) {
+export function phoneSnapshot({ state, names = {}, project = '', startLabel = () => null, team = [] }) {
   const tasks = state.tasks || [];
   return {
     project,
     names,
+    // Team chips on the phone: who is linked, a status dot and the lead (no other data).
+    team: (Array.isArray(team) ? team : []).slice(0, 12).map((m) => ({ id: String(m.id), dot: ['work', 'ok', 'wait', 'off', 'bad'].includes(m.dot) ? m.dot : 'off', lead: m.lead === true })),
     at: new Date().toISOString(),
     waiting: {
       permissions: (state.permissions || []).filter((p) => p.status === 'pending').map((p) => ({ id: p.id, agent: p.agent, kind: p.kind, what: p.what, why: p.why, computerOnly: PHONE_NEVER_APPROVE.includes(p.kind) })),

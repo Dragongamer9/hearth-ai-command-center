@@ -20,6 +20,7 @@ import { createLeadWaker, waitingForLead } from './ops/leadwake.mjs';
 import { createWorkflow } from './ops/workflow-ui.mjs';
 import { instructionsBlock, recordReview, holdApproval, useHeldApproval, recordTest, shouldPing, lastReview } from './ops/workflow.mjs';
 import { teamHabitat, teamHabitatLine } from './habitat/status.mjs';
+import { icon } from './icons.mjs';
 
 const api = window.hearth;
 
@@ -58,6 +59,19 @@ const MAX_HOPS = 6;
 // ---------- state ----------
 let state = { version: 1, tasks: [], audit: [], models: {}, chat: [], agentStatus: {}, autoHandoff: true, roles: {}, lead: 'anthropic', disabled: {}, permissions: [], chatSessions: {} };
 let ui = { view: 'overview', selected: null, modal: null, busy: {}, draft: '', target: 'all', typing: null, running: {}, saving: {}, changes: {}, expanded: null, side: 'anthropic', signin: {}, installOllama: false, editing: null, showHist: {}, typingSet: new Set(), attach: [], lightbox: null, hist: { q: '', provider: 'all', source: 'all', list: [], sel: null, stats: null, kind: 'auto', scanning: false }, prs: { list: [], loaded: false, msg: '', byTask: {} }, release: { version: '', confirm: '', target: '', notes: '', draft: true } };
+// Look-only preferences of the redesigned shell (side panel, Team list, sidebar width).
+// Kept in this window's local storage, written only when the owner changes one; app settings are untouched.
+const PREFS_KEY = 'hearth-aicc-ui';
+const PANEL_TABS = [['board', 'Board'], ['task', 'Task'], ['habitat', 'Habitat'], ['jobs', 'Jobs'], ['approvals', 'Approvals'], ['release', 'Release']];
+function loadPrefs() { try { const p = JSON.parse(localStorage.getItem(PREFS_KEY) || '{}'); return p && typeof p === 'object' ? p : {}; } catch { return {}; } }
+function savePref(k, v) { try { const p = loadPrefs(); p[k] = v; localStorage.setItem(PREFS_KEY, JSON.stringify(p)); } catch {} }
+{
+  const p = loadPrefs();
+  ui.panel = PANEL_TABS.some(([id]) => id === p.panel && id !== 'task') ? p.panel : null;
+  ui.teamOpen = p.teamOpen !== false;
+  ui.sideCollapsed = p.sideCollapsed === true;
+  ui.more = false; ui.menu = null; ui.mode = 'routine'; ui.setSec = 'general';
+}
 let backups = { recoveredFrom: null, backups: [] };
 let settings = { project: null, projects: [], connection: { anthropic: 'cli', openai: 'cli', xai: 'cli', mistral: 'cli', perplexity: 'api', deepseek: 'api' }, bins: {}, access: 'standard', extraDirs: [], autoPush: true, chatEdits: true, chatResume: true, theme: 'hearth', reduceMotion: false, textSize: 100 };
 let gh = { git: null, gh: null, ghUser: null };
@@ -79,6 +93,7 @@ const ops = createOps({
   runTask: (...a) => runTask(...a), startOrQueue: (t, a) => startOrQueue(t, a), decide: (...a) => decide(...a), sendChat: () => sendChat(),
   makeTask: (o, src) => makeTask(o, src), actionFor: (t) => actionFor(t),
   cli: () => cli, method: (a) => method(a), refreshAgents: async () => { await refreshAgents(); render(); },
+  team: () => teamList().map((a) => ({ id: a, dot: dotOf(a), lead: a === state.lead })),
 });
 
 // Team workflow (src/ops/workflow*.mjs): truth card, run gates and modes, instruction log,
@@ -146,6 +161,13 @@ const agentChip = (id) => {
   return `<span class="agent ${a.cls}"><i></i>${esc(a.name)}</span>`;
 };
 const avatar = (id) => `<span class="avatar ${AGENTS[id]?.cls || ''}" style="background:${COLORS[id] || '#67707b'}">${esc((AGENTS[id]?.name || '?')[0])}</span>`;
+
+// Coloured monograms for teammates (never provider logos).
+const MONO = { anthropic: ['C', '#b9772e'], openai: ['G', '#3f8a6b'], google: ['Ge', '#4a73b5'], xai: ['X', '#5d5a57'], mistral: ['M', '#b8613a'], qwen: ['Q', '#6a5fb5'], perplexity: ['P', '#2f7f8f'], deepseek: ['D', '#4a5fb0'], ollama: ['L', '#2f8a8a'], freebuff: ['F', '#8a5aa8'], copilot: ['Co', '#3d8a63'], meta: ['Me', '#3b6fc0'] };
+const mono = (id, small = false) => { const m = MONO[id] || [(AGENTS[id]?.name || '?')[0], '#7a7166']; return `<span class="av-ai ${small ? 's' : ''}" style="background:${m[1]}" aria-hidden="true">${esc(m[0])}</span>`; };
+// Sidebar dots: working (ember ring) · free (green) · waiting (amber) · problem (red) · not linked (hollow).
+function dotOf(a) { const st = panelState(statusOf(a), outInfo(a)); return st.live ? 'work' : ({ good: 'ok', warn: 'wait', bad: 'bad', accent: 'work' }[st.cls] || 'off'); }
+const teamList = () => AGENT_IDS.filter((a) => connected(a) || authHold(a) || outInfo(a) || a === state.lead);
 
 function method(a) {
   if (API_ONLY.includes(a)) return 'api';
@@ -578,8 +600,41 @@ async function undoLead(id) {
 }
 
 // ---------- views ----------
+function projectName() {
+  const p = ops.projectsList?.();
+  const cur = p?.list?.find((x) => x.id === p.active);
+  return cur?.name || (settings.project ? String(settings.project).split(/[\\/]/).filter(Boolean).pop() : '');
+}
 function viewOverview() {
-  return `${wf.overviewCard()}${ops.summaryCard()}${viewOverviewMain()}`;
+  const h = new Date().getHours();
+  const part = h < 5 ? 'evening' : h < 12 ? 'morning' : h < 18 ? 'afternoon' : 'evening';
+  const name = settings.ownerIdentity?.name || '';
+  const proj = projectName();
+  const live = liveAgents();
+  const s = ops.summaryData();
+  const running = wf.jobsRunning();
+  const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+  const away = `<div class="away"><div class="away-h">${icon('moon', 'sm')}<b>While you were away</b><span class="faint" style="font-size:12.5px">since ${esc(time(s.since))}</span><span class="grow"></span><button class="btn small ghost" data-ops="seen">Mark all as seen</button><button class="btn small link" data-nav="summary">Open →</button></div>
+    ${s.quiet && !s.waitingCount ? '<div class="empty">Nothing happened since you last looked.</div>' : `<div class="away-grid">
+      <div><div class="k">Needs you</div><div class="v">${s.waitingCount ? `${plural(s.waiting.approvals.length, 'approval')} · ${plural(s.waiting.permissions.length + s.waiting.cards.length, 'question')}` : 'Nothing'}</div></div>
+      <div><div class="k">Moved</div><div class="v">${plural(s.totals.done, 'task')} finished · ${plural(s.totals.reviews, 'review')} · ${plural(s.totals.merges, 'merge')}</div></div>
+      <div><div class="k">Jobs</div><div class="v">${running} running · ${plural(s.totals.failures, 'failure')}</div></div></div>`}</div>`;
+  const chip = (attrs, ic, label, dis = false) => `<button class="qchip" ${attrs} ${dis ? 'disabled' : ''}>${icon(ic, 'sm')}${label}</button>`;
+  return `<div class="home">
+    <div class="greet"><img src="./icon.png" alt=""><h1>Good ${part}${name ? `, ${esc(name)}` : ''}</h1></div>
+    <div class="greet-sub">${proj ? `Your team is ready on ${esc(proj)}. ${esc(AGENTS[state.lead].name)} ★ leads; nothing reaches main without you.` : 'Pick a shared project folder to get the team started.'}</div>
+    ${composer('What should the team work on?', false)}
+    <div class="chips">
+      ${chip('data-prefill="plan"', 'board', 'Plan a feature')}
+      ${chip('data-nav="project"', 'dl', 'Fix a bug from sent logs')}
+      ${chip('data-nav="github"', 'branch', 'Review open pull requests')}
+      ${chip('data-checkin', 'users', 'Team check-in', !live.length || Boolean(round))}
+      ${chip('data-nav="release"', 'flag', 'Prepare a release')}
+    </div>
+    ${away}
+    <div class="home-block">${ops.banner ? '' : ''}${setupChecklist()}${wf.overviewCard()}</div>
+    <details class="home-more"><summary>Team at a glance ▾</summary>${viewOverviewMain()}</details>
+  </div>`;
 }
 function viewOverviewMain() {
   const open = openTasks();
@@ -592,7 +647,7 @@ function viewOverviewMain() {
   const active = open.filter((t) => ui.running[t.id] || ['implementing', 'checkpoint', 'testing', 'review'].includes(t.stage)).slice(0, 6);
   const roster = AGENT_IDS.filter((a) => connected(a) || ui.running[a] || state.tasks.some((t) => t.assignee === a && !['approved', 'rejected'].includes(t.stage)));
   const recentChat = state.chat.filter((m) => !m.deleted && m.who !== 'system').slice(-5).reverse();
-  return `${setupChecklist()}
+  return `
     <div class="grid stats">
       <div class="card stat"><div class="n">${open.length}</div><div class="l">Open tasks</div></div>
       <div class="card stat"><div class="n" style="color:${waiting.length + asks.length ? 'var(--warn)' : 'var(--strong)'}">${waiting.length + asks.length}</div><div class="l">Waiting for you<br><span class="faint">${waiting.length} approval${waiting.length === 1 ? '' : 's'} · ${asks.length} permission${asks.length === 1 ? '' : 's'}</span></div></div>
@@ -842,14 +897,17 @@ function renderPanel() {
   const snap = habitatSnapshot();
   const hab = teamHabitat(state.habitat, snap.agents, NAMES);
   const where = Object.fromEntries(hab.rows.map((r) => [r.id, r]));
-  const rows = AGENT_IDS.filter((a) => connected(a) || authHold(a) || outInfo(a) || a === state.lead).map((a) => {
+  const rows = teamList().map((a) => {
     const st = panelState(statusOf(a), outInfo(a));
     const hold = authHold(a);
     const h = where[a];
-    return `<div class="team-member">${agentChip(a)}<span class="badge ${st.cls}"${hold?.message ? ` title="${esc(hold.message)}"` : ''}>${st.live ? '<span class="dot pulse"></span>' : ''}${esc(st.text)}</span>${st.detail ? `<small>${esc(st.detail)}</small>` : ''}${h ? `<small class="wf-hab" title="Habitat">⌂ ${esc(h.place)} · ${esc(h.activity)}</small>` : ''}</div>`;
+    const ag = AGENTS[a];
+    const can = { web: 'opens its own site in a window', api: 'chats, plans and reviews through its official API', local: 'runs on this computer', manual: 'works hands-on in a terminal' }[ag.kind] || 'chats, plans, reviews and edits code in task workspaces';
+    const tip = [`${ag.name}${a === state.lead ? ' (lead)' : ''}: ${st.text}`, st.detail, hold?.message, h ? `Habitat: ${h.place} · ${h.activity}` : '', `${ag.vendor} · ${ag.tool}: ${can}`, 'Click to open on the Agents page.'].filter(Boolean).join('\n');
+    return `<button class="team-member" data-teammember="${a}" title="${esc(tip)}">${mono(a, true)}<span class="nm">${esc(ag.name)}${a === state.lead ? ' <span class="star">★</span>' : ''}</span><span class="st ${st.cls}">${a === state.lead ? 'lead · ' : ''}${esc(st.text)}</span><span class="dot ${dotOf(a)}${st.live ? ' pulse' : ''}"></span>${st.detail ? `<small>${esc(st.detail)}</small>` : ''}</button>`;
   }).join('');
   const board = hab.board.length ? `<div class="wf-hallboard"><b>Hall board</b>${hab.board.map((b) => `<span>${esc(b.who)}: “${esc(b.text)}”</span>`).join('')}</div>` : '';
-  return rows ? rows + board : '<span class="faint">No AIs linked yet.</span>';
+  return rows ? rows + board : '<span class="empty">No AIs linked yet.</span>';
 }
 // ---------- Habitat (src/habitat.mjs) ----------
 // The same state the status panel reads, one entry per enabled AI.
@@ -920,29 +978,43 @@ function habitatPrompt(agent, resumed) {
 // Redraw only the panel (keeps the chat draft and scroll).
 function updatePanel() {
   const el = document.getElementById('team-panel');
-  if (el) el.innerHTML = renderPanel();
+  if (el && ui.teamOpen) el.innerHTML = renderPanel();
 }
 
 // ---------- team chat ----------
 function askCard(p) {
   const st = p.status;
+  const label = st === 'pending' ? 'Permission request' : st === 'approved' ? 'Approved' : 'Denied';
   return `<div class="ask ${st}">
-    <div class="k">${st === 'pending' ? 'Permission request' : st === 'approved' ? 'Approved' : 'Denied'} · R-${esc(p.id)} · ${esc(PERMISSION_KINDS[p.kind])}${p.context !== 'chat' ? ` · T-${esc(p.context)}` : ''}</div>
-    <div class="w">${esc(p.what)}</div>
+    <div class="hd"><span class="ic">${icon(st === 'pending' ? 'shield' : st === 'approved' ? 'check' : 'x')}</span><div style="flex:1;min-width:0"><div class="w">${esc(p.what)}</div><div class="k">${label} from ${esc(NAMES[p.agent] || p.agent)} · R-${esc(p.id)} · ${esc(PERMISSION_KINDS[p.kind])}${p.context !== 'chat' ? ` · T-${esc(p.context)}` : ''}</div></div></div>
     ${p.why ? `<div class="y">Why: ${esc(p.why)}</div>` : ''}
-    ${st === 'pending' ? `<div class="row"><button class="btn small good" data-decide="${p.id}:approved">Approve</button><button class="btn small danger" data-decide="${p.id}:denied">Deny</button><button class="btn small ghost" data-decide="${p.id}:why">Ask why</button><span class="faint" style="font-size:11.5px">${esc(NAMES[p.agent])} is blocked until you answer.</span></div>`
-      : `<div class="faint" style="font-size:11.5px">${esc(st)} by you ${esc(ago(p.decidedAt))} · recorded in the audit log</div>`}
+    <div class="facts"><span class="pill">${esc(PERMISSION_KINDS[p.kind])}</span><span class="pill mono">R-${esc(p.id)}</span>${p.context !== 'chat' ? `<span class="pill mono">T-${esc(p.context)}</span>` : ''}</div>
+    ${st === 'pending' ? `<div class="ft"><button class="btn small primary" data-decide="${p.id}:approved">Approve</button><button class="btn small" data-decide="${p.id}:denied">Deny</button><button class="btn small ghost" data-decide="${p.id}:why">Ask why</button><span class="grow"></span><span class="faint">${esc(NAMES[p.agent])} is blocked until you answer · logged in the audit log</span></div>`
+      : `<div class="ft"><span class="faint">${esc(st)} by you ${esc(ago(p.decidedAt))} · recorded in the audit log</span></div>`}
   </div>`;
+}
+
+// Tasks waiting for the owner, as cards at the end of the conversation (also in Approvals).
+function inlineApprovals() {
+  const list = state.tasks.filter((t) => t.stage === 'approval');
+  if (!list.length) return '';
+  return `<div class="inline-approvals">${list.map((t) => {
+    const v = t.reviewVerdict;
+    const tests = t.done?.tests || '';
+    const pr = ui.prs.byTask[t.id];
+    return `<div class="appr"><div class="hd"><span class="ic">${icon('merge')}</span><div style="flex:1;min-width:0"><div class="w">${t.ws ? 'Approve & merge' : 'Approve'} T-${esc(t.id)}?</div><div class="k">${esc(t.title)} · built by ${esc(NAMES[t.assignee] || 'nobody')}, reviewed by ${esc(NAMES[t.reviewer] || 'nobody')}</div></div></div>
+      <div class="facts">${v?.sha ? `<span class="pill mono">@${esc(short(v.sha))}</span>` : ''}${tests ? `<span class="pill ${tests === 'passed' ? 'good' : 'bad'}">tests ${esc(tests)}</span>` : ''}${v?.verdict === 'approve' ? `<span class="pill good">APPROVE · ${esc(NAMES[v.by] || v.by)}</span>` : ''}${t.pr ? `<span class="pill">PR #${esc(t.pr.number || '')}${pr?.checks ? ` · ${pr.checks.passed}/${pr.checks.total} checks` : ''}</span>` : ''}${t.policy.warn.length ? `<span class="pill warn" title="${esc(t.policy.warn.join(' '))}">${t.policy.warn.length} policy note${t.policy.warn.length > 1 ? 's' : ''}</span>` : ''}</div>
+      <div class="ft">${approveButtons(t)}<button class="btn small danger" data-reject="${t.id}">Reject</button>${t.ws ? `<button class="btn small ghost" data-showchanges="${t.id}" data-inline>Show changes</button>` : `<button class="btn small ghost" data-open="${t.id}">Details</button>`}</div></div>`;
+  }).join('')}</div>`;
 }
 
 function chatMessage(m) {
   if (m.deleted) return '';
-  const cls = { owner: 'me', system: 'sys' }[m.who] || '';
-  const chip = m.who === 'owner' ? '<b style="color:var(--strong)">You</b>' : m.who === 'system' ? '' : agentChip(m.who) + (m.relayed ? '<span>relayed by you</span>' : '');
+  const kind = { owner: 'me', system: 'sys' }[m.who] || 'ai';
   const props = (m.proposals || []).map((p, i) => `<div class="prop">
-      <div style="flex:1"><div>${esc(p.title)}</div><div class="meta row" style="margin-top:4px">${agentChip(p.assignee)}<span class="faint" style="font-size:11px">review</span>${agentChip(p.reviewer)}<span class="badge">${esc(ACTIONS[p.action])}</span></div></div>
+      <div style="flex:1;min-width:0"><div>${esc(p.title)}</div><div class="meta row" style="margin-top:4px">${agentChip(p.assignee)}<span class="faint" style="font-size:11.5px">review</span>${agentChip(p.reviewer)}<span class="badge">${esc(ACTIONS[p.action])}</span></div></div>
       ${!p.taskId && p.dupOf && state.tasks.some((x) => x.id === p.dupOf) ? `<span class="badge warn" title="Similar to an open task">Looks like T-${esc(p.dupOf)}</span><button class="btn small primary" data-opendup="${esc(p.dupOf)}">Open T-${esc(p.dupOf)}</button><button class="btn small" data-adddup="${m.id}:${i}">Add anyway</button>` : ''}
-      ${p.taskId ? `<button class="btn small ghost" data-open="${p.taskId}">On board ✓</button>` : p.dupOf && state.tasks.some((x) => x.id === p.dupOf) ? '' : `<button class="btn small" data-addprop="${m.id}:${i}">Add</button>${EDITORS.includes(p.assignee) ? `<button class="btn small primary" data-startprop="${m.id}:${i}" ${canRun(p.assignee) && settings.project ? '' : 'disabled'}>Add & start</button>` : ''}`}
+      ${p.taskId ? `<button class="badge good" data-open="${p.taskId}" style="cursor:pointer">✓ T-${esc(p.taskId)} on board</button>` : p.dupOf && state.tasks.some((x) => x.id === p.dupOf) ? '' : `<button class="btn small" data-addprop="${m.id}:${i}">Add to board</button>${EDITORS.includes(p.assignee) ? `<button class="btn small primary" data-startprop="${m.id}:${i}" ${canRun(p.assignee) && settings.project ? '' : 'disabled'}>Add & start</button>` : ''}`}
     </div>`).join('');
   const pending = (m.proposals || []).filter((p) => !p.taskId).length;
   const asks = (m.asks || []).map((id) => state.permissions.find((p) => p.id === id)).filter(Boolean).map(askCard).join('');
@@ -953,43 +1025,57 @@ function chatMessage(m) {
     : `<div class="body">${m.retracted ? `Message retracted by ${esc(NAMES[m.who])}.` : ops.bodyHtml(m)}${edited}</div>`;
   const hist = ui.showHist[m.id] && m.history?.length ? `<div class="hist">${m.history.map((h) => `${esc(time(h.at))} · ${esc(NAMES[h.by] || h.by)}${h.retracted ? ' retracted' : ' edited'} — earlier text:\n${esc(h.text)}`).join('\n\n')}</div>` : '';
   const tools = m.who !== 'system' && !editing ? `<div class="tools"><button data-editmsg="${m.id}" title="Edit (you can edit any message)">Edit</button><button data-delmsg="${m.id}" title="Delete">Delete</button></div>` : '';
-  return `<div class="msg ${cls} ${m.err ? 'err' : ''} ${m.retracted ? 'retracted' : ''}">
+  const meta = `${esc(time(m.at))}${m.model ? ` · ${esc(m.model)}` : ''}${m.auto ? ' · posted on its own' : ''}${m.parallel ? ' · answered in parallel, independently' : ''}${m.beforeOwner ? ' · written before your newest message' : ''}`;
+  const undo = m.leadUndo ? (() => { const e = (state.leadLog || []).find((x) => x.id === m.leadUndo); return e ? `<div class="row" style="margin-top:6px">${e.undone ? '<span class="badge">Undone</span>' : `<button class="btn small" data-leadundo="${esc(e.id)}">Undo</button>`}</div>` : ''; })() : '';
+  const propsHtml = props ? `<div class="props">${props}${pending > 1 ? `<button class="btn small primary" data-addall="${m.id}" style="margin-top:4px;align-self:flex-start">Add all ${pending}</button>` : ''}</div>` : '';
+  const extra = `${ops.resultsHtml(m)}${hist}${asks}${undo}${propsHtml}`;
+  const cls = `msg ${kind} ${m.err ? 'err' : ''} ${m.retracted ? 'retracted' : ''}`;
+  if (kind === 'me') return `<div class="${cls}">${tools}<div class="bubble">${attachmentsHtml(m)}${body}<div class="t">${meta} <span class="mid">#${esc(m.id)}</span></div></div>${extra}</div>`;
+  if (kind === 'sys') return `<div class="${cls}"><div class="sysin">${body}${attachmentsHtml(m)}${extra}</div></div>`;
+  return `<div class="${cls}">
     ${tools}
-    ${chip ? `<div class="who">${chip}<span>${esc(time(m.at))}${m.model ? ` · ${esc(m.model)}` : ''}${m.auto ? ' · posted on its own' : ''}${m.parallel ? ' · answered in parallel, independently' : ''}${m.beforeOwner ? ' · written before your newest message' : ''}</span><span class="mid">#${esc(m.id)}</span></div>` : ''}
-    ${body}${attachmentsHtml(m)}${ops.resultsHtml(m)}${hist}
-    ${asks}
-    ${m.leadUndo ? (() => { const e = (state.leadLog || []).find((x) => x.id === m.leadUndo); return e ? `<div class="row" style="margin-top:6px">${e.undone ? '<span class="badge">Undone</span>' : `<button class="btn small" data-leadundo="${esc(e.id)}">Undo</button>`}</div>` : ''; })() : ''}
-    ${props ? `<div class="props">${props}${pending > 1 ? `<button class="btn small primary" data-addall="${m.id}" style="margin-top:4px;align-self:flex-start">Add all ${pending}</button>` : ''}</div>` : ''}
+    <div class="who">${mono(m.who)}<b>${esc(NAMES[m.who] || AGENTS[m.who]?.name || m.who)}</b>${m.who === state.lead ? '<span class="star">★ lead</span>' : ''}${m.relayed ? '<span>relayed by you</span>' : ''}<span class="t">${meta}</span><span class="mid">#${esc(m.id)}</span></div>
+    ${body}${attachmentsHtml(m)}${extra}
   </div>`;
+}
+
+function composer(placeholder, note) {
+  const live = liveAgents();
+  if (ui.target !== 'all' && ui.target !== 'relay' && !live.includes(ui.target)) ui.target = 'all';
+  const lead = esc(AGENTS[state.lead].name);
+  const target = (id, label) => `<button class="chip ${ui.target === id ? 'on' : ''}" data-target="${id}" ${id !== 'all' && !live.includes(id) ? 'disabled' : ''}>${label}</button>`;
+  const tLabel = ui.target === 'all' ? `Team <span class="faint">(${lead} ★ first)</span>` : ui.target === 'relay' ? 'Post as FreeBuff' : `${mono(ui.target, true)} ${esc(AGENTS[ui.target].name)}`;
+  const tMenu = ui.menu === 'target' ? `<div class="menu" style="left:58px"><div class="mh">Send to</div>${target('all', `${icon('users', 'sm')} Team <small>${lead} ★ answers first</small>`)}${HEADLESS.filter((a) => connected(a)).map((a) => target(a, `${mono(a, true)} ${esc(AGENTS[a].name)}${live.includes(a) ? '' : ' <small>not available</small>'}`)).join('')}<button class="chip ${ui.target === 'relay' ? 'on' : ''}" data-target="relay" title="Paste what FreeBuff said so everyone can see it">${mono('freebuff', true)} Post as FreeBuff <small>paste what it said</small></button><div class="mh">Or write @name in your message to talk to one AI.</div></div>` : '';
+  const mMenu = ui.menu === 'mode' ? `<div class="menu" style="left:58px"><div class="mh">How careful should the team be with this message?</div><button class="chip ${ui.mode === 'routine' ? 'on' : ''}" data-pickmode="routine">${icon('flag', 'sm')} Routine <small>your approval levels apply</small></button><button class="chip ${ui.mode === 'major' ? 'on' : ''}" data-pickmode="major">${icon('shield', 'sm')} Major <small>ask me before acting</small></button><div class="mh">Major adds a short note to your message asking the team to check with you first.</div></div>` : '';
+  return `<div class="composer-wrap"><div class="composer">
+      ${ui.attach.length ? `<div class="row att-pending">${ui.attach.map((a, i) => `<span class="badge">${a.kind === 'video' ? '🎬' : '🖼'} ${esc(a.name)}<button class="btn small link" data-unattach="${i}" title="Remove">✕</button></span>`).join('')}</div>` : ''}
+      <textarea id="chat-text" rows="1" placeholder="${esc(placeholder)}" aria-label="Message the team (Enter to send, Shift+Enter for a new line, @name to address one AI)">${esc(ui.draft)}</textarea>
+      <div class="crow">
+        <button class="ib" data-attach title="Attach images or videos (or paste / drag them in)">${icon('clip', 'sm')}</button>
+        <button class="to" data-ui="menu-target" title="Who this message goes to">${icon('at', 'sm')}${tLabel}${icon('chev', 'sm')}</button>
+        ${ui.target === 'relay' ? '' : `<button class="to" data-ui="menu-mode" title="Routine or major">${icon(ui.mode === 'major' ? 'shield' : 'flag', 'sm')}${ui.mode === 'major' ? 'Major' : 'Routine'}${icon('chev', 'sm')}</button>`}
+        <span class="grow"></span>
+        ${ops.voiceButton()}
+        <button class="send" data-sendchat title="Send (Enter)" aria-label="Send">${icon('up')}</button>
+      </div>
+      ${tMenu}${mMenu}
+    </div>${note ? '<div class="composer-note">Everyone sees every message · @name talks to one AI · main only changes when you approve</div>' : ''}</div>`;
 }
 
 function viewChat() {
   const live = liveAgents();
-  const target = (id, label) => `<button class="chip ${ui.target === id ? 'on' : ''}" data-target="${id}" ${id !== 'all' && !live.includes(id) ? 'disabled' : ''}>${label}</button>`;
-  if (ui.target !== 'all' && ui.target !== 'relay' && !live.includes(ui.target)) ui.target = 'all';
   const asks = pendingAsks().length;
+  const typing = typingNow() ? `<div class="msg typing">${[...ui.typingSet].map((a) => `${mono(a, true)}<b style="color:var(--strong)">${esc(NAMES[a] || a)}</b>`).join(' ')} <span>${ui.typingSet.size > 1 ? 'are replying (in parallel)…' : 'is replying…'}</span><span class="dots"><i></i><i></i><i></i></span></div>` : '';
   return `<div class="chat">
-    <section class="team-status" aria-label="Team status"><div class="row"><b>Team status</b><span style="flex:1"></span><button class="btn small ghost" data-recheck>Re-check</button><button class="btn small link" data-nav="agents">Agents →</button></div><div class="team-panel" id="team-panel">${renderPanel()}</div></section>
-    <div class="chat-top"><span style="flex:1"></span>
-      ${asks ? `<span class="badge warn">${asks} waiting for your answer</span>` : ''}
-      <span class="faint" style="font-size:11.5px" title="Each AI keeps one session for this room in its own CLI, so you can resume it there (Chat history → Resume).">${settings.chatResume ? 'Saved in each AI’s own CLI' : ''}</span>
-      ${round ? '<button class="btn small danger" data-stopround title="End this chat round: nobody else starts, and the AIs typing now are cancelled">Stop</button>' : ''}<button class="btn small ghost" data-checkin ${live.length && !round ? '' : 'disabled'}>Team check-in</button>
-      ${state.chat.length ? '<button class="btn small ghost" data-clearchat>Clear</button>' : ''}</div>
+    <div class="chat-top">${asks ? `<span class="badge warn">${asks} waiting for your answer</span>` : ''}<span style="flex:1"></span>${settings.chatResume ? '<span class="faint" style="font-size:11.5px" title="Each AI keeps one session for this room in its own CLI, so you can resume it there (Chat history → Resume).">Saved in each AI’s own CLI</span>' : ''}${state.chat.length ? '<button class="btn small ghost" data-clearchat>Clear</button>' : ''}</div>
     <div class="chat-log" id="chat-log">
-      ${state.chat.map(chatMessage).join('') || `<div class="empty" style="padding:28px;line-height:1.6">Say hi, or try: <i>"Here's the plan for Hearth's Settings › Storage page — split it into tasks between you."</i><br><br>
+      ${state.chat.map(chatMessage).join('') || `<div class="empty">Say hi, or try: <i>"Here's the plan for Hearth's Settings › Storage page — split it into tasks between you."</i><br><br>
         Everyone sees every message. ${esc(AGENTS[state.lead].name)} ★ leads and answers first. AIs can mention and hand off to each other, post updates on their own, fix or retract their own messages, and must ask you before risky actions (pushes, merges, releases, deleting files, boot-critical changes, commands outside the workspace). You can edit or delete any message.
         ${live.length ? '' : '<br><br><span style="color:var(--warn)">No agents are linked yet — sign in on the Agents page.</span>'}</div>`}
-      ${typingNow() ? `<div class="msg typing">${[...ui.typingSet].map(agentChip).join('')} <span class="muted">${ui.typingSet.size > 1 ? 'are replying (in parallel)…' : 'is replying…'}</span></div>` : ''}
+      ${inlineApprovals()}
+      ${typing}
     </div>
-    <div class="chat-input">
-      ${ui.attach.length ? `<div class="row att-pending" style="margin-bottom:7px">${ui.attach.map((a, i) => `<span class="badge">${a.kind === 'video' ? '🎬' : '🖼'} ${esc(a.name)}<button class="btn small link" data-unattach="${i}" title="Remove">✕</button></span>`).join('')}</div>` : ''}
-      <div class="row" style="margin-bottom:7px"><span class="faint" style="font-size:12px">Send to</span>${target('all', 'Team (lead first)')}${HEADLESS.filter((a) => connected(a)).map((a) => target(a, AGENTS[a].name)).join('')}<span style="flex:1"></span><button class="chip ${ui.target === 'relay' ? 'on' : ''}" data-target="relay" title="Paste what FreeBuff said so everyone can see it">Post as FreeBuff</button></div>
-      <div class="row" style="align-items:flex-end">
-        <button class="btn ghost" data-attach title="Attach images or videos (or paste / drag them in)">📎</button>${ops.voiceButton()}
-        <textarea id="chat-text" placeholder="Message the team…  (Enter to send, Shift+Enter for a new line, @name to address one AI)" style="flex:1;min-height:48px">${esc(ui.draft)}</textarea>
-        <button class="btn primary" data-sendchat>Send</button>
-      </div>
-    </div>
+    ${composer('Message the team…', true)}
   </div>`;
 }
 
@@ -1001,9 +1087,14 @@ function post(msg) {
 }
 
 async function sendChat() {
-  const text = ui.draft.trim();
+  const raw = ui.draft.trim();
+  // Major (composer mode picker): a visible note on the message asks the team to check first.
+  const text = raw && ui.mode === 'major' && ui.target !== 'relay' ? `${raw}\n\n(Major: please check with me before acting on this.)` : raw;
   // Never blocked by AI activity: only an empty box stops it.
   if (!canOwnerSend(text) && !ui.attach.length) return;
+  ui.mode = 'routine';
+  ui.menu = null;
+  if (ui.view === 'overview') ui.view = 'chat'; // the Home composer posts to Team chat
   if (ui.target === 'relay') {
     post({ who: 'freebuff', text: text.slice(0, 8000), relayed: true, proposals: parseProposals(text) });
     ui.draft = '';
@@ -1685,51 +1776,66 @@ function updateBlock() {
     </div>`;
 }
 
+const SET_SECS = [
+  ['general', 'sun', 'General', 'How the app looks.'],
+  ['identity', 'user', 'Owner identity', 'Every commit the team makes is authored as you. No AI author lines.'],
+  ['team', 'users', 'Team & lead powers', 'Who leads, and what the lead may do without asking you. Only you change these; they are never changed by the app.'],
+  ['accounts', 'key', 'AI accounts', 'Sign-in, API keys and what each AI can do here.'],
+  ['local', 'cpu', 'Local AI', 'Models that run on this computer, and image tools.'],
+  ['projects', 'folder', 'Projects & workspace', 'The shared folder the AIs work in, and the folders they may use.'],
+  ['github', 'branch', 'GitHub', 'Pull, push and pull requests with your own GitHub sign-in.'],
+  ['facts', 'flag', 'Hearth OS facts & red flags', 'What every AI is told about Hearth OS.'],
+  ['safety', 'shield', 'Approvals & safety', 'What the AIs may do, and which actions ask you first.'],
+  ['phone', 'phone', 'Phone view', 'Your board, chat and approvals on your phone, on your local network only.'],
+  ['updates', 'dl', 'App updates', 'Check for, download and install new versions, for the AppImage and the .deb.'],
+  ['data', 'db', 'Saved work & data', 'Backups, export and the local data folder.'],
+  ['about', 'doc', 'About this build', ''],
+];
 function viewSettings() {
   const themeChip = (v, l) => `<button class="chip ${settings.theme === v ? 'on' : ''}" data-theme="${v}">${l}</button>`;
   const check = (key, label) => `<label style="display:flex;gap:10px;align-items:center;margin:4px 0;cursor:pointer;color:var(--text)"><input type="checkbox" data-togglesetting="${key}" ${settings[key] ? 'checked' : ''}> ${label}</label>`;
-  return `${ops.approvalSettings()}<div class="grid two">
-    <div class="card"><h3>Appearance</h3>
+  const p = ops.projectsList?.() || { list: [] };
+  const sec = (id, html) => { const [, , label, lead] = SET_SECS.find((x) => x[0] === id); return `<section class="set-sec" id="set-${id}"><h2>${esc(label)}</h2>${lead ? `<p class="lead">${esc(lead)}</p>` : ''}${html}</section>`; };
+  const body = {
+    general: `<div class="card"><h3>Appearance</h3>
       <div class="row">${themeChip('hearth', 'Follow Hearth OS desktop')}${themeChip('dark', 'Dark')}${themeChip('light', 'Light')}${themeChip('system', 'System')}</div>
       ${check('reduceMotion', 'Reduce motion (Habitat characters stay in place instead of walking around)')}
       <p class="muted" style="font-size:12.5px;line-height:1.5;margin:8px 0 0">${hearthTheme.found
         ? `Using the Hearth desktop theme${hearthTheme.tokens.name ? ` “${esc(hearthTheme.tokens.name)}”` : ''} from <span class="mono">${esc(hearthTheme.dir)}</span> — changes there apply here live.`
-        : `No Hearth desktop theme found at <span class="mono">${esc(hearthTheme.dir)}</span> (theme.json / theme.css), so the Steam-style Hearth OS 1.0 look is used. On Hearth OS it follows Mantel's theme automatically.`}</p>
+        : `No Hearth desktop theme found at <span class="mono">${esc(hearthTheme.dir)}</span> (theme.json / theme.css), so the app's own warm look is used. On Hearth OS it follows Mantel's theme automatically.`}</p>
       <div class="sep"></div>
       <label for="text-size">Text size</label>
       <select id="text-size" aria-describedby="text-size-help">${[100, 115, 130, 150].map((size) => `<option value="${size}" ${size === (settings.textSize || 100) ? 'selected' : ''}>${size}%${size === 100 ? ' (default)' : ''}</option>`).join('')}</select>
-      <p id="text-size-help" class="muted">Scales the whole interface. Ctrl+= increases, Ctrl+- decreases, Ctrl+0 resets to 100%. Your choice is remembered.</p>
-    </div>
-    <div class="card"><h3>App updates</h3>
-      <div class="kv"><span class="k">Installed</span><span class="mono">${esc(info.appVersion)}</span>
-      <span class="k">Channel</span><span>GitHub Releases (published releases only)</span></div>
-      ${updateBlock()}
-    </div>
-    <div class="card"><h3>Shared workspace</h3>
-      <div class="kv"><span class="k">Project folder</span><span class="mono" style="word-break:break-all">${esc(settings.project || 'Not set')}</span></div>
-      <p class="muted" style="font-size:12.5px;line-height:1.5">A git repository all agents share. Each task gets its own branch and working copy; every run is committed as a checkpoint (as you, with no AI attribution) so nothing is lost.</p>
-      <div class="row"><button class="btn small primary" data-pickproject>${settings.project ? 'Change folder' : 'Choose folder'}</button></div>
-      <div class="sep"></div>
-      <label style="display:flex;gap:10px;align-items:center;margin:0;cursor:pointer;color:var(--text)"><input type="checkbox" data-autohandoff ${state.autoHandoff ? 'checked' : ''}> Hand a task to the next free agent when one runs out of usage</label>
-    </div>
-    <div class="card"><h3>What the AIs may do</h3>
-      <label style="display:flex;gap:10px;align-items:flex-start;margin:6px 0;cursor:pointer;font-size:13px;color:var(--text)"><input type="radio" name="access" data-access="standard" ${settings.access !== 'full' ? 'checked' : ''}><span><b>Like their own apps (recommended)</b><br><span class="muted">Edit files, run commands, use git and the web — each with its own built-in safety checks.</span></span></label>
-      <label style="display:flex;gap:10px;align-items:flex-start;margin:6px 0;cursor:pointer;font-size:13px;color:var(--text)"><input type="radio" name="access" data-access="full" ${settings.access === 'full' ? 'checked' : ''}><span><b>Full access, no safety checks</b><br><span class="muted">Anything, without asking. Only if you accept that one bad command can break a device.</span></span></label>
-      <div class="sep"></div>
-      ${check('chatEdits', 'AIs can work (edit, run, use git) right from Team chat')}
-      ${check('chatResume', 'Keep one CLI session per AI for Team chat (resumable in each AI’s own CLI)')}
-      <label style="display:flex;gap:10px;align-items:center;margin:4px 0;cursor:pointer;color:var(--text)"><input type="checkbox" data-toggleleadgh ${leadGitHubOn() ? 'checked' : ''}> Lead handles GitHub (pull, combine, push branches)</label>
+      <p id="text-size-help" class="muted">Scales the whole interface. Ctrl+= increases, Ctrl+- decreases, Ctrl+0 resets to 100%. Your choice is remembered.</p></div>`,
+    identity: ops.identityCard(),
+    team: `<div class="card"><h3>Lead coordinator</h3><div class="row">${mono(state.lead)}<b style="color:var(--strong)">${esc(AGENTS[state.lead].name)} ★</b><span class="muted" style="font-size:12.8px">answers first in team chat and splits work into tasks</span><span style="flex:1"></span><button class="btn small" data-nav="agents">Change on the Agents page</button></div>
+      <div class="sep"></div>      <label style="display:flex;gap:10px;align-items:center;margin:4px 0;cursor:pointer;color:var(--text)"><input type="checkbox" data-toggleleadgh ${leadGitHubOn() ? 'checked' : ''}> Lead handles GitHub (pull, combine, push branches)</label>
       <p class="faint" style="margin:0 0 6px 26px;font-size:12px">${esc(NAMES[state.lead])} pulls from GitHub, pushes task branches and merges approved tasks onto release/next with your own git/gh sign-in. Main, tags and releases stay yours.${gh.ghUser && repo.remote ? '' : ' Needs GitHub set up first.'} Off until you turn it on.</p>
       ${check('leadActions', `Let the lead AI (${esc(NAMES[state.lead])}) approve, deny, start and add tasks`)}
       <p class="faint" style="margin:0 0 6px 26px;font-size:12px">Off by default. ${esc(NAMES[state.lead])} can't approve its own work; releases, version numbers and tags stay yours. Every action shows in Team chat and the Audit log, with Undo where possible.</p>
-      ${check('autoPush', 'Back up every checkpoint to its own branch on GitHub')}
-      <p class="faint" style="font-size:12px;margin:6px 0">Whatever the setting, AIs must ask you (a permission card) before pushes, merges, releases, deleting files, boot-critical changes and commands outside the workspace.</p>
-      <div class="sep"></div>
-      <div class="faint" style="font-size:12px;margin-bottom:6px">Other folders on this computer the AIs may use</div>
+      
+      <label style="display:flex;gap:10px;align-items:center;margin:0;cursor:pointer;color:var(--text)"><input type="checkbox" data-autohandoff ${state.autoHandoff ? 'checked' : ''}> Hand a task to the next free agent when one runs out of usage</label>
+</div>${ops.leadPowersCard()}`,
+    accounts: `<div class="card"><h3>Your AI accounts<span class="grow"></span><button class="btn small" data-recheck>Re-check</button><button class="btn small primary" data-nav="agents">Sign in and manage</button></h3>
+      ${AGENT_IDS.map((a) => `<div class="row" style="padding:5px 0;border-top:1px solid var(--line)">${mono(a, true)}<span style="flex:1;color:var(--strong)">${esc(AGENTS[a].name)}${a === state.lead ? ' <span class="star">★</span>' : ''}</span>${statusBadge(a)}</div>`).join('')}
+      <p class="faint" style="font-size:12px;margin:8px 0 0">Signing in happens on each provider's own page; API keys are kept in your system keyring. Both are on the Agents page.</p></div>${ops.capsCard()}`,
+    local: `<div class="card"><h3>Local AI (Ollama)</h3>${ops.localModels()}</div>${ops.toolsCard()}`,
+    projects: `<div class="card"><h3>Shared workspace</h3>
+      <div class="kv"><span class="k">Project folder</span><span class="mono" style="word-break:break-all">${esc(settings.project || 'Not set')}</span></div>
+      <p class="muted" style="font-size:12.5px;line-height:1.5">A git repository all agents share. Each task gets its own branch and working copy; every run is committed as a checkpoint (as you, with no AI attribution) so nothing is lost.</p>
+      <div class="row"><button class="btn small primary" data-pickproject>${settings.project ? 'Change folder' : 'Choose folder'}</button></div></div>
+      <div class="card"><h3>Projects<span class="grow"></span><button class="btn small" data-ops="addfolder">Add a project folder</button><button class="btn small ghost" data-nav="project">Project page</button></h3>
+      ${p.list.map((x) => `<div class="row ops-prow"><b style="flex:1">${esc(x.name)}</b><span class="mono faint">${esc(x.dir || 'no folder yet')}</span>${x.id === p.active ? '<span class="badge accent">Open</span>' : `<button class="btn small" data-ops="switch" data-arg="${esc(x.id)}">Switch</button>`}</div>`).join('') || '<div class="empty">Loading…</div>'}
+      <p class="faint" style="font-size:12px;margin:8px 0 0">Clone, test command, version file and project memory are on the Project page.</p></div>
+      <div class="card"><h3>Folder access</h3>      <div class="faint" style="font-size:12px;margin-bottom:6px">Other folders on this computer the AIs may use</div>
       ${settings.extraDirs.map((d) => `<div class="row" style="font-size:12.5px;margin:3px 0"><span class="mono" style="flex:1;word-break:break-all">${esc(d)}</span><button class="btn small ghost" data-removedir="${esc(d)}">Remove</button></div>`).join('') || '<div class="empty" style="padding:4px 0">None yet.</div>'}
       <button class="btn small" data-adddir style="margin-top:6px">Add folder…</button>
-    </div>
-    <div class="card"><h3>Hearth OS project facts the AIs follow</h3>
+</div>`,
+    github: `<div class="card"><h3>GitHub</h3><div class="kv"><span class="k">git</span><span class="mono">${esc(gh.git || 'not found')}</span><span class="k">gh</span><span class="mono">${esc(gh.gh || 'not installed')}</span><span class="k">Signed in</span><span>${gh.ghUser ? esc(gh.ghUser) : '<span class="faint">not signed in</span>'}</span><span class="k">Remote</span><span class="mono" style="word-break:break-all">${esc(repo.remote || 'none')}</span></div>
+      <div class="row">${gh.gh && !gh.ghUser ? '<button class="btn small primary" data-ghlogin>Connect GitHub</button>' : ''}<button class="btn small" data-nav="github">Pull requests, pull and push</button></div><div class="sep"></div>      ${check('autoPush', 'Back up every checkpoint to its own branch on GitHub')}
+      <p class="faint" style="font-size:12px;margin:6px 0">Whatever the setting, AIs must ask you (a permission card) before pushes, merges, releases, deleting files, boot-critical changes and commands outside the workspace.</p>
+</div>`,
+    facts: `<div class="card"><h3>Hearth OS project facts the AIs follow</h3>
       <div class="kv"><span class="k">Line</span><span>Hearth OS ${esc(HEARTH_OS.line)} — ${esc(HEARTH_OS.base)}-only</span>
         <span class="k">Desktop</span><span>${esc(HEARTH_OS.desktop)}</span>
         <span class="k">Game Mode</span><span>${esc(HEARTH_OS.gameMode)}</span>
@@ -1739,21 +1845,35 @@ function viewSettings() {
       <div class="sect">Red-flag rules</div>
       ${RED_FLAGS.map((r) => `<div class="policy warn" style="margin:4px 0">${esc(r)}</div>`).join('')}
       <p class="faint" style="font-size:12px;margin:8px 0 0">${esc(HEARTH_OS.scope)}</p>
-    </div>
-    <div class="card"><h3>Saved work & backups</h3>
+    </div>`,
+    safety: `<div class="card"><h3>What the AIs may do</h3>
+      <label style="display:flex;gap:10px;align-items:flex-start;margin:6px 0;cursor:pointer;font-size:13px;color:var(--text)"><input type="radio" name="access" data-access="standard" ${settings.access !== 'full' ? 'checked' : ''}><span><b>Like their own apps (recommended)</b><br><span class="muted">Edit files, run commands, use git and the web — each with its own built-in safety checks.</span></span></label>
+      <label style="display:flex;gap:10px;align-items:flex-start;margin:6px 0;cursor:pointer;font-size:13px;color:var(--text)"><input type="radio" name="access" data-access="full" ${settings.access === 'full' ? 'checked' : ''}><span><b>Full access, no safety checks</b><br><span class="muted">Anything, without asking. Only if you accept that one bad command can break a device.</span></span></label><div class="sep"></div>      ${check('chatEdits', 'AIs can work (edit, run, use git) right from Team chat')}
+      ${check('chatResume', 'Keep one CLI session per AI for Team chat (resumable in each AI’s own CLI)')}
+</div>${ops.levelsCard()}`,
+    phone: `<div class="card"><h3>Your phone</h3>${ops.phoneBlock()}</div>`,
+    updates: `<div class="card"><h3>App updates</h3>
+      <div class="kv"><span class="k">Installed</span><span class="mono">${esc(info.appVersion)}</span>
+      <span class="k">Channel</span><span>GitHub Releases (published releases only)</span></div>
+      ${updateBlock()}
+    </div>`,
+    data: `<div class="card"><h3>Saved work & backups</h3>
       <p class="muted" style="font-size:12.5px;line-height:1.5">Everything is saved automatically and atomically, with the last ${backups.backups.length || 10} versions kept. Chat history is saved separately.</p>
       ${backups.recoveredFrom ? `<div class="policy warn">The latest save was damaged, so it was set aside and your work was restored from ${esc(backups.recoveredFrom)}.</div>` : ''}
       ${backups.backups.slice(0, 6).map((b) => `<div class="row" style="font-size:12.5px;margin:3px 0"><span class="mono faint" style="width:20px">${b.n}</span><span style="flex:1">${b.ok ? `${esc(time(b.savedAt))} · ${b.tasks} task${b.tasks === 1 ? '' : 's'}` : '<span style="color:var(--bad)">unreadable</span>'}</span>${b.ok ? `<button class="btn small ghost" data-restore="${b.n}">Restore</button>` : ''}</div>`).join('') || '<div class="empty">No earlier versions yet.</div>'}
       <div class="row" style="margin-top:8px"><button class="btn small" data-export>Export everything</button></div>
-    </div>
-    <div class="card"><h3>Local data</h3>
+    </div><div class="card"><h3>Local data</h3>
       <div class="kv"><span class="k">Folder</span><span class="mono" style="word-break:break-all">${esc(info.dataPath)}</span>
       <span class="k">Electron</span><span class="mono">${esc(info.electron)}</span></div>
       <button class="btn danger small" data-reset>Clear tasks & audit log</button>
-    </div>
-    <div class="card"><h3>About this build</h3>
+    </div>`,
+    about: `<div class="card"><h3>About this build</h3><div class="kv"><span class="k">App version</span><span class="mono">${esc(info.appVersion)}</span><span class="k">Electron</span><span class="mono">${esc(info.electron)}</span><span class="k">This computer</span><span>${info.hearthOs ? esc(info.hearthOs.name) : 'not running Hearth OS'}</span></div>
       <p class="muted" style="line-height:1.55;font-size:12.5px;margin:0">A standalone personal tool for working on the Hearth OS project (not part of Hearth OS). Claude, ChatGPT, Gemini, Grok, Mistral and Qwen signed in with your own accounts through their official CLIs; Perplexity and DeepSeek through official API keys; Copilot and Meta AI as sandboxed windows of their own sites. Shared git workspace with checkpoints, out-of-usage handoff, team chat with edits, handoffs and permission requests, two-way chat history with the CLIs and official-export import, pull-request tracking, owner-approved merges and releases, audit log, in-app updates.</p>
-    </div>
+    </div>`,
+  };
+  return `<div class="settings"><h1>Settings</h1>
+    <nav class="set-nav" aria-label="Settings sections">${SET_SECS.map(([id, ic, label]) => `<button class="nav ${ui.setSec === id ? 'on' : ''}" data-setsec="${id}">${icon(ic, 'sm')}${esc(label)}</button>`).join('')}</nav>
+    <div class="set-body" id="set-body">${SET_SECS.map(([id]) => sec(id, body[id])).join('')}</div>
   </div>`;
 }
 
@@ -1789,9 +1909,14 @@ function drawer() {
     : t.policy.warn.length ? `<div class="policy warn">${t.policy.warn.map(esc).join('<br>')}</div>` : '<div class="policy ok">Policy & scope check passed.</div>';
   const pr = ui.prs.byTask[t.id];
   const asks = state.permissions.filter((p) => p.context === t.id && p.status === 'pending');
+  const flow = ['intake', 'implementing', 'checkpoint', 'testing', 'review', 'approval'];
+  const at = closed ? flow.length : flow.indexOf(t.stage);
+  const stageBar = `<div class="stages">${['Intake', 'Build', 'Checkpoint', 'Tests', 'Review', 'You'].map((l, i) => `<div class="${i < at ? 'd' : i === at ? 'c' : ''}"><i></i><span>${l}</span></div>`).join('')}</div>`;
   return `<div class="drawer">
-    <div class="row"><span class="mono faint">T-${esc(t.id)}</span><span style="flex:1"></span><button class="btn ghost small" data-close>Close ✕</button></div>
+    <div class="row"><span class="mono faint">T-${esc(t.id)}</span><span class="faint">·</span><span class="muted" style="font-size:12.8px">${esc(ACTIONS[t.action])}</span><span style="flex:1"></span><button class="btn ghost small" data-close>Close ✕</button></div>
     <h2>${esc(t.title)}</h2>
+    <div class="row" style="font-size:13px">${mono(t.assignee, true)}<span>${esc(NAMES[t.assignee] || 'Nobody')} implements</span><span class="faint">·</span>${mono(t.reviewer, true)}<span>${esc(NAMES[t.reviewer] || 'nobody')} reviews</span></div>
+    ${stageBar}
     <div class="row">${stageBadge(t)}${runBadge(t)}${queueBadge(t)}${doneBadge(t)}<span class="badge">${esc(ACTIONS[t.action])}</span></div>
     ${pol}
     ${wf.drawerExtras(t)}
@@ -1878,42 +2003,126 @@ const TITLES = {
   ...wf.titles,
 };
 
+const MORE = ['agents', 'history', 'github', 'audit', 'ops', 'actions', 'summary', 'project', 'release'];
+const NAV_ICON = { agents: 'users', history: 'history', github: 'branch', audit: 'list', ops: 'stats', actions: 'list', summary: 'moon', project: 'folder', release: 'flag', overview: 'home', settings: 'gear' };
+function sidebar(waiting) {
+  const label = Object.fromEntries(NAV.map(([id, , l]) => [id, l]));
+  const nav = (id, ic, text, extra = '') => `<button class="nav ${ui.view === id ? 'on' : ''}" data-nav="${id}" title="${esc(text)}">${icon(ic)}<span class="lbl-txt">${esc(text)}</span>${extra}</button>`;
+  const running = wf.jobsRunning();
+  const p = ops.projectsList?.() || { list: [] };
+  const recent = [...state.tasks].filter((t) => !['approved', 'rejected'].includes(t.stage)).sort((a, b) => String(b.updatedAt || b.createdAt).localeCompare(String(a.updatedAt || a.createdAt))).slice(0, 5);
+  const tdot = (t) => (ui.running[t.id] ? '<span class="dot work pulse"></span>' : actionFor(t) && !actionFor(t).passive ? '<span class="dot wait"></span>' : '');
+  const members = teamList();
+  const online = members.filter((a) => !['off'].includes(dotOf(a))).length;
+  const updOn = ['available', 'ready'].includes(upd.status?.state);
+  const owner = settings.ownerIdentity?.name || 'You';
+  return `<aside class="side">
+    <div class="brand"><button class="home-link" data-nav="overview" title="Home"><img src="./icon.png" alt=""><div><b>Hearth AI</b><span>Command Center</span></div></button><button class="collapse" data-ui="side" title="${ui.sideCollapsed ? 'Widen' : 'Narrow'} the sidebar">${icon('side', 'sm')}</button></div>
+    <button class="newtask" data-new title="New task"><span class="plus">${icon('plus')}</span><span class="lbl-txt">New task</span></button>
+    ${nav('chat', 'chat', 'Team chat', typingNow() ? '<span class="meta">replying…</span>' : '')}
+    ${nav('board', 'board', 'Board', openTasks().length ? `<span class="meta">${openTasks().length} open</span>` : '')}
+    ${nav('approvals', 'shield', 'Approvals', waiting ? `<span class="n">${waiting}</span>` : '')}
+    ${nav('jobs', 'clock', 'Jobs', running ? `<span class="meta">${running} running</span>` : '')}
+    ${nav('habitat', 'home', 'Habitat')}
+    <div class="more-wrap"><button class="nav ${ui.more || MORE.includes(ui.view) ? 'on' : ''}" data-ui="more" aria-expanded="${ui.more}" title="More pages">${icon('more')}<span class="lbl-txt">More</span><span class="chev">${icon(ui.more ? 'chev' : 'chevr', 'sm')}</span></button>
+    ${ui.more ? `<div class="more-menu" role="menu">${nav('overview', 'home', 'Home')}${MORE.map((id) => nav(id, NAV_ICON[id] || 'more', label[id] || id)).join('')}${nav('settings', 'gear', 'Settings')}</div>` : ''}</div>
+    <div class="sec">Projects<span class="grow"></span><button data-ops="addfolder" title="Add a project folder">${icon('plus', 'sm')}</button></div>
+    ${p.list.length ? p.list.map((x) => x.id === p.active
+      ? `<button class="item on" data-nav="project" title="${esc(x.dir || '')}">${icon('folder', 'sm')}<span class="t">${esc(x.name)}</span>${repo.branch ? `<span class="meta mono">${esc(repo.branch)}</span>` : ''}</button>`
+      : `<button class="item" data-ops="switch" data-arg="${esc(x.id)}" title="Switch to ${esc(x.name)}">${icon('folder', 'sm')}<span class="t">${esc(x.name)}</span></button>`).join('')
+      : `<button class="item" data-pickproject>${icon('folder', 'sm')}<span class="t">${settings.project ? esc(projectName()) : 'Choose a project folder'}</span></button>`}
+    ${recent.length ? `<div class="sec">Recent</div>${recent.map((t) => `<button class="item rtask ${ui.selected === t.id ? 'on' : ''}" data-open="${t.id}" title="${esc(t.title)}"><span class="tid">T-${esc(t.id)}</span><span class="t">${esc(t.title)}</span><span class="meta">${tdot(t)}</span></button>`).join('')}` : ''}
+    <div class="team-status side-team" aria-label="Team status">
+      <div class="sec">Team<span class="faint" style="font-weight:500">· ${online} online</span><span class="grow"></span><button data-recheck title="Re-check every AI">${icon('refresh', 'sm')}</button><button data-ui="team" title="${ui.teamOpen ? 'Collapse' : 'Expand'} the Team list">${icon(ui.teamOpen ? 'chev' : 'chevr', 'sm')}</button></div>
+      <div class="team-panel" id="team-panel">${ui.teamOpen ? renderPanel() : ''}</div>
+    </div>
+    <div class="spacer"></div>
+    <div class="owner"><span class="av">${esc(owner[0].toUpperCase())}</span><div><b>${esc(owner)}</b><span class="role">Owner</span></div><span class="tools">${updOn ? '<button class="updpill" data-goupdates title="An update is ready: open Settings › App updates">Update</button>' : ''}<button class="gear ${ui.view === 'settings' ? 'on' : ''}" data-nav="settings" title="Settings">${icon('gear')}</button></span></div>
+  </aside>`;
+}
+
+function topbar(waiting, title) {
+  const live = liveAgents();
+  const proj = projectName();
+  const sel = ui.view === 'board' && ui.selected ? state.tasks.find((t) => t.id === ui.selected) : null;
+  const crumb = ui.view === 'overview'
+    ? `<span>${esc(proj || 'Hearth AI Command Center')}</span>${repo.branch ? `<span class="faint">· ${esc(repo.branch)}</span>` : ''}`
+    : `${proj ? `<span>${esc(proj)}</span><span class="faint">/</span>` : ''}<b>${esc(title)}</b>${sel ? `<span class="sub">· T-${esc(sel.id)}</span>` : ''}`;
+  const tb = (id, ic, label, n = '') => `<button class="tb" data-panel="${id}" title="Open ${label} beside the conversation">${icon(ic, 'sm')}${label}${n}</button>`;
+  const updOn = ['available', 'ready'].includes(upd.status?.state);
+  return `<div class="topbar"><div class="crumb">${crumb}</div><div class="grow"></div>
+    ${updOn ? '<button class="pill acc" data-goupdates title="Open Settings › App updates">Update available</button>' : ''}<span class="pill" title="This app is in beta">Beta</span>
+    ${round ? '<button class="tb b" data-stopround title="End this chat round: nobody else starts, and the AIs typing now are cancelled" style="color:var(--bad)">Stop</button>' : ''}
+    ${ui.view === 'chat' ? `<button class="tb b" data-checkin ${live.length && !round ? '' : 'disabled'}>${icon('users', 'sm')}${ui.panel ? 'Check-in' : 'Team check-in'}</button>` : ''}
+    ${ui.panel ? '' : `${tb('board', 'board', 'Board')}${tb('approvals', 'shield', 'Approvals', waiting ? `<span class="n">${waiting}</span>` : '')}${tb('jobs', 'clock', 'Jobs')}${tb('habitat', 'home', 'Habitat')}`}
+    <button class="tb ${ui.panel ? 'on' : ''}" data-ui="panel" title="${ui.panel ? 'Hide' : 'Show'} the side panel" aria-label="Side panel">${icon('panel', 'sm')}</button></div>`;
+}
+
+function boardList() {
+  const open = openTasks();
+  return `<div class="lbl" style="margin-top:0">Board<span style="flex:1"></span><span>${open.length} open</span></div>
+    ${open.map((t) => `<button class="brow ${ui.selected === t.id ? 'on' : ''}" data-open="${t.id}"><span class="tid">T-${esc(t.id)}</span><span class="tt">${esc(t.title)}</span>${actionFor(t) && !actionFor(t).passive ? '<span class="badge warn">Needs you</span>' : stageBadge(t)}</button>`).join('') || '<div class="empty">No open tasks.</div>'}
+    <div class="row" style="margin-top:12px"><button class="btn small" data-nav="board">Open the full board</button><button class="btn small ghost" data-new>New task</button></div>`;
+}
+function panelBody() {
+  const full = (v) => (ui.view === v ? `<div class="panel-note">${esc(TITLES[v][0])} is open full width on the left.</div>` : '');
+  if (ui.panel === 'task') return drawer() || `<div class="panel-note">Pick a task on the board or under Recent to see its truth card, actions and history here.</div>${boardList()}`;
+  if (ui.panel === 'habitat') return full('habitat') || viewHabitat();
+  if (ui.panel === 'jobs') return full('jobs') || wf.views.jobs();
+  if (ui.panel === 'approvals') return full('approvals') || viewApprovals();
+  if (ui.panel === 'release') return full('release') || wf.views.release();
+  return boardList();
+}
+function rightPanel(waiting) {
+  if (!ui.panel) return '';
+  return `<aside class="rpanel" aria-label="Side panel"><div class="ph" role="tablist">${PANEL_TABS.map(([id, l]) => `<button class="tab ${ui.panel === id ? 'on' : ''}" role="tab" data-panel="${id}">${l}${id === 'approvals' && waiting ? `<span class="n">${waiting}</span>` : ''}</button>`).join('')}<span class="grow"></span><button class="tab" data-ui="panelclose" title="Close the panel" aria-label="Close the panel">${icon('x', 'sm')}</button></div>
+    <div class="pb">${panelBody()}</div></aside>`;
+}
+
+let lastSelected = null;
 function render() {
   const waiting = state.tasks.filter((t) => t.stage === 'approval').length + pendingAsks().length;
   const views = { habitat: viewHabitat, github: viewGithub, chat: viewChat, overview: viewOverview, board: viewBoard, approvals: viewApprovals, agents: viewAgents, history: viewHistory, audit: viewAudit, settings: viewSettings, ...ops.views, ...wf.views };
+  // Opening a task shows it in the side panel's Task tab; closing it puts the panel back as it was.
+  if (ui.selected !== lastSelected) {
+    if (ui.selected) { if (!lastSelected) ui.panelBefore = ui.panel === 'task' ? null : ui.panel; ui.panel = 'task'; }
+    else if (ui.panel === 'task') ui.panel = ui.panelBefore || null;
+    lastSelected = ui.selected;
+  }
   const [title, sub] = TITLES[ui.view];
-  const updBadge = upd.status?.state === 'available' || upd.status?.state === 'ready' ? '<span class="badge accent" data-nav="settings" style="cursor:pointer">Update available</span>' : '';
-  const scroll = document.querySelector('.main')?.scrollTop || 0;
+  const scroll = document.querySelector('.content')?.scrollTop || 0;
+  const flush = ui.view === 'chat';
+  const content = ui.view === 'overview' || ui.view === 'settings' || flush ? views[ui.view]()
+    : `<div class="page"><div class="page-h"><h1>${esc(title)}</h1><span class="sub">${esc(sub)}</span></div>${views[ui.view]()}</div>`;
   document.getElementById('app').innerHTML = `
-  <div class="shell">
-    <aside class="side">
-      <div class="brand"><img src="./icon.png" alt=""><div><b>Hearth AI</b><span>Command Center</span></div></div>
-      ${ops.projectSwitcher()}
-      ${NAV.map(([id, ico, label]) => `<button class="nav ${ui.view === id ? 'on' : ''}" data-nav="${id}"><span class="ico">${ico}</span>${label}${id === 'approvals' && waiting ? `<span class="count warn">${waiting}</span>` : ''}${id === 'chat' && typingNow() ? '<span class="count">…</span>' : ''}</button>`).join('')}
-      <div class="spacer"></div>
-      <div class="pin">Working on <b>Hearth OS ${esc(HEARTH_OS.line)}</b><br>Debian · Mantel · Steam Game Mode<br><span class="faint">App v${esc(info.appVersion)} · standalone</span></div>
-    </aside>
+  <div class="shell ${ui.sideCollapsed ? 'side-collapsed' : ''}">
+    ${sidebar(waiting)}
     <main class="main">
-      <div class="top"><div><h1>${esc(title)}</h1><div class="sub">${esc(sub)}</div></div><div class="grow"></div>
-        ${updBadge}<span class="badge warn">Beta</span>
-        <button class="btn primary" data-new>＋ New task</button></div>
-      ${ops.banner()}${views[ui.view]()}
+      ${topbar(waiting, title)}
+      <div class="banners">${ops.banner()}</div>
+      <div class="content ${flush ? 'flush' : ''} view-${esc(ui.view)}">${content}</div>
     </main>
-  </div>${drawer()}${modal()}${ops.overlay()}`;
-  const main = document.querySelector('.main');
+    ${rightPanel(waiting)}
+  </div>${modal()}${ops.overlay()}`;
+  const main = document.querySelector('.content');
   if (main && ui.keepScroll) main.scrollTop = scroll;
   ui.keepScroll = false;
   const log = document.getElementById('chat-log');
   if (log) log.scrollTop = log.scrollHeight;
   const box = document.getElementById('chat-text');
-  if (box && !ui.modal && !ui.selected && !ui.editing) {
+  if (box) fitComposer(box);
+  if (box && !ui.modal && !ui.selected && !ui.editing && !ui.menu) {
     box.focus();
     box.setSelectionRange(box.value.length, box.value.length);
   }
   document.getElementById('edit-text')?.focus();
-  if (ui.view === 'habitat') { mountHabitat(document.getElementById('habitat'), habitatHooks); mountHabitat3d(document.getElementById('habitat'), habitatHooks); }
+  if (ui.view === 'settings' && ui.scrollSec) { document.getElementById(`set-${ui.scrollSec}`)?.scrollIntoView({ block: 'start' }); ui.scrollSec = null; }
+  const hab = document.getElementById('habitat');
+  if (hab && (ui.view === 'habitat' || ui.panel === 'habitat')) { mountHabitat(hab, habitatHooks); mountHabitat3d(hab, habitatHooks); }
   else { stopHabitat(); stopHabitat3d(); }
 }
+// The composer grows with what you type (up to 40% of the window).
+function fitComposer(box) { box.style.height = 'auto'; box.style.height = `${Math.min(box.scrollHeight + 2, window.innerHeight * 0.4)}px`; }
 
 // ---------- actions ----------
 function setStage(t, stage, event, detail) {
@@ -2854,6 +3063,36 @@ document.addEventListener('click', async (e) => {
   }
 });
 
+// Look-only controls of the redesigned shell. Capture phase: closes menus before the
+// app's own click handler (below) acts and redraws. Never touches saved state or settings.
+const PREFILL = { plan: "Here's a feature to plan for Hearth OS — split it into tasks between you: " };
+document.addEventListener('click', async (e) => {
+  const t = e.target;
+  const wasMore = ui.more, wasMenu = ui.menu;
+  const el = t.closest?.('[data-ui],[data-panel],[data-pickmode],[data-prefill],[data-setsec],[data-goupdates],[data-teammember],[data-showchanges][data-inline]');
+  const closing = (ui.more && !t.closest?.('.more-menu,[data-ui="more"]')) || (ui.menu && !t.closest?.('.menu,[data-ui^="menu-"]'));
+  if (closing) { ui.more = false; ui.menu = null; }
+  if (!el) { if (closing && !t.closest?.(CLICK)) render(); return; }
+  const d = el.dataset;
+  if (d.showchanges && d.inline !== undefined) { ui.selected = d.showchanges; return; } // the app's handler loads the changes and redraws
+  if (d.ui === 'more') { ui.more = !wasMore; return render(); }
+  if (d.ui === 'side') { ui.sideCollapsed = !ui.sideCollapsed; savePref('sideCollapsed', ui.sideCollapsed); return render(); }
+  if (d.ui === 'team') { ui.teamOpen = !ui.teamOpen; savePref('teamOpen', ui.teamOpen); return render(); }
+  if (d.ui === 'panel' || d.ui === 'panelclose') {
+    if (ui.panel) { ui.panel = null; ui.selected = null; lastSelected = null; }
+    else ui.panel = ui.selected ? 'task' : 'board';
+    savePref('panel', ui.panel === 'task' ? null : ui.panel);
+    return render();
+  }
+  if (d.ui === 'menu-target' || d.ui === 'menu-mode') { const m = d.ui.slice(5); ui.menu = wasMenu === m ? null : m; return render(); }
+  if (d.panel) { ui.panel = d.panel; savePref('panel', d.panel === 'task' ? null : d.panel); if (d.panel === 'approvals') recheckApprovals(); return render(); }
+  if (d.pickmode) { ui.mode = d.pickmode === 'major' ? 'major' : 'routine'; ui.menu = null; render(); return document.getElementById('chat-text')?.focus(); }
+  if (d.prefill) { ui.draft = PREFILL[d.prefill] || ''; render(); return document.getElementById('chat-text')?.focus(); }
+  if (d.teammember) { ui.view = 'agents'; ui.side = d.teammember; ui.expanded = d.teammember; ui.selected = null; return render(); }
+  if (d.setsec) { ui.setSec = d.setsec; document.querySelectorAll('[data-setsec]').forEach((b) => b.classList.toggle('on', b.dataset.setsec === d.setsec)); return document.getElementById(`set-${d.setsec}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+  if (d.goupdates !== undefined) { ui.view = 'settings'; ui.selected = null; ui.setSec = 'updates'; ui.scrollSec = 'updates'; backups = await api.backups().catch(() => backups); return render(); }
+}, true);
+
 document.addEventListener('change', async (e) => {
   const ds = e.target.dataset || {};
   if (ds.role) {
@@ -2889,22 +3128,23 @@ async function addFiles(files) {
     const r = await api.attachSave(name, await f.arrayBuffer()).catch((err) => ({ ok: false, message: cleanErr(err.message) }));
     if (r.ok) ui.attach.push(r.att); else toast(r.message);
   }
-  if (ui.view === 'chat') render();
+  if (ui.view === 'chat' || ui.view === 'overview') render();
 }
+const canDrop = () => ui.view === 'chat' || ui.view === 'overview';
 document.addEventListener('paste', (e) => {
-  if (ui.view !== 'chat' || !e.clipboardData?.files?.length) return;
+  if (!canDrop() || !e.clipboardData?.files?.length) return;
   e.preventDefault();
   addFiles(e.clipboardData.files);
 });
-document.addEventListener('dragover', (e) => { if (ui.view === 'chat') e.preventDefault(); });
+document.addEventListener('dragover', (e) => { if (canDrop()) e.preventDefault(); });
 document.addEventListener('drop', (e) => {
-  if (ui.view !== 'chat' || !e.dataTransfer?.files?.length) return;
+  if (!canDrop() || !e.dataTransfer?.files?.length) return;
   e.preventDefault();
   addFiles(e.dataTransfer.files);
 });
 
 document.addEventListener('input', (e) => {
-  if (e.target.id === 'chat-text') ui.draft = e.target.value;
+  if (e.target.id === 'chat-text') { ui.draft = e.target.value; fitComposer(e.target); }
   if (e.target.id === 'hist-q') {
     ui.hist.q = e.target.value;
     clearTimeout(histTimer);
@@ -2960,7 +3200,8 @@ document.addEventListener('keydown', (e) => {
     return sendChat();
   }
   if (e.key === 'Escape') {
-    if (ui.editing) ui.editing = null;
+    if (ui.menu || ui.more) { ui.menu = null; ui.more = false; }
+    else if (ui.editing) ui.editing = null;
     else if (ui.modal) ui.modal = null;
     else ui.selected = null;
     render();

@@ -178,7 +178,8 @@ async function session(name, opts, steps, b = browser) {
     await page.screenshot({ path: f, fullPage: full });
     console.log('saved', f);
   };
-  const nav = async (v) => { await page.click(`.side [data-nav="${v}"]`); await page.waitForTimeout(250); };
+  // Pages used less often sit under More in the sidebar: open it first when needed.
+  const nav = async (v) => { const sel = `.side [data-nav="${v}"]`; if (!(await page.locator(sel).count())) { await page.click('.side [data-ui="more"]'); await page.waitForTimeout(150); } await page.click(sel); await page.waitForTimeout(250); };
   await steps({ page, shot, nav });
   await ctx.close();
 }
