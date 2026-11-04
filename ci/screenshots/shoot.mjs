@@ -293,13 +293,13 @@ await session('070', { scenario: 'populated', theme: 'dark', flows: true }, asyn
   await btn.click(); await page.waitForTimeout(400);
   await shot('queue-start-next-queued');
   await page.keyboard.press('Escape'); await nav('board');
-  check((await page.textContent('[data-open="QB0702"]')).includes('Queued for Claude'), 'a Start-next task reads "Queued for Claude"');
+  check((await page.textContent('.board [data-open="QB0702"]')).includes('Queued for Claude'), 'a Start-next task reads "Queued for Claude"');
   check(!(await page.textContent('.main')).includes('QC0703') || (await page.locator('[data-open="QC0703"] .badge', { hasText: 'Running' }).count()) === 0, 'a task that was only added did not start');
   // Images in team chat: an AI's screenshot shows inline, and the owner can attach one.
   await nav('chat');
   check(await page.locator('.atts img').count() >= 1, 'AI image attachment shown inline');
   await page.click('[data-attach]'); await page.waitForTimeout(300);
-  check((await page.textContent('.chat-input')).includes('owner-photo.png'), 'owner attachment pending');
+  check((await page.textContent('.composer')).includes('owner-photo.png'), 'owner attachment pending');
   await shot('chat-image-attachments');
 });
 

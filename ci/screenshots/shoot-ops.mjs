@@ -184,7 +184,7 @@ check((await page.textContent('.drawer')).includes('App tests: passed'), 'drawer
 await page.keyboard.press('Escape');
 
 // Project switcher and project page.
-check(await page.locator('#ops-project option').count() === 2, 'project switcher in the sidebar');
+check(await page.locator('.side button.item[data-ops="switch"], .side button.item.on[data-nav="project"]').count() === 2, 'project switcher in the sidebar');
 await nav('project');
 await page.click('[data-ops="memload"]'); await page.waitForTimeout(300);
 check((await text()).includes('beacon') && (await text()).includes('PROJECT.md'), 'project page lists projects and memory');

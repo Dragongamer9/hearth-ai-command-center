@@ -117,9 +117,9 @@ check((await page.textContent('.main')).includes('Made outside the app') && (awa
 
 // Board: truth badges (behind main, tests at the sha, refused review), blocker badges.
 await nav('board');
-const card = await page.textContent('[data-open="WF0001"]');
+const card = await page.textContent('.board [data-open="WF0001"]');
 check(card.includes('behind main by 2') && card.includes('tests passed') && card.includes('@f00dbab'), 'board truth badges');
-check((await page.textContent('[data-open="WF0002"]')).includes('Environment problem'), 'blocker badge on the board');
+check((await page.textContent('.board [data-open="WF0002"]')).includes('Environment problem'), 'blocker badge on the board');
 await shot('board-truth-badges');
 
 // Drawer: the truth card, the review lock, the instruction log and the review packet.
@@ -152,7 +152,8 @@ await page.waitForTimeout(300);
 await nav('chat');
 const log = await page.textContent('#chat-log');
 check(log.includes('head moved since your review (c0ffee1→f00dbab)') && log.includes('only the lead (Claude) can do that'), 'refused actions with reasons');
-check((await page.textContent('#team-panel')).includes('Hall board') && (await page.textContent('#team-panel')).includes('garden'), 'passive Habitat status in the team panel');
+// The place and activity are in each Team member's hover text (title); the hall board shows under the list.
+check((await page.textContent('#team-panel')).includes('Hall board') && (await page.innerHTML('#team-panel')).includes('garden'), 'passive Habitat status in the team panel');
 await shot('chat-refused-actions-and-habitat-status');
 
 // Release gate: preview checklist blocks on a version mismatch and an unmatched note.
