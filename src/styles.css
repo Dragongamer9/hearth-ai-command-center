@@ -572,3 +572,8 @@ table.perms tr.off td { color: var(--faint); }
 .vcard .vpick select { max-width: 200px; }
 #voice-clone .srow input[type="text"], #clone-name { min-width: 220px; }
 .vkey { width: 230px; background: var(--panel-2); border: 1px solid var(--line-2); border-radius: 8px; padding: 4px 8px; color: var(--text); }
+/* Key and token entry (the app's own dialog; Electron has no window.prompt). */
+.secret-bg { position: fixed; inset: 0; z-index: 90; background: rgba(0, 0, 0, .45); display: grid; place-items: center; }
+.secret-modal { width: min(460px, calc(100% - 32px)); background: var(--panel); border: 1px solid var(--line-2); border-radius: 14px; box-shadow: var(--shadow); padding: 18px; display: flex; flex-direction: column; gap: 10px; }
+.secret-modal input[type="password"], .secret-modal input#secret-in { width: 100%; font-family: var(--mono); }
+.secret-modal .mft { display: flex; justify-content: flex-end; gap: 8px; }

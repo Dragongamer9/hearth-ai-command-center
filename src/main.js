@@ -1813,7 +1813,27 @@ function popAt(el, kind, extra = {}) {
 }
 const msgById = (id) => S.msgs.find((x) => x.id === id);
 const mediaChat = (el) => el.closest('[data-msg]') ? S.open : (S.modal?.chatId || S.open);
-async function secretPrompt(label) { return window.prompt?.(`${label} (saved encrypted on this PC):`) || null; }
+// Ask for a key or token in the app's own small dialog (Electron has no window.prompt, so the
+// old prompt silently returned nothing and keys could never be entered). Hidden input; the value
+// goes straight to the encrypted store and is never kept in the window.
+function secretPrompt(label, { placeholder = 'Paste it here' } = {}) {
+  return new Promise((resolve) => {
+    const bg = document.createElement('div');
+    bg.className = 'modal-bg secret-bg';
+    bg.innerHTML = `<div class="modal secret-modal" role="dialog" aria-modal="true" aria-label="${esc(label)}"><h3>${esc(label)}</h3><p class="fine">Saved encrypted on this PC. It never goes to any other AI.</p><input type="password" id="secret-in" autocomplete="off" spellcheck="false" placeholder="${esc(placeholder)}"><label class="fine"><input type="checkbox" id="secret-show"> Show</label><div class="mft"><button class="btn ghost" id="secret-cancel">Cancel</button><button class="btn p" id="secret-ok">Save</button></div></div>`;
+    document.body.appendChild(bg);
+    const inp = bg.querySelector('#secret-in');
+    const done = (v) => { document.removeEventListener('keydown', onKey, true); bg.remove(); resolve(v); };
+    const ok = () => { const v = inp.value.trim(); done(v || null); };
+    const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); done(null); } else if (e.key === 'Enter' && document.activeElement === inp) { e.preventDefault(); e.stopPropagation(); ok(); } };
+    document.addEventListener('keydown', onKey, true);
+    bg.querySelector('#secret-show').addEventListener('change', (e) => { inp.type = e.target.checked ? 'text' : 'password'; });
+    bg.querySelector('#secret-cancel').addEventListener('click', (e) => { e.stopPropagation(); done(null); });
+    bg.querySelector('#secret-ok').addEventListener('click', (e) => { e.stopPropagation(); ok(); });
+    bg.addEventListener('click', (e) => { if (e.target === bg) done(null); });
+    setTimeout(() => inp.focus(), 0);
+  });
+}
 
 document.addEventListener('click', async (ev) => {
   const a = ev.target.closest('[data-a]');
