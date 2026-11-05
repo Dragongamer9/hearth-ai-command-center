@@ -24,6 +24,8 @@ const { LIVE_PROVIDERS } = require('./validate.cjs');
 const { cleanSavedLevels } = require('./ops/approval.cjs');
 const { cleanIdentity } = require('./ops/identity.cjs');
 const ops = require('./ops/index.cjs');
+const guard = require('./ops/project-guard.cjs');
+const { createChats } = require('./chats.cjs');
 
 // No Hearth OS version pin: the app never changes, bumps, publishes or deploys
 // Hearth OS versions (the owner picks every number). It only shows which Hearth
@@ -135,6 +137,14 @@ let history = null;
 let openWeb = null;
 let lastLoad = { recoveredFrom: null };
 let opsApi = null; // electron/ops/index.cjs
+let chats = null; // electron/chats.cjs
+// The window is bound to the project whose state it loaded; saves and actions from a
+// window bound to another project are refused (electron/ops/project-guard.cjs).
+const binding = guard.createBinding();
+// Channels that act on the open project: refused while the window still shows another project.
+const GUARDED = new Set(['agents:run', 'workspace:ensure', 'workspace:ensureChat', 'workspace:checkpoint', 'state:restore',
+  'git:pushTask', 'git:pushBranch', 'git:mergeApproved', 'git:leadSync', 'git:updateFromMain', 'git:releaseBranch', 'git:openPr', 'git:prMerge', 'git:release',
+  'ops:leadRelease', 'ops:actRelease', 'ops:releasePreview', 'ops:releaseOverride', 'ops:projectSettings', 'ops:rewriteTask', 'ops:testRun', 'ops:jobStart', 'ops:jobRetry', 'ops:leadTaskGit', 'ops:memorySave', 'ops:memoryApply']);
 
 function readState() {
   lastLoad = store.load();
@@ -160,6 +170,10 @@ function trusted(event) {
 function handle(channel, fn) {
   ipcMain.handle(channel, async (event, ...args) => {
     if (!trusted(event)) throw new Error('untrusted sender');
+    if (GUARDED.has(channel)) {
+      const g = binding.checkAction();
+      if (!g.ok) return { ok: false, refused: 'project', error: { kind: 'wrong_project', message: `Not done: ${g.reason}.` }, message: `Not done: ${g.reason}.` };
+    }
     return fn(...args);
   });
 }
@@ -223,10 +237,39 @@ function cleanResult(r) {
 }
 
 function registerIpc() {
-  handle('state:load', () => readState());
-  handle('state:save', (state) => writeState(state));
+  // The window loads the open project's state, stamped with its id, and is bound to it.
+  // Refused (never written) when the state isn't the open project's: no cross-project saves.
+  const stateApi = guard.stateIpc({ binding, read: () => readState(), write: (st) => writeState(st) });
+  handle('state:load', () => stateApi.load());
+  handle('state:save', (state) => stateApi.save(state));
+  // Look only: signs the open project's saved data was copied from another project.
+  handle('state:health', () => {
+    try {
+      const reg = ops.projectsList();
+      const read = (id) => { try { return JSON.parse(fs.readFileSync(ops.projectStateFile(id), 'utf8')); } catch { return null; } };
+      const cur = reg.list.find((p) => p.id === binding.active());
+      if (!cur) return { ok: true, notices: [] };
+      const others = reg.list.filter((p) => p.id !== cur.id).map((p) => ({ id: p.id, name: p.name, dir: p.dir, state: read(p.id) }));
+      return { ok: true, notices: guard.detectCrossCopy({ id: cur.id, name: cur.name, dir: readSettings().project || cur.dir, state: lastLoad.state }, others) };
+    } catch (e) { return { ok: false, notices: [], message: String(e.message || e) }; }
+  });
+  // ---- chats (many conversations, each linkable to a project) ----
+  const chatProjects = () => ops.projectsList().list;
+  handle('chats:list', () => ({ list: chats.list(chatProjects(), (id) => ops.projectStateFile(id)), notices: chats.notices(), broken: Boolean(chats.broken()) }));
+  handle('chats:create', (projectId) => {
+    const pid = projectId === null || projectId === undefined ? null : String(projectId);
+    if (pid && !chatProjects().some((p) => p.id === pid)) throw new Error('Unknown project.');
+    return chats.create({ projectId: pid });
+  });
+  handle('chats:get', (id) => chats.get(String(id)));
+  handle('chats:save', (id, data) => chats.save(String(id), data || {}));
+  handle('chats:update', (id, patch) => {
+    const p = patch && typeof patch === 'object' ? patch : {};
+    if ('projectId' in p && p.projectId !== null && !chatProjects().some((x) => x.id === p.projectId)) throw new Error('Unknown project.');
+    return chats.update(String(id), p);
+  });
   handle('state:backups', () => ({ recoveredFrom: lastLoad.recoveredFrom, lost: Boolean(lastLoad.lost), backups: store.list() }));
-  handle('state:restore', (n) => store.restore(Number(n)));
+  handle('state:restore', (n) => ({ ...store.restore(Number(n)), projectId: binding.active() }));
   // Export everything (tasks, progress, chat, audit) with secrets scrubbed.
   handle('state:export', async (state) => {
     validateState(state);
@@ -410,16 +453,32 @@ function registerIpc() {
     let mode = opts.mode === 'edit' ? 'edit' : 'read';
     const runId = typeof opts.runId === 'string' && /^[A-Za-z0-9]{4,20}$/.test(opts.runId) ? opts.runId : null;
     const s = readSettings();
+    // A chat linked to another project, or a window showing another project, never runs here.
+    if (opts.projectId !== undefined) {
+      const g = binding.checkAction(opts.projectId);
+      if (!g.ok) return { ok: false, error: { kind: 'wrong_project', message: `Not run: ${g.reason}.` } };
+    }
     let cwd = s.project || undefined;
-    if (opts.taskId) {
+    if (opts.unlinked === true) {
+      // A chat with no project: it can talk, never edit, and sees no project's files.
+      cwd = path.join(dataDir(), 'chats', 'no-project');
+      fs.mkdirSync(cwd, { recursive: true, mode: 0o700 });
+      mode = 'read';
+    } else if (opts.taskId) {
       const dir = taskDir(opts.taskId);
-      if (fs.existsSync(dir)) cwd = dir;
+      if (fs.existsSync(dir)) {
+        // Only a workspace of the open project's repository (never another project's).
+        if (!s.project || !(await workspace.belongsTo(dir, s.project))) {
+          return { ok: false, error: { kind: 'wrong_project', message: `Not run: the workspace ${opts.taskId} belongs to a different project's repository than ${s.project ? path.basename(s.project) : 'the open project'}.` } };
+        }
+        cwd = dir;
+      }
     }
     if (mode === 'edit') mode = s.access; // 'standard' or 'full'
     if (mode !== 'read' && agent === 'ollama') {
       return { ok: false, error: { kind: 'read_only', message: 'The local model can chat, plan and review, but cannot edit files.' } };
     }
-    if (mode !== 'read' && (!opts.taskId || cwd !== taskDir(opts.taskId))) {
+    if (mode !== 'read' && (opts.unlinked === true || !opts.taskId || cwd !== taskDir(opts.taskId))) {
       return { ok: false, error: { kind: 'no_workspace', message: 'Pick a project folder in Settings first so the task has a workspace.' } };
     }
 
@@ -550,6 +609,19 @@ function registerIpc() {
     taskDir(taskId);
     return workspace.ensureWorktree({ project: s.project, root: worktreeRoot(), taskId, title: String(title).slice(0, 200) });
   });
+  // The team chat's workspace: chosen here (never by the window) and verified to belong
+  // to the open project's repository; one from another repo is never used.
+  handle('workspace:ensureChat', async (projectId) => {
+    const g = binding.checkAction(projectId);
+    if (!g.ok) return { ok: false, message: `Not done: ${g.reason}.` };
+    const s = readSettings();
+    if (!s.project) return { ok: false, message: 'Pick a project folder first.' };
+    try {
+      const pick = await guard.chooseChatWorkspace({ project: s.project, root: worktreeRoot(), belongsTo: workspace.belongsTo });
+      const ws = await workspace.ensureWorktree({ project: s.project, root: worktreeRoot(), taskId: pick.id, title: 'team chat' });
+      return { ok: true, ...ws, id: pick.id, projectId: binding.active(), notice: pick.notice };
+    } catch (e) { return { ok: false, message: String(e.message || e) }; }
+  });
   handle('workspace:head', (taskId) => workspace.head(taskDir(taskId)));
   // ---- chat attachments (images / videos) ----
   const withFrames = async (r) => {
@@ -581,8 +653,12 @@ function registerIpc() {
     if (!where.ok) return where;
     return withFrames(attachments.saveFromPath(worktreeRoot(), where.file, { roots: [s.project, worktreeRoot()] }));
   });
-  handle('workspace:checkpoint', (taskId, author, message) =>
-    workspace.checkpoint(taskDir(taskId), { author: String(author).slice(0, 40), message: String(message).slice(0, 300) }));
+  handle('workspace:checkpoint', async (taskId, author, message) => {
+    const dir = taskDir(taskId);
+    const s = readSettings();
+    if (fs.existsSync(dir) && !(s.project && (await workspace.belongsTo(dir, s.project)))) throw new Error(`The workspace ${taskId} belongs to a different project's repository; nothing was committed.`);
+    return workspace.checkpoint(dir, { author: String(author).slice(0, 40), message: String(message).slice(0, 300) });
+  });
   handle('workspace:summary', (taskId, baseSha) => {
     if (!/^[0-9a-f]{7,40}$/.test(baseSha)) throw new Error('bad sha');
     return workspace.summary(taskDir(taskId), baseSha);
@@ -799,7 +875,9 @@ function registerOps() {
   opsApi = ops.register({
     handle, dataDir, readSettings, useProject, settingsDisk, taskDir, worktreeRoot, gitops, workspace, agents, attachments, redact, send, dialog,
     getWindow: () => mainWindow,
-    setStore: (file) => { store = createStore(file); lastLoad = { recoveredFrom: null }; },
+    // The store swaps first and the binding with it: any save still on its way from the
+    // window (which shows the previous project until it reloads) is refused.
+    setStore: (file, id) => { store = createStore(file); lastLoad = { recoveredFrom: null }; binding.setActive(id); },
   });
 }
 
@@ -819,6 +897,8 @@ app.whenReady().then(() => {
   secrets = createSecretStore({ safeStorage, dir: dataDir() });
   // The active project's board (the data from before projects is the default project, in the same file).
   store = createStore(ops.stateFile(dataDir(), readSettings().project, readSettings().projects));
+  binding.setActive(ops.activeProjectId());
+  chats = createChats(dataDir());
   history = createHistory(historyFile());
   openWeb = web.createWebWindows({ BrowserWindow, shell, iconPath: path.join(__dirname, '..', 'dist', 'icon.png') });
   theme.watchTheme((t) => send('theme:changed', t));

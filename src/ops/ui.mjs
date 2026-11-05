@@ -796,14 +796,20 @@ async function onClick(e) {
   if (op === 'switch') {
     const running = Object.keys(C.ui().running || {});
     if (running.length) return C.toast(`Wait until the running task${running.length > 1 ? 's' : ''} (${running.map((id) => `T-${id}`).join(', ')}) finish, or stop them, before switching projects.`);
+    // A chat round still answering would post (and save) into the wrong project.
+    const busy = C.beforeSwitch?.();
+    if (busy) return C.toast(busy);
     const name = (local.projects?.list || []).find((x) => x.id === arg)?.name || 'the project';
     C.toast(`Switching to ${name}…`);
     try {
       await C.save();
+      // From here this window saves nothing more (the main process would refuse it anyway).
+      C.switching?.(true);
       const r = await call('opsProjectSwitch', arg);
       if (r?.ok) { location.reload(); return; }
+      C.switching?.(false);
       return C.toast(`Could not switch to ${name}: ${r?.message || 'no answer from the app'}`);
-    } catch (err) { return C.toast(`Could not switch to ${name}: ${String(err?.message || err)}`); }
+    } catch (err) { C.switching?.(false); return C.toast(`Could not switch to ${name}: ${String(err?.message || err)}`); }
   }
   if (op === 'addfolder' || op === 'addclone') {
     const input = op === 'addclone' ? document.getElementById('ops-clone')?.value.trim() : '';

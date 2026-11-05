@@ -23,13 +23,33 @@ function slug(text) {
   return String(text).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'task';
 }
 
-// Create (or reuse) the task's branch and worktree.
+// The repository a folder belongs to: its shared git dir (the same for a repo and all
+// of its worktrees), as a real absolute path. null when it isn't a git folder.
+async function commonDir(dir) {
+  if (!dir || !fs.existsSync(dir)) return null;
+  const r = await git(dir, ['rev-parse', '--git-common-dir']);
+  if (!r.ok || !r.out) return null;
+  try { return fs.realpathSync(path.resolve(dir, r.out)); } catch { return null; }
+}
+// True only when `dir` is a worktree (or the checkout) of the same repository as `project`.
+async function belongsTo(dir, project) {
+  const [a, b] = await Promise.all([commonDir(dir), commonDir(project)]);
+  return Boolean(a && b && a === b);
+}
+
+// Create (or reuse) the task's branch and worktree. An existing folder is reused only
+// when it is a worktree of this project's repository; one from another repo is refused.
 async function ensureWorktree({ project, root, taskId, title }) {
   if (!(await isRepo(project))) throw new Error('The project folder is not a git repository. Pick a git repo in Settings (or run `git init` there).');
   if (!/^[A-Z0-9]{4,10}$/.test(taskId)) throw new Error('bad task id');
   const dir = path.join(root, taskId);
   const branch = `hearth/${taskId.toLowerCase()}-${slug(title)}`;
   if (fs.existsSync(path.join(dir, '.git'))) {
+    if (!(await belongsTo(dir, project))) {
+      const e = new Error(`The workspace ${taskId} belongs to a different project's repository, so it was not used.`);
+      e.wrongRepo = true;
+      throw e;
+    }
     const base = await git(project, ['rev-parse', 'HEAD']);
     return { dir, branch, created: false, baseSha: base.out };
   }
@@ -98,4 +118,4 @@ async function head(dir) {
   return r.ok && r.out ? r.out : null;
 }
 
-module.exports = { APP_DIR, head, isRepo, ensureWorktree, checkpoint, summary, git, slug, cleanMessage, ownerIdentity };
+module.exports = { APP_DIR, head, isRepo, commonDir, belongsTo, ensureWorktree, checkpoint, summary, git, slug, cleanMessage, ownerIdentity };

@@ -273,7 +273,7 @@ function register(d) {
     if (!target) throw new Error('Unknown project.');
     projects.setDir(cur.id, projectDir());
     projects.switchTo(target.id);
-    setStore(projects.stateFile(target.id));
+    setStore(projects.stateFile(target.id), target.id);
     if (target.dir) useProject(target.dir);
     return { ok: true, ...listProjects() };
   });
@@ -772,7 +772,7 @@ function register(d) {
       projects.setDir(cur.id, projectDir());
       const p = known || projects.add({ dir });
       projects.switchTo(p.id);
-      setStore(projects.stateFile(p.id));
+      setStore(projects.stateFile(p.id), p.id);
       return { ...useProject(dir), projectSwitched: true };
     },
     assetsEnv: (agent, cwd) => assetsEnv(agent, cwd),
@@ -826,4 +826,8 @@ function phonePushData(snap, redactFn, set, max = 2e6) {
 
 const pickDispatchRun = (runs = [], after = null) => (runs || []).filter((r) => r.event === 'workflow_dispatch' && (!after || String(r.created_at) >= after.slice(0, 19))).sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))[0] || null;
 
-module.exports = { register, stateFile, jobLimits, jobMode, phonePushData, pickDispatchRun };
+const activeProjectId = () => (projects ? projects.get().active : 'default');
+const projectsList = () => projects.get();
+const projectStateFile = (id) => projects.stateFile(id);
+
+module.exports = { activeProjectId, projectsList, projectStateFile, register, stateFile, jobLimits, jobMode, phonePushData, pickDispatchRun };
