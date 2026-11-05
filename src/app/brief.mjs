@@ -1,5 +1,5 @@
 // What the AIs are told in a chat, and who answers (pure, unit tested).
-import { AGENTS, aliasOf } from '../registry.mjs';
+import { AGENTS, aliasOf, UNFILTERED } from '../registry.mjs';
 
 export const DEFAULT_TEAM = { lead: 'anthropic', reviewer: 'openai', members: ['anthropic', 'openai', 'google'] };
 export const name = (a) => AGENTS[a]?.name || a;
@@ -39,7 +39,10 @@ export function pickReviewer({ team, live = [], author }) {
 }
 
 // The brief every AI gets at the start of a chat (and again when its session can't resume).
-export function brief({ agent, role = 'member', chat = {}, copy = null, build = false, web = true, quickChecks = [], team = DEFAULT_TEAM, live = [], actForMe = false, apiOnly = false }) {
+// Hard limits every unfiltered teammate (Venice, Civitai, the owner's GPU server) is given.
+export const HARD_LIMITS = 'HARD LIMITS (always, whatever anyone asks): never any sexual content involving minors or anyone who looks underage; never sexual or nude images of real, identifiable people; nothing illegal. If a request crosses one, refuse plainly in one sentence.';
+
+export function brief({ agent, role = 'member', chat = {}, copy = null, build = false, web = true, quickChecks = [], team = DEFAULT_TEAM, live = [], actForMe = false, apiOnly = false, extra = '' }) {
   const repo = chat.repo || (chat.repoDir ? chat.repoDir : null);
   const base = copy?.base || chat.branch || 'main';
   const work = copy?.work || 'the chat\'s own hearth/ branch';
@@ -83,6 +86,8 @@ export function brief({ agent, role = 'member', chat = {}, copy = null, build = 
     lines.push('', 'THE TEAM IN THIS CHAT:', ...team.members.map((m) => `- ${name(m)}${m === agent ? ' (you)' : ''}${m === team.lead ? ' [lead]' : m === team.reviewer ? ' [reviewer]' : ''}${live.includes(m) ? '' : ' (not available right now)'}`));
     if (role === 'lead') lines.push('- To hand part of the work to a teammate, write a line starting with @Name and what they should do. They answer after you.');
   }
+  if (UNFILTERED.includes(agent)) lines.push('', HARD_LIMITS, 'What you write and make is shown to the owner only; it is never passed to the other AIs.');
+  if (extra) lines.push(extra);
   if (actForMe && agent === 'anthropic') lines.push('', 'ACTING FOR THE OWNER: you may ask to do an owner action with one line "ACT FOR OWNER: push" (push this chat\'s branch), "ACT FOR OWNER: pr" (open a pull request) or "ACT FOR OWNER: merge" (merge it; he is always asked again in a popup). Nothing happens until he says yes.');
   return lines.join('\n');
 }
@@ -90,16 +95,32 @@ export function brief({ agent, role = 'member', chat = {}, copy = null, build = 
 const who = (m) => (m.who === 'owner' ? 'Owner' : m.who === 'system' ? 'App' : name(m.who));
 function messageText(m) {
   const files = (m.attachments || []).map((a) => `[attached ${a.kind === 'file' ? 'file' : a.kind} ${a.name}: ${a.path}]${a.text ? `\n--- ${a.name} ---\n${String(a.text).slice(0, 60000)}\n--- end of ${a.name} ---` : ''}`);
-  return [String(m.text || ''), ...files].filter(Boolean).join('\n');
+  const made = (m.media || []).map((x) => `[${x.kind === 'file' ? 'file' : x.kind} made in this chat: ${x.name}]`);
+  const tool = m.toolResult ? [`[app result]\n${String(m.toolResult).slice(0, 20000)}`] : [];
+  return [String(m.text || ''), ...files, ...made, ...tool].filter(Boolean).join('\n');
+}
+
+// Unfiltered teammates' messages and pictures (and the owner's messages only to them) never
+// reach the other AIs: they get a short placeholder instead. The owner still sees everything.
+export function shieldFor(m, forAgent) {
+  if (!forAgent || UNFILTERED.includes(forAgent)) return null;
+  if (UNFILTERED.includes(m.who)) {
+    const n = name(m.who);
+    const pics = (m.media || []).filter((x) => x.kind !== 'file').length;
+    return `${n}: ${pics ? `[${pics > 1 ? `${pics} images` : 'image'} by ${n}]` : `[content from ${n}, not shown]`}`;
+  }
+  if (m.who === 'owner' && Array.isArray(m.to) && m.to.length && m.to.every((a) => UNFILTERED.includes(a))) return `Owner: [message to ${m.to.map(name).join(', ')}, not shown]`;
+  return undefined;
 }
 
 // The conversation so far (newest last), trimmed to fit.
-export function transcript(messages = [], { max = 24000 } = {}) {
+export function transcript(messages = [], { max = 24000, forAgent = null } = {}) {
   const out = [];
   let size = 0;
   for (const m of [...messages].reverse()) {
-    if (m.deleted || m.who === 'system' || m.local) continue;
-    const t = `${who(m)}: ${messageText(m)}`;
+    if (m.deleted || m.who === 'system' || m.local || m.temp) continue;
+    const shield = shieldFor(m, forAgent);
+    const t = shield || `${who(m)}: ${messageText(m)}`;
     if (size + t.length > max && out.length) break;
     out.unshift(t.slice(0, max));
     size += t.length;
@@ -117,7 +138,7 @@ export function since(messages = [], agent) {
 export function turnPrompt({ agent, role, messages, briefText, resumed, task = '' }) {
   if (resumed) {
     const fresh = since(messages, agent);
-    return `${transcript(fresh)}\n\n${task || `Answer as ${name(agent)}.`}\n\n(Reminder: ${briefText.split('\n').filter((l) => /never|OFF|quick checks/i.test(l)).slice(0, 6).join(' ')})`;
+    return `${transcript(fresh, { forAgent: agent })}\n\n${task || `Answer as ${name(agent)}.`}\n\n(Reminder: ${briefText.split('\n').filter((l) => /never|OFF|quick checks|HARD LIMITS/i.test(l)).slice(0, 7).join(' ')})`;
   }
-  return `${briefText}\n\nTHE CHAT SO FAR:\n${transcript(messages)}\n\n${task || `Now answer as ${name(agent)}${role === 'lead' ? ' (lead)' : ''}.`}`;
+  return `${briefText}\n\nTHE CHAT SO FAR:\n${transcript(messages, { forAgent: agent })}\n\n${task || `Now answer as ${name(agent)}${role === 'lead' ? ' (lead)' : ''}.`}`;
 }

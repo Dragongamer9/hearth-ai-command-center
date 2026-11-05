@@ -155,7 +155,7 @@ function register(d) {
   async function runChat(o) {
     if (!o || typeof o !== 'object') throw new Error('bad request');
     const e = entryOf(o.chatId);
-    const agent = validateProvider(o.agent);
+    const agent = (d.extraAgents || []).includes(o.agent) ? o.agent : validateProvider(o.agent);
     const prompt = validatePrompt(o.prompt);
     const runId = typeof o.runId === 'string' && /^[A-Za-z0-9]{4,24}$/.test(o.runId) ? o.runId : crypto.randomBytes(5).toString('hex');
     const helper = o.helper === true;
@@ -184,6 +184,9 @@ function register(d) {
       } else cwd = scratchDir(e.id);
       const startedAt = Date.now();
       const headBefore = copy ? (await copies.git(cwd, ['rev-parse', 'HEAD'])).out : null;
+      // A roleplay turn: the hard limits are checked before the AI starts (electron/cards.cjs).
+      const rp = o.rp && typeof o.rp === 'object' ? { cardIds: (Array.isArray(o.rp.cardIds) ? o.rp.cardIds : []).map(String).slice(0, 8) } : null;
+      if (rp && d.rpGuard) { const g = d.rpGuard(agent, rp, 'before', String(o.rp.check || '')); if (!g.ok) return { ok: false, error: { kind: 'refused', message: g.message, limit: g.kind } }; }
       const apiOnly = apiConnected(agent);
       let mode = 'read';
       if (agent !== 'ollama' && !apiOnly && !helper) {
@@ -194,7 +197,7 @@ function register(d) {
       const files = (Array.isArray(o.files) ? o.files : []).filter((f) => typeof f === 'string' && attachments.inside(f, [attachments.attachDir(worktreeRoot())])).slice(0, 8);
       let r;
       if (apiOnly) {
-        r = await callApi(agent, o.model, prompt);
+        r = await callApi(agent, o.model ? validateModel(o.model) : undefined, prompt, controller.signal);
       } else {
         try { mcp = d.mcpForRun ? d.mcpForRun(path.join(dataDir(), 'run')) : null; } catch { mcp = null; }
         const base = {
@@ -221,6 +224,8 @@ function register(d) {
         }
       }
       if (r.text) r.text = redact(r.text);
+      // … and after: a reply that crosses them is never shown or kept.
+      if (rp && d.rpGuard && r.ok && r.text) { const g = d.rpGuard(agent, rp, 'after', r.text); if (!g.ok) return { ok: false, error: { kind: 'refused', message: g.message, limit: g.kind } }; }
       if (r.partial) r.partial = redact(r.partial);
       if (r.error?.message) r.error.message = redact(r.error.message);
       const out = { ...r, mode, web, build, helper };

@@ -1,7 +1,7 @@
 // Hearth AI Command Center — Electron main process.
 // All privileged work (files, secrets, provider APIs, updates) happens here.
 // The renderer only gets the narrow API exposed in preload.cjs.
-const { app, BrowserWindow, ipcMain, shell, Menu, safeStorage, dialog, clipboard, protocol } = require('electron');
+const { app, BrowserWindow, Notification, ipcMain, shell, Menu, safeStorage, dialog, clipboard, protocol } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -129,13 +129,25 @@ function readSettings() {
     maxChats: v2.MAX_CHAT_CHOICES.includes(s.maxChats) ? s.maxChats : 3,
     // Custom instructions every AI gets in every chat (empty until he writes them).
     customInstructions: cleanInstructions(s.customInstructions),
+    // Venice and Civitai choices (models, engine, request fields). Defaults until he picks.
+    teammates: cleanTeammates(s.teammates),
   };
+}
+const MODEL_OK = /^[A-Za-z0-9._:\-/]{1,100}$/;
+function cleanTeammates(t) {
+  const o = t && typeof t === 'object' && !Array.isArray(t) ? t : {};
+  const out = {};
+  if (o.venice && typeof o.venice === 'object') out.venice = { ...(MODEL_OK.test(o.venice.model || '') ? { model: o.venice.model } : {}), ...(MODEL_OK.test(o.venice.imageModel || '') ? { imageModel: o.venice.imageModel } : {}) };
+  if (o.civitai && typeof o.civitai === 'object') out.civitai = { ...(['sdcpp', 'comfy', 'flux2', 'qwen'].includes(o.civitai.engine) ? { engine: o.civitai.engine } : {}), ...(typeof o.civitai.fields === 'string' ? { fields: o.civitai.fields.slice(0, 4000) } : {}) };
+  return out;
 }
 function cleanInstructions(c) {
   const t = (v) => (typeof v === 'string' ? v.slice(0, 3000) : '');
   return c && typeof c === 'object' && !Array.isArray(c) ? { about: t(c.about), style: t(c.style) } : { about: '', style: '' };
 }
-const TEAM_IDS = ['anthropic', 'openai', 'google', 'xai', 'mistral', 'qwen', 'perplexity', 'deepseek', 'ollama'];
+const TEAM_IDS = ['anthropic', 'openai', 'google', 'xai', 'mistral', 'qwen', 'perplexity', 'deepseek', 'ollama', 'venice', 'civitai', 'gpu'];
+// Teammates by key or URL (electron/teammates.cjs): answered through their own API.
+const TEAMMATES = ['venice', 'civitai', 'gpu'];
 function cleanTeam(t) {
   if (!t || typeof t !== 'object' || Array.isArray(t)) return null;
   const members = [...new Set((Array.isArray(t.members) ? t.members : []).filter((a) => TEAM_IDS.includes(a)))];
@@ -452,6 +464,11 @@ function registerIpc() {
       s.maxChats = patch.maxChats;
     }
     if ('customInstructions' in patch) s.customInstructions = cleanInstructions(patch.customInstructions);
+    if ('teammates' in patch) {
+      const t = cleanTeammates(patch.teammates);
+      if (t.civitai?.fields) { try { JSON.parse(t.civitai.fields); } catch { throw new Error('The Civitai request fields must be JSON, like {"prompt": "{prompt}"}.'); } }
+      s.teammates = { ...s.teammates, ...Object.fromEntries(Object.entries(t).map(([k, v]) => [k, { ...(s.teammates[k] || {}), ...v }])) };
+    }
     // Only the owner turns it on: a native confirmation the window can't answer for him.
     if ('actForMe' in patch) {
       const on = patch.actForMe === true;
@@ -991,7 +1008,7 @@ function registerIpc() {
 let parityApi = null;
 function registerParity() {
   parityApi = parity.register({
-    handle, dataDir, readSettings, chats, secrets, shell, dialog, send, protocol, attachments, worktreeRoot, BrowserWindow,
+    handle, dataDir, readSettings, chats, secrets, shell, dialog, send, protocol, attachments, worktreeRoot, BrowserWindow, Notification,
     getWindow: () => mainWindow,
     v2: () => v2Api,
     // The Habitat from the old (1.x) project boards: read-only, never written.
@@ -1006,12 +1023,15 @@ function registerV2() {
     handle, dataDir, readSettings, chats, agents, gitops, attachments, history, redact, send, dialog, shell, worktreeRoot, runs, protocol,
     getWindow: () => mainWindow,
     mcpForRun: (dir) => (parityApi ? parityApi.mcpForRun(dir) : null),
+    rpGuard: (...a) => (parityApi ? parityApi.rpGuard(...a) : { ok: true }),
     assetsEnv: (agent, cwd) => (opsApi ? opsApi.assetsEnv(agent, cwd) : undefined),
     validateProvider, validatePrompt, validateModel,
     projects: () => ops.projectsList(),
     stateFileFor: (id) => ops.projectStateFile(id),
-    apiConnected: (agent) => API_ONLY.includes(agent) || (LIVE_PROVIDERS.includes(agent) && readSettings().connection[agent] === 'api'),
-    callApi: async (agent, model, prompt) => {
+    extraAgents: TEAMMATES,
+    apiConnected: (agent) => TEAMMATES.includes(agent) || API_ONLY.includes(agent) || (LIVE_PROVIDERS.includes(agent) && readSettings().connection[agent] === 'api'),
+    callApi: async (agent, model, prompt, signal) => {
+      if (TEAMMATES.includes(agent)) return parityApi ? parityApi.teammates.chat(agent, { prompt, model, signal }) : { ok: false, error: { kind: 'auth', message: 'Not ready.' } };
       const r = await callProvider({ provider: agent, apiKey: secrets.get(agent), model: validateModel(model || DEFAULT_MODELS[agent]), prompt });
       if (!r.ok) {
         if (r.error.kind === 'rate_limit' || agents.isLimit(r.error.message)) r.error.kind = 'limit';

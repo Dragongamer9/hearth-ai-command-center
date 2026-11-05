@@ -15,17 +15,29 @@ const { createMemory } = require('./memory-store.cjs');
 const { createScheduler } = require('./schedule.cjs');
 const { createConnectors } = require('./connectors.cjs');
 const { createJsonFile } = require('./jsonfile.cjs');
+const { createTeammates } = require('./teammates.cjs');
+const cardsLib = require('./cards.cjs');
 
 const KEY_NAMES = ['google', 'openai', 'xai', 'mistral'];
-const whoName = { owner: 'Owner', system: 'App', anthropic: 'Claude', openai: 'ChatGPT', google: 'Gemini', xai: 'Grok', mistral: 'Mistral', qwen: 'Qwen', perplexity: 'Perplexity', deepseek: 'DeepSeek', ollama: 'Local AI' };
+const whoName = { owner: 'Owner', system: 'App', anthropic: 'Claude', openai: 'ChatGPT', google: 'Gemini', xai: 'Grok', mistral: 'Mistral', qwen: 'Qwen', perplexity: 'Perplexity', deepseek: 'DeepSeek', ollama: 'Local AI', venice: 'Venice', civitai: 'Civitai', gpu: 'Your GPU server' };
+// Teammates whose output never reaches the other AIs (the same rule as src/app/brief.mjs).
+const UNFILTERED = ['venice', 'civitai', 'gpu'];
 const uid = () => crypto.randomBytes(5).toString('hex');
 
+// A chat as text for an AI that is NOT one of the unfiltered teammates: their messages and
+// pictures (and the owner's messages only to them) become short placeholders.
+function shieldLine(m) {
+  const n = whoName[m.who] || m.who;
+  if (UNFILTERED.includes(m.who)) { const pics = (m.media || []).filter((x) => x.kind !== 'file').length; return `${n}: ${pics ? `[${pics > 1 ? `${pics} images` : 'image'} by ${n}]` : `[content from ${n}, not shown]`}`; }
+  if (m.who === 'owner' && Array.isArray(m.to) && m.to.length && m.to.every((a) => UNFILTERED.includes(a))) return `Owner: [message to ${m.to.map((a) => whoName[a] || a).join(', ')}, not shown]`;
+  return null;
+}
 function transcriptOf(messages, max = 12000) {
   const out = [];
   let n = 0;
   for (const m of [...(messages || [])].reverse()) {
     if (m.local || m.deleted) continue;
-    const t = `${whoName[m.who] || m.who}: ${String(m.text || '').slice(0, 4000)}`;
+    const t = shieldLine(m) || `${whoName[m.who] || m.who}: ${String(m.text || '').slice(0, 4000)}`;
     if (n + t.length > max && out.length) break;
     out.unshift(t);
     n += t.length;
@@ -39,6 +51,7 @@ function register(d) {
   const memory = createMemory(path.join(dataDir(), 'memory.json'));
   const connectors = createConnectors({ file: path.join(dataDir(), 'connectors.json'), secrets });
   const habitat = createJsonFile(path.join(dataDir(), 'habitat.json'), { empty: () => null, check: (j) => typeof j === 'object', label: 'Your Habitat file' });
+  const teammates = d.teammates || createTeammates({ secrets, file: path.join(dataDir(), 'servers.json'), settings: readSettings });
   const entryOf = (id) => v2().entryOf(String(id));
   const attachRoot = () => attachments.attachDir(worktreeRoot());
 
@@ -100,6 +113,13 @@ function register(d) {
   // A picture made (or edited) by an AI that can, posted into the chat.
   handle('media:image', async (chatId, o = {}) => {
     entryOf(chatId);
+    // The unfiltered teammates (Venice, Civitai, the owner's GPU server) make pictures their own way.
+    if (teammates.IDS.includes(o.provider)) {
+      const r = await teammates.image(o.provider, { prompt: o.prompt });
+      if (!r.ok) return { ...r, provider: o.provider };
+      const items = r.images.map((im, i) => media.storeBuffer(root, String(chatId), `${o.provider}-${Date.now()}-${i + 1}.${/jpeg/.test(im.mime) ? 'jpg' : /webp/.test(im.mime) ? 'webp' : 'png'}`, im.buf)).filter(Boolean);
+      return { ok: true, provider: o.provider, via: r.via, item: items[0], items, notes: r.notes || [] };
+    }
     const provider = pickProvider(o.provider, makers.IMAGE_PROVIDERS);
     let image = null;
     if (o.edit) {
@@ -109,7 +129,8 @@ function register(d) {
     }
     const r = await makers.generateImage({ provider, key: secrets.get(provider), prompt: o.prompt, image });
     if (!r.ok) return { ...r, provider };
-    return { ok: true, provider, via: r.via, item: media.storeBuffer(root, String(chatId), `${o.edit ? 'edited' : 'image'}-${Date.now()}.${r.mime.includes('jpeg') ? 'jpg' : 'png'}`, r.buf) };
+    const item = media.storeBuffer(root, String(chatId), `${o.edit ? 'edited' : 'image'}-${Date.now()}.${r.mime.includes('jpeg') ? 'jpg' : 'png'}`, r.buf);
+    return { ok: true, provider, via: r.via, item, items: [item].filter(Boolean) };
   });
   const videoJobs = new Map();
   handle('media:video', async (chatId, o = {}) => {
@@ -164,13 +185,15 @@ function register(d) {
       const e = chats.entry(h.id);
       const g = chats.get(h.id);
       const snippets = [];
-      if (g?.ok) for (const m of g.messages) { const t = String(m.text || ''); const lo = t.toLowerCase(); const i = words.map((w) => lo.indexOf(w)).find((x) => x >= 0); if (i >= 0 && i !== undefined) { snippets.push(`${whoName[m.who] || m.who} (${String(m.at || '').slice(0, 10)}): ${t.slice(Math.max(0, i - 120), i + 280).replace(/\s+/g, ' ')}`); if (snippets.length >= 3) break; } }
+      if (g?.ok) for (const m of g.messages) { if (shieldLine(m)) continue; const t = String(m.text || ''); const lo = t.toLowerCase(); const i = words.map((w) => lo.indexOf(w)).find((x) => x >= 0); if (i >= 0 && i !== undefined) { snippets.push(`${whoName[m.who] || m.who} (${String(m.at || '').slice(0, 10)}): ${t.slice(Math.max(0, i - 120), i + 280).replace(/\s+/g, ' ')}`); if (snippets.length >= 3) break; } }
       return { id: h.id, title: e?.title || h.id, repo: e?.repo || null, updatedAt: e?.updatedAt || null, snippets: snippets.length ? snippets : [h.snippet].filter(Boolean) };
     });
   });
   handle('chats:readOther', (id) => { const e = chats.entry(String(id)); const g = e ? chats.get(String(id)) : null; return g?.ok ? { ok: true, title: e.title, text: transcriptOf(g.messages, 12000) } : { ok: false, message: 'Not found.' }; });
 
   // ---- per-chat knowledge: instructions and pinned reference files ----
+  // Make a chat a roleplay chat (or change its characters, players, order, lorebooks).
+  handle('chats:rp', (id, rp) => { const e = chats.entry(String(id)); if (!e) throw new Error('unknown chat'); return chats.update(e.id, { rp: rp || null }); });
   handle('chats:knowledge', (id, k = {}) => {
     const e = chats.entry(String(id));
     if (!e) throw new Error('unknown chat');
@@ -267,6 +290,92 @@ function register(d) {
     } finally { w.destroy(); try { fs.unlinkSync(tmp); } catch {} }
   });
 
+  // ---- more teammates: Venice, Civitai, the owner's GPU servers ----
+  handle('teammates:status', () => teammates.status());
+  handle('teammates:setKey', (agent, key) => teammates.setKey(String(agent), key));
+  handle('teammates:removeKey', (agent) => teammates.removeKey(String(agent)));
+  handle('teammates:addServer', (spec) => teammates.addServer(spec || {}));
+  handle('teammates:removeServer', (id) => teammates.removeServer(String(id)));
+
+  // ---- roleplay: character cards, lorebooks, persona (electron/cards.cjs) ----
+  const cards = cardsLib.createCards({ dataDir: dataDir() });
+  const cardsOf = (ids) => (Array.isArray(ids) ? ids : []).map((id) => cards.get(String(id))).filter(Boolean);
+  handle('cards:list', () => ({ list: cards.list(), broken: cards.broken() }));
+  handle('cards:import', (name, data) => cards.importFile(String(name || 'card'), Buffer.from(data instanceof ArrayBuffer ? new Uint8Array(data) : data || [])));
+  handle('cards:pick', async () => {
+    const r = await dialog.showOpenDialog(getWindow(), { title: 'Import character cards or lorebooks', properties: ['openFile', 'multiSelections'], filters: [{ name: 'Character cards and lorebooks', extensions: ['png', 'json'] }] });
+    if (r.canceled) return [];
+    const out = [];
+    for (const f of r.filePaths.slice(0, 20)) { try { out.push({ ok: true, ...cards.importFile(path.basename(f), fs.readFileSync(f)) }); } catch (e) { out.push({ ok: false, message: `${path.basename(f)}: ${e.message}` }); } }
+    return out;
+  });
+  handle('cards:save', (card) => cards.save(card || {}));
+  handle('cards:remove', (id) => cards.remove(String(id)));
+  handle('cards:export', async (id, fmt) => {
+    const x = cards.exportCard(String(id), fmt === 'json' ? 'json' : 'png');
+    const s2 = await dialog.showSaveDialog(getWindow(), { title: 'Export character card', defaultPath: path.join(os.homedir(), 'Downloads', media.safeName(x.name)) });
+    if (s2.canceled || !s2.filePath) return { ok: false, cancelled: true };
+    fs.writeFileSync(s2.filePath, x.buf);
+    return { ok: true, file: s2.filePath };
+  });
+  handle('lore:list', () => cards.bookList());
+  handle('lore:save', (b) => cards.saveBook(b || {}));
+  handle('lore:remove', (id) => cards.removeBook(String(id)));
+  handle('lore:import', (name, data) => cards.importBook(String(name || 'lorebook.json'), Buffer.from(data instanceof ArrayBuffer ? new Uint8Array(data) : data || [])));
+  handle('lore:fromCard', (id) => { const c = cards.get(String(id)); if (!c?.character_book) return { ok: false, message: 'That card has no lorebook.' }; return { ok: true, book: cards.addBook({ ...c.character_book, name: c.character_book.name || `${c.name}'s lorebook` }) }; });
+  handle('lore:export', async (id) => {
+    const x = cards.exportBook(String(id));
+    const s2 = await dialog.showSaveDialog(getWindow(), { title: 'Export lorebook', defaultPath: path.join(os.homedir(), 'Downloads', media.safeName(x.name)) });
+    if (s2.canceled || !s2.filePath) return { ok: false, cancelled: true };
+    fs.writeFileSync(s2.filePath, x.buf);
+    return { ok: true, file: s2.filePath };
+  });
+  handle('rp:persona', () => cards.persona());
+  handle('rp:setPersona', (p) => cards.setPersona(p || {}));
+  handle('rp:check', (ids, text) => cardsLib.checkRequest({ cards: cardsOf(ids), text: String(text || '') }));
+  // A roleplay picture: the hard limits are checked here, in the main process, before any request.
+  handle('rp:image', async (chatId, o = {}) => {
+    entryOf(chatId);
+    const list = cardsOf(o.cardIds);
+    const note = String(o.note || '').slice(0, 1500);
+    const looks = list.map((c) => `${c.name}: ${String(c.description || c.personality || '').replace(/\{\{char\}\}/gi, c.name).slice(0, 600)}`).join('\n');
+    const prompt = (o.kind === 'scene' ? `A scene${note ? `: ${note}` : ''}. Characters:\n${looks}${list[0]?.scenario ? `\nSetting: ${list[0].scenario.slice(0, 400)}` : ''}` : `A portrait of ${looks}${note ? `\n${note}` : ''}`).slice(0, 3000);
+    const chk = cardsLib.checkRequest({ cards: list, text: `${prompt}\n${note}`, image: true });
+    if (!chk.ok) return { ok: false, error: { kind: chk.kind, message: chk.message } };
+    const provider = String(o.provider || '');
+    if (teammates.IDS.includes(provider)) {
+      const r = await teammates.image(provider, { prompt, safe: chk.safe });
+      if (!r.ok) return { ...r, provider };
+      const items = r.images.map((im, i) => media.storeBuffer(root, String(chatId), `${o.kind === 'scene' ? 'scene' : 'portrait'}-${Date.now()}-${i + 1}.${/jpeg/.test(im.mime) ? 'jpg' : 'png'}`, im.buf)).filter(Boolean);
+      return { ok: true, provider, via: r.via, items, safe: chk.safe };
+    }
+    if (!makers.IMAGE_PROVIDERS.includes(provider)) return { ok: false, error: { kind: 'unsupported', message: 'Pick a teammate that makes pictures.' } };
+    const r = await makers.generateImage({ provider, key: secrets.get(provider), prompt });
+    if (!r.ok) return { ...r, provider };
+    return { ok: true, provider, via: r.via, items: [media.storeBuffer(root, String(chatId), `portrait-${Date.now()}.png`, r.buf)].filter(Boolean) };
+  });
+  // Roleplay turns are checked against the hard limits before and after the AI writes.
+  function rpGuard(agent, rp, phase, text) {
+    const list = cardsOf(rp?.cardIds);
+    if (!list.length) return { ok: true };
+    if (phase === 'before' && teammates.IDS.includes(agent)) {
+      const young = list.find((c) => cardsLib.cardLimits(c).minor);
+      if (young) return { ok: false, kind: 'minor', message: `Blocked: ${young.name} reads as under 18 (${cardsLib.cardLimits(young).minorWhy}), so ${whoName[agent] || agent} (an uncensored teammate) can't play in this story. Pick Claude, ChatGPT or Gemini to play it as a non-sexual story.` };
+    }
+    const chk = cardsLib.checkRequest({ cards: list, text: String(text || '') });
+    return chk.ok ? { ok: true } : { ok: false, kind: chk.kind, message: chk.message };
+  }
+
+  // ---- desktop notifications (Settings › Notifications; on unless the owner turns it off) ----
+  handle('notify:show', (o = {}) => {
+    if (readSettings().notify === false || !d.Notification?.isSupported?.()) return { ok: false };
+    const w = getWindow();
+    const n = new d.Notification({ title: String(o.title || 'Hearth AI').slice(0, 120), body: String(o.body || '').slice(0, 300), silent: false });
+    n.on('click', () => { if (w && !w.isDestroyed()) { w.show(); w.focus(); send('notify:open', String(o.chatId || '')); } });
+    n.show();
+    return { ok: true };
+  });
+
   // ---- the Habitat's saved store (rooms, garden, journals) ----
   handle('habitat:get', () => {
     const cur = habitat.read();
@@ -284,7 +393,7 @@ function register(d) {
     return { ok: true };
   });
 
-  return { memory, scheduler, connectors, docText, mcpForRun: (dir) => connectors.forRun(dir), stop() { scheduler.stop(); makers.stopSpeaking(); } };
+  return { memory, scheduler, connectors, teammates, cards, rpGuard, docText, mcpForRun: (dir) => connectors.forRun(dir), stop() { scheduler.stop(); makers.stopSpeaking(); } };
 }
 
-module.exports = { register, transcriptOf, KEY_NAMES };
+module.exports = { register, transcriptOf, shieldLine, KEY_NAMES, UNFILTERED };

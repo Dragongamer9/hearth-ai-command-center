@@ -51,7 +51,8 @@ function buildRequest(provider, apiKey, model, prompt) {
     return {
       url: ENDPOINTS[provider],
       headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
-      body: { model, messages: [{ role: 'user', content: prompt }] },
+      // Perplexity: its own follow-up questions come back with the answer and citations.
+      body: { model, messages: [{ role: 'user', content: prompt }], ...(provider === 'perplexity' ? { return_related_questions: true } : {}) },
     };
   }
   throw new Error('provider has no verified API adapter');
@@ -74,7 +75,9 @@ function extractText(provider, json) {
     if (typeof msg === 'string' && msg) {
       // Perplexity returns its sources separately; keep them with the answer.
       const cites = Array.isArray(json.citations) ? json.citations.filter((c) => typeof c === 'string').slice(0, 10) : [];
-      return cites.length ? `${msg}\n\nSources:\n${cites.map((c, i) => `[${i + 1}] ${c}`).join('\n')}` : msg;
+      const related = Array.isArray(json.related_questions) ? json.related_questions.filter((q) => typeof q === 'string' && q.trim()).slice(0, 3).map((q) => q.replace(/[|\n]/g, ' ').trim().slice(0, 120)) : [];
+      const withSources = cites.length ? `${msg}\n\nSources:\n${cites.map((c, i) => `[${i + 1}] ${c}`).join('\n')}` : msg;
+      return related.length ? `${withSources}\nFOLLOW-UPS: ${related.join(' | ')}` : withSources;
     }
     return null;
   }
@@ -129,7 +132,8 @@ async function callProvider({ provider, apiKey, model, prompt, timeoutMs = 60000
 
   const text = extractText(provider, json);
   if (text === null) return fail('malformed', 'Provider returned a response in an unexpected format.', res.status);
-  return { ok: true, text: text.slice(0, MAX_RESPONSE_CHARS), model };
+  const citations = Array.isArray(json.citations) ? json.citations.filter((c) => typeof c === 'string' && /^https:\/\//.test(c)).slice(0, 12) : [];
+  return { ok: true, text: text.slice(0, MAX_RESPONSE_CHARS), model, ...(citations.length ? { citations } : {}) };
 }
 
 // "Test" on the Agents page: one tiny prompt with the saved key. Only a category
