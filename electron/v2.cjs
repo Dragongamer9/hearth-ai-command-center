@@ -212,6 +212,9 @@ function register(d) {
           onEvent: (ev) => { for (const st of steps.fromEvent(agent, ev)) step(st); },
           web,
           mcp: mcp ? { claudeFile: mcp.claudeFile, codexArgs: mcp.codexArgs } : null,
+          // Gemini and Mistral: their narrow allow-list (electron/permissions.cjs).
+          quickChecks: tools.quickChecks,
+          runDir: path.join(dataDir(), 'run'),
           // Claude: plan mode when it only answers; else edits plus the allowed commands only
           // (Run & build off: edits, no commands).
           claude: agent !== 'anthropic' ? null : mode === 'read' ? { perm: 'plan', allowedTools: ['Skill', 'Task', ...(mcp ? mcp.names.map((n) => `mcp__${n}`) : [])], web } : claudePolicy({ build, access: s.access, quickChecks: tools.quickChecks, web, mcp: mcp ? mcp.names : [] }),
@@ -223,12 +226,14 @@ function register(d) {
           r.resumeReset = true;
         }
       }
+      // Settings never change by themselves: an AI's change to settings.json is undone at once.
+      const undone = d.guardSettings ? d.guardSettings(agent) : null;
       if (r.text) r.text = redact(r.text);
       // … and after: a reply that crosses them is never shown or kept.
       if (rp && d.rpGuard && r.ok && r.text) { const g = d.rpGuard(agent, rp, 'after', r.text); if (!g.ok) return { ok: false, error: { kind: 'refused', message: g.message, limit: g.kind } }; }
       if (r.partial) r.partial = redact(r.partial);
       if (r.error?.message) r.error.message = redact(r.error.message);
-      const out = { ...r, mode, web, build, helper };
+      const out = { ...r, mode, web, build, helper, ...(undone ? { settingsUndone: undone } : {}) };
       if (copy && !helper) {
         // Anything the AI left uncommitted is saved as the owner's commit.
         try { await copies.commitAll(e.id, `${String(o.title || e.title).slice(0, 72)}`); } catch (err) { out.commitError = err.message; }
@@ -245,7 +250,8 @@ function register(d) {
       }
       out.previews = previews.collect(cwd, startedAt);
       // Pictures, videos and files the AI made or named: copied into the app's media folder.
-      try { out.media = media.collect({ cwd, sinceMs: startedAt, text: r.text || r.partial || '', chatId: e.id, root: mediaRoot }); } catch { out.media = []; }
+      // … with a plain reason for each one that can't be shown (outside, missing, too large, wrong type).
+      try { const m = media.collectAll({ cwd, sinceMs: startedAt, text: r.text || r.partial || '', chatId: e.id, root: mediaRoot }); out.media = m.items; if (m.problems.length) out.mediaProblems = m.problems; } catch { out.media = []; }
       if (r.ok && r.sessionId && !e.temp) {
         try { history.append({ provider: agent, sessionId: r.sessionId, title: e.title, cwd, taskId: null, resumable: true, messages: [{ role: 'user', text: String(o.historyText || prompt).slice(0, 8000), at: new Date(startedAt).toISOString() }, { role: 'assistant', text: r.text, at: new Date().toISOString() }] }); } catch {}
       }

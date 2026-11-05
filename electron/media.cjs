@@ -40,15 +40,57 @@ function inside(base, rel) {
   return real;
 }
 
-// Paths an AI named in its reply: FILE: x, ATTACH: x, ![alt](x) with a relative x.
+// A path as an AI writes it: quotes, <>, backticks, a trailing full stop and a
+// "(caption)" are not part of it.
+function cleanNamed(p) {
+  let x = String(p || '').trim().replace(/\s+\([^)]*\)\s*$/, '').replace(/[.,;:!?]+$/, '').trim();
+  x = x.replace(/^[<"'`]+|[>"'`]+$/g, '').replace(/[.,;:!?]+$/, '').trim();
+  if (/^file:\/\//i.test(x)) { try { x = decodeURIComponent(x.slice(7)); } catch {} }
+  return x;
+}
+// Paths an AI named in its reply: FILE: x, ATTACH: x (also in a list or quote: "- ATTACH: x"),
+// ![alt](x) with a relative path, or an absolute one inside its folder.
 function namedPaths(text) {
   const out = [];
   for (const raw of String(text || '').split('\n')) {
-    const m = raw.replace(/[*`]/g, '').trim().match(/^(?:FILE|ATTACH)\s*:\s*(.+)$/i);
-    if (m) out.push(m[1].trim());
+    const m = raw.replace(/[*`]/g, '').trim().replace(/^(?:[-+>•]|\d+[.)])\s*/, '').match(/^(?:FILE|ATTACH)\s*:\s*(.+)$/i);
+    if (m) out.push(cleanNamed(m[1]));
   }
-  for (const m of String(text || '').matchAll(/!\[[^\]\n]{0,200}\]\(([^)\s]{1,300})\)/g)) if (!/^[a-z][a-z0-9+.-]*:/i.test(m[1])) out.push(m[1]);
-  return [...new Set(out)].slice(0, 20);
+  for (const m of String(text || '').matchAll(/!\[[^\]\n]{0,200}\]\(<?([^)\s>]{1,300})>?(?:\s+"[^"]*")?\)/g)) if (!/^(?!file:)[a-z][a-z0-9+.-]*:/i.test(m[1])) out.push(cleanNamed(m[1]));
+  return [...new Set(out.filter(Boolean))].slice(0, 20);
+}
+// Why a named file can't be shown, in plain words (null = it can).
+function whyNot(base, named) {
+  const r = String(named || '');
+  let rel = r;
+  let realBase;
+  try { realBase = fs.realpathSync(base); } catch { return 'the chat\'s folder is gone'; }
+  if (path.isAbsolute(r)) {
+    const abs = path.resolve(r);
+    if (!(abs === realBase || abs.startsWith(realBase + path.sep) || abs.startsWith(path.resolve(base) + path.sep))) return 'it is outside the chat\'s folder (only files in the chat\'s folder can be shown)';
+    rel = path.relative(abs.startsWith(realBase) ? realBase : path.resolve(base), abs);
+  }
+  if (rel.split(/[\\/]+/).includes('..')) return 'it is outside the chat\'s folder (only files in the chat\'s folder can be shown)';
+  const f = path.resolve(realBase, rel);
+  let real;
+  try { real = fs.realpathSync(f); } catch { return 'the file isn\'t there (missing)'; }
+  if (!real.startsWith(realBase + path.sep)) return 'it links outside the chat\'s folder';
+  let st;
+  try { st = fs.statSync(real); } catch { return 'the file isn\'t there (missing)'; }
+  if (!st.isFile()) return 'it is a folder, not a file';
+  if (!st.size) return 'the file is empty';
+  if (st.size > MAX_FILE) return `it is too large (${Math.round(st.size / 1048576)} MB; the limit is ${MAX_FILE / 1048576} MB)`;
+  const e = extOf(real);
+  if (!IMAGE[e] && !VIDEO[e] && !FILES[e]) return `.${e} isn't a type the chat can show (pictures: png, jpg, gif, webp, svg; videos: mp4, webm)`;
+  return null;
+}
+// The resolved file for a named path (relative, or absolute inside the folder), or null.
+function resolveNamed(base, named) {
+  if (whyNot(base, named)) return null;
+  let realBase;
+  try { realBase = fs.realpathSync(base); } catch { return null; }
+  const r = path.isAbsolute(named) ? path.relative(path.resolve(named).startsWith(realBase) ? realBase : path.resolve(base), path.resolve(named)) : named;
+  return inside(base, r);
 }
 
 // New media files in a folder since a time (bounded walk).
@@ -105,11 +147,33 @@ function storeBuffer(root, chatId, name, buf, have = new Set()) {
   return { kind: kindOf(name), name: safeName(name), file, size: buf.length, mime: mimeOf(name), url: urlFor(chatId, file) };
 }
 
-function collect({ cwd, sinceMs, text, chatId, root }) {
-  if (!cwd || !fs.existsSync(cwd)) return [];
-  const named = namedPaths(text).map((r) => inside(cwd, r)).filter(Boolean);
-  const files = [...new Set([...named, ...scan(cwd, sinceMs)])].slice(0, 24);
-  return store(root, chatId, files);
+function collect(o) { return collectAll(o).items; }
+// Everything the AI made or named, plus a plain reason for every named file that can't be
+// shown. Each item names the path the AI wrote (from), so the chat can show the picture
+// right where its link was.
+function collectAll({ cwd, sinceMs, text, chatId, root }) {
+  if (!cwd || !fs.existsSync(cwd)) return { items: [], problems: [] };
+  const problems = [];
+  const fromOf = new Map();
+  for (const n of namedPaths(text)) {
+    const why = whyNot(cwd, n);
+    if (why) { problems.push({ path: n, reason: why }); continue; }
+    const f = resolveNamed(cwd, n);
+    if (f && !fromOf.has(f)) fromOf.set(f, n);
+  }
+  const files = [...new Set([...fromOf.keys(), ...scan(cwd, sinceMs)])].slice(0, 24);
+  const items = [];
+  for (const f of files) {
+    let buf;
+    try { const st = fs.statSync(f); if (!st.isFile() || st.size > MAX_FILE) continue; buf = fs.readFileSync(f); } catch { continue; }
+    const it = storeBuffer(root, chatId, path.basename(f), buf, new Set());
+    if (!it) continue;
+    // The same picture under two names is shown once; both links point at it.
+    const same = items.find((x) => x.file.slice(0, 10) === it.file.slice(0, 10));
+    if (same) { if (fromOf.has(f)) { if (!same.from) same.from = fromOf.get(f); else (same.alsoFrom ||= []).push(fromOf.get(f)); } continue; }
+    items.push(fromOf.has(f) ? { ...it, from: fromOf.get(f) } : it);
+  }
+  return { items, problems };
 }
 
 // hearth-media://c/<chatId>/<file> -> the file, only inside <root>/<chatId>/.
@@ -157,4 +221,4 @@ function removeChat(root, chatId) {
   try { fs.rmSync(path.join(root, chatId), { recursive: true, force: true }); } catch {}
 }
 
-module.exports = { SCHEME, MEDIA_DIRS, IMAGE, VIDEO, MAX_FILE, CHAT_RE, kindOf, mimeOf, mediaRoot, inside, namedPaths, scan, store, storeBuffer, collect, resolve, respond, dataUri, urlFor, removeChat, safeName };
+module.exports = { SCHEME, MEDIA_DIRS, IMAGE, VIDEO, MAX_FILE, CHAT_RE, kindOf, mimeOf, mediaRoot, inside, namedPaths, cleanNamed, whyNot, scan, store, storeBuffer, collect, collectAll, resolve, respond, dataUri, urlFor, removeChat, safeName };

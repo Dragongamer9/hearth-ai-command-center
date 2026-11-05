@@ -4,7 +4,7 @@
 //   ChatGPT  -> OpenAI Codex (`codex exec`)         sign in: `codex login`
 //   Gemini   -> Antigravity CLI (`agy -p`), else Gemini CLI (`gemini -p`); sign in: run `agy` (or `gemini`)
 //   Grok     -> xAI Grok Build (`grok -p`)       sign in: `grok login` (browser OAuth, grok.com account)
-//   Mistral  -> Mistral Vibe (`vibe -p`)          sign in: `vibe --setup` (browser, Mistral account)
+//   Mistral  -> Mistral Vibe (`vibe -p --agent hearth-…`) sign in: `vibe --setup` (browser, Mistral account)
 //   Qwen     -> Qwen Code (`qwen -p`)             sign in: run `qwen`, choose Qwen OAuth
 //   Local    -> Ollama on this machine (HTTP on 127.0.0.1:11434, no account)
 //   FreeBuff -> `freebuff` (interactive only; opened in a terminal)
@@ -20,6 +20,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const installer = require('./installer.cjs');
 const { claudeUsage } = require('./ops/usage.cjs');
+const perms = require('./permissions.cjs');
 
 const BIN = { anthropic: 'claude', openai: 'codex', google: 'gemini', xai: 'grok', mistral: 'vibe', qwen: 'qwen', freebuff: 'freebuff', ollama: 'ollama' };
 const CLI_AGENTS = ['anthropic', 'openai', 'google', 'xai', 'mistral', 'qwen'];
@@ -353,7 +354,9 @@ function lineSplitter(fn) {
     if (buf.length > 4e6) buf = '';
   };
 }
-async function runAgent({ agent, prompt, cwd, mode = 'read', model, timeoutMs, signal, bin, extraDirs = [], resumeId = null, images = [], onData, extraEnv = null, onEvent = null, claude = null, web = null, mcp = null }) {
+async function runAgent({ agent, prompt, cwd, mode = 'read', model, timeoutMs, signal, bin, extraDirs = [], resumeId = null, images = [], onData, extraEnv = null, onEvent = null, claude = null, web = null, mcp = null, quickChecks = [], test = false, runDir = null }) {
+  // quickChecks: the owner's quick checks (Gemini and Mistral get them as their allow-list).
+  // test: the Test Team button's run (may also remove the one file it made).
   // mcp: connector configs for this run (electron/connectors.cjs): { claudeFile, codexArgs }.
   // Output activity feeds the stall watchdog (electron/ops/watchdog.cjs).
   // extraEnv: e.g. HEARTH_AI_ASSETS, the AI's own folder for generated files.
@@ -426,11 +429,13 @@ async function runAgent({ agent, prompt, cwd, mode = 'read', model, timeoutMs, s
 
   if (agent === 'google' && isAgy(file)) {
     // agy reads its prompt only from -p (no stdin), so long briefs are trimmed to fit.
-    const args = ['-p', capArgPrompt(prompt), '--output-format', 'json', '--mode', { read: 'plan', standard: 'accept-edits', full: 'auto' }[mode]];
+    // Narrow access only, also with the owner's Full access: plan (read) or accept-edits.
+    // Commands and web pages follow the allow-list in agy's own settings.json, which the owner
+    // sets up with one click in Settings › Permissions (agy has no per-run rules flag).
+    // Never --dangerously-skip-permissions.
+    const args = ['-p', capArgPrompt(prompt), '--output-format', 'json', '--mode', mode === 'read' && !test ? 'plan' : 'accept-edits'];
     if (resume) args.push('--conversation', resume);
     for (const d of dirs) args.push('--add-dir', d);
-    // Full access = no permission prompts. (--sandbox would restrict it instead.)
-    if (mode === 'full') args.push('--dangerously-skip-permissions');
     if (model) args.push('--model', model);
     const res = await run(file, args, { cwd: workdir, timeoutMs, signal });
     const parsed = parseGemini(res.out);
@@ -441,11 +446,19 @@ async function runAgent({ agent, prompt, cwd, mode = 'read', model, timeoutMs, s
   if (agent === 'google' || agent === 'qwen') {
     // Brief comes in over stdin; -p forces headless mode and is appended to it.
     // Qwen Code is built on the Gemini CLI and takes the same flags.
-    const args = ['-p', `Follow the instructions above.${img.pArg}`, '--output-format', 'json', '--approval-mode', { read: 'plan', standard: 'auto_edit', full: 'yolo' }[mode]];
+    // Gemini: narrow access through a policy file for this run only (reading, web, the owner's
+    // quick checks; never yolo, also with Full access). Qwen keeps its own approval modes.
+    let policy = null;
+    const approval = agent === 'google' ? (mode === 'read' && !test ? 'default' : 'auto_edit') : { read: 'plan', standard: 'auto_edit', full: 'yolo' }[mode];
+    const args = ['-p', `Follow the instructions above.${img.pArg}`, '--output-format', 'json', '--approval-mode', approval];
+    if (agent === 'google') {
+      try { policy = perms.writeGeminiPolicy(runDir || path.join(os.tmpdir(), 'hearth-ai-run'), { quickChecks, build: mode !== 'read', web: web !== false, test }); args.push('--policy', policy); } catch {}
+    }
     if (resume) args.push('--resume', resume);
     if (dirs.length) args.push('--include-directories', dirs.join(','));
     if (model) args.push('-m', model);
     const res = await run(file, args, { cwd: workdir, input: prompt, timeoutMs, signal });
+    if (policy) { try { fs.unlinkSync(policy); } catch {} }
     const parsed = parseGemini(res.out);
     const via = agent === 'google' ? 'Gemini CLI' : 'Qwen Code';
     if (res.code === 0 && !parsed.error && parsed.text) return { ok: true, text: parsed.text, via, sessionId: parsed.sessionId || resume || null };
@@ -469,9 +482,14 @@ async function runAgent({ agent, prompt, cwd, mode = 'read', model, timeoutMs, s
   if (agent === 'mistral') {
     // `vibe -p` with no text reads the prompt from stdin. Standard = Vibe's
     // default accept-edits agent (commands needing approval are denied).
+    // Narrow access through the app's own agent profile (read files, web, the owner's quick
+    // checks; edits only with Run & build). Never --auto-approve, also with Full access.
+    // Folders the owner granted (and attachments) are added with --add-dir, so reading them
+    // isn't refused as "outside the working folder".
     const args = ['-p', '--output', 'json'];
+    try { args.push('--agent', perms.ensureVibeAgent({ quickChecks, build: mode !== 'read', web: web !== false, test })); } catch {}
+    for (const d of dirs) args.push('--add-dir', d);
     if (resume) args.push('--resume', resume);
-    if (mode === 'full') args.push('--auto-approve');
     const res = await run(file, args, { cwd: workdir, input: prompt, timeoutMs, signal });
     const parsed = parseVibe(res.out);
     if (res.code === 0 && parsed.text) return { ok: true, text: parsed.text, via: 'Mistral Vibe', sessionId: parsed.sessionId || resume || null };

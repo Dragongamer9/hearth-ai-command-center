@@ -64,8 +64,11 @@ function du(dir) {
   return total;
 }
 
-function prePushHook(protectedBranches) {
+// work: the chat's own hearth/ branch. With it, a push to ANY other branch is refused too
+// (not only main, master, the base branch and tags).
+function prePushHook(protectedBranches, work = null) {
   const cases = [...new Set(protectedBranches.filter(validBranch))].map((b) => `refs/heads/${b}`).join('|');
+  const own = work && validBranch(work) && /^hearth\//.test(work) ? work : null;
   return `#!/bin/sh
 ${PREPUSH_MARK}
 # This folder is a temporary copy made by Hearth AI Command Center. Work goes to the
@@ -75,7 +78,11 @@ while read local_ref local_sha remote_ref remote_sha; do
   case "$remote_ref" in
     ${cases || 'refs/heads/main|refs/heads/master'}|refs/tags/*)
       echo "Hearth AI: pushing to \${remote_ref#refs/*/} is not allowed from a temporary copy. Push to the chat's own branch; merging asks the owner first." >&2
-      exit 1;;
+      exit 1;;${own ? `
+    refs/heads/${own}) ;;
+    *)
+      echo "Hearth AI: only the chat's own branch ${own} can be pushed from this copy, not \${remote_ref#refs/*/}." >&2
+      exit 1;;` : ''}
   esac
 done
 exit 0
@@ -137,7 +144,7 @@ function createCopies({ dataDir, gitBin = 'git', urlFor = (repo) => `https://git
     // AI attribution lines are stripped from every commit made here (hooks act on HEARTH_AI_APP=1).
     const hooks = path.join(dir, '.git', 'hooks');
     identity.installHooks(hooks);
-    fs.writeFileSync(path.join(hooks, 'pre-push'), prePushHook(['main', 'master', base, defaultBranch].filter(Boolean)), { mode: 0o755 });
+    fs.writeFileSync(path.join(hooks, 'pre-push'), prePushHook(['main', 'master', base, defaultBranch].filter(Boolean), work), { mode: 0o755 });
     // The app's own folders never show up in git status (local exclude, never the tracked .gitignore).
     const ex = path.join(dir, '.git', 'info', 'exclude');
     fs.mkdirSync(path.dirname(ex), { recursive: true });

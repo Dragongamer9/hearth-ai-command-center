@@ -310,6 +310,15 @@ function register(d) {
     return out;
   });
   handle('cards:save', (card) => cards.save(card || {}));
+  // Find characters: card sites in the sandboxed web window; a downloaded card is imported.
+  const finder = require('./card-finder.cjs');
+  const openSite = BrowserWindow ? finder.createFinder({
+    BrowserWindow, shell, iconPath: path.join(__dirname, '..', 'dist', 'icon.png'), send,
+    importFile: (name, buf) => cards.importFile(name, buf),
+    setPicture: (id, buf) => cards.save({ id, avatarData: `data:${buf[0] === 0x89 ? 'image/png' : buf[0] === 0xff ? 'image/jpeg' : 'image/webp'};base64,${buf.toString('base64')}` }),
+  }) : null;
+  handle('cards:findSites', () => ({ sites: Object.entries(finder.SITES).map(([id, x]) => ({ id, ...x })), notListed: finder.NOT_LISTED, maxMb: finder.MAX_CARD / 1048576 }));
+  handle('cards:findOpen', (id) => (openSite ? openSite(String(id)) : { ok: false, message: 'Not available here.' }));
   handle('cards:remove', (id) => cards.remove(String(id)));
   handle('cards:export', async (id, fmt) => {
     const x = cards.exportCard(String(id), fmt === 'json' ? 'json' : 'png');

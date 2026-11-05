@@ -57,13 +57,18 @@ test('Grok Build: headless JSON, client-chosen session id, resume, approvals by 
   assert.equal((await agents.logout('xai', bin)).ok, true);
 });
 
-test('Mistral Vibe: prompt on stdin, last assistant message from JSON, auto-approve only in full mode', async () => {
+test('Mistral Vibe: prompt on stdin, last assistant message from JSON, never --auto-approve (also in full mode)', async () => {
   const bin = path.join(FIX, 'vibe');
-  let r = await agents.runAgent({ agent: 'mistral', prompt: 'hi', cwd: os.tmpdir(), mode: 'standard', bin });
-  assert.ok(r.ok, JSON.stringify(r));
-  assert.equal(r.text, 'Vibe answered (accept-edits).');
-  r = await agents.runAgent({ agent: 'mistral', prompt: 'hi', cwd: os.tmpdir(), mode: 'full', bin });
-  assert.equal(r.text, 'Vibe answered (auto).');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'hearth-vibe-home-'));
+  const old = process.env.VIBE_HOME;
+  process.env.VIBE_HOME = home;
+  try {
+    let r = await agents.runAgent({ agent: 'mistral', prompt: 'hi', cwd: os.tmpdir(), mode: 'standard', bin });
+    assert.ok(r.ok, JSON.stringify(r));
+    assert.equal(r.text, 'Vibe answered (accept-edits).');
+    r = await agents.runAgent({ agent: 'mistral', prompt: 'hi', cwd: os.tmpdir(), mode: 'full', bin });
+    assert.equal(r.text, 'Vibe answered (accept-edits).', 'Full access never turns on auto-approve for Mistral');
+  } finally { if (old === undefined) delete process.env.VIBE_HOME; else process.env.VIBE_HOME = old; fs.rmSync(home, { recursive: true, force: true }); }
   assert.equal(agents.parseVibe('not json').text, 'not json');
 });
 

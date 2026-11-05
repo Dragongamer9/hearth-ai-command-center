@@ -11,6 +11,7 @@ import { extractPreviews, kindOf } from './previews.mjs';
 import { parseActs, makeAct } from './act.mjs';
 import { outcomeSteps } from './steps.mjs';
 import { parseTools } from './tools.mjs';
+import { plainError } from './errors.mjs';
 
 export function newRuntime(id, extra = {}) {
   return { id, msgs: [], sessions: {}, loaded: false, readOnly: false, copy: null, busy: null, stop: false, queued: [], round: false, waiting: false, unseen: false, temp: false, helpers: 0, chain: Promise.resolve(), ...extra };
@@ -108,24 +109,45 @@ export function createTeamRunner(ctx) {
       await ctx.save(R);
       return false;
     }
+    // Every teammate in this turn shows as waiting, working, blocked, failed or done, with a
+    // plain reason and Retry (src/main.js). A Retry updates its own row; a new message starts fresh.
+    const blockedNamed = mentionsIn(text).filter((x) => !L.includes(x) && AGENTS[x]);
+    if (opts.retry && R.turnState) {
+      for (const a of order) setState(R, a, 'waiting', '');
+    } else {
+      R.turnState = { text, at: now(), list: [...order.map((a) => ({ agent: a, state: 'waiting', reason: '' })), ...blockedNamed.map((a) => ({ agent: a, state: 'blocked', reason: ctx.statusOf?.(a)?.why || ctx.setupHint?.(a) || 'not set up' }))] };
+    }
     // Teammates in the team that can't answer yet are named once, plainly.
-    for (const a of mentionsIn(text).filter((x) => !L.includes(x) && AGENTS[x]?.kind === 'api' && UNFILTERED.includes(x))) post(R, { who: 'system', text: `${aiName(a)} was skipped: ${ctx.setupHint?.(a) || 'not set up'}.` });
+    for (const a of blockedNamed.filter((x) => AGENTS[x]?.kind === 'api' && UNFILTERED.includes(x))) post(R, { who: 'system', text: `${aiName(a)} was skipped: ${ctx.setupHint?.(a) || 'not set up'}.` });
+    ctx.render(R);
     const done = [];
     let changed = null;
     let ok = true;
+    // A teammate that fails no longer stops the others: everyone named still gets a turn.
     for (let i = 0; i < order.length && !R.stop; i++) {
       const agent = order[i];
       const role = mode === 'team' && agent === t.lead ? 'lead' : 'member';
       const task = opts.task && i === 0 ? opts.task : (i > 0 && role !== 'lead' ? handoffTask(R, agent) : '');
+      setState(R, agent, 'working', '');
       let r = await turn(R, agent, { role, task, regenerate: opts.regenerate && i === 0 ? opts.regenerate : null });
       done.push(agent);
-      if (!r) { ok = false; break; }
       // App lines that need an answer (search past chats, helpers): one more turn, at most twice.
-      for (let loop = 0; loop < 2 && r?.followUp && !R.stop; loop++) r = await turn(R, agent, { role, task: r.followUp, isFollowUp: true }) || null;
-      if (!r) { ok = false; break; }
+      for (let loop = 0; loop < 2 && r?.ok !== false && r?.followUp && !R.stop; loop++) r = await turn(R, agent, { role, task: r.followUp, isFollowUp: true }) || { ok: false };
+      if (!r || r.ok === false) {
+        ok = false;
+        const pe = r?.plain || { state: 'failed', reason: `${aiName(agent)} didn't answer.` };
+        setState(R, agent, R.stop ? 'failed' : pe.state, R.stop ? 'Stopped by you.' : pe.reason, r?.raw);
+        continue;
+      }
+      setState(R, agent, 'done', '');
       if (r.changes?.files?.length) changed = { by: agent, msgId: r.msgId };
-      if (role === 'lead' && !opts.regenerate) for (const h of handoffs(r.text, { team: t, live: L, done: [...done, ...order] })) order.push(h);
+      if (role === 'lead' && !opts.regenerate) {
+        for (const h of handoffs(r.text, { team: t, live: L, done: [...done, ...order] })) { order.push(h); addState(R, h); }
+        // Named in the lead's hand-off but not connected: blocked, with what it needs.
+        for (const h of handoffs(r.text, { team: t, live: t.members, done: [...done, ...order] })) if (!L.includes(h)) addState(R, h, 'blocked', ctx.statusOf?.(h)?.why || ctx.setupHint?.(h) || 'not set up');
+      }
     }
+    if (R.stop && R.turnState) for (const x of R.turnState.list) if (x.state === 'waiting') { x.state = 'skipped'; x.reason = 'Stopped by you before its turn.'; }
     const reviewer = changed && mode === 'team' && !R.stop ? pickReviewer({ team: t, live: L, author: changed.by }) : null;
     if (reviewer && !UNFILTERED.includes(reviewer)) {
       const d = await ctx.call('chatDiff', R.id);
@@ -133,6 +155,22 @@ export function createTeamRunner(ctx) {
       await turn(R, reviewer, { role: 'reviewer', task: `Review ${aiName(changed.by)}'s changes on this chat's branch. Say plainly if they are right and what (if anything) must change. Keep it short. Don't edit files.\n\nTHE CHANGES:\n${diff || '(no diff available)'}`, readOnly: true });
     }
     return ok;
+  }
+
+  function setState(R, agent, state, reason, raw) {
+    if (!R.turnState) R.turnState = { text: '', at: now(), list: [] };
+    const x = R.turnState.list.find((y) => y.agent === agent) || (R.turnState.list.push({ agent }), R.turnState.list[R.turnState.list.length - 1]);
+    Object.assign(x, { state, reason: reason || '', raw: raw || undefined, at: now() });
+    ctx.render(R);
+  }
+  function addState(R, agent, state = 'waiting', reason = '') {
+    if (R.turnState && !R.turnState.list.some((y) => y.agent === agent)) R.turnState.list.push({ agent, state, reason });
+  }
+  // Retry one teammate of the last turn (its row's Retry button).
+  async function retry(R, agent) {
+    const text = R.turnState?.text || [...R.msgs].reverse().find((m) => m.who === 'owner')?.text || '';
+    if (!text) return 'nothing';
+    return start(R, text, { only: agent, retry: true });
   }
 
   // What the lead asked a teammate to do (its @Name line), for a teammate that only makes pictures.
@@ -155,7 +193,7 @@ export function createTeamRunner(ctx) {
       R.busy = null;
       const msg = post(R, r.ok ? { who: agent, role, text: r.text || 'Here it is.', via: r.via, media: r.items || [] } : { who: agent, role, err: true, text: r.message || 'No picture came back.' });
       await ctx.save(R);
-      return r.ok ? { text: msg.text, msgId: msg.id } : null;
+      return r.ok ? { text: msg.text, msgId: msg.id } : { ok: false, plain: plainError(agent, { message: r.message || 'No picture came back.' }), raw: r.message };
     }
     const runId = `${uid().replace(/[^a-z0-9]/gi, '').slice(0, 10)}r`;
     R.busy = { agent, role, runId, steps: [], startedAt: Date.now() };
@@ -164,7 +202,7 @@ export function createTeamRunner(ctx) {
     const upto = regenerate ? R.msgs.slice(0, R.msgs.findIndex((m) => m.id === regenerate)) : R.msgs;
     const build = ctx.buildFor(R) && !readOnly;
     const web = ctx.webFor(R);
-    const opts = { agent, role, chat: c, copy: R.copy ? { base: R.copy.base, work: R.copy.work } : null, build, web, quickChecks: ctx.settings().tools?.quickChecks || [], team: ctx.team(), live: ctx.live(), actForMe: ctx.settings().actForMe === true, apiOnly: ctx.method(agent) === 'api' };
+    const opts = { agent, role, chat: c, copy: R.copy ? { base: R.copy.base, work: R.copy.work } : null, build, web, quickChecks: ctx.settings().tools?.quickChecks || [], team: ctx.team(), live: ctx.live(), actForMe: ctx.settings().actForMe === true, apiOnly: ctx.method(agent) === 'api', status: ctx.statusMap?.() || {}, missing: ctx.missingChecks?.() || [], canPush: Boolean(c.repo || c.repoDir) && !c.temp, autoPush: ctx.settings().autoPush !== false };
     const extra = (await ctx.briefExtra?.(R, agent, role, Boolean(resumeId))) || '';
     const briefText = brief({ ...opts, extra });
     const prompt = turnPrompt({ agent, role, messages: upto, briefText, resumed: Boolean(resumeId), task });
@@ -191,15 +229,16 @@ export function createTeamRunner(ctx) {
     if (r.sessionId) R.sessions[agent] = r.sessionId;
     if (r.status) R.copy = { ...r.status, exists: true };
     const media = Array.isArray(r.media) ? r.media : [];
+    if (r.settingsUndone) post(R, { who: 'system', text: `${aiName(agent)} changed your settings file during its turn. The change was undone at once; your settings are as you left them. Settings › Saved data shows it in the change log.` });
     if (!r.ok) {
-      const kind = r.error?.kind;
-      const why = kind === 'limit' ? `${aiName(agent)} is out of usage${r.error.reset ? ` (${r.error.reset})` : ''}.` : kind === 'auth' ? `${aiName(agent)} isn't signed in. Sign in under Settings › Accounts.` : kind === 'cancelled' ? 'Stopped.' : kind === 'wrong_repo' ? r.error.message : kind === 'refused' ? `${aiName(agent)} refused: ${r.error.message}` : r.error?.message || 'Something went wrong.';
-      post(R, { who: agent, role, err: true, text: why + (r.partial ? `\n\n${r.partial}` : ''), steps, outcome: outcomeSteps(r), ...(media.length ? { media } : {}), ...(r.changes?.files?.length ? { changes: changesOf(R, r) } : {}) });
+      // Known raw errors in plain words (src/app/errors.mjs); the raw text stays under "Details".
+      const pe = plainError(agent, r.error || {});
+      post(R, { who: agent, role, err: true, text: pe.reason + (r.partial ? `\n\n${r.partial}` : ''), rawError: pe.raw && pe.raw !== pe.reason ? pe.raw.slice(0, 2000) : undefined, retryable: r.error?.kind !== 'cancelled', steps, outcome: outcomeSteps(r), ...(media.length ? { media } : {}), ...(r.changes?.files?.length ? { changes: changesOf(R, r) } : {}) });
       await ctx.save(R);
       ctx.afterSave?.(R);
-      return null;
+      return { ok: false, plain: pe, raw: pe.raw };
     }
-    let raw = r.text || '';
+    let raw = showMedia(r.text || '', media);
     if (ctx.afterReply) raw = ctx.afterReply(R, agent, raw);
     const { text: noPreview, previews: fenced } = extractPreviews(raw);
     const { text: noTools, tools, followUps } = parseTools(noPreview, { agent });
@@ -210,6 +249,7 @@ export function createTeamRunner(ctx) {
       who: agent, role, text: shown || (previews.length ? 'Here\'s the preview.' : media.length ? 'Here it is.' : '(no text)'), via: r.via, steps, web,
       outcome: outcomeSteps({ ...r, previews }), previews,
       ...(media.length ? { media } : {}),
+      ...(Array.isArray(r.mediaProblems) && r.mediaProblems.length ? { mediaProblems: r.mediaProblems.slice(0, 10) } : {}),
       ...(followUps.length ? { followUps } : {}),
       ...(Array.isArray(r.citations) && r.citations.length ? { citations: r.citations.slice(0, 12) } : {}),
       ...(r.changes?.files?.length ? { changes: changesOf(R, r) } : {}),
@@ -288,5 +328,25 @@ export function createTeamRunner(ctx) {
     return true;
   }
 
-  return { rt, runtimes, queue, start, stop, turn, runTeam, onStep, post, busyIds: () => [...runtimes.values()].filter((R) => R.round || R.waiting).map((R) => R.id) };
+  return { rt, runtimes, queue, start, stop, turn, runTeam, onStep, post, retry, busyIds: () => [...runtimes.values()].filter((R) => R.round || R.waiting).map((R) => R.id) };
+}
+
+// Pictures in the AI's text: a Markdown link to a file the app collected now points at the
+// app's own copy (so it shows right there), and an ATTACH:/FILE: line that worked is dropped
+// (the picture shows under the message). Lines that didn't work stay, with the reason shown.
+export function showMedia(text, media = []) {
+  let out = String(text || '');
+  const byFrom = new Map(media.filter((m) => m && m.from && m.url).flatMap((m) => [m.from, ...(m.alsoFrom || [])].map((f) => [f, m])));
+  if (!byFrom.size) return out;
+  const clean = (p) => String(p || '').trim().replace(/^[<"'`]+|[>"'`.,;]+$/g, '').replace(/^\.\//, '');
+  out = out.replace(/!\[([^\]\n]{0,200})\]\(<?([^)\s>]{1,300})>?(\s+"[^"]*")?\)/g, (all, alt, href) => {
+    const m = byFrom.get(href) || byFrom.get(clean(href));
+    return m && m.kind === 'image' ? `![${alt}](${m.url})` : all;
+  });
+  return out.split('\n').filter((l) => {
+    const mm = l.replace(/[*`]/g, '').trim().replace(/^(?:[-+>•]|\d+[.)])\s*/, '').match(/^(?:FILE|ATTACH)\s*:\s*(.+)$/i);
+    if (!mm) return true;
+    const p = mm[1].trim().replace(/\s+\([^)]*\)\s*$/, '');
+    return !(byFrom.has(p) || byFrom.has(clean(p)) || [...byFrom.keys()].some((k) => clean(p) === clean(k)));
+  }).join('\n');
 }

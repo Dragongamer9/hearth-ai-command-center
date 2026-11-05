@@ -206,6 +206,11 @@ function register(d) {
     // The owner's own yes stands in for the lead switches; every other check is the same.
     const c = release.checkLead({ kind: k, leadActions: viaOwner?.owner ? true : s.leadActions, switchOn: viaOwner?.owner ? true : (k === 'tag' ? s.leadTag : s.leadRelease), requested: version, next: ps.nextVersion, fileVer: release.fileVersion(ps.versionFile, file), exists });
     if (!c.ok) return { ok: false, message: c.reason };
+    // Releasing and tagging always ask the owner: the lead's switches only let it ask.
+    if (!viaOwner?.owner) {
+      const yes = dialog.showMessageBoxSync(getWindow(), { type: 'warning', message: `The lead asks: ${k === 'tag' ? 'tag' : 'release'} v${c.version}?`, detail: 'Your "Lead may publish releases / create tags" switch lets the lead ask; only your yes here does it. It can\'t be undone.', buttons: [k === 'tag' ? 'Tag now' : 'Release now', 'Cancel'], defaultId: 1, cancelId: 1 });
+      if (yes !== 0) return { ok: false, cancelled: true, message: 'Cancelled.' };
+    }
     const sha = (await workspace.git(dir, ['rev-parse', ref])).out;
     // The release gate: the checklist passed for exactly this commit (or the Owner overrode it).
     // (fetched above, so ref is GitHub's main right now)
