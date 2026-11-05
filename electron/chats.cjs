@@ -25,6 +25,15 @@ function atomicWrite(file, data) {
   fs.renameSync(tmp, file);
 }
 
+// Pinned first; within a group the owner's order (when set), then newest first.
+function chatOrder(a, b) {
+  if (Boolean(a.pinned) !== Boolean(b.pinned)) return a.pinned ? -1 : 1;
+  const ao = Number.isInteger(a.order), bo = Number.isInteger(b.order);
+  if (ao && bo && a.order !== b.order) return a.order - b.order;
+  if (ao !== bo) return ao ? -1 : 1;
+  return String(b.updatedAt || b.createdAt || '').localeCompare(String(a.updatedAt || a.createdAt || ''));
+}
+
 function createChats(dataDir, { now = () => new Date().toISOString() } = {}) {
   const dir = path.join(dataDir, 'chats');
   const indexFile = path.join(dir, 'index.json');
@@ -52,7 +61,12 @@ function createChats(dataDir, { now = () => new Date().toISOString() } = {}) {
     createdAt: typeof e.createdAt === 'string' ? e.createdAt : now(),
     updatedAt: typeof e.updatedAt === 'string' ? e.updatedAt : null,
     ...(e.linkedBy ? { linkedBy: String(e.linkedBy).slice(0, 40), linkedAt: String(e.linkedAt || '') } : {}),
+    ...(e.pinned === true ? { pinned: true } : {}),
+    ...(Number.isInteger(e.order) ? { order: e.order } : {}),
+    ...(e.hidden === true ? { hidden: true } : {}),
+    ...(e.renamed === true ? { renamed: true } : {}),
   } : null);
+  const cleanTrash = (t) => (t && typeof t === 'object' && typeof t.trashId === 'string' && /^[a-z0-9-]{8,40}$/.test(t.trashId) && clean(t.entry) ? { trashId: t.trashId, deletedAt: String(t.deletedAt || ''), file: String(t.file || ''), entry: clean(t.entry) } : null);
 
   function load() {
     if (idx) return idx;
@@ -73,6 +87,7 @@ function createChats(dataDir, { now = () => new Date().toISOString() } = {}) {
       }
     }
     idx.list = idx.list.map(clean).filter(Boolean);
+    idx.trash = (Array.isArray(idx.trash) ? idx.trash : []).map(cleanTrash).filter(Boolean);
     return idx;
   }
   function saveIndex() {
@@ -104,14 +119,15 @@ function createChats(dataDir, { now = () => new Date().toISOString() } = {}) {
       let at = e.updatedAt;
       if (e.team && stateFileFor) { try { at = fs.statSync(stateFileFor(e.projectId)).mtime.toISOString(); } catch {} }
       return { ...e, updatedAt: at || e.createdAt, projectId: e.projectId && known.has(e.projectId) ? e.projectId : (e.team ? e.projectId : null) };
-    }).sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+    }).sort(chatOrder);
   }
 
   function create({ projectId = null, title = 'New chat' } = {}) {
     load();
     let id;
     do { id = `c${crypto.randomBytes(5).toString('hex')}`; } while (idx.list.some((e) => e.id === id));
-    const e = clean({ id, title, titleAuto: true, projectId, createdAt: now(), updatedAt: now() });
+    const orders = idx.list.filter((x) => !x.pinned && Number.isInteger(x.order)).map((x) => x.order);
+    const e = clean({ id, title, titleAuto: true, projectId, createdAt: now(), updatedAt: now(), ...(orders.length ? { order: Math.min(...orders) - 1 } : {}) });
     atomicWrite(path.join(dir, `${id}.json`), JSON.stringify({ id, messages: [], sessions: {} }, null, 1));
     idx.list.push(e);
     saveIndex();
@@ -150,7 +166,15 @@ function createChats(dataDir, { now = () => new Date().toISOString() } = {}) {
     if (!e) throw new Error('unknown chat');
     if ('title' in patch) {
       const t = String(patch.title || '').replace(/\s+/g, ' ').trim().slice(0, 120);
-      if (t) { e.title = t; e.titleAuto = patch.auto === true; }
+      if (t) { e.title = t; e.titleAuto = patch.auto === true; if (patch.auto !== true) e.renamed = true; }
+    }
+    if ('pinned' in patch) {
+      if (patch.pinned === true) e.pinned = true; else delete e.pinned;
+      delete e.order; // it joins the other group at its natural place
+    }
+    if ('hidden' in patch) {
+      if (!e.team) throw new Error('Only a project\'s team chat can be hidden; other chats can be deleted.');
+      if (patch.hidden === true) e.hidden = true; else delete e.hidden;
     }
     if ('projectId' in patch) {
       if (e.team) throw new Error("A project's team chat stays linked to its project. Start a new chat to link another one.");
@@ -164,7 +188,61 @@ function createChats(dataDir, { now = () => new Date().toISOString() } = {}) {
     return { ...e };
   }
 
-  return { list, create, get, save, update, ensureTeams, notices: () => notices.slice(), broken: () => broken, dir, indexFile };
+  // The owner's order for one group (pinned or not): exactly the chats of that group, in the new order.
+  function reorder(ids) {
+    load();
+    if (!Array.isArray(ids) || !ids.length) throw new Error('bad order');
+    const entries = ids.map((id) => idx.list.find((x) => x.id === id));
+    if (entries.some((x) => !x)) throw new Error('unknown chat');
+    if (new Set(ids).size !== ids.length) throw new Error('bad order');
+    const pinned = Boolean(entries[0].pinned);
+    if (entries.some((x) => Boolean(x.pinned) !== pinned)) throw new Error('Pinned and other chats are ordered separately.');
+    entries.forEach((x, i) => { x.order = i; });
+    // Chats of that group not in the list keep their place after the ordered ones.
+    let n = entries.length;
+    for (const x of idx.list) if (Boolean(x.pinned) === pinned && !ids.includes(x.id)) x.order = n++;
+    saveIndex();
+    return true;
+  }
+
+  // Delete a chat: its file moves to chats/trash (nothing is destroyed) and it can be restored.
+  function remove(id) {
+    load();
+    const e = idx.list.find((x) => x.id === id);
+    if (!e) throw new Error('unknown chat');
+    if (e.team) throw new Error("A project's team chat can't be deleted (its messages belong to the project). You can hide it instead.");
+    const trashId = `${id}-${Date.now().toString(36)}`;
+    const tdir = path.join(dir, 'trash');
+    fs.mkdirSync(tdir, { recursive: true, mode: 0o700 });
+    const src = fileOf(id);
+    const dest = path.join(tdir, `${trashId}.json`);
+    if (fs.existsSync(src)) fs.renameSync(src, dest);
+    if (fs.existsSync(`${src}.bak`)) fs.renameSync(`${src}.bak`, `${dest}.bak`);
+    idx.list = idx.list.filter((x) => x.id !== id);
+    idx.trash = [{ trashId, deletedAt: now(), file: dest, entry: { ...e } }, ...(idx.trash || [])].slice(0, 50);
+    saveIndex();
+    return { ok: true, trashId };
+  }
+  const trash = () => { load(); return (idx.trash || []).map((t) => ({ trashId: t.trashId, deletedAt: t.deletedAt, id: t.entry.id, title: t.entry.title, projectId: t.entry.projectId })); };
+  function restore(trashId) {
+    load();
+    const t = (idx.trash || []).find((x) => x.trashId === trashId);
+    if (!t) throw new Error('That deleted chat is no longer in the bin.');
+    if (idx.list.some((x) => x.id === t.entry.id)) throw new Error('That chat is already in the list.');
+    const dest = fileOf(t.entry.id);
+    const src = path.join(dir, 'trash', `${trashId}.json`);
+    if (fs.existsSync(dest)) throw new Error('A chat file with that id already exists, so nothing was overwritten.');
+    if (fs.existsSync(src)) fs.renameSync(src, dest);
+    if (fs.existsSync(`${src}.bak`)) fs.renameSync(`${src}.bak`, `${dest}.bak`);
+    const entry = { ...t.entry };
+    delete entry.order;
+    idx.list.push(entry);
+    idx.trash = idx.trash.filter((x) => x.trashId !== trashId);
+    saveIndex();
+    return { ...entry };
+  }
+
+  return { list, create, get, save, update, reorder, remove, trash, restore, ensureTeams, notices: () => notices.slice(), broken: () => broken, dir, indexFile };
 }
 
-module.exports = { createChats, atomicWrite, ID_RE, TEAM_RE };
+module.exports = { createChats, chatOrder, atomicWrite, ID_RE, TEAM_RE };

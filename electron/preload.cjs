@@ -15,6 +15,10 @@ contextBridge.exposeInMainWorld('hearth', {
   chatsGet: (id) => ipcRenderer.invoke('chats:get', id),
   chatsSave: (id, data) => ipcRenderer.invoke('chats:save', id, data),
   chatsUpdate: (id, patch) => ipcRenderer.invoke('chats:update', id, patch),
+  chatsReorder: (ids) => ipcRenderer.invoke('chats:reorder', ids),
+  chatsDelete: (id) => ipcRenderer.invoke('chats:delete', id),
+  chatsTrash: () => ipcRenderer.invoke('chats:trash'),
+  chatsRestore: (trashId) => ipcRenderer.invoke('chats:restore', trashId),
 
   providerStatus: () => ipcRenderer.invoke('providers:status'),
   setKey: (provider, key) => ipcRenderer.invoke('providers:setKey', provider, key),

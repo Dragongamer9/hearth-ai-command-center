@@ -7,8 +7,37 @@ export const isTeam = (id) => typeof id === 'string' && id.startsWith('team-');
 export const teamChatId = (projectId) => `team-${projectId}`;
 
 // Newest first; the open project's chats are not hidden, nothing is filtered out.
+// Pinned first; within a group the owner's order (when set), then newest first (same as electron/chats.cjs).
 export function sortChats(list = []) {
-  return [...list].sort((a, b) => String(b.updatedAt || b.createdAt || '').localeCompare(String(a.updatedAt || a.createdAt || '')));
+  return [...list].sort((a, b) => {
+    if (Boolean(a.pinned) !== Boolean(b.pinned)) return a.pinned ? -1 : 1;
+    const ao = Number.isInteger(a.order), bo = Number.isInteger(b.order);
+    if (ao && bo && a.order !== b.order) return a.order - b.order;
+    if (ao !== bo) return ao ? -1 : 1;
+    return String(b.updatedAt || b.createdAt || '').localeCompare(String(a.updatedAt || a.createdAt || ''));
+  });
+}
+
+// Move a chat one place up or down within its group (pinned or not); returns that group's new id order, or null.
+export function moveInGroup(list = [], id, dir) {
+  const sorted = sortChats(list);
+  const me = sorted.find((c) => c.id === id);
+  if (!me) return null;
+  const group = sorted.filter((c) => Boolean(c.pinned) === Boolean(me.pinned)).map((c) => c.id);
+  const i = group.indexOf(id), j = i + (dir < 0 ? -1 : 1);
+  if (j < 0 || j >= group.length) return null;
+  [group[i], group[j]] = [group[j], group[i]];
+  return group;
+}
+
+// Drop a dragged chat before another one of the same group; returns the group's new id order, or null.
+export function dropInGroup(list = [], dragId, beforeId) {
+  const sorted = sortChats(list);
+  const a = sorted.find((c) => c.id === dragId), b = sorted.find((c) => c.id === beforeId);
+  if (!a || !b || a.id === b.id || Boolean(a.pinned) !== Boolean(b.pinned)) return null;
+  const group = sorted.filter((c) => Boolean(c.pinned) === Boolean(a.pinned)).map((c) => c.id).filter((x) => x !== dragId);
+  group.splice(group.indexOf(beforeId), 0, dragId);
+  return group;
 }
 
 // A chat's automatic title: the first line of its first owner message, shortened.

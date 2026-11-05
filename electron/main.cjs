@@ -278,6 +278,10 @@ function registerIpc() {
     if ('projectId' in p && p.projectId !== null && !chatProjects().some((x) => x.id === p.projectId)) throw new Error('Unknown project.');
     return chats.update(String(id), p);
   });
+  handle('chats:reorder', (ids) => chats.reorder(Array.isArray(ids) ? ids.map(String) : []));
+  handle('chats:delete', (id) => chats.remove(String(id)));
+  handle('chats:trash', () => chats.trash());
+  handle('chats:restore', (trashId) => chats.restore(String(trashId)));
   handle('state:backups', () => ({ recoveredFrom: lastLoad.recoveredFrom, lost: Boolean(lastLoad.lost), backups: store.list() }));
   handle('state:restore', (n) => ({ ...store.restore(Number(n)), projectId: binding.active() }));
   // Export everything (tasks, progress, chat, audit) with secrets scrubbed.

@@ -22,7 +22,7 @@ import { instructionsBlock, recordReview, holdApproval, useHeldApproval, recordT
 import { teamHabitat, teamHabitatLine } from './habitat/status.mjs';
 import { icon } from './icons.mjs';
 import { ACT_AGENT, parseActLines, makeActRequest, describe as describeAct, typedDecision, stillValid, settle, undoEntry } from './ops/actforme.mjs';
-import { isTeam, teamChatId, sortChats, autoTitle, pickOpenChat, openPlan, savePlan, chatEditRule } from './chats.mjs';
+import { isTeam, teamChatId, sortChats, autoTitle, pickOpenChat, openPlan, savePlan, chatEditRule, moveInGroup, dropInGroup } from './chats.mjs';
 
 const api = window.hearth;
 
@@ -175,6 +175,7 @@ async function loadChats() {
   chatsState.list = sortChats(r?.list?.length ? r.list : fallback);
   chatsState.notices = r?.notices || [];
   chatsState.broken = Boolean(r?.broken);
+  chatsState.trash = await api.chatsTrash?.().catch(() => []) || [];
   const id = pickOpenChat(chatsState.list, loadPrefs().openChat, state.projectId);
   if (!chatsState.list.some((c) => c.id === id)) chatsState.list.unshift({ ...fallback[0], id });
   await openChatHere(id, { quiet: true });
@@ -279,7 +280,96 @@ async function checkHealth() {
   ui.health = [...(h?.notices || []).map((n) => n.text), ...(chatsState.notices || [])];
   if (ui.health.length) render();
 }
-function chatTitle(c) { return c.team ? `${(ops.projectsList?.().list || []).find((x) => x.id === c.projectId)?.name || 'Project'} team chat` : c.title || 'New chat'; }
+function chatTitle(c) { return c.team && !c.renamed ? `${(ops.projectsList?.().list || []).find((x) => x.id === c.projectId)?.name || 'Project'} team chat` : c.title || 'New chat'; }
+// Chat list management: rename, pin, order, hide (team chats), delete to the bin and restore.
+async function refreshChatList() {
+  const r = await api.chatsList?.().catch(() => null);
+  if (r?.list?.length) chatsState.list = sortChats(r.list);
+  chatsState.trash = await api.chatsTrash?.().catch(() => chatsState.trash) || [];
+}
+async function chatAction(kind, id) {
+  const c = chatsState.list.find((x) => x.id === id);
+  ui.chatMenu = null;
+  if (!c) return render();
+  if (kind === 'rename') { ui.sideRename = id; render(); const el = document.getElementById('side-rename'); el?.focus(); el?.select(); return; }
+  if (kind === 'pin' || kind === 'unpin') {
+    const e = await updateChat(id, { pinned: kind === 'pin' });
+    if (e) audit(kind === 'pin' ? 'Chat pinned' : 'Chat unpinned', null, chatTitle(c));
+  }
+  if (kind === 'up' || kind === 'down') {
+    const ids = moveInGroup(chatsState.list, id, kind === 'up' ? -1 : 1);
+    if (ids) { const r = await api.chatsReorder(ids).catch((err) => ({ message: cleanErr(err.message) })); if (r?.message) toast(r.message); }
+  }
+  if (kind === 'hide' || kind === 'unhide') {
+    const e = await updateChat(id, { hidden: kind === 'hide' });
+    if (e) { audit(kind === 'hide' ? 'Team chat hidden from the list' : 'Team chat shown in the list', null, chatTitle(c)); if (kind === 'hide') toast(`“${chatTitle(c)}” is hidden. Show it again from “Hidden chats” under the list.`); }
+  }
+  if (kind === 'delete') {
+    if (c.team) return toast("A project's team chat can't be deleted (its messages belong to the project). Hide it instead.");
+    if (id === chatsState.open && chatBusy()) return toast(chatBusy());
+    if (!confirm(`Delete the chat “${chatTitle(c)}”? It goes to Recently deleted, where you can restore it.`)) return render();
+    if (id === chatsState.open) { await saveChain; if (!(await openChatHere(teamChatId(state.projectId)))) return render(); }
+    const r = await api.chatsDelete(id).catch((err) => ({ message: cleanErr(err.message) }));
+    if (!r?.ok) { toast(`Not deleted: ${r?.message || 'no answer from the app'}`); return render(); }
+    audit('Chat deleted (kept in Recently deleted)', null, chatTitle(c));
+    ui.lastDeleted = { trashId: r.trashId, title: chatTitle(c) };
+  }
+  await refreshChatList();
+  render();
+}
+let renamingNow = false;
+async function finishSideRename(keep) {
+  if (renamingNow) return;
+  const el = document.getElementById('side-rename');
+  const id = ui.sideRename;
+  ui.sideRename = null;
+  const c = chatsState.list.find((x) => x.id === id);
+  const t = el?.value.replace(/\s+/g, ' ').trim();
+  if (keep && c && t && t !== chatTitle(c)) {
+    renamingNow = true;
+    try { const e = await updateChat(id, { title: t }); if (e) audit('Chat renamed', null, t); } finally { renamingNow = false; }
+  }
+  render();
+}
+// Drag a chat onto another one of the same group (Pinned or Chats) to put it there.
+let dragChat = null;
+document.addEventListener('dragstart', (e) => {
+  const row = e.target.closest?.('[data-chatdrag]');
+  if (!row) return;
+  dragChat = row.dataset.chatdrag;
+  row.classList.add('dragging');
+  try { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', dragChat); } catch {}
+});
+document.addEventListener('dragover', (e) => {
+  const row = e.target.closest?.('[data-chatdrag]');
+  if (!row || !dragChat || row.dataset.chatdrag === dragChat) return;
+  if (!dropInGroup(chatsState.list, dragChat, row.dataset.chatdrag)) return;
+  e.preventDefault();
+  document.querySelectorAll('.chat-row.drop-before').forEach((x) => x !== row && x.classList.remove('drop-before'));
+  row.classList.add('drop-before');
+});
+document.addEventListener('dragend', () => { dragChat = null; document.querySelectorAll('.chat-row.dragging,.chat-row.drop-before').forEach((x) => x.classList.remove('dragging', 'drop-before')); });
+document.addEventListener('drop', async (e) => {
+  const row = e.target.closest?.('[data-chatdrag]');
+  if (!row || !dragChat) return;
+  e.preventDefault();
+  const ids = dropInGroup(chatsState.list, dragChat, row.dataset.chatdrag);
+  dragChat = null;
+  if (!ids) return;
+  const r = await api.chatsReorder(ids).catch((err) => ({ message: cleanErr(err.message) }));
+  if (r?.message) toast(r.message);
+  await refreshChatList();
+  render();
+});
+async function restoreChat(trashId) {
+  const r = await api.chatsRestore(trashId).catch((err) => ({ message: cleanErr(err.message) }));
+  if (!r?.id) { toast(`Not restored: ${r?.message || 'no answer from the app'}`); return render(); }
+  audit('Chat restored', null, r.title || '');
+  if (ui.lastDeleted?.trashId === trashId) ui.lastDeleted = null;
+  await refreshChatList();
+  toast(`“${r.title}” is back in your chats.`);
+  render();
+}
 function chatProjName(c) { return c.projectId ? (ops.projectsList?.().list || []).find((x) => x.id === c.projectId)?.name || 'missing project' : 'No project'; }
 
 // ---------- "Claude can do everything I can (asks me first every time)" ----------
@@ -1389,7 +1479,7 @@ function chatHeader() {
   const rule = chatEditRule(c, state.projectId);
   const title = ui.renaming
     ? `<input type="text" id="chat-rename" value="${esc(chatTitle(c))}" maxlength="120" aria-label="Chat name"><button class="btn small primary" data-chatrenamesave>Save</button><button class="btn small ghost" data-chatrenamecancel>Cancel</button>`
-    : `<h2 class="chat-title" title="${esc(chatTitle(c))}">${esc(chatTitle(c))}</h2>${c.team ? '' : `<button class="btn small link" data-chatrename title="Rename this chat">Rename</button>`}`;
+    : `<h2 class="chat-title" title="${esc(chatTitle(c))}">${esc(chatTitle(c))}</h2><button class="btn small link" data-chatrename title="Rename this chat">Rename</button>`;
   const menu = ui.menu === 'chatproj' ? `<div class="menu chatproj-menu" role="menu">${c.team
     ? `<div class="mh">This is ${esc(chatProjName(c))}'s own team chat; its messages live with that project, so it stays linked to it. Start a new chat to link another project.</div><button class="chip" data-newchat>${icon('plus', 'sm')}<span class="t">New chat</span></button>`
     : `<div class="mh">Link this chat to a project. The team works only in that project's repository.</div>${projs.list.map((x) => `<button class="chip ${x.id === c.projectId ? 'on' : ''}" data-chatlink="${esc(x.id)}">${icon(x.id === c.projectId ? 'check' : 'folder', 'sm')}<span class="t">${esc(x.name)}</span>${x.id === c.projectId ? '<small>linked</small>' : x.id === state.projectId ? '<small>open now</small>' : '<small>switches project</small>'}</button>`).join('')}
@@ -2367,14 +2457,41 @@ const MORE = ['agents', 'history', 'github', 'audit', 'ops', 'actions', 'summary
 const NAV_ICON = { agents: 'users', history: 'history', github: 'branch', audit: 'list', ops: 'stats', actions: 'list', summary: 'moon', project: 'folder', release: 'flag', overview: 'home', settings: 'gear' };
 // The Chats list (newest first). The narrowed sidebar opens it from the Chats icon.
 function chatItems(max) {
-  const list = chatsState.list;
+  const all = chatsState.list;
+  const hidden = all.filter((c) => c.hidden);
+  const list = all.filter((c) => !c.hidden || ui.showHidden);
   const shown = list.slice(0, max);
-  return `${shown.map((c) => `<button class="item chat-item ${c.id === chatsState.open && ui.view === 'chat' ? 'on' : ''}" data-openchat="${esc(c.id)}" title="${esc(chatTitle(c))} · ${esc(chatProjName(c))}">${icon('chat', 'sm')}<span class="t">${esc(chatTitle(c))}</span><span class="meta ${c.projectId === state.projectId ? '' : 'other'}">${esc(c.projectId === state.projectId ? '' : chatProjName(c))}</span></button>`).join('')}
-    ${list.length > max ? `<button class="item more-chats" data-allchats>${icon('more', 'sm')}<span class="t">All chats (${list.length})</span></button>` : ui.allChats && list.length > 6 ? `<button class="item more-chats" data-allchats>${icon('chev', 'sm')}<span class="t">Fewer</span></button>` : ''}`;
+  const groupOf = (c) => (c.pinned ? 'pinned' : 'rest');
+  const row = (c, i) => {
+    const head = c.pinned && i === 0 ? '<div class="chat-group">Pinned</div>' : !c.pinned && i > 0 && shown[i - 1].pinned ? '<div class="chat-group">Chats</div>' : '';
+    const meta = `<span class="meta ${c.projectId === state.projectId ? '' : 'other'}">${esc(c.projectId === state.projectId ? '' : chatProjName(c))}</span>`;
+    const body = ui.sideRename === c.id
+      ? `<div class="item chat-item renaming"><input type="text" id="side-rename" data-renameid="${esc(c.id)}" value="${esc(chatTitle(c))}" maxlength="120" aria-label="Chat name"></div>`
+      : `<button class="item chat-item ${c.id === chatsState.open && ui.view === 'chat' ? 'on' : ''} ${c.hidden ? 'hidden-chat' : ''}" data-openchat="${esc(c.id)}" title="${esc(chatTitle(c))} · ${esc(chatProjName(c))}">${icon(c.pinned ? 'pin' : 'chat', 'sm')}<span class="t">${esc(chatTitle(c))}</span>${meta}</button>`;
+    const g = groupOf(c);
+    const sameGroup = list.filter((x) => groupOf(x) === g);
+    const first = sameGroup[0]?.id === c.id, last = sameGroup[sameGroup.length - 1]?.id === c.id;
+    const menu = ui.chatMenu === c.id ? `<div class="menu chat-row-menu" role="menu">
+      <button class="chip" data-chatact="rename" data-id="${esc(c.id)}">${icon('pencil', 'sm')}Rename</button>
+      <button class="chip" data-chatact="${c.pinned ? 'unpin' : 'pin'}" data-id="${esc(c.id)}">${icon('pin', 'sm')}${c.pinned ? 'Unpin' : 'Pin to the top'}</button>
+      <button class="chip" data-chatact="up" data-id="${esc(c.id)}" ${first ? 'disabled' : ''}>${icon('up', 'sm')}Move up</button>
+      <button class="chip" data-chatact="down" data-id="${esc(c.id)}" ${last ? 'disabled' : ''}><span class="flip">${icon('up', 'sm')}</span>Move down</button>
+      ${c.team ? `<button class="chip" data-chatact="${c.hidden ? 'unhide' : 'hide'}" data-id="${esc(c.id)}">${icon('eyeoff', 'sm')}${c.hidden ? 'Show in the list' : 'Hide from the list'}</button>`
+        : `<button class="chip danger" data-chatact="delete" data-id="${esc(c.id)}">${icon('trash', 'sm')}Delete</button>`}
+    </div>` : '';
+    return `${head}<div class="chat-row ${ui.chatMenu === c.id ? 'menu-open' : ''}" draggable="${ui.sideRename === c.id ? 'false' : 'true'}" data-chatdrag="${esc(c.id)}">${body}<button class="row-more" data-chatmenu="${esc(c.id)}" title="Rename, pin, move or delete" aria-label="Chat options" aria-expanded="${ui.chatMenu === c.id}">${icon('dots', 'sm')}</button>${menu}</div>`;
+  };
+  const trash = chatsState.trash || [];
+  return `${shown.map(row).join('')}
+    ${list.length > max ? `<button class="item more-chats" data-allchats>${icon('more', 'sm')}<span class="t">All chats (${list.length})</span></button>` : ui.allChats && list.length > 6 ? `<button class="item more-chats" data-allchats>${icon('chev', 'sm')}<span class="t">Fewer</span></button>` : ''}
+    ${ui.lastDeleted ? `<div class="chat-undo">Deleted “${esc(ui.lastDeleted.title)}”<button class="btn small link" data-chatrestore="${esc(ui.lastDeleted.trashId)}">Undo</button></div>` : ''}
+    ${hidden.length ? `<button class="item more-chats" data-chatshowhidden>${icon('eyeoff', 'sm')}<span class="t">${ui.showHidden ? 'Hide hidden chats' : `Hidden chats (${hidden.length})`}</span></button>` : ''}
+    ${trash.length ? `<button class="item more-chats" data-chattrash>${icon('trash', 'sm')}<span class="t">Recently deleted (${trash.length})</span></button>` : ''}
+    ${ui.showTrash && trash.length ? `<div class="chat-trash">${trash.map((t) => `<div class="row"><span class="t">${esc(t.title)}</span><span class="faint">${esc(ago(t.deletedAt))}</span><button class="btn small" data-chatrestore="${esc(t.trashId)}">Restore</button></div>`).join('')}</div>` : ''}`;
 }
 function chatsMenu() {
   return `<div class="menu chats-menu" role="menu"><div class="mh">Chats</div><button class="chip" data-newchat>${icon('plus', 'sm')}<span class="t">New chat</span></button>
-    ${chatsState.list.slice(0, 30).map((c) => `<button class="chip ${c.id === chatsState.open ? 'on' : ''}" data-openchat="${esc(c.id)}">${icon('chat', 'sm')}<span class="t">${esc(chatTitle(c))}</span><small>${esc(chatProjName(c))}</small></button>`).join('')}</div>`;
+    ${chatsState.list.filter((c) => !c.hidden).slice(0, 30).map((c) => `<button class="chip ${c.id === chatsState.open ? 'on' : ''}" data-openchat="${esc(c.id)}">${icon('chat', 'sm')}<span class="t">${esc(chatTitle(c))}</span><small>${esc(chatProjName(c))}</small></button>`).join('')}</div>`;
 }
 function sidebar(waiting) {
   const label = Object.fromEntries(NAV.map(([id, , l]) => [id, l]));
@@ -2940,7 +3057,7 @@ async function syncHistory(quiet = false) {
   if (ui.view === 'history') render();
 }
 
-const CLICK = '[data-actallow],[data-actdeny],[data-actview],[data-actundo],[data-openchat],[data-newchat],[data-allchats],[data-chatlink],[data-chatrename],[data-chatrenamesave],[data-chatrenamecancel],[data-sendreview],[data-owneract],[data-updatemain],[data-releasebranch],[data-leadundo],[data-opendup],[data-adddup],[data-stopround],[data-toggleleadgh],[data-attach],[data-unattach],[data-lightbox],[data-closelightbox],[data-testkey],[data-nav],[data-new],[data-open],[data-close],[data-cancel],[data-create],[data-advance],[data-approve],[data-reject],[data-changes],[data-note],[data-delete],[data-savekey],[data-rmkey],[data-ask],[data-export],[data-reset],[data-upd],[data-opinion],[data-modalbg],[data-sendchat],[data-target],[data-addprop],[data-addall],[data-clearchat],[data-method],[data-login],[data-recheck],[data-locate],[data-available],[data-run],[data-stop],[data-freebuff],[data-fbdone],[data-openws],[data-pickproject],[data-autohandoff],[data-restore],[data-install],[data-installall],[data-installollama],[data-startprop],[data-showchanges],[data-dismisssetup],[data-signin],[data-disconnect],[data-toggleagent],[data-ghlogin],[data-gitrefresh],[data-useproject],[data-clone],[data-gitpull],[data-pushbranch],[data-openpr],[data-approvemerge],[data-approvepr],[data-access],[data-togglesetting],[data-adddir],[data-removedir],[data-expand],[data-opensignin],[data-openweb],[data-openexport],[data-makelead],[data-decide],[data-editmsg],[data-delmsg],[data-saveedit],[data-canceledit],[data-togglehist],[data-checkin],[data-histscan],[data-histimport],[data-histopen],[data-histresume],[data-histweb],[data-histwebin],[data-histremove],[data-prlist],[data-prrefresh],[data-release],[data-theme]';
+const CLICK = '[data-chatmenu],[data-chatact],[data-chatrestore],[data-chatshowhidden],[data-chattrash],[data-actallow],[data-actdeny],[data-actview],[data-actundo],[data-openchat],[data-newchat],[data-allchats],[data-chatlink],[data-chatrename],[data-chatrenamesave],[data-chatrenamecancel],[data-sendreview],[data-owneract],[data-updatemain],[data-releasebranch],[data-leadundo],[data-opendup],[data-adddup],[data-stopround],[data-toggleleadgh],[data-attach],[data-unattach],[data-lightbox],[data-closelightbox],[data-testkey],[data-nav],[data-new],[data-open],[data-close],[data-cancel],[data-create],[data-advance],[data-approve],[data-reject],[data-changes],[data-note],[data-delete],[data-savekey],[data-rmkey],[data-ask],[data-export],[data-reset],[data-upd],[data-opinion],[data-modalbg],[data-sendchat],[data-target],[data-addprop],[data-addall],[data-clearchat],[data-method],[data-login],[data-recheck],[data-locate],[data-available],[data-run],[data-stop],[data-freebuff],[data-fbdone],[data-openws],[data-pickproject],[data-autohandoff],[data-restore],[data-install],[data-installall],[data-installollama],[data-startprop],[data-showchanges],[data-dismisssetup],[data-signin],[data-disconnect],[data-toggleagent],[data-ghlogin],[data-gitrefresh],[data-useproject],[data-clone],[data-gitpull],[data-pushbranch],[data-openpr],[data-approvemerge],[data-approvepr],[data-access],[data-togglesetting],[data-adddir],[data-removedir],[data-expand],[data-opensignin],[data-openweb],[data-openexport],[data-makelead],[data-decide],[data-editmsg],[data-delmsg],[data-saveedit],[data-canceledit],[data-togglehist],[data-checkin],[data-histscan],[data-histimport],[data-histopen],[data-histresume],[data-histweb],[data-histwebin],[data-histremove],[data-prlist],[data-prrefresh],[data-release],[data-theme]';
 
 document.addEventListener('click', async (e) => {
   const el = e.target.closest(CLICK);
@@ -2953,7 +3070,12 @@ document.addEventListener('click', async (e) => {
   if (d.actdeny) return decideAct(d.actdeny, 'deny', ui.modal === 'act' ? 'popup' : 'card');
   if (d.actview) { ui.modal = 'act'; ui.actReq = d.actview; return render(); }
   if (d.actundo) return undoAct(d.actundo);
-  if (d.openchat) return openChat(d.openchat);
+  if (d.chatmenu) { ui.chatMenu = ui.chatMenu === d.chatmenu ? null : d.chatmenu; return render(); }
+  if (d.chatact) return chatAction(d.chatact, d.id);
+  if (d.chatrestore) return restoreChat(d.chatrestore);
+  if (d.chatshowhidden !== undefined) { ui.showHidden = !ui.showHidden; return render(); }
+  if (d.chattrash !== undefined) { ui.showTrash = !ui.showTrash; return render(); }
+  if (d.openchat) { ui.chatMenu = null; ui.lastDeleted = null; return openChat(d.openchat); }
   if (d.newchat !== undefined) return newChat();
   if (d.allchats !== undefined) { ui.allChats = !ui.allChats; return render(); }
   if (d.chatlink !== undefined) return linkChat(d.chatlink || null);
@@ -2962,7 +3084,7 @@ document.addEventListener('click', async (e) => {
   if (d.chatrenamesave !== undefined) {
     const c = openChatEntry();
     const t = document.getElementById('chat-rename')?.value.trim();
-    if (c && !c.team && t) { const e = await updateChat(c.id, { title: t }); if (e) audit('Chat renamed', null, t); save(); }
+    if (c && t) { const e = await updateChat(c.id, { title: t }); if (e) audit('Chat renamed', null, t); save(); }
     ui.renaming = false;
     return render();
   }
@@ -3473,6 +3595,9 @@ document.addEventListener('click', async (e) => {
   const closing = (ui.more && !t.closest?.('.more-menu,[data-ui="more"]')) || (ui.menu && !t.closest?.('.menu,[data-ui^="menu-"]'));
   if (ui.renaming && t.id !== 'chat-rename' && !t.closest?.('[data-chatrenamesave],[data-chatrename]') && t.closest?.('[data-openchat],[data-newchat],[data-nav]')) ui.renaming = false;
   if (closing) { ui.more = false; ui.menu = null; }
+  // A chat's options menu closes on any click outside it; renaming in the list saves on a click elsewhere.
+  if (ui.chatMenu && !t.closest?.('.chat-row-menu,[data-chatmenu]')) { ui.chatMenu = null; if (!t.closest?.(CLICK) && !el) render(); }
+  if (ui.sideRename && t.id !== 'side-rename') { finishSideRename(true); return; }
   if (!el) { if (closing && !t.closest?.(CLICK)) render(); return; }
   const d = el.dataset;
   if (d.showchanges && d.inline !== undefined) { ui.selected = d.showchanges; return; } // the app's handler loads the changes and redraws
@@ -3601,6 +3726,8 @@ document.addEventListener('keydown', (e) => {
     changeTextSize(e.key === '0' ? 100 : e.key === '-' ? 'down' : 'up');
     return;
   }
+  if (e.target.id === 'side-rename' && (e.key === 'Enter' || e.key === 'Escape')) { e.preventDefault(); return finishSideRename(e.key === 'Enter'); }
+  if (e.key === 'Escape' && ui.chatMenu) { ui.chatMenu = null; return render(); }
   if (e.target.id === 'chat-rename' && e.key === 'Enter') { e.preventDefault(); document.querySelector('[data-chatrenamesave]')?.click(); return; }
   if (e.target.id === 'chat-text' && e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
