@@ -413,7 +413,8 @@ function register(d) {
   });
 
   // ---- voice chat: speech to text, voices, cloning (electron/voice-chat.cjs) ----
-  const voice = voiceChat.register({ handle, secrets, readSettings, send, which: makers.which, media, mediaRoot: root, dialog, getWindow });
+  // CosyVoice2 voice clips (his, with consent) live in voice-clips/<server id>/, never in settings.
+  const voice = voiceChat.register({ handle, secrets, readSettings, send, which: makers.which, media, mediaRoot: root, dialog, getWindow, clipsDir: path.join(dataDir(), 'voice-clips') });
 
   return { memory, scheduler, connectors, teammates, cards, rpGuard, docText, mcpForRun: (dir) => connectors.forRun(dir), stop() { scheduler.stop(); makers.stopSpeaking(); voice.stop(); } };
 }

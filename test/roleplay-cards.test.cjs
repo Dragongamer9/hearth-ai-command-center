@@ -115,5 +115,9 @@ test('no code from other roleplay apps: none of the app\'s source names one or c
   const files = [];
   const walk = (d) => { for (const e of fs.readdirSync(d, { withFileTypes: true })) { const f = path.join(d, e.name); if (e.isDirectory()) { if (e.name !== 'vendor') walk(f); } else if (/\.(c?js|mjs|css|html)$/.test(e.name)) files.push(f); } };
   roots.forEach(walk);
-  for (const f of files) { const t = fs.readFileSync(f, 'utf8'); assert.doesNotMatch(t, /sillytavern|silly tavern|tavernai|GNU Affero|AGPL/i, f); }
+  // src/app/credits.mjs lists the licence of a speech server the app only reaches over HTTP
+  // (chatterbox-tts-api); it is the one file allowed to name it, and it holds no code from it.
+  const credits = path.join(__dirname, '..', 'src', 'app', 'credits.mjs');
+  for (const f of files) { const t = fs.readFileSync(f, 'utf8'); assert.doesNotMatch(t, f === credits ? /sillytavern|silly tavern|tavernai/i : /sillytavern|silly tavern|tavernai|GNU Affero|AGPL/i, f); }
+  assert.match(fs.readFileSync(credits, 'utf8'), /chatterbox-tts-api[\s\S]*AGPL-3\.0[\s\S]*only talks to it over HTTP/);
 });

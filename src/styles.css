@@ -577,3 +577,17 @@ table.perms tr.off td { color: var(--faint); }
 .secret-modal { width: min(460px, calc(100% - 32px)); background: var(--panel); border: 1px solid var(--line-2); border-radius: 14px; box-shadow: var(--shadow); padding: 18px; display: flex; flex-direction: column; gap: 10px; }
 .secret-modal input[type="password"], .secret-modal input#secret-in { width: 100%; font-family: var(--mono); }
 .secret-modal .mft { display: flex; justify-content: flex-end; gap: 8px; }
+/* Speech servers (Settings › Voice): free, open-source voices on his own PCs. */
+.vsrv { border-top: 1px solid var(--line); padding-bottom: 6px; }
+.vsrv > .srow { border-top: 0; }
+.vsrv .note, .vhint { margin: 4px 0; }
+.note.good { border-color: var(--good); color: var(--good); }
+.vvoices { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 6px; }
+.vform { border: 1px solid var(--line-2); border-radius: 12px; padding: 12px; margin-top: 10px; background: var(--panel-2); display: grid; gap: 10px; }
+.vform h3 { margin: 0; }
+.vgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px 14px; }
+.vgrid .field select { background: var(--panel); border: 1px solid var(--line-2); border-radius: 8px; padding: 6px 8px; color: var(--text); }
+.vgrid .field .faint { font-size: 11.5px; line-height: 1.4; }
+.vpick select[data-vuse] { max-width: 180px; }
+.credits td, .credits th { text-align: left; padding: 4px 10px 4px 0; font-size: 12.5px; vertical-align: top; }
+.credits th { color: var(--muted); font-weight: 600; }

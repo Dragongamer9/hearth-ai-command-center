@@ -76,6 +76,11 @@ contextBridge.exposeInMainWorld('hearth', {
   voiceCancel: (token) => ipcRenderer.invoke('voice:cancel', token),
   voiceStopAll: () => ipcRenderer.invoke('voice:stopAll'),
   voiceClone: (o) => ipcRenderer.invoke('voice:clone', o || {}),
+  // Speech servers (electron/speech-servers.cjs): only a saved server's id is ever passed.
+  voiceServerKey: (id, key) => ipcRenderer.invoke('voice:serverKey', id, key),
+  voiceServerTest: (id) => ipcRenderer.invoke('voice:serverTest', id),
+  voiceServerClone: (o) => ipcRenderer.invoke('voice:serverClone', o || {}),
+  voiceServerForget: (id) => ipcRenderer.invoke('voice:serverForget', id),
   onVoiceChunk: (cb) => {
     const listener = (_e, payload) => cb(payload);
     ipcRenderer.on('voice:chunk', listener);

@@ -4,6 +4,9 @@
 // - which provider may speak it (Venice, Civitai and his GPU server never go to OpenAI unless he
 //   allowed it);
 // - hands-free turn taking (voice activity detection) and barge-in (talking over a reply stops it).
+// - speech servers (Kokoro, Chatterbox, Sesame CSM, Dia, CosyVoice2, Orpheus on his own PCs):
+//   provider 'server:<id>', a voice per server in voices[k].servers[<id>], and a voice choice may
+//   name its own server (use), so different characters can use different engines.
 export const PROVIDERS = ['elevenlabs', 'openai', 'local'];
 export const PROVIDER_NAMES = { elevenlabs: 'ElevenLabs', openai: 'OpenAI', local: 'this PC' };
 export const UNCENSORED = ['venice', 'civitai', 'gpu'];
@@ -12,15 +15,33 @@ export const VOICE_DEFAULTS = Object.freeze({ stt: 'auto', tts: 'local', turn: '
 // The voice settings as the main process gives them (its defaults, if they are missing).
 export function voiceSettings(settings) {
   const v = settings?.voice && typeof settings.voice === 'object' ? settings.voice : {};
-  return { ...VOICE_DEFAULTS, ...v, voices: v.voices && typeof v.voices === 'object' ? v.voices : {} };
+  return { ...VOICE_DEFAULTS, ...v, voices: v.voices && typeof v.voices === 'object' ? v.voices : {}, servers: Array.isArray(v.servers) ? v.servers : [] };
+}
+export const isServer = (p) => /^server:[a-z0-9]{6,16}$/.test(String(p || ''));
+export const serverIdOf = (p) => (isServer(p) ? String(p).slice(7) : null);
+export function serverFor(p, settings) { const id = serverIdOf(p); return id ? voiceSettings(settings).servers.find((x) => x.id === id) || null : null; }
+export function providerName(p, settings) { return isServer(p) ? serverFor(p, settings)?.name || 'a speech server' : PROVIDER_NAMES[p] || String(p || ''); }
+// May this teammate's text go to that server? Only a server at OpenAI's own address (hosts from
+// voice:status) falls under the rule for Venice, Civitai and his GPU server.
+export function serverAllowed(p, { who, settings, hosts = {} }) {
+  const srv = serverFor(p, settings);
+  if (!srv) return false;
+  return !(hosts[srv.id]?.openaiHost && UNCENSORED.includes(who) && !voiceSettings(settings).openaiForUncensored);
 }
 
 // Who may speak this message: the provider he picked, unless it has no key, or it is OpenAI and
 // the message comes from an uncensored teammate he hasn't allowed to go to OpenAI.
-export function routeFor({ who, settings, keys = {}, names = {} }) {
+export function routeFor({ who, settings, keys = {}, names = {}, hosts = {} }) {
   const v = voiceSettings(settings);
   let provider = v.tts;
   let notice = null;
+  if (isServer(provider)) {
+    if (serverAllowed(provider, { who, settings, hosts })) return { provider, notice };
+    const gone = !serverFor(provider, settings);
+    provider = keys.elevenlabs && !gone ? 'elevenlabs' : 'local';
+    notice = gone ? 'The speech server you picked was removed, so a voice on this PC is used. Pick another in Settings › Voice.' : `${names[who] || who}'s replies aren't sent to OpenAI, so this one is spoken by ${PROVIDER_NAMES[provider]}.`;
+    return { provider, notice };
+  }
   if (provider === 'openai' && UNCENSORED.includes(who) && !v.openaiForUncensored) {
     provider = keys.elevenlabs ? 'elevenlabs' : 'local';
     notice = `${names[who] || who}'s replies aren't sent to OpenAI, so this one is spoken by ${PROVIDER_NAMES[provider]}. You can allow OpenAI for them in Settings › Voice.`;
@@ -38,24 +59,32 @@ export function autoPick(key, list) {
   for (const ch of String(key)) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619); }
   return list[Math.abs(h) % list.length];
 }
-const idOf = (v, provider) => (provider === 'elevenlabs' ? v?.elevenlabs?.id : v?.[provider]) || null;
+export const idOf = (v, provider) => (provider === 'elevenlabs' ? v?.elevenlabs?.id : isServer(provider) ? v?.servers?.[serverIdOf(provider)] : v?.[provider]) || null;
 
 // The voice for one message part. msg: { who, char }; cards: the chat's characters.
 // Order: the character's own voice, then the teammate's voice, then the default voice, then an
 // automatic pick from the provider's list.
-export function voiceFor({ msg, part = 'speech', cards = [], settings, provider, list = [] }) {
+// A voice choice that names its own speech server (use) speaks there when canUse allows it.
+export function voiceFor({ msg, part = 'speech', cards = [], settings, provider, list = [], canUse = () => false }) {
   const v = voiceSettings(settings);
   const card = msg?.char ? cards.find((c) => c.id === msg.char) : null;
   const own = card?.ownerVoice || null;
+  const provOf = (c) => (c?.use && isServer(c.use) && canUse(c.use) ? c.use : provider);
   if (part === 'narration' && v.narration === 'narrator') {
     const n = v.voices.narrator;
-    const id = idOf(n, provider);
-    if (id) return { provider, voice: id, speed: n.speed, pitch: n.pitch, narrator: true };
+    const p = provOf(n);
+    const id = idOf(n, p);
+    if (id || p !== provider) return { provider: p, voice: id, speed: n.speed, pitch: n.pitch, narrator: true, ...(id ? {} : { auto: true }) };
   }
   // A character with no voice of its own gets an automatic one (so a group never sounds alike);
   // an AI teammate falls back to the default voice first.
   const chain = card ? [own] : [v.voices[msg?.who], v.voices.default];
-  for (const c of chain.filter(Boolean)) { const id = idOf(c, provider); if (id) return { provider, voice: id, speed: c.speed, pitch: c.pitch }; }
+  for (const c of chain.filter(Boolean)) {
+    const p = provOf(c);
+    const id = idOf(c, p);
+    // On its own server with no voice picked yet: that server's first voice.
+    if (id || p !== provider) return { provider: p, voice: id, speed: c.speed, pitch: c.pitch, ...(id ? {} : { auto: true }) };
+  }
   const ids = list.map((x) => x.id);
   const auto = autoPick(card ? `card:${card.id}` : `ai:${msg?.who || 'x'}`, ids) || idOf(v.voices.default, provider);
   return { provider, voice: auto, speed: own?.speed ?? v.voices.default?.speed, pitch: own?.pitch ?? v.voices.default?.pitch, auto: true };
@@ -66,7 +95,8 @@ export function speechParts(text, { narration = 'same' } = {}) {
   const t = String(text || '').replace(/```[\s\S]*?```/g, ' ').replace(/!\[[^\]]*\]\([^)]*\)/g, ' ').replace(/\[([^\]]+)\]\([^)]*\)/g, '$1').replace(/https?:\/\/\S+/g, ' ').replace(/\*\*([^*]+)\*\*/g, '$1');
   const out = [];
   const push = (kind, s) => {
-    const x = s.replace(/[#_`>|~*]/g, ' ').replace(/\s+/g, ' ').trim();
+    // Expressive tags like <laugh> survive for the engines that perform them (Orpheus).
+    const x = s.replace(/<([a-z]{3,12})>/gi, '\u0001$1\u0002').replace(/[#_`>|~*]/g, ' ').replace(/\u0001([a-z]{3,12})\u0002/gi, '<$1>').replace(/\s+/g, ' ').trim();
     if (!x || !/[\p{L}\p{N}]/u.test(x)) return;
     if (kind === 'narration' && narration === 'skip') return;
     const k = narration === 'same' ? 'speech' : kind;
@@ -95,16 +125,17 @@ export function speechParts(text, { narration = 'same' } = {}) {
 }
 
 // The spoken plan for a set of replies: [{ msgId, who, char, kind, text, provider, voice, ... }].
-export function speechPlan({ msgs, cards = [], settings, keys = {}, lists = {}, names = {} }) {
+export function speechPlan({ msgs, cards = [], settings, keys = {}, lists = {}, names = {}, hosts = {} }) {
   const v = voiceSettings(settings);
   const plan = [];
   const notices = new Set();
   for (const m of msgs) {
     if (!m || m.who === 'owner' || m.who === 'system' || m.err) continue;
-    const r = routeFor({ who: m.who, settings, keys, names });
+    const r = routeFor({ who: m.who, settings, keys, names, hosts });
     if (r.notice) notices.add(r.notice);
+    const canUse = (p) => serverAllowed(p, { who: m.who, settings, hosts });
     for (const p of speechParts(m.text, { narration: v.narration })) {
-      const sel = voiceFor({ msg: m, part: p.kind, cards, settings, provider: r.provider, list: lists[r.provider] || [] });
+      const sel = voiceFor({ msg: m, part: p.kind, cards, settings, provider: r.provider, list: lists[r.provider] || [], canUse });
       plan.push({ msgId: m.id, who: m.who, char: m.char || null, kind: p.kind, text: p.text, ...sel });
     }
   }

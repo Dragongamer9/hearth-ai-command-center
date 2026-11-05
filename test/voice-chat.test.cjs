@@ -222,7 +222,7 @@ test('RED FLAG: the updaters and release workflow are byte-identical to 1.8.0 (v
 
 test('Settings never change by themselves: first run saves nothing, a change saves only that key', () => {
   const d = vc.cleanSettings(undefined);
-  assert.deepEqual(d, { ...vc.DEFAULTS, voices: {} });
+  assert.deepEqual(d, { ...vc.DEFAULTS, voices: {}, servers: [] });
   assert.equal(d.tts, 'local', 'free and private until he picks another');
   // Reading twice is the same and writes nothing (main.cjs saves only diffs).
   assert.deepEqual(diffSettings({ voice: vc.cleanSettings({}) }, { voice: vc.cleanSettings({}) }), []);
