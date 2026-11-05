@@ -76,6 +76,9 @@ function createChats(dataDir, { now = () => new Date().toISOString() } = {}) {
     ...(typeof e.repoDir === 'string' && path.isAbsolute(e.repoDir) && !cleanRepo(e.repo) ? { repoDir: e.repoDir } : {}),
     ...(e.migratedV2 === true ? { migratedV2: true } : {}),
     ...(typeof e.importError === 'string' ? { importError: e.importError.slice(0, 300) } : {}),
+    // Per-chat knowledge: custom instructions and pinned reference files (attachments).
+    ...(typeof e.instructions === 'string' && e.instructions.trim() ? { instructions: e.instructions.slice(0, 4000) } : {}),
+    ...(Array.isArray(e.refs) && e.refs.length ? { refs: e.refs.filter((r) => r && typeof r.path === 'string' && path.isAbsolute(r.path) && typeof r.name === 'string').slice(0, 12).map((r) => ({ name: String(r.name).slice(0, 120), path: r.path, kind: ['image', 'video', 'file'].includes(r.kind) ? r.kind : 'file' })) } : {}),
   } : null);
   const cleanTrash = (t) => (t && typeof t === 'object' && typeof t.trashId === 'string' && /^[a-z0-9-]{8,40}$/.test(t.trashId) && clean(t.entry) ? { trashId: t.trashId, deletedAt: String(t.deletedAt || ''), file: String(t.file || ''), entry: clean(t.entry) } : null);
 
@@ -203,6 +206,14 @@ function createChats(dataDir, { now = () => new Date().toISOString() } = {}) {
       delete e.repoDir;
       e.linkedBy = 'owner';
       e.linkedAt = now();
+    }
+    if ('instructions' in patch) {
+      const t = String(patch.instructions || '').slice(0, 4000);
+      if (t.trim()) e.instructions = t; else delete e.instructions;
+    }
+    if ('refs' in patch) {
+      const c = clean({ ...e, refs: Array.isArray(patch.refs) ? patch.refs : [] });
+      if (c.refs) e.refs = c.refs; else delete e.refs;
     }
     if ('projectId' in patch) {
       if (e.team) throw new Error("A project's team chat stays linked to its project. Start a new chat to link another one.");

@@ -17,7 +17,8 @@ const KINDS = { html: 'html', htm: 'html', svg: 'svg', md: 'markdown', markdown:
 const MAX_FILE = 1024 * 1024;
 const MAX_PAGE = 6 * 1024 * 1024;
 
-function csp(allowNet = false) {
+// lib: a diagram page may load the bundled diagram library from hearth-preview://lib/ only.
+function csp(allowNet = false, lib = false) {
   const net = allowNet ? ' https:' : '';
   return [
     "default-src 'none'",
@@ -25,7 +26,7 @@ function csp(allowNet = false) {
     `media-src data: blob:${net}`,
     `font-src data:${net}`,
     `style-src 'unsafe-inline'${net}`,
-    `script-src 'unsafe-inline'${net}`,
+    `script-src 'unsafe-inline'${net}${lib ? ` ${SCHEME}://lib` : ''}`,
     `connect-src ${allowNet ? 'https:' : "'none'"}`,
     "frame-src 'none'",
     "form-action 'none'",
@@ -52,28 +53,36 @@ function collect(dir, sinceMs = 0, { max = 6 } = {}) {
 }
 
 // Pages the window asked to show. Kept in memory only, newest 30.
-function createPreviewStore() {
+// Bundled libraries a sandboxed diagram page may load (never the app window).
+const LIBS = { 'mermaid.min.js': path.join('mermaid', 'mermaid.min.js') };
+function createPreviewStore({ libDir = null } = {}) {
   const pages = new Map();
   return {
-    add(html, allowNet) {
+    add(html, allowNet, { lib = false } = {}) {
       const text = String(html || '');
       if (Buffer.byteLength(text) > MAX_PAGE) throw new Error('That preview is too big to show.');
       const id = crypto.randomBytes(8).toString('hex');
-      pages.set(id, { html: text, allowNet: allowNet === true });
+      pages.set(id, { html: text, allowNet: allowNet === true && !lib, lib: lib === true });
       while (pages.size > 30) pages.delete(pages.keys().next().value);
       return `${SCHEME}://${id}/`;
     },
     // The protocol handler: the page with its CSP as a real header.
     respond(url) {
       let id = '';
-      try { id = new URL(String(url)).host; } catch {}
+      let file = '';
+      try { const u = new URL(String(url)); id = u.host; file = u.pathname.replace(/^\//, ''); } catch {}
+      if (id === 'lib') {
+        const rel = LIBS[file];
+        if (!rel || !libDir) return { status: 404, headers: { 'content-type': 'text/plain' }, body: 'Not found.' };
+        try { return { status: 200, headers: { 'content-type': 'text/javascript; charset=utf-8', 'x-content-type-options': 'nosniff', 'cache-control': 'max-age=3600' }, body: fs.readFileSync(path.join(libDir, rel)) }; } catch { return { status: 404, headers: { 'content-type': 'text/plain' }, body: 'Not found.' }; }
+      }
       const p = pages.get(id);
       if (!p) return { status: 404, headers: { 'content-type': 'text/plain' }, body: 'Preview not found.' };
       return {
         status: 200,
         headers: {
           'content-type': 'text/html; charset=utf-8',
-          'content-security-policy': csp(p.allowNet),
+          'content-security-policy': csp(p.allowNet, p.lib),
           'x-content-type-options': 'nosniff',
           'referrer-policy': 'no-referrer',
           'cache-control': 'no-store',

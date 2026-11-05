@@ -353,7 +353,8 @@ function lineSplitter(fn) {
     if (buf.length > 4e6) buf = '';
   };
 }
-async function runAgent({ agent, prompt, cwd, mode = 'read', model, timeoutMs, signal, bin, extraDirs = [], resumeId = null, images = [], onData, extraEnv = null, onEvent = null, claude = null }) {
+async function runAgent({ agent, prompt, cwd, mode = 'read', model, timeoutMs, signal, bin, extraDirs = [], resumeId = null, images = [], onData, extraEnv = null, onEvent = null, claude = null, web = null, mcp = null }) {
+  // mcp: connector configs for this run (electron/connectors.cjs): { claudeFile, codexArgs }.
   // Output activity feeds the stall watchdog (electron/ops/watchdog.cjs).
   // extraEnv: e.g. HEARTH_AI_ASSETS, the AI's own folder for generated files.
   let resultEvent = null;
@@ -377,12 +378,13 @@ async function runAgent({ agent, prompt, cwd, mode = 'read', model, timeoutMs, s
     const perm = claude && CLAUDE_PERMS.includes(claude.perm) ? claude.perm : { read: 'plan', standard: 'auto', full: 'bypassPermissions' }[mode];
     const sid = resume || uuid();
     const web = !claude || claude.web !== false;
-    const allowed = [...(web ? ['WebSearch', 'WebFetch'] : []), ...((claude && Array.isArray(claude.allowedTools)) ? claude.allowedTools.filter((t) => typeof t === 'string' && /^[A-Za-z]+(\([^()\n]{1,120}\))?$/.test(t)) : [])];
+    const allowed = [...(web ? ['WebSearch', 'WebFetch'] : []), ...((claude && Array.isArray(claude.allowedTools)) ? claude.allowedTools.filter((t) => typeof t === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,80}(\([^()\n]{1,120}\))?$/.test(t)) : [])];
     const args = ['-p', '--output-format', lines ? 'stream-json' : 'json', ...(lines ? ['--verbose'] : []), '--permission-mode', perm];
     if (allowed.length) args.push('--allowedTools', ...allowed);
     if (!web) args.push('--disallowedTools', 'WebSearch', 'WebFetch');
     const settingsFile = claudeSettingsFile();
     if (settingsFile) args.push('--settings', settingsFile);
+    if (mcp && typeof mcp.claudeFile === 'string') args.push('--mcp-config', mcp.claudeFile);
     args.push(...(resume ? ['--resume', resume] : ['--session-id', sid]));
     if (mode === 'full') args.push('--dangerously-skip-permissions');
     for (const d of dirs) args.push('--add-dir', d);
@@ -396,13 +398,17 @@ async function runAgent({ agent, prompt, cwd, mode = 'read', model, timeoutMs, s
   }
 
   if (agent === 'openai') {
-    const outFile = path.join(os.tmpdir(), `hearth-codex-${process.pid}-${Date.now()}.txt`);
+    // Unique per run: several chats can have Codex working at the same moment.
+    const outFile = path.join(os.tmpdir(), `hearth-codex-${process.pid}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}.txt`);
     const args = ['exec', ...img.args, '--json', '--skip-git-repo-check', '--color', 'never', '-C', workdir, '-o', outFile];
     if (mode === 'full') args.push('--dangerously-bypass-approvals-and-sandbox');
     else if (mode === 'standard') args.push('--approve-for-me');
     else args.push('-s', 'read-only');
     if (mode !== 'read') for (const d of dirs) args.push('--add-dir', d);
     if (model) args.push('-m', model);
+    // Web toggle on: Codex's own web search tool. Connectors: its mcp_servers config.
+    if (web === true) args.push('-c', 'tools.web_search=true');
+    if (mcp && Array.isArray(mcp.codexArgs)) args.push(...mcp.codexArgs.filter((x) => typeof x === 'string'));
     let input = prompt;
     if (resume && prompt.length < 100000) { args.push('resume', resume, prompt); input = null; } else args.push('-');
     const res = await run(file, args, { cwd: workdir, input, timeoutMs, signal });

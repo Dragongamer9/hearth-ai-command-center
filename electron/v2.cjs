@@ -10,6 +10,8 @@ const { createGithub } = require('./github.cjs');
 const steps = require('./steps.cjs');
 const previews = require('./previews.cjs');
 const { migrateV2, remoteReader, readStateReadOnly } = require('./migrate-v2.cjs');
+const media = require('./media.cjs');
+const crypto = require('node:crypto');
 
 // Commands the AIs may run in a copy by themselves (Claude Code enforces this list; the
 // others are told). Quick checks only: heavy builds and full test runs go to GitHub Actions.
@@ -20,11 +22,15 @@ const cleanQuick = (list) => [...new Set((Array.isArray(list) ? list : []).map((
 const IDLE_CHOICES = [1, 6, 24, 72, 168, 0];
 
 // Claude Code permissions for one chat turn. Build on: edits plus the allowed commands only.
-function claudePolicy({ build, access, quickChecks, web }) {
-  if (access === 'full' && build) return { perm: 'bypassPermissions', allowedTools: [], web };
+// Skill (Claude Code skills) and Task (its own parallel helpers) are always allowed;
+// connectors (MCP servers the owner added) by name.
+function claudePolicy({ build, access, quickChecks, web, mcp = [] }) {
+  const extra = ['Skill', 'Task', ...mcp.map((n) => `mcp__${n}`)];
+  if (access === 'full' && build) return { perm: 'bypassPermissions', allowedTools: extra, web };
   const allowedTools = build ? [...GIT_TOOLS, ...cleanQuick(quickChecks)].map((c) => `Bash(${c}:*)`) : ['Bash(git status:*)', 'Bash(git diff:*)', 'Bash(git log:*)', 'Bash(git show:*)', 'Bash(ls:*)'];
-  return { perm: 'acceptEdits', allowedTools, web };
+  return { perm: 'acceptEdits', allowedTools: [...allowedTools, ...extra], web };
 }
+const MAX_CHAT_CHOICES = [1, 2, 3, 4, 5, 6, 8, 10];
 
 function register(d) {
   const { handle, dataDir, readSettings, chats, agents, gitops, attachments, history, redact, send, dialog, getWindow, shell, assetsEnv, worktreeRoot, validateProvider, validatePrompt, validateModel, callApi, apiConnected, projects, stateFileFor, protocol } = d;
@@ -32,9 +38,15 @@ function register(d) {
   // (tests pass urlFor/github to work against local repos without the network)
   const copies = createCopies({ dataDir: dataDir(), gitBin: gitops.find('git') || 'git', owner: ownerIdentity, ...(d.urlFor ? { urlFor: d.urlFor } : {}) });
   const github = d.github || createGithub({ ghBin: () => gitops.find('gh') });
-  const store = previews.createPreviewStore();
-  const running = new Map(); // chatId -> AbortController
+  const store = previews.createPreviewStore({ libDir: d.libDir || path.join(__dirname, '..', 'dist', 'vendor') });
+  // Every run is keyed by its chat (helpers by chat#run), never one global: several chats
+  // can have their teams working at once, each in its own copy, branch and sessions.
+  const running = new Map(); // chatId (or chatId#runId for a helper) -> AbortController
+  const busyChats = new Set(); // chats whose round is in progress in the window (between turns too)
+  const temps = new Map(); // temporary chats: kept in memory only, nothing saved
+  const mediaRoot = media.mediaRoot(dataDir());
   const notices = [];
+  const primaryRunning = () => [...running.keys()].filter((k) => !k.includes('#')).length;
 
   // ---- migration (once, additive) ----
   const migration = (async () => {
@@ -53,7 +65,7 @@ function register(d) {
     });
   }
 
-  const entryOf = (id) => { const e = chats.entry(String(id)); if (!e) throw new Error('unknown chat'); return e; };
+  const entryOf = (id) => { const t = temps.get(String(id)); if (t) return t; const e = chats.entry(String(id)); if (!e) throw new Error('unknown chat'); return e; };
   const connOf = (e) => (e.repo ? { repo: e.repo } : e.repoDir ? { dir: e.repoDir } : null);
   async function branchOf(e) {
     if (e.branch) return e.branch;
@@ -70,7 +82,24 @@ function register(d) {
     const def = e.repo ? await github.defaultBranch(e.repo) : null;
     return copies.ensure({ chatId: e.id, ...(c.repo ? { repo: c.repo } : { dir: c.dir }), branch, title: e.title, defaultBranch: def });
   }
-  const scratchDir = (id) => { const dir = path.join(dataDir(), 'chats', 'scratch', String(id).replace(/[^a-z0-9-]/g, '')); fs.mkdirSync(dir, { recursive: true, mode: 0o700 }); return dir; };
+  const scratchDir = (id) => { const dir = path.join(dataDir(), 'chats', temps.has(String(id)) ? 'temp' : 'scratch', String(id).replace(/[^a-z0-9-]/g, '')); fs.mkdirSync(dir, { recursive: true, mode: 0o700 }); return dir; };
+  // Temporary (incognito) chats: no file, no history, no repo; everything goes when it ends.
+  handle('chats:temp', () => {
+    const id = `t${crypto.randomBytes(5).toString('hex')}`;
+    const e = { id, title: 'Temporary chat', temp: true, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+    temps.set(id, e);
+    return e;
+  });
+  function endTemp(id) {
+    if (!temps.has(String(id))) return { ok: false };
+    running.get(String(id))?.abort();
+    temps.delete(String(id));
+    try { fs.rmSync(path.join(dataDir(), 'chats', 'temp', String(id)), { recursive: true, force: true }); } catch {}
+    media.removeChat(mediaRoot, String(id));
+    return { ok: true };
+  }
+  handle('chats:tempEnd', (id) => endTemp(id));
+  handle('chat:busy', (id, on) => { if (on === true) busyChats.add(String(id)); else busyChats.delete(String(id)); return true; });
 
   handle('v2:boot', async () => {
     const m = await migration;
@@ -84,7 +113,7 @@ function register(d) {
     return chats.create({ repo, branch, title: typeof o?.title === 'string' && o.title.trim() ? o.title.slice(0, 120) : 'New chat' });
   });
   handle('chats:search', (q) => chats.search(String(q || '')));
-  handle('chats:get2', (id) => chats.get(String(id)));
+  handle('chats:get2', (id) => (temps.has(String(id)) ? { ok: true, messages: [], sessions: {}, temp: true } : chats.get(String(id))));
 
   // Connect a chat to another repo/branch (or none). Its old copy goes away first; one
   // holding unpushed work is never removed here: the window asks the owner.
@@ -123,25 +152,30 @@ function register(d) {
   }
 
   // ---- runs ----
-  handle('chat:run', async (o) => {
+  async function runChat(o) {
     if (!o || typeof o !== 'object') throw new Error('bad request');
     const e = entryOf(o.chatId);
     const agent = validateProvider(o.agent);
     const prompt = validatePrompt(o.prompt);
-    const runId = typeof o.runId === 'string' && /^[A-Za-z0-9]{4,24}$/.test(o.runId) ? o.runId : null;
-    if (running.has(e.id)) return { ok: false, error: { kind: 'busy', message: 'Another AI is still working in this chat.' } };
+    const runId = typeof o.runId === 'string' && /^[A-Za-z0-9]{4,24}$/.test(o.runId) ? o.runId : crypto.randomBytes(5).toString('hex');
+    const helper = o.helper === true;
+    const key = helper ? `${e.id}#${runId}` : e.id;
+    if (running.has(key)) return { ok: false, error: { kind: 'busy', message: 'Another AI is still working in this chat.' } };
     const s = readSettings();
+    // The owner's limit on chats working at once (the window queues the rest and says so).
+    if (!helper && primaryRunning() >= (s.maxChats || 3)) return { ok: false, error: { kind: 'queue', message: `${s.maxChats || 3} chats are already working; this one waits its turn.` } };
     const tools = s.tools;
     const web = o.web === true;
-    const build = o.build === true;
+    const build = o.build === true && !helper;
     const controller = new AbortController();
-    running.set(e.id, controller);
-    if (runId) d.runs.set(runId, controller);
+    running.set(key, controller);
+    d.runs.set(runId, controller);
     const step = (st) => send('chat:step', { runId, chatId: e.id, step: st });
+    let mcp = null;
     try {
       let cwd;
       let copy = null;
-      if (connOf(e)) {
+      if (connOf(e) && !e.temp) {
         if (!copies.exists(e.id)) step({ kind: 'copy', label: 'Made a temporary copy', detail: `${e.repo || path.basename(e.repoDir)} · shallow, on this PC`, live: true });
         try { copy = await copyFor(e); } catch (err) { return { ok: false, error: { kind: err.wrongRepo ? 'wrong_repo' : 'copy', message: err.message } }; }
         // Belt and braces: never run in a copy whose origin isn't this chat's repo.
@@ -152,7 +186,7 @@ function register(d) {
       const headBefore = copy ? (await copies.git(cwd, ['rev-parse', 'HEAD'])).out : null;
       const apiOnly = apiConnected(agent);
       let mode = 'read';
-      if (agent !== 'ollama' && !apiOnly) {
+      if (agent !== 'ollama' && !apiOnly && !helper) {
         if (copy) mode = build ? (s.access === 'full' ? 'full' : 'standard') : agent === 'anthropic' ? 'standard' : 'read';
         else mode = build ? 'standard' : 'read';
       }
@@ -162,6 +196,7 @@ function register(d) {
       if (apiOnly) {
         r = await callApi(agent, o.model, prompt);
       } else {
+        try { mcp = d.mcpForRun ? d.mcpForRun(path.join(dataDir(), 'run')) : null; } catch { mcp = null; }
         const base = {
           agent, cwd, mode,
           model: o.model ? validateModel(o.model) : undefined,
@@ -170,11 +205,13 @@ function register(d) {
           bin: s.bins[agent],
           extraDirs: [...s.extraDirs, ...(files.length ? [attachments.attachDir(worktreeRoot())] : [])],
           images,
-          extraEnv: assetsEnv(agent, cwd),
+          extraEnv: { ...(assetsEnv(agent, cwd) || {}), ...(mcp ? (agent === 'openai' ? mcp.codexEnv : mcp.env) : {}), ...(mcp && agent === 'google' ? { GEMINI_CLI_SYSTEM_SETTINGS_PATH: mcp.geminiFile } : {}) },
           onEvent: (ev) => { for (const st of steps.fromEvent(agent, ev)) step(st); },
+          web,
+          mcp: mcp ? { claudeFile: mcp.claudeFile, codexArgs: mcp.codexArgs } : null,
           // Claude: plan mode when it only answers; else edits plus the allowed commands only
           // (Run & build off: edits, no commands).
-          claude: agent !== 'anthropic' ? null : mode === 'read' ? { perm: 'plan', allowedTools: [], web } : claudePolicy({ build, access: s.access, quickChecks: tools.quickChecks, web }),
+          claude: agent !== 'anthropic' ? null : mode === 'read' ? { perm: 'plan', allowedTools: ['Skill', 'Task', ...(mcp ? mcp.names.map((n) => `mcp__${n}`) : [])], web } : claudePolicy({ build, access: s.access, quickChecks: tools.quickChecks, web, mcp: mcp ? mcp.names : [] }),
         };
         const resumeId = typeof o.resumeId === 'string' ? o.resumeId : null;
         r = await agents.runAgent({ ...base, prompt, resumeId });
@@ -186,8 +223,8 @@ function register(d) {
       if (r.text) r.text = redact(r.text);
       if (r.partial) r.partial = redact(r.partial);
       if (r.error?.message) r.error.message = redact(r.error.message);
-      const out = { ...r, mode, web, build };
-      if (copy) {
+      const out = { ...r, mode, web, build, helper };
+      if (copy && !helper) {
         // Anything the AI left uncommitted is saved as the owner's commit.
         try { await copies.commitAll(e.id, `${String(o.title || e.title).slice(0, 72)}`); } catch (err) { out.commitError = err.message; }
         // The files-changed card only for a turn that really changed something.
@@ -202,16 +239,21 @@ function register(d) {
         copies.touch(e.id);
       }
       out.previews = previews.collect(cwd, startedAt);
-      if (r.ok && r.sessionId) {
+      // Pictures, videos and files the AI made or named: copied into the app's media folder.
+      try { out.media = media.collect({ cwd, sinceMs: startedAt, text: r.text || r.partial || '', chatId: e.id, root: mediaRoot }); } catch { out.media = []; }
+      if (r.ok && r.sessionId && !e.temp) {
         try { history.append({ provider: agent, sessionId: r.sessionId, title: e.title, cwd, taskId: null, resumable: true, messages: [{ role: 'user', text: String(o.historyText || prompt).slice(0, 8000), at: new Date(startedAt).toISOString() }, { role: 'assistant', text: r.text, at: new Date().toISOString() }] }); } catch {}
       }
       return out;
     } finally {
-      running.delete(e.id);
-      if (runId) d.runs.delete(runId);
+      mcp?.cleanup();
+      running.delete(key);
+      d.runs.delete(runId);
     }
-  });
-  handle('chat:cancel', (chatId) => { running.get(String(chatId))?.abort(); return true; });
+  }
+  handle('chat:run', runChat);
+  // Stop one chat (and its helpers); other chats keep working.
+  handle('chat:cancel', (chatId) => { const id = String(chatId); for (const [k, c] of running) if (k === id || k.startsWith(`${id}#`)) c.abort(); return true; });
 
   // ---- the files-changed card ----
   handle('chat:changes', async (id) => { const e = entryOf(id); return copies.exists(e.id) ? { ok: true, ...(await copies.changes(e.id)), status: await copies.status(e.id) } : { ok: false, files: [] }; });
@@ -281,7 +323,10 @@ function register(d) {
   handle('gh:branches', (repo) => github.branches(String(repo || '')));
 
   // ---- previews ----
-  handle('preview:serve', (html) => ({ ok: true, url: store.add(String(html || ''), readSettings().previewNetwork === true), net: readSettings().previewNetwork === true }));
+  handle('preview:serve', (html, o = {}) => (o && o.diagram === true
+    // A diagram (mermaid) frame: the bundled library only, never the network.
+    ? { ok: true, url: store.add(String(html || ''), false, { lib: true }), net: false }
+    : { ok: true, url: store.add(String(html || ''), readSettings().previewNetwork === true), net: readSettings().previewNetwork === true }));
   handle('preview:download', async (name, content) => {
     const safe = String(name || 'preview.html').replace(/[^A-Za-z0-9._ -]+/g, '_').slice(0, 100) || 'preview.html';
     const r = await dialog.showSaveDialog(getWindow(), { title: 'Download preview', defaultPath: safe });
@@ -337,7 +382,7 @@ function register(d) {
   const first = setTimeout(sweep, 20000);
   timer.unref?.();
   first.unref?.();
-  return { copies, github, sweep, stop() { clearInterval(timer); clearTimeout(first); for (const c of running.values()) c.abort(); }, migration };
+  return { copies, github, sweep, runChat, running, busyChats, temps, entryOf, scratchDir, mediaRoot, copyFor, stop() { clearInterval(timer); clearTimeout(first); for (const c of running.values()) c.abort(); for (const id of [...temps.keys()]) endTemp(id); }, migration };
 }
 
-module.exports = { register, claudePolicy, cleanQuick, DEFAULT_QUICK_CHECKS, GIT_TOOLS, IDLE_CHOICES };
+module.exports = { register, claudePolicy, cleanQuick, DEFAULT_QUICK_CHECKS, GIT_TOOLS, IDLE_CHOICES, MAX_CHAT_CHOICES };

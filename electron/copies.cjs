@@ -25,7 +25,7 @@ const BRANCH_RE = /^[A-Za-z0-9._/-]{1,200}$/;
 const OWNER = { name: 'Dragongamer9', email: 'Dragongamer9@users.noreply.github.com', emails: ['Dragongamer9@users.noreply.github.com'] };
 const PREPUSH_MARK = '# hearth-ai-command-center: temporary copy guard';
 // Files the app writes into a copy that must never be committed.
-const APP_PATHS = ['.hearth-ai', '.hearth-preview'];
+const APP_PATHS = ['.hearth-ai', '.hearth-preview', '.hearth-media', '.hearth-out'];
 
 const validBranch = (b) => typeof b === 'string' && BRANCH_RE.test(b) && !b.includes('..') && !b.startsWith('-') && !b.endsWith('/') && !b.endsWith('.lock');
 const validRepo = (r) => typeof r === 'string' && REPO_RE.test(r) && !r.endsWith('.git');
@@ -284,8 +284,10 @@ function createCopies({ dataDir, gitBin = 'git', urlFor = (repo) => `https://git
     if (!r || path.isAbsolute(r) || parts.includes('..') || parts[0] === '.git' || /[\0\r\n]/.test(r) || r.length > 300) return { ok: false, message: 'Use a plain path inside the repo, like docs/mockups/page.html.' };
     const file = path.resolve(dirOf(chatId), r);
     if (!file.startsWith(dirOf(chatId) + path.sep)) return { ok: false, message: 'That path is outside the repo.' };
-    const buf = Buffer.from(String(content || ''), 'utf8');
-    if (buf.length > 5 * 1024 * 1024) return { ok: false, message: 'That file is too big (over 5 MB).' };
+    // Text from a preview, or the bytes of a picture/video/file the owner saves to the repo.
+    const buf = Buffer.isBuffer(content) ? content : Buffer.from(String(content || ''), 'utf8');
+    const cap = Buffer.isBuffer(content) ? 50 : 5;
+    if (buf.length > cap * 1024 * 1024) return { ok: false, message: `That file is too big (over ${cap} MB).` };
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, buf);
     const c = await commitAll(chatId, `Add ${r}`);
