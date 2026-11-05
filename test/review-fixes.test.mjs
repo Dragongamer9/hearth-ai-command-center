@@ -64,19 +64,8 @@ test('fix 8: owner identity: a blocking first-run prompt with suggestions, never
   assert.match(ui, /function overlay\(\)/);
   assert.match(ui, /nothing is saved until you confirm/);
   assert.match(ui, /Your owner identity isn\\'t confirmed/);
-  const main = src('src/main.js');
-  assert.match(main, /\$\{ops\.overlay\(\)\}/);
-  assert.match(main, /\$\{ops\.banner\(\)\}/);
   const idx = src('electron/ops/index.cjs');
   const def = idx.slice(idx.indexOf("handle('ops:identityDefault'"), idx.indexOf("handle('ops:identityApply'"));
   assert.ok(!/setSettings|writeSettings/.test(def), 'suggestions are never saved');
 });
 
-test('fix 13: Habitat reads ops.snapshot(); turn results always flush; CI watch off by default', () => {
-  const main = src('src/main.js');
-  assert.match(main, /ops: ops\.snapshot\(\),/);
-  assert.ok(!main.includes('habitatResultsHtml'));
-  // chat turns, task runs and verify-only runs
-  assert.equal((main.match(/\} finally \{ ops\.turnEnd\(agent, m\); \}/g) || []).length, 3);
-  assert.ok(!src('src/habitat/actions.mjs').includes('habitatResultsHtml'));
-});

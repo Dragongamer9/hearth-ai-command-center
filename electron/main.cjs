@@ -1,7 +1,7 @@
 // Hearth AI Command Center — Electron main process.
 // All privileged work (files, secrets, provider APIs, updates) happens here.
 // The renderer only gets the narrow API exposed in preload.cjs.
-const { app, BrowserWindow, ipcMain, shell, Menu, safeStorage, dialog, clipboard } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, Menu, safeStorage, dialog, clipboard, protocol } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -26,6 +26,7 @@ const { cleanIdentity } = require('./ops/identity.cjs');
 const ops = require('./ops/index.cjs');
 const guard = require('./ops/project-guard.cjs');
 const { createChats } = require('./chats.cjs');
+const v2 = require('./v2.cjs');
 
 // No Hearth OS version pin: the app never changes, bumps, publishes or deploys
 // Hearth OS versions (the owner picks every number). It only shows which Hearth
@@ -38,6 +39,8 @@ if (!app.requestSingleInstanceLock()) {
   app.quit();
   process.exit(0);
 }
+// Live previews are served from their own scheme with their own CSP (electron/previews.cjs).
+protocol.registerSchemesAsPrivileged([{ scheme: 'hearth-preview', privileges: { standard: true, secure: true } }]);
 
 let mainWindow = null;
 let secrets = null;
@@ -102,7 +105,26 @@ function readSettings() {
     view3d: cleanView3d(s.view3d),
     // "Claude can do everything I can (asks me first every time)". Off unless the owner turns it on.
     actForMe: s.actForMe === true,
+    // 2.x chats. Defaults are shown until the owner changes them; nothing is written for him.
+    // Temporary copies are removed after this many idle hours (0 = never; unpushed work always stays).
+    copyIdleHours: v2.IDLE_CHOICES.includes(s.copyIdleHours) ? s.copyIdleHours : 24,
+    // The composer's Web and "Run & build" start on these; quick checks the AIs may run on this PC.
+    tools: {
+      web: s.tools?.web !== false,
+      build: s.tools?.build !== false,
+      quickChecks: Array.isArray(s.tools?.quickChecks) ? v2.cleanQuick(s.tools.quickChecks) : v2.DEFAULT_QUICK_CHECKS.slice(),
+    },
+    // Live previews may load from the internet. Off unless the owner turns it on.
+    previewNetwork: s.previewNetwork === true,
+    // Who's in chats: { lead, reviewer, members }. null = the default team (Claude leads).
+    team: cleanTeam(s.team),
   };
+}
+const TEAM_IDS = ['anthropic', 'openai', 'google', 'xai', 'mistral', 'qwen', 'perplexity', 'deepseek', 'ollama'];
+function cleanTeam(t) {
+  if (!t || typeof t !== 'object' || Array.isArray(t)) return null;
+  const members = [...new Set((Array.isArray(t.members) ? t.members : []).filter((a) => TEAM_IDS.includes(a)))];
+  return { lead: TEAM_IDS.includes(t.lead) ? t.lead : 'anthropic', reviewer: TEAM_IDS.includes(t.reviewer) ? t.reviewer : t.reviewer === null ? null : 'openai', members };
 }
 // Plain JSON only, small; the window normalises the fields (src/habitat3d/map.mjs normPrefs).
 function cleanView3d(v) {
@@ -212,6 +234,10 @@ function createWindow() {
   // No navigating away from the app. Reloading the app's own page is allowed: switching projects and
   // chats reloads the window (in 1.3–1.4 the reload was blocked here, so a switch only showed after a restart).
   mainWindow.webContents.on('will-navigate', (e, url) => { if (!sameDocument(url, mainWindow.webContents.getURL())) e.preventDefault(); });
+  // A live preview's frame can never navigate anywhere but its own hearth-preview: page.
+  mainWindow.webContents.on('will-frame-navigate', (e) => {
+    if (!e.isMainFrame && !String(e.url || '').startsWith('hearth-preview://') && e.url !== 'about:blank' && e.url !== 'about:srcdoc') e.preventDefault();
+  });
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith('https://')) shell.openExternal(url);
     return { action: 'deny' };
@@ -391,6 +417,19 @@ function registerIpc() {
     for (const k of ['leadMerge', 'leadRelease', 'leadTag']) if (k in patch) s[k] = patch[k] === true;
     if ('ownerIdentity' in patch) s.ownerIdentity = cleanIdentity(patch.ownerIdentity);
     if ('view3d' in patch) s.view3d = cleanView3d(patch.view3d);
+    if ('copyIdleHours' in patch) {
+      if (!v2.IDLE_CHOICES.includes(patch.copyIdleHours)) throw new Error('Invalid idle time');
+      s.copyIdleHours = patch.copyIdleHours;
+    }
+    if ('tools' in patch && patch.tools && typeof patch.tools === 'object') {
+      const t = { ...s.tools };
+      if ('web' in patch.tools) t.web = patch.tools.web === true;
+      if ('build' in patch.tools) t.build = patch.tools.build === true;
+      if ('quickChecks' in patch.tools) t.quickChecks = v2.cleanQuick(patch.tools.quickChecks);
+      s.tools = t;
+    }
+    if ('previewNetwork' in patch) s.previewNetwork = patch.previewNetwork === true;
+    if ('team' in patch) s.team = cleanTeam(patch.team);
     // Only the owner turns it on: a native confirmation the window can't answer for him.
     if ('actForMe' in patch) {
       const on = patch.actForMe === true;
@@ -885,12 +924,54 @@ function registerIpc() {
     return r;
   });
 
+  // Text files (logs, notes, code) for the composer's attach button; images still go to attach:save.
+  handle('attach:saveAny', (name, data) => {
+    const buf = Buffer.from(data instanceof ArrayBuffer ? new Uint8Array(data) : data || []);
+    if (attachments.kindOf(String(name || ''))) return withFrames(attachments.saveBuffer(worktreeRoot(), String(name || ''), buf));
+    const r = attachments.saveText(worktreeRoot(), String(name || ''), buf);
+    return r.ok ? { ok: true, att: { ...r.att, url: null } } : r;
+  });
+  handle('attach:pickAny', async () => {
+    const r = await dialog.showOpenDialog(mainWindow, { title: 'Attach files', properties: ['openFile', 'multiSelections'], filters: [{ name: 'Images, videos and text files', extensions: [...Object.keys(attachments.TYPES), ...attachments.TEXT_EXT] }, { name: 'All files', extensions: ['*'] }] });
+    if (r.canceled) return [];
+    const out = [];
+    for (const f of r.filePaths.slice(0, 10)) {
+      if (attachments.kindOf(f)) out.push(await withFrames(attachments.saveFromPath(worktreeRoot(), f)));
+      else { const t = attachments.saveText(worktreeRoot(), path.basename(f), fs.readFileSync(f)); out.push(t.ok ? { ok: true, att: { ...t.att, url: null } } : t); }
+    }
+    return out;
+  });
+
   handle('updater:info', () => updater.info());
   handle('updater:check', () => updater.check());
   handle('updater:download', () => updater.download());
   handle('updater:install', () => updater.install());
   handle('updater:restart', () => updater.restart());
   registerOps();
+  registerV2();
+}
+
+// 2.x chats (electron/v2.cjs): runs in temporary copies, GitHub, previews, saved data.
+let v2Api = null;
+function registerV2() {
+  v2Api = v2.register({
+    handle, dataDir, readSettings, chats, agents, gitops, attachments, history, redact, send, dialog, shell, worktreeRoot, runs, protocol,
+    getWindow: () => mainWindow,
+    assetsEnv: (agent, cwd) => (opsApi ? opsApi.assetsEnv(agent, cwd) : undefined),
+    validateProvider, validatePrompt, validateModel,
+    projects: () => ops.projectsList(),
+    stateFileFor: (id) => ops.projectStateFile(id),
+    apiConnected: (agent) => API_ONLY.includes(agent) || (LIVE_PROVIDERS.includes(agent) && readSettings().connection[agent] === 'api'),
+    callApi: async (agent, model, prompt) => {
+      const r = await callProvider({ provider: agent, apiKey: secrets.get(agent), model: validateModel(model || DEFAULT_MODELS[agent]), prompt });
+      if (!r.ok) {
+        if (r.error.kind === 'rate_limit' || agents.isLimit(r.error.message)) r.error.kind = 'limit';
+        else if (r.error.kind === 'server' || r.error.kind === 'network') r.error.kind = 'outage';
+        else if (r.error.kind === 'no_key') r.error.kind = 'auth';
+      }
+      return r.ok ? { ...r, via: 'API' } : r;
+    },
+  });
 }
 
 // Team ops (projects, project memory, test runs, CI, logs, voice, phone): electron/ops/.
@@ -936,6 +1017,7 @@ app.whenReady().then(() => {
 app.on('before-quit', () => {
   for (const c of runs.values()) c.abort();
   opsApi?.stop();
+  v2Api?.stop();
 });
 
 app.on('window-all-closed', () => {

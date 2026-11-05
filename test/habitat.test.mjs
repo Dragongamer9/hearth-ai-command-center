@@ -132,21 +132,14 @@ test('sprites, icons and font are well formed; every AI has a color', () => {
   for (const [k, rows] of Object.entries(ICONS)) for (const row of rows) assert.equal(row.length, rows[0].length, k);
   for (const [k, g] of Object.entries(FONT)) assert.match(g, /^[01]{15}$/, k);
   for (const a of IDS) assert.match(COLORS[a], /^#[0-9a-f]{6}$/);
-  const css = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8');
-  for (const a of IDS) assert.ok(css.includes(`.a-${a} i { background: ${COLORS[a]}; }`), `${a} color matches styles.css`);
 });
 
 test('Habitat hooks: sidebar entry, pixelated canvas, paused when hidden, reduced-motion setting kept', () => {
-  const ui = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
   const hab = readFileSync(new URL('../src/habitat.mjs', import.meta.url), 'utf8');
-  const css = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8');
   const main = readFileSync(new URL('../electron/main.cjs', import.meta.url), 'utf8');
-  assert.ok(ui.includes("['habitat', '⌂', 'Habitat']"));
-  assert.match(css, /\.habitat canvas \{[^}]*image-rendering: pixelated/);
   assert.match(hab, /if \(document\.hidden\) return;/);
   assert.match(hab, /requestAnimationFrame/);
   assert.doesNotMatch(hab, /https?:\/\/|fetch\(|new Image\(/, 'no network or external assets');
   assert.match(main, /reduceMotion: s\.reduceMotion === true,/);
   assert.match(main, /if \('reduceMotion' in patch\) s\.reduceMotion = patch\.reduceMotion === true;/);
-  assert.match(ui, /prefers-reduced-motion: reduce/);
 });

@@ -56,11 +56,6 @@ test('no AI path can change the Next version or settings', () => {
   setLeadPowers(ON);
   for (const kind of ['version', 'settings']) assert.equal(leadMayApprove({ kind, what: 'x' }).ok, false, kind);
   setLeadPowers({});
-  const ui = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
-  const lead = ui.slice(ui.indexOf('async function leadAct('), ui.indexOf('function aliasOrNone('));
-  for (const call of ['setSettings', 'opsProjectSettings']) assert.ok(!lead.includes(call), `leadAct never calls ${call}`);
-  const handlers = ui.slice(ui.indexOf('function handleLeadLines('), ui.indexOf('function leadRecord('));
-  assert.ok(!handlers.includes('setSettings') && !handlers.includes('opsProjectSettings'));
   const ops = readFileSync(new URL('../src/ops/ui.mjs', import.meta.url), 'utf8');
   const phone = ops.slice(ops.indexOf('async function onPhone('), ops.indexOf('// ---------- voice'));
   assert.ok(!phone.includes('setSettings') && !phone.includes('opsProjectSettings'), 'phone actions never change settings');

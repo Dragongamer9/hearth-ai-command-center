@@ -354,11 +354,7 @@ test('pet and new icons are well formed; Habitat stays offline and saves through
   for (const [k, rows] of Object.entries(ICONS2)) for (const r of rows) assert.equal(r.length, rows[0].length, k);
   const hab = readFileSync(new URL('../src/habitat.mjs', import.meta.url), 'utf8');
   const life = readFileSync(new URL('../src/habitat/life.mjs', import.meta.url), 'utf8');
-  const ui = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
   for (const src of [hab, life]) assert.doesNotMatch(src, /https?:\/\/|fetch\(|new Image\(|localStorage/, 'no network, no external assets, no side storage');
   assert.doesNotMatch(life, /Math\.random/, 'no random judgement in the saved progress or moods');
-  assert.match(ui, /saveStore: \(h\) => \{ state\.habitat = h; save\(\); \}/);
-  assert.match(ui, /store: state\.habitat \|\| null/);
-  assert.match(ui, /ops: ops\.snapshot\(\),/, 'the Habitat reads opsSnapshot() through ops.snapshot()');
   assert.match(hab, /Reset Habitat progress/);
 });

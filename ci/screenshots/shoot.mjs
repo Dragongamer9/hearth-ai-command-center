@@ -1,554 +1,152 @@
-// CI-only screenshot harness. Serves the built renderer (dist/) and replaces the
-// Electron preload bridge (window.hearth) with harmless fake data. Nothing here
-// ships in the app; it never signs in anywhere or touches real accounts.
-import { chromium } from 'playwright';
+// CI-only screenshot harness for the 2.x chats layout. Serves the built renderer and
+// replaces the Electron preload bridge (window.hearth) with harmless fake data. Nothing
+// here ships in the app; it never signs in anywhere or touches real accounts.
+// Fails (exit 1) when a page doesn't render what it should or the page throws.
 import { mkdirSync } from 'node:fs';
 
+const { chromium } = await import(process.env.PLAYWRIGHT || 'playwright');
 const BASE = process.env.BASE_URL || 'http://127.0.0.1:4173/';
 const OUT = process.env.OUT_DIR || 'shots';
 mkdirSync(OUT, { recursive: true });
 
 function stub(opts) {
-  const { scenario, theme = 'hearth', hearthTheme = null, flows = false, habitat = false, habitatDay = false, habitatActions = false, habitat3d = false } = opts;
-  const populated = scenario !== 'fresh';
   const ago = (m) => new Date(Date.now() - m * 60000).toISOString();
-  const pol = (warn = []) => ({ ok: true, block: [], warn });
-  const tasks = populated ? [
-    { id: 'K7Q2MA', title: 'Add Settings › Storage page to Mantel', description: 'Drives, games by size, move games between drives, cleanup. Settings must be remembered.', assignee: 'anthropic', reviewer: 'openai', action: 'code', stage: 'approval', notes: [{ who: 'Claude', text: 'Implemented page + persistence, tests pass.', at: ago(30) }], runs: [{ agent: 'anthropic', status: 'done', checkpoint: 'a1b2c3d', sessionId: '6f1c2d3e-0000-4111-8222-333344445555', via: 'Claude Code', output: 'Added StoragePage.qml and settings store.\nSTATUS: DONE', at: ago(40) }], ws: { branch: 'hearth/k7q2ma-storage-page', baseSha: 'abc1234' }, pr: { number: 42, url: 'https://github.com/example/hearth-os/pull/42' }, policy: pol(['Settings: every Hearth OS setting must be remembered and never change by itself.']), createdAt: ago(300), updatedAt: ago(30) },
-    { id: 'P3LX9Z', title: 'Fix Wi-Fi list not refreshing after resume', description: '', assignee: 'openai', reviewer: 'google', action: 'code', stage: 'implementing', notes: [], runs: [{ agent: 'openai', status: 'limit', output: 'Out of usage.', at: ago(20) }], policy: pol(), createdAt: ago(200), updatedAt: ago(20) },
-    { id: 'R8DN4C', title: 'Write docs for Hearth Sync Decky plugin', description: '', assignee: 'google', reviewer: 'anthropic', action: 'docs', stage: 'review', notes: [], runs: [], policy: pol(), createdAt: ago(180), updatedAt: ago(60) },
-    { id: 'T2VB7H', title: 'Theme the GRUB boot menu (keep it visible)', description: 'Hearth/Steam-style GRUB theme. Previous version must stay startable.', assignee: 'xai', reviewer: 'ollama', action: 'code', stage: 'testing', notes: [], runs: [], policy: pol(['Boot-critical: an update must never leave a device unable to start. Keep the previous version startable and test on a spare device first.']), createdAt: ago(150), updatedAt: ago(50) },
-    { id: 'W5MJ1E', title: 'Research Steam startup animation swap', description: '', assignee: 'perplexity', reviewer: 'anthropic', action: 'docs', stage: 'intake', notes: [], runs: [], policy: pol(), createdAt: ago(100), updatedAt: ago(100) },
-    { id: 'Y9GH6S', title: 'Polish Mantel file manager Properties dialog', description: '', assignee: 'mistral', reviewer: 'openai', action: 'code', stage: 'approved', notes: [], runs: [{ agent: 'mistral', status: 'done', output: 'Done.', at: ago(700) }], policy: pol(), createdAt: ago(900), updatedAt: ago(600) },
-  ] : [];
-  if (flows) {
-    // 0.7.0 flows: builder -> reviewer APPROVE -> Approve to merge, and the queue's Start next.
-    tasks.unshift(
-      { id: 'RV0700', title: 'Team status panel above the chat', description: 'Shows who is ready, busy or out of usage.', assignee: 'openai', reviewer: 'google', action: 'code', stage: 'review', notes: [], runs: [{ agent: 'openai', status: 'done', head: 'c0ffee15d9a3b2e4f60718293a4b5c6d7e8f9012', tests: 'passed', output: 'Panel added.\nTESTS: PASSED\nSTATUS: DONE', at: ago(9) }], done: { sha: 'c0ffee15d9a3b2e4f60718293a4b5c6d7e8f9012', tests: 'passed', at: ago(9), by: 'openai' }, ws: { branch: 'hearth/rv0700-team-status', baseSha: 'abc1234' }, policy: pol(), createdAt: ago(60), updatedAt: ago(9) },
-      { id: 'QA0701', title: 'Rework the Storage page layout', description: '', assignee: 'anthropic', reviewer: 'google', action: 'code', stage: 'intake', notes: [], runs: [], policy: pol(), createdAt: ago(50), updatedAt: ago(50) },
-      { id: 'QB0702', title: 'Add drive health to the Storage page', description: '', assignee: 'anthropic', reviewer: 'google', action: 'code', stage: 'intake', notes: [], runs: [], policy: pol(), createdAt: ago(40), updatedAt: ago(40) },
-      { id: 'QC0703', title: 'Only added, never started: drive icons', description: '', assignee: 'anthropic', reviewer: 'google', action: 'code', stage: 'intake', notes: [], runs: [], policy: pol(), createdAt: ago(45), updatedAt: ago(45) },
-    );
-    window.__runImpl = (o) => {
-      if (String(o.title || '').startsWith('Review:')) return Promise.resolve({ ok: true, text: 'Checked the branch: the panel renders and the tests pass.\nAPPROVE: T-RV0700 @c0ffee1 tests pass', via: 'Antigravity CLI' });
-      if (o.agent === 'perplexity') return Promise.resolve({ ok: false, error: { kind: 'auth', message: 'invalid api key' } });
-      if (o.taskId === 'QA0701') return new Promise(() => {}); // Claude stays busy on this one
-      return new Promise((r) => setTimeout(() => r({ ok: true, text: 'Plan: I take the layout; Gemini reviews.', via: 'Claude Code' }), 4500));
-    };
-  }
-  if (habitat) {
-    // Habitat scene: Claude and Gemini work at their desks (runs never finish here).
-    // Claude's last run failed its tests, so its desk light is red.
-    tasks.unshift(
-      { id: 'HB0001', title: 'Settings › Storage: drive health panel', description: '', assignee: 'anthropic', reviewer: 'google', action: 'code', stage: 'intake', notes: [], runs: [{ agent: 'anthropic', status: 'continue', tests: 'failed', output: 'TESTS: FAILED', at: ago(35) }], policy: pol(), createdAt: ago(30), updatedAt: ago(30) },
-      { id: 'HB0002', title: 'Mantel dock: remember pinned apps', description: '', assignee: 'google', reviewer: 'anthropic', action: 'code', stage: 'intake', notes: [], runs: [], policy: pol(), createdAt: ago(25), updatedAt: ago(25) },
-    );
-    // Finished work the garden and trophy shelf grow from (one merged into main).
-    for (const [i, a] of ['anthropic', 'google', 'openai', 'anthropic', 'google', 'ollama'].entries()) {
-      tasks.push({ id: `HD000${i}`, title: `Finished habitat task ${i + 1}`, description: '', assignee: a, reviewer: 'openai', action: 'code', stage: 'approved', decision: 'approved', notes: i === 0 ? [{ who: 'System', text: 'Merged into main (abc9999). Pushed main to GitHub.', at: ago(500) }] : [], runs: [{ agent: a, status: 'done', tests: 'passed', output: 'STATUS: DONE', at: ago(600 + i) }], policy: pol(), createdAt: ago(900), updatedAt: ago(400 + i) });
-    }
-    window.__runImpl = () => new Promise(() => {});
-  }
-  if (habitatDay) {
-    // Claude finishes HB0003 after 3 s; Gemini then reviews it (and keeps reviewing).
-    tasks.unshift({ id: 'HB0003', title: 'Storage page: drive temperature', description: '', assignee: 'anthropic', reviewer: 'google', action: 'code', stage: 'intake', notes: [], runs: [], policy: pol(), createdAt: ago(20), updatedAt: ago(20) });
-    window.__runImpl = (o) => {
-      if (String(o.title || '').startsWith('Review:')) return new Promise(() => {});
-      if (o.taskId === 'HB0003') return new Promise((r) => setTimeout(() => r({ ok: true, text: 'Drive temperature added to the Storage page.\nTESTS: PASSED\nSTATUS: DONE', via: 'Claude Code' }), 3000));
-      return new Promise(() => {});
-    };
-  }
-  if (habitatActions) {
-    // Claude answers the owner in team chat with a few HABITAT: lines.
-    window.__runImpl = (o) => {
-      if (String(o.thread || '').includes('anthropic')) return new Promise((r) => setTimeout(() => r({ ok: true, via: 'Claude Code', text: 'Good idea, a short break before the next Storage task.\nHABITAT: place lamp at 4,0\nHABITAT: lamp on\nHABITAT: note Storage page shipped\nHABITAT: coffee with @gemini' }), 1200));
-      return new Promise(() => {});
-    };
-  }
-  const IMG = 'data:image/svg+xml;utf8,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="480" height="270"><rect width="480" height="270" fill="#1b2838"/><rect x="24" y="24" width="432" height="40" rx="6" fill="#2a475e"/><text x="40" y="51" fill="#c7d5e0" font-family="sans-serif" font-size="18">Settings › Storage</text><rect x="24" y="84" width="300" height="18" rx="4" fill="#66c0f4"/><rect x="24" y="116" width="220" height="18" rx="4" fill="#4c6b22"/><text x="24" y="240" fill="#8f98a0" font-family="sans-serif" font-size="14">screenshot attached by Claude</text></svg>');
-  const audit = populated ? [
-    { id: 'A0', at: ago(4), actor: 'anthropic', event: 'Permission requested', taskId: null, detail: 'Claude · Push to GitHub: push hearth/k7q2ma-storage-page' },
-    { id: 'A1', at: ago(30), actor: 'owner', event: 'Approval requested', taskId: 'K7Q2MA', detail: 'Claude finished; ChatGPT reviewed' },
-    { id: 'A2', at: ago(40), actor: 'anthropic', event: 'Claude finished a run', taskId: 'K7Q2MA', detail: 'checkpoint a1b2c3d · 3 files changed' },
-    { id: 'A3', at: ago(20), actor: 'owner', event: 'ChatGPT ran out of usage', taskId: null, detail: '' },
-    { id: 'A4', at: ago(12), actor: 'google', event: 'Gemini edited its message #C3GEMN', taskId: null, detail: '' },
-    { id: 'A5', at: ago(600), actor: 'owner', event: 'Approved', taskId: 'Y9GH6S', detail: '' },
-  ] : [];
-  const chat = populated ? [
-    { id: 'C1OWNR', who: 'owner', at: ago(16), text: 'Team: next for Hearth OS 1.1 — the Storage page and the GRUB theme. Split it up.' },
-    { id: 'C2CLAU', who: 'anthropic', at: ago(15), model: 'Claude Code', text: 'Plan: I build the Storage page (ChatGPT reviews). @grok takes the GRUB theme, @gemini fact-checks the GRUB theme format.', proposals: [{ title: 'Add Settings › Storage page to Mantel', assignee: 'anthropic', reviewer: 'openai', action: 'code', taskId: 'K7Q2MA' }, { title: 'Theme the GRUB boot menu (keep it visible)', assignee: 'xai', reviewer: 'ollama', action: 'code', taskId: 'T2VB7H' }] },
-    { id: 'C3GEMN', who: 'google', at: ago(14), model: 'Gemini CLI', text: 'GRUB themes live in /boot/grub/themes/<name>/theme.txt; GRUB_THEME in /etc/default/grub points to it. Keep GRUB_TIMEOUT_STYLE=menu so it stays visible.', edited: true, editedAt: ago(12), editedBy: 'google', history: [{ text: 'GRUB themes live in /usr/share/grub/themes only.', at: ago(12), by: 'google' }] },
-    { id: 'C4GROK', who: 'xai', at: ago(13), model: 'Grok Build', text: 'On it. I\'ll keep the previous entry as the default fallback so the device always starts.' },
-    { id: 'C5SYS0', who: 'system', at: ago(11), text: 'ChatGPT is out of usage until about 1 hour from now.' },
-    { id: 'C6CLAU', who: 'anthropic', at: ago(5), auto: true, model: 'Claude Code', text: 'T-K7Q2MA “Add Settings › Storage page to Mantel”: StoragePage.qml and the settings store are in, tests pass.\n(Reported done — ready for review.)' },
-    { id: 'C7CLAU', who: 'anthropic', at: ago(4), model: 'Claude Code', text: 'I\'d like to push the task branch so ChatGPT can review it on GitHub.', asks: ['R7PUSH'] },
-  ] : [];
-  if (flows) chat.push({ id: 'C8SHOT', who: 'anthropic', at: ago(3), model: 'Claude Code', text: 'Storage page after the layout change.', attachments: [{ id: 'a1', kind: 'image', name: 'storage-page.png', path: '/tmp/x/storage-page.png', url: IMG, size: 2048 }] });
-  const permissions = populated ? [
-    { id: 'R7PUSH', agent: 'anthropic', kind: 'push', what: 'Push hearth/k7q2ma-storage-page to GitHub', why: 'So ChatGPT can review the branch and the PR checks run.', context: 'chat', msgId: 'C7CLAU', at: ago(4), status: 'pending', questions: [] },
-    { id: 'R6BOOT', agent: 'xai', kind: 'boot', what: 'Change GRUB_DEFAULT handling in the image build', why: 'Needed for the theme', context: 'chat', at: ago(200), status: 'approved', decidedAt: ago(190), questions: [] },
-  ] : [];
-  // In the 0.7.0 flows Claude isn't waiting on a permission card, so it can take turns and tasks.
-  if (flows || habitat) for (const p of permissions) if (p.agent === 'anthropic') { p.status = 'approved'; p.decidedAt = ago(2); }
-  const state = { version: 1, tasks, audit, models: {}, chat, permissions, chatSessions: {}, agentStatus: flows ? {} : populated ? { openai: { outUntil: new Date(Date.now() + 3600000).toISOString(), reason: 'usage limit reached' } } : {}, autoHandoff: true, roles: {}, lead: 'anthropic', disabled: {}, setupDismissed: populated };
-  // Saved Habitat progress from earlier sessions (loaded through the normal state).
-  if (habitat) state.habitat = { v: 1, finished: 28, growth: 28, counted: [], ai: { anthropic: { done: 12, approvals: 9 }, google: { done: 6, approvals: 4 } }, pet: { name: '' } };
-  // Claude unlocked a lantern earlier and put it away (it can place it with HABITAT: place lamp).
-  if (habitatActions) state.habitat.ai.anthropic.stored = ['lantern'];
-  // 3D lodge: starts in 2D (the switch is pressed in the test); the owner's study is already furnished.
-  if (habitat3d) state.habitat3d = { mode: '2d', walkView: 'third', avatar: { hair: 2, outfit: '#e8833a' }, room: { props: [{ kind: 'owner-desk', x: 1, y: 0 }, { kind: 'bookshelf', x: 3, y: 0 }, { kind: 'armchair', x: 4, y: 3 }, { kind: 'plant', x: 0, y: 3 }, { kind: 'lamp', x: 5, y: 0 }, { kind: 'trophy', x: 0, y: 0 }, { kind: 'globe', x: 2, y: 3 }] }, notes: [{ text: 'Storage page next', at: ago(30) }] };
-  const settings = { ownerIdentity: { name: 'Dragongamer9', email: 'Dragongamer9@users.noreply.github.com', emails: ['Dragongamer9@users.noreply.github.com'] }, project: populated ? '/home/owner/Projects/hearth-os' : null, projects: populated ? ['/home/owner/Projects/hearth-os', '/home/owner/Projects/beacon'] : [], connection: { anthropic: 'cli', openai: 'cli', xai: 'cli', mistral: 'cli', perplexity: 'api', deepseek: 'api' }, bins: {}, access: 'standard', extraDirs: populated ? ['/home/owner/Games'] : [], autoPush: true, chatEdits: true, chatResume: true, theme };
-  let xaiChecks = 0;
-  const agents = populated
-    ? { anthropic: { installed: true, signedIn: true, path: '/usr/bin/claude' }, openai: { installed: true, signedIn: true, path: '/usr/bin/codex' }, google: { installed: true, signedIn: true, path: '/usr/bin/gemini' }, xai: { installed: true, signedIn: false, path: '/home/owner/.grok/bin/grok' }, mistral: { installed: false, signedIn: false }, qwen: { installed: true, signedIn: false, path: '/usr/bin/qwen' }, perplexity: {}, deepseek: {}, ollama: { installed: true, models: ['llama3.2'] }, freebuff: { installed: true, signedIn: null, path: '/usr/bin/freebuff' } }
-    : { anthropic: { installed: false, signedIn: false }, openai: { installed: true, signedIn: false }, google: { installed: false, signedIn: false }, ollama: { installed: false }, freebuff: { installed: false } };
-  const git = populated ? { repo: true, branch: 'main', defaultBranch: 'main', remote: 'https://github.com/example/hearth-os.git', dirty: 0, ahead: 0, behind: 2, branches: [
-    { name: 'main', track: '[behind 2]', when: '2 hours ago', protected: true },
-    { name: 'hearth/k7q2ma-storage-page', track: '', when: '30 minutes ago', protected: false },
-    { name: 'hearth/p3lx9z-wifi-refresh', track: '[ahead 1]', when: '20 minutes ago', protected: false }] } : { repo: false };
-  const pr42 = { number: 42, title: 'Add Settings › Storage page to Mantel', url: 'https://github.com/example/hearth-os/pull/42', state: 'OPEN', label: 'approved', draft: false, head: 'hearth/k7q2ma-storage-page', base: 'main', mergeable: 'MERGEABLE', reviewDecision: 'APPROVED', updatedAt: ago(25),
-    checks: { total: 4, passed: 3, failed: 0, pending: 1, items: [{ name: 'build-iso', state: 'passed' }, { name: 'unit-tests', state: 'passed' }, { name: 'lint', state: 'passed' }, { name: 'install-test (VM)', state: 'pending' }] },
-    reviews: [{ who: 'Dragongamer9', state: 'APPROVED' }] };
-  const prs = populated ? [pr42,
-    { ...pr42, number: 41, title: 'Fix Wi-Fi list not refreshing after resume', head: 'hearth/p3lx9z-wifi-refresh', label: 'checks failing', reviewDecision: '', reviews: [], checks: { total: 3, passed: 1, failed: 2, pending: 0, items: [] } },
-    { ...pr42, number: 39, title: 'Polish Mantel file manager Properties dialog', head: 'hearth/y9gh6s-properties', state: 'MERGED', label: 'merged', checks: { total: 3, passed: 3, failed: 0, pending: 0, items: [] } },
-  ] : [];
-  const conv = (o) => ({ key: `${o.provider}:${o.source.startsWith('import') ? 'imp:' : ''}${o.sessionId}`, count: o.messages.length, startedAt: o.messages[0]?.at, updatedAt: o.messages[o.messages.length - 1]?.at, ...o });
-  const history = populated ? [
-    conv({ provider: 'anthropic', source: 'app', sessionId: '6f1c2d3e-0000-4111-8222-333344445555', title: 'T-K7Q2MA: Add Settings › Storage page to Mantel', cwd: '/home/owner/.config/Hearth AI Command Center/workspaces/K7Q2MA', resumable: true, taskId: 'K7Q2MA', messages: [{ role: 'user', text: 'Task T-K7Q2MA: Add Settings › Storage page to Mantel\n\nDrives, games by size, move games between drives, cleanup.', at: ago(42) }, { role: 'assistant', text: 'Added StoragePage.qml and the settings store; settings persist across restarts.\nSTATUS: DONE', at: ago(40) }] }),
-    conv({ provider: 'openai', source: 'cli', sessionId: '0199aaaa-bbbb-7ccc-8ddd-eeeeffff0000', title: 'Why does the Wi-Fi list not refresh after resume?', cwd: '/home/owner/Projects/hearth-os', resumable: true, messages: [{ role: 'user', text: 'Why does the Wi-Fi list not refresh after resume?', at: ago(300) }, { role: 'assistant', text: 'NetworkManager emits a StateChanged signal on resume that the applet ignores. Subscribe to it and refresh the list.', at: ago(299) }] }),
-    conv({ provider: 'openai', source: 'import:chatgpt', sessionId: '6729f0c1-aaaa-bbbb-cccc-0123456789ab', title: 'GRUB theme ideas for a Steam-style boot menu', openUrl: 'https://chatgpt.com/c/6729f0c1-aaaa-bbbb-cccc-0123456789ab', resumable: false, messages: [{ role: 'user', text: 'Give me GRUB theme ideas that look like the Steam Deck boot screen.', at: ago(60 * 24 * 9) }, { role: 'assistant', text: 'Use a dark blue-slate background (#171a21), a centered logo, and a slim Steam-blue selection bar. Keep the menu visible with GRUB_TIMEOUT_STYLE=menu.', at: ago(60 * 24 * 9 - 1) }] }),
-    conv({ provider: 'anthropic', source: 'import:claude', sessionId: '0b1c2d3e-0000-1111-2222-333344445555', title: 'Mantel icon set — folder and drive icons', openUrl: 'https://claude.ai/chat/0b1c2d3e-0000-1111-2222-333344445555', resumable: false, messages: [{ role: 'user', text: 'Draw a folder icon in the Hearth style.', at: ago(60 * 24 * 20) }, { role: 'assistant', text: 'Here is an SVG folder icon with a 3px corner radius and the Hearth flame as a badge.', at: ago(60 * 24 * 20 - 1) }] }),
-    conv({ provider: 'google', source: 'import:gemini', sessionId: 'takeout-2026-10-02T10:00:00.000Z', title: 'What is Mantel?', openUrl: 'https://gemini.google.com/app', resumable: false, messages: [{ role: 'user', text: 'What is Mantel?', at: ago(60 * 24 * 31) }, { role: 'assistant', text: 'Mantel is the Hearth OS desktop.', at: ago(60 * 24 * 31) }] }),
-    conv({ provider: 'xai', source: 'cli', sessionId: 'b7f3e2a1-1111-4222-8333-444455556666', title: 'Plan the GRUB theme build step', cwd: '/home/owner/Projects/hearth-os', resumable: true, bestEffort: true, messages: [{ role: 'user', text: 'Plan the GRUB theme build step', at: ago(90) }, { role: 'assistant', text: 'Add a grub-theme stage after the kernel stage; never change GRUB_DEFAULT.', at: ago(89) }] }),
-  ] : [];
-  const ok = async (v) => v;
-  const search = (q = '', f = {}) => history.filter((c) => (f.provider && f.provider !== 'all' ? c.provider === f.provider : true) && (f.source && f.source !== 'all' ? (f.source === 'import' ? c.source.startsWith('import') : c.source === f.source) : true) && (!q || JSON.stringify(c).toLowerCase().includes(q.toLowerCase()))).map((c) => ({ ...c, snippet: c.messages[c.messages.length - 1].text.slice(0, 140), messages: undefined }));
-  window.__shots = { signinXai: () => { xaiChecks = 1; } };
-  const chatList = [
-    { id: 'team-default', team: true, title: 'team chat', projectId: 'default', createdAt: ago(900), updatedAt: ago(4) },
-    { id: 'c00000boot1', title: 'Boot menu after 0.6.53', titleAuto: false, projectId: 'default', createdAt: ago(60), updatedAt: ago(30) },
-    { id: 'c00000idea2', title: 'Weekend ideas', titleAuto: false, projectId: null, createdAt: ago(3000), updatedAt: ago(2000) },
+  const chats = [
+    { id: 'team-a1b2c3d4', title: 'Hearth OS 1.4 planning', team: true, pinned: true, repo: 'Dragongamer9/hearth-os', branch: 'bughunt', createdAt: ago(9000), updatedAt: ago(3000), migratedV2: true, hasCopy: false },
+    { id: 'c0000000001', title: 'Fix Wi-Fi list after resume', repo: 'Dragongamer9/hearth-os', branch: 'main', createdAt: ago(60), updatedAt: ago(2), hasCopy: true },
+    { id: 'c0000000002', title: 'Storage page mockup', repo: 'Dragongamer9/hearth-os', branch: 'main', createdAt: ago(90), updatedAt: ago(20), hasCopy: true },
+    { id: 'c0000000003', title: 'Beacon launcher icons', repo: 'Dragongamer9/beacon', branch: 'main', createdAt: ago(200), updatedAt: ago(40) },
+    { id: 'c0000000004', title: 'Release notes for 1.3', repo: 'Dragongamer9/hearth-os', branch: 'main', createdAt: ago(1700), updatedAt: ago(1500) },
+    { id: 'c0000000005', title: 'Weekend ideas', createdAt: ago(1700), updatedAt: ago(1560) },
+    { id: 'c0000000006', title: 'Command Center crash log', repo: 'Dragongamer9/hearth-ai-command-center', branch: 'main', createdAt: ago(1800), updatedAt: ago(1600) },
+    { id: 'c0000000007', title: 'GRUB theme research', createdAt: ago(9000), updatedAt: ago(6000) },
+    { id: 'c0000000008', title: 'Mech game turret ideas', repo: 'Dragongamer9/quad-mech', branch: 'main', createdAt: ago(9500), updatedAt: ago(7000) },
   ];
-  const chatFiles = { c00000boot1: [{ id: 'B1', who: 'owner', at: ago(31), text: 'Why does the boot menu disappear after 0.6.53?' }, { id: 'B2', who: 'anthropic', at: ago(30), model: 'Claude Code', text: 'The boot entry is written before the new kernel is in place. I can fix it on a task branch and keep the previous version startable.' }], c00000idea2: [] };
-  window.hearth = {
-    loadState: () => ok(JSON.parse(JSON.stringify(state))),
-    saveState: (st) => { window.__saved = JSON.parse(JSON.stringify(st)); return ok(true); },
-    // Chats: the project's team chat plus two separate chats (one with no project).
-    chatsList: () => ok({ list: chatList, notices: [] }),
-    chatsGet: (id) => ok({ ok: true, messages: chatFiles[id] || [], sessions: {} }),
-    chatsSave: (id, d) => { chatFiles[id] = d.messages; return ok(true); },
-    chatsCreate: (pid) => { const e = { id: `c${String(chatList.length).padStart(10, '0')}`, title: 'New chat', titleAuto: true, projectId: pid, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }; chatList.unshift(e); chatFiles[e.id] = []; return ok(e); },
-    chatsUpdate: (id, p) => { const e = chatList.find((c) => c.id === id); Object.assign(e, p); return ok({ ...e }); },
-    ensureChatWorkspace: (pid) => ok({ ok: true, id: 'CHATB9YUUL', branch: 'hearth/chatb9yuul-team-chat', projectId: pid }),
-    stateHealth: () => ok({ ok: true, notices: [] }),
-    opsProjects: () => ok({ active: 'default', list: !populated ? [] : [{ id: 'default', name: 'hearth-os', dir: settings.project, settings: { nextVersion: '' } }, { id: 'b7c1d2e3', name: 'beacon', dir: '/home/owner/HearthProjects/beacon', settings: { nextVersion: '' } }] }),
-    appInfo: () => ok({ appVersion: '0.4.0', hearthOs: populated ? { name: 'Hearth OS 1.0', version: '1.0' } : null, dataPath: '/home/owner/.config/Hearth AI Command Center', electron: '45.0.0', packaged: true }),
-    backups: () => ok({ recoveredFrom: null, backups: populated ? [{ n: 1, ok: true, savedAt: ago(60), tasks: 6 }, { n: 2, ok: true, savedAt: ago(240), tasks: 5 }] : [] }),
-    restoreBackup: () => ok(state), exportAll: () => ok({ ok: false }),
-    providerStatus: () => ok({ encryption: true, weakEncryption: false, defaults: { anthropic: 'claude-sonnet-5-5', openai: 'gpt-5', xai: 'grok-4', mistral: 'mistral-large-latest', perplexity: 'sonar', deepseek: 'deepseek-chat' }, keys: { perplexity: populated, deepseek: false } }),
-    setKey: () => ok(true), removeKey: () => ok(true), ask: () => ok({ ok: false }),
-    settings: () => ok(settings), setConnection: () => ok(settings), pickProject: () => ok(settings), pickBinary: () => ok(settings), useProject: () => ok(settings), setSettings: (p) => { Object.assign(settings, p); window.__settings = JSON.parse(JSON.stringify(settings)); return ok(settings); }, addDir: () => ok(settings), removeDir: () => ok(settings),
-    gitTools: () => ok(populated ? { git: '/usr/bin/git', gh: '/usr/bin/gh', ghUser: 'Dragongamer9' } : { git: '/usr/bin/git', gh: null, ghUser: null }),
-    gitLogin: () => ok({ ok: false }), gitStatus: () => ok(git), gitPull: () => ok({ ok: false, message: 'CI preview' }), gitPushTask: () => ok({ ok: false }), gitPushBranch: () => ok({ ok: false }), gitMergeApproved: () => ok(flows ? { ok: true, sha: 'abc9999', branch: 'main', pushed: true, message: 'Merged into main (abc9999). Pushed main to GitHub.' } : { ok: false, message: 'CI preview' }),
-    gitUpdateFromMain: () => ok({ ok: true, changed: false, message: 'Already up to date with main.' }), gitReleaseBranch: () => ok({ ok: false, message: 'CI preview' }),
-    workspaceHead: () => ok('c0ffee15d9a3b2e4f60718293a4b5c6d7e8f9012'),
-    gitLeadSync: () => ok({ ok: false, message: 'CI preview' }),
-    attachSave: (name) => ok({ ok: true, att: { id: 'p1', kind: 'image', name, url: IMG, path: '/tmp/x/' + name, size: 100 } }),
-    attachPick: () => ok([{ ok: true, att: { id: 'p2', kind: 'image', name: 'owner-photo.png', url: IMG, path: '/tmp/x/owner-photo.png', size: 100 } }]),
-    attachFromAgent: () => ok({ ok: false, message: 'CI preview' }),
-    testKey: () => new Promise((r) => setTimeout(() => r({ ok: false, error: { kind: 'auth', message: 'The provider rejected this key or denied access.' } }), 500)), gitOpenPr: () => ok({ ok: false }), gitClone: () => ok({ ok: false }),
-    gitPrList: () => ok({ ok: populated, prs, message: 'Connect GitHub to see pull requests.' }), gitPrView: () => ok({ ok: true, pr: pr42 }), gitPrMerge: () => ok({ ok: false, message: 'Cancelled.' }), gitRelease: () => ok({ ok: false, message: 'CI preview' }),
-    agentStatus: (a) => { if (a === 'xai' && xaiChecks) { xaiChecks++; if (xaiChecks > 2) return ok({ installed: true, signedIn: true, path: '/home/owner/.grok/bin/grok' }); } return ok(agents[a] || {}); },
-    agentLogin: () => ok({ ok: true, terminal: 'gnome-terminal' }), agentInstall: () => ok({ ok: true, terminal: 'gnome-terminal' }), agentLogout: () => ok({ ok: false }), agentOpenSignin: () => ok({ ok: true }),
-    openWeb: () => ok({ ok: true }), openExport: () => ok({ ok: true }),
-    run: (o) => (window.__runImpl ? window.__runImpl(o) : new Promise(() => {})), cancelRun: () => ok(true),
-    ensureWorkspace: (id) => ok({ branch: `hearth/${id.toLowerCase()}`, baseSha: 'abc1234' }), checkpoint: () => ok(null), workspaceSummary: () => ok(populated ? ' src/settings/StoragePage.qml | 120 +++\n src/settings/store.js | 18 +-\n 2 files changed' : ''),
-    openWorkspace: () => ok(true), openFreebuff: () => ok({ ok: false }),
-    historyScan: () => ok({ ok: true, found: history.filter((c) => c.source === 'cli').length }), historySearch: (q, f) => ok(search(q, f)), historyGet: (k) => ok(history.find((c) => c.key === k) || null),
-    historyStats: () => ok({ total: history.length, by: {} }), historyRemove: () => ok(true), historyResume: () => ok({ ok: true, terminal: 'gnome-terminal', command: 'claude --resume …' }), historyOpenWeb: () => ok({ ok: true }), historyImport: () => ok({ ok: false, cancelled: true }),
-    themeGet: () => ok(hearthTheme || { found: false, dir: '/home/owner/.config/hearth', tokens: {}, css: '' }), onThemeChanged: () => () => {},
-    updaterInfo: () => ok({ enabled: true, reason: '', status: populated ? { state: 'available', version: '0.4.1' } : { state: 'idle' } }),
-    checkForUpdates: () => ok(true), downloadUpdate: () => ok(true), installUpdate: () => ok(true), onUpdaterStatus: () => () => {},
+  const storage = '<!doctype html><html><head><style>body{margin:0;font-family:Inter,system-ui,sans-serif;color:#d8f3ff;background:radial-gradient(80% 60% at 80% 0,#ff2bd633,transparent 60%),#0b1020;min-height:100vh;padding:22px;box-sizing:border-box}h1{font:800 24px system-ui;letter-spacing:.04em;color:#22d3ee;margin:0}.s{color:#7fa6c0;font-size:13px;margin:4px 0 18px}.d{border:1px solid #22d3ee55;border-radius:12px;padding:14px 16px;margin-bottom:12px;background:#0f1830}.r{display:flex;justify-content:space-between;font-weight:700}.r span{color:#7fa6c0;font-weight:500}.b{height:8px;border-radius:4px;background:#1c2a48;margin-top:10px}.b i{display:block;height:8px;border-radius:4px;background:linear-gradient(90deg,#22d3ee,#ff2bd6)}.u{font-size:12px;color:#7fa6c0;margin-top:6px}.a{display:flex;gap:10px;margin-top:6px}.a div{flex:1;padding:14px;border-radius:12px;font-weight:800;text-align:center}.c{background:#22d3ee;color:#04121c}.m{border:1px solid #ff2bd6;color:#ffb3f0}.h{margin-top:40px;font-size:12px;color:#7fa6c0}</style></head><body><h1>STORAGE</h1><div class="s">2 drives · 1.3 TB free</div><div class="d"><div class="r">Internal SSD<span>512 GB</span></div><div class="b"><i style="width:72%"></i></div><div class="u">72% used</div></div><div class="d"><div class="r">microSD — Games<span>1 TB</span></div><div class="b"><i style="width:41%"></i></div><div class="u">41% used</div></div><div class="a"><div class="c">Clean up</div><div class="m">Move games</div></div><div class="h">Ⓐ open &nbsp; Ⓑ back &nbsp; Ⓧ clean up</div></body></html>';
+  const msgs = {
+    c0000000001: [
+      { id: 'm1', who: 'owner', text: "The Wi-Fi list in Mantel doesn't refresh after the ROG Ally wakes up. Fix it and run the tests.", at: ago(4) },
+      { id: 'm2', who: 'anthropic', role: 'lead', at: ago(2), via: 'Claude Code',
+        steps: [
+          { kind: 'search', label: 'Searched the repo', detail: 'for “wifi rescan”' },
+          { kind: 'read', label: 'Read', detail: 'WifiPage.qml', file: 'hosts/linux/desktop/shell/WifiPage.qml' },
+          { kind: 'read', label: 'Read', detail: 'nm-watch.py', file: 'hosts/linux/desktop/nm-watch.py' },
+          { kind: 'read', label: 'Read', detail: 'test_wifi.py', file: 'hosts/linux/test/test_wifi.py' },
+          { kind: 'web-read', label: 'Read a web page', detail: 'networkmanager.dev', url: 'https://networkmanager.dev/docs/' },
+          { kind: 'edit', label: 'Edited', detail: 'nm-watch.py', file: 'hosts/linux/desktop/nm-watch.py' },
+          { kind: 'edit', label: 'Edited', detail: 'WifiPage.qml', file: 'hosts/linux/desktop/shell/WifiPage.qml' },
+          { kind: 'check', label: 'Ran checks locally', detail: 'python3 -m py_compile hosts/linux/desktop/nm-watch.py' },
+        ],
+        outcome: [{ kind: 'edit-summary', icon: 'pencil', label: 'Edited 2 files', detail: 'on branch hearth/fix-wi-fi-list-0001', note: '✓ committed as you', ok: true }, { kind: 'pushed', icon: 'push', label: 'Pushed to GitHub', detail: 'hearth/fix-wi-fi-list-0001', note: '✓ on GitHub', ok: true }],
+        text: 'NetworkManager drops its cached scan when the Ally sleeps, and Mantel only asked for a scan when the page opened. It now listens for the resume signal and rescans, with a 2-second wait so the Wi-Fi card is awake first.',
+        changes: { files: [{ path: 'hosts/linux/desktop/nm-watch.py', add: 14, del: 2 }, { path: 'hosts/linux/desktop/shell/WifiPage.qml', add: 6, del: 1 }], add: 20, del: 3, branch: 'hearth/fix-wi-fi-list-0001', base: 'main', head: 'c0ffee15d9a3b2e4f60718293a4b5c6d7e8f9012', pushed: 'hearth/fix-wi-fi-list-0001', repo: 'Dragongamer9/hearth-os' },
+        actions: { branch: 'hearth/fix-wi-fi-list-0001', sha: 'c0ffee15d9a3b2e4f60718293a4b5c6d7e8f9012', state: opts.failing ? 'failure' : 'success', runs: [{ name: 'CI', status: 'completed', conclusion: opts.failing ? 'failure' : 'success', url: 'https://github.com/Dragongamer9/hearth-os/actions/runs/1' }], ...(opts.failing ? { failure: { job: { name: 'test', step: 'Run tests' }, annotations: [{ level: 'failure', path: 'hosts/linux/test/test_wifi.py', line: 41, message: 'AssertionError: rescan was not called after resume' }] } } : {}) } },
+      { id: 'm3', who: 'openai', role: 'reviewer', at: ago(1), via: 'Codex', text: 'Reviewed the diff: looks right. One note: the 2-second wait should be a constant so the tests can shorten it. ✓ Approve.' },
+    ],
+    c0000000002: [
+      { id: 'p1', who: 'owner', text: 'Make a mockup of a Settings › Storage page for Mantel, in the Gaming look.', at: ago(25) },
+      { id: 'p2', who: 'anthropic', role: 'lead', at: ago(20), via: 'Claude Code', steps: [{ kind: 'read', label: 'Read', detail: 'palettes.json', file: 'hosts/linux/desktop/palettes.json' }], outcome: [{ kind: 'preview', icon: 'eye', label: 'Made a live preview', detail: 'storage-page.html', note: 'open →', open: 'storage-page.html' }],
+        text: 'Here\'s the Storage page: drives as cards with a usage bar, big “Clean up” and “Move games” actions, and the controller hints along the bottom. Want me to build the real QML page from it?',
+        previews: [{ id: 'pv1', name: 'storage-page.html', kind: 'html', content: storage }] },
+    ],
   };
+  const diff = 'diff --git a/hosts/linux/desktop/nm-watch.py b/hosts/linux/desktop/nm-watch.py\nindex 1..2 100644\n--- a/hosts/linux/desktop/nm-watch.py\n+++ b/hosts/linux/desktop/nm-watch.py\n@@ -10,7 +10,19 @@ import dbus\n from gi.repository import GLib\n \n-def watch():\n-    bus = dbus.SystemBus()\n+RESCAN_DELAY_S = 2\n+\n+def on_resume(sleeping):\n+    if not sleeping:\n+        GLib.timeout_add_seconds(RESCAN_DELAY_S, rescan)\n+\n+def watch():\n+    bus = dbus.SystemBus()\n+    bus.add_signal_receiver(on_resume, "PrepareForSleep", "org.freedesktop.login1.Manager")\n     nm = bus.get_object(NM, NM_PATH)\n     return nm\n \ndiff --git a/hosts/linux/desktop/shell/WifiPage.qml b/hosts/linux/desktop/shell/WifiPage.qml\nindex 3..4 100644\n--- a/hosts/linux/desktop/shell/WifiPage.qml\n+++ b/hosts/linux/desktop/shell/WifiPage.qml\n@@ -22,6 +22,11 @@ Page {\n     ListView {\n         model: wifi.networks\n+        Connections {\n+            target: power\n+            function onResumed() { wifi.rescan() }\n+        }\n     }\n-    Component.onCompleted: wifi.rescan()\n+    Component.onCompleted: wifi.rescan()\n }\n';
+  const listeners = { step: [] };
+  const ok = (v) => Promise.resolve(v);
+  const settings = { theme: opts.light ? 'light' : 'dark', textSize: 100, connection: {}, bins: {}, extraDirs: [], access: 'standard', autoPush: true, actForMe: true, previewNetwork: false, copyIdleHours: 24, tools: { web: true, build: true, quickChecks: ['node --check', 'node --test', 'python3 -m py_compile', 'bash -n'] }, team: null, ownerIdentity: { name: 'Dragongamer9', email: 'Dragongamer9@users.noreply.github.com', emails: ['Dragongamer9@users.noreply.github.com'] } };
+  window.__calls = [];
+  window.hearth = new Proxy({
+    appInfo: () => ok({ appVersion: '1.5.0', dataPath: '/home/you/.config/Hearth AI Command Center', electron: '45', packaged: true }),
+    settings: () => ok(settings),
+    setSettings: (p) => { Object.assign(settings, p, p.tools ? { tools: { ...settings.tools, ...p.tools } } : {}); return ok({ ...settings }); },
+    themeGet: () => ok({ found: false, tokens: {} }),
+    v2Boot: () => ok({ migrated: true, notices: [] }),
+    chatsList2: () => ok({ list: chats, notices: [], broken: false }),
+    chatsTrash: () => ok(opts.trash ? [{ trashId: 'c0000000009-x1', title: 'Old test chat', deletedAt: ago(30) }] : []),
+    chatsGet2: (id) => ok({ ok: true, messages: msgs[id] || [], sessions: {} }),
+    chatsSave: () => ok(true),
+    chatsUpdate: (id, p) => ok({ ...chats.find((c) => c.id === id), ...p }),
+    chatsCreate2: (o) => { const e = { id: 'c00000000aa', title: o.title || 'New chat', titleAuto: true, repo: o.repo, branch: o.branch, createdAt: ago(0), updatedAt: ago(0) }; chats.unshift(e); return ok(e); },
+    copiesStatus: () => ok({ exists: true, unpushed: false, dirty: 0, ahead: 0, base: 'main', work: 'hearth/fix-wi-fi-list-0001', head: 'c0ffee15d9a3b2e4f60718293a4b5c6d7e8f9012' }),
+    providerStatus: () => ok({ encryption: true, keys: {} }),
+    agentStatus: (a) => ok(['anthropic', 'openai', 'google'].includes(a) ? { installed: true, signedIn: true } : { installed: false, signedIn: false }),
+    gitTools: () => ok({ git: '/usr/bin/git', gh: '/usr/bin/gh', ghUser: 'Dragongamer9' }),
+    updaterInfo: () => ok({ enabled: true, install: 'appimage', status: { state: 'none', message: 'You are on the latest version.' } }),
+    onUpdaterStatus: () => () => {}, onThemeChanged: () => () => {}, onCopiesIdle: () => () => {}, onCopiesRemoved: () => () => {}, onOpsPhoneAction: () => () => {},
+    onChatStep: (cb) => { listeners.step.push(cb); return () => {}; },
+    opsPhoneStatus: () => ok({ enabled: false }),
+    ghRepos: () => ok({ ok: true, repos: [
+      { full: 'Dragongamer9/hearth-os', private: false, pushedAt: ago(120), default: 'main' },
+      { full: 'Dragongamer9/hearth-ai-command-center', private: false, pushedAt: ago(300), default: 'main' },
+      { full: 'Dragongamer9/beacon', private: false, pushedAt: ago(8640), default: 'main' },
+      { full: 'Dragongamer9/hearth-logs', private: true, pushedAt: ago(60), default: 'main' },
+      { full: 'Dragongamer9/Tributary-Launcher', private: false, pushedAt: null, default: 'main' },
+    ] }),
+    ghBranches: () => ok({ ok: true, default: 'main', branches: ['main', 'bughunt', 'feature/storage'] }),
+    chatDiff: () => ok({ ok: true, diff }),
+    copiesList: () => ok({ ok: true, root: '/home/you/.config/Hearth AI Command Center/copies', idleHours: 24, list: [
+      { chatId: 'c0000000001', repo: 'Dragongamer9/hearth-os', branch: 'main', work: 'hearth/fix-wi-fi-list-0001', size: 98 * 1048576, lastUsedAt: ago(2), unpushed: false },
+      { chatId: 'c0000000002', repo: 'Dragongamer9/hearth-os', branch: 'main', work: 'hearth/storage-page-mockup-0002', size: 97 * 1048576, lastUsedAt: ago(20), unpushed: true, dirty: 1, ahead: 1 },
+      { chatId: 'c0000000006', repo: 'Dragongamer9/hearth-ai-command-center', branch: 'main', work: 'hearth/command-center-crash-0006', size: 5 * 1048576, lastUsedAt: ago(1600), unpushed: false },
+    ] }),
+    savedBoards: () => ok([{ id: 'default', name: 'hearth-os', file: '/home/you/.config/Hearth AI Command Center/command-center-state.json', ok: true, tasks: [{ id: 'K7Q2MA', title: 'Add Settings › Storage page to Mantel', stage: 'approval', assignee: 'anthropic' }, { id: 'P3LX9Z', title: 'Fix Wi-Fi list not refreshing after resume', stage: 'implementing', assignee: 'openai' }], approvals: 3, audit: 412, chat: 230 }, { id: 'b7e1c2d3', name: 'beacon', file: '/home/you/.config/Hearth AI Command Center/projects/b7e1c2d3/command-center-state.json', ok: true, tasks: [], approvals: 0, audit: 12, chat: 18 }]),
+    chatRun: (o) => {
+      window.__calls.push(['chatRun', o]);
+      const steps = [{ kind: 'search', label: 'Searched the repo', detail: 'for “storage”' }, { kind: 'read', label: 'Read', detail: 'StoragePage.qml' }];
+      steps.forEach((s, i) => setTimeout(() => listeners.step.forEach((cb) => cb({ runId: o.runId, step: s })), 200 + i * 200));
+      return new Promise((r) => setTimeout(() => r({ ok: true, text: o.agent === 'openai' ? 'Checked the change: it refreshes the list when a card is inserted. Looks right.' : 'Done: the drive list now refreshes.\n\n```html preview drives.html\n<h1 style="color:#22d3ee">Drives</h1>\n```', sessionId: 'sess-1', via: o.agent === 'openai' ? 'Codex' : 'Claude Code', changes: o.build === false ? null : { files: [{ path: 'StoragePage.qml', add: 3, del: 1 }], add: 3, del: 1, branch: 'hearth/storage-00aa', base: 'main' }, status: { exists: true, unpushed: true, ahead: 1, dirty: 0, base: 'main', work: 'hearth/storage-00aa', head: 'b'.repeat(40) }, previews: [] }), opts.sendHang ? 1e9 : 900));
+    },
+  }, { get: (t, k) => (k in t ? t[k] : typeof k === 'string' ? () => Promise.resolve(null) : undefined) });
+  try { localStorage.setItem('hearth.v2.open', opts.open || ''); if (!opts.open) localStorage.removeItem('hearth.v2.open'); } catch {}
 }
+
+const SHOTS = [
+  { file: '01-home.png', opts: {}, expect: ['Good ', 'What should the team work on?', 'Fix a bug in a repo', 'Prepare a release', 'Pinned', 'Today', 'Yesterday', 'Earlier'] },
+  { file: '02-chat-working-on-a-repo.png', opts: { open: 'c0000000001' }, expect: ['Searched the repo', 'Read', 'Edited 2 files', 'committed as you', '2 files changed', 'Open pull request', 'Show changes', 'Merge into main', 'Ran the tests', 'in GitHub Actions', 'reviewer'] },
+  { file: '03-live-preview.png', opts: { open: 'c0000000002' }, click: '[data-a="open-preview"]', expect: ['storage-page.html', 'Preview', 'Code', 'Download', 'Save to repo'], frame: true },
+  { file: '04-connect-a-repo-and-attach.png', opts: {}, attach: true, click: '#composer-box [data-a="repo-pop"]', expect: ['Connect this chat to a GitHub repo', 'Dragongamer9/hearth-os', 'No repo, just talk', 'Branch'] },
+  { file: '05-settings.png', opts: {}, click: '[data-a="settings"]', expect: ['AI team', 'Who\'s in your chats', 'Accounts', 'GitHub', 'Tools', 'Permissions', 'Appearance', 'App updates', 'Saved data'] },
+  { file: '06-chat-light.png', opts: { open: 'c0000000001', light: true }, expect: ['2 files changed'] },
+  { file: '07-diff-viewer.png', opts: { open: 'c0000000001' }, click: '[data-a="card-diff"]', expect: ['nm-watch.py', 'RESCAN_DELAY_S', 'WifiPage.qml'] },
+  { file: '08-saved-data-temporary-copies.png', opts: { trash: true }, click: '[data-a="settings"]', then: '[data-a="tab"][data-t="data"]', expect: ['Temporary copies', 'Space used', '200 MB', 'not on GitHub', 'Clean up', 'Old boards (read-only)', 'hearth-os'] },
+  { file: '09-actions-failed.png', opts: { open: 'c0000000001', failing: true }, expect: ['GitHub Actions failed', 'rescan was not called after resume', 'Ask the team to fix it'] },
+  { file: '10-app-updates.png', opts: {}, click: '[data-a="settings"]', then: '[data-a="tab"][data-t="updates"]', expect: ['App updates', 'Check for updates', 'AppImage and the .deb'] },
+  { file: '11-send-and-steps.png', opts: { open: 'c0000000002' }, send: 'Refresh the drive list when a card is inserted', expect: ['Done: the drive list now refreshes.', 'drives.html', 'Live preview'] },
+];
 
 const browser = await chromium.launch();
-const errors = [];
-const check = (cond, msg) => { if (!cond) errors.push(`check failed: ${msg}`); };
-async function session(name, opts, steps, b = browser) {
-  const ctx = await b.newContext({ viewport: { width: 1600, height: 1000 }, bypassCSP: true, colorScheme: opts.theme === 'light' ? 'light' : 'dark', reducedMotion: opts.reducedMotion ? 'reduce' : 'no-preference' });
-  await ctx.addInitScript(stub, opts);
-  const page = await ctx.newPage();
-  page.on('pageerror', (e) => errors.push(`${name}: ${e.message}`));
-  page.on('console', (m) => { if (m.type() === 'error') errors.push(`${name} console: ${m.text()}`); });
-  page.on('dialog', (d) => d.dismiss());
+let failed = 0;
+for (const s of SHOTS) {
+  const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
+  const errors = [];
+  page.on('pageerror', (e) => errors.push(String(e.message || e)));
+  await page.addInitScript(stub, s.opts);
   await page.goto(BASE, { waitUntil: 'networkidle' });
-  await page.waitForSelector('.shell', { timeout: 15000 });
-  await page.waitForTimeout(1200);
-  let i = 1;
-  const shot = async (label, { full = false } = {}) => {
-    const f = `${OUT}/${name}-${String(i++).padStart(2, '0')}-${label}.png`;
-    await page.waitForTimeout(350);
-    await page.screenshot({ path: f, fullPage: full });
-    console.log('saved', f);
-  };
-  // Pages used less often sit under More in the sidebar: open it first when needed.
-  const nav = async (v) => { if (v === 'chat') { await page.click('.side [data-ui="menu-chats"]'); await page.waitForTimeout(250); return; } const sel = `.side [data-nav="${v}"]`; if (!(await page.locator(sel).count())) { await page.click('.side [data-ui="more"]'); await page.waitForTimeout(150); } await page.click(sel); await page.waitForTimeout(250); };
-  await steps({ page, shot, nav });
-  await ctx.close();
+  await page.waitForSelector('#side .brand');
+  await page.waitForTimeout(300);
+  if (s.attach) {
+    await page.evaluate(() => {
+      const dt = new DataTransfer();
+      for (const [n, t] of [['log.txt', 'text/plain'], ['crash.png', 'image/png']]) dt.items.add(new File(['x'], n, { type: t }));
+    });
+    await page.evaluate(() => { window.hearth.attachSaveAny = (name) => Promise.resolve({ ok: true, att: { name, kind: name.endsWith('.png') ? 'file' : 'file', path: `/tmp/${name}` } }); });
+    await page.fill('#composer', 'Here\'s the crash from my log, find the cause');
+    await page.evaluate(async () => { const f = [new File(['x'], 'log.txt'), new File(['x'], 'crash.png')]; const ev = new Event('drop', { bubbles: true }); ev.dataTransfer = { files: f, types: ['Files'] }; document.dispatchEvent(ev); });
+    await page.waitForTimeout(300);
+  }
+  if (s.click) { await page.click(s.click); await page.waitForTimeout(500); }
+  if (s.then) { await page.click(s.then); await page.waitForTimeout(500); }
+  if (s.send) { await page.fill('#composer', s.send); await page.keyboard.press('Enter'); await page.waitForTimeout(2200); }
+  const text = (await page.evaluate(() => `${document.body.innerText}\n${[...document.querySelectorAll('[placeholder]')].map((e) => e.placeholder).join('\n')}`)).toLowerCase();
+  const missing = (s.expect || []).filter((t) => !text.includes(t.toLowerCase()));
+  if (s.frame) {
+    const sandbox = await page.getAttribute('.pv-frame', 'sandbox');
+    if (sandbox !== 'allow-scripts') missing.push(`iframe sandbox="${sandbox}"`);
+  }
+  await page.screenshot({ path: `${OUT}/${s.file}` });
+  if (missing.length || errors.length) { failed++; console.log(`::error::${s.file}: missing ${JSON.stringify(missing)} errors ${JSON.stringify(errors)}`); }
+  else console.log(`ok ${s.file}`);
+  await page.close();
 }
-
-// 1) New look, dark, everything filled in.
-await session('dark', { scenario: 'populated', theme: 'dark' }, async ({ page, shot, nav }) => {
-  await nav('overview'); await shot('overview-filled', { full: true });
-  await nav('chat'); await shot('team-chat-permission-request');
-  await page.click('[data-togglehist="C3GEMN"]'); await shot('team-chat-edited-message-history');
-  await page.hover('.msg:has([data-editmsg="C4GROK"])'); await page.click('[data-editmsg="C4GROK"]'); await shot('team-chat-owner-editing');
-  await page.keyboard.press('Escape');
-  // Chats: the list, a separate chat with its project chip, a chat with no project, the narrowed sidebar.
-  await page.click('.side [data-openchat="c00000boot1"]'); await shot('chats-list-and-chat');
-  await page.click('[data-ui="menu-chatproj"]'); await shot('chat-project-chip-menu');
-  await page.keyboard.press('Escape');
-  await page.click('.side [data-openchat="c00000idea2"]'); await shot('chat-no-project-talk-only');
-  check((await page.textContent('.chat')).includes('can’t edit files'), 'a chat with no project says it cannot edit files');
-  await page.click('.side [data-ui="side"]'); await page.click('.side [data-ui="menu-chats"]'); await shot('chats-narrow-sidebar-menu');
-  await page.click('.chats-menu [data-openchat="team-default"]'); await page.click('.side [data-ui="side"]');
-  await nav('board'); await shot('board-filled', { full: true });
-  await nav('approvals'); await shot('approvals-with-permission');
-  await nav('agents'); await shot('agents-compact', { full: true });
-  await page.click('tr[data-expand="anthropic"] td:first-child'); await shot('agents-claude-expanded-side-panel');
-  await page.click('tr[data-expand="perplexity"] td:first-child'); await shot('agents-perplexity-api-member');
-  await page.click('tr[data-expand="copilot"] td:first-child'); await shot('agents-copilot-web-window', { full: true });
-  // Sign-in flow states: not installed -> installing; installed -> waiting for browser -> linked.
-  await page.click('tr[data-expand="mistral"] td:first-child');
-  await page.click('tr[data-expand="mistral"] [data-signin="mistral"]'); await shot('signin-1-installing');
-  await page.click('tr[data-expand="xai"] td:first-child');
-  await page.evaluate(() => window.__shots.signinXai());
-  await page.click('tr.detail-row [data-signin="xai"]'); await shot('signin-2-waiting-for-browser');
-  await page.waitForTimeout(6800); await shot('signin-3-linked');
-  await nav('history'); await shot('history-list');
-  await page.click('[data-histopen^="openai:imp:"]'); await shot('history-imported-chatgpt');
-  await page.click('[data-histopen^="openai:0199"]'); await shot('history-cli-session-resume');
-  await page.click('[data-histopen^="anthropic:6f1c"]'); await shot('history-app-session');
-  await nav('github'); await shot('github-prs-and-release', { full: true });
-  await page.fill('#rel-version', '1.1'); await page.fill('#rel-confirm', '1.1'); await page.dispatchEvent('#rel-confirm', 'input'); await shot('github-release-typed-version');
-  await nav('board'); await page.click('[data-open="K7Q2MA"]'); await page.waitForTimeout(500); await shot('task-drawer-pr-panel');
-  await page.keyboard.press('Escape');
-  await page.click('[data-open="T2VB7H"]'); await shot('task-drawer-boot-critical');
-  await page.keyboard.press('Escape');
-  await nav('settings'); await shot('settings', { full: true });
-  await nav('audit'); await shot('audit');
-});
-
-// 2) Light mode.
-await session('light', { scenario: 'populated', theme: 'light' }, async ({ page, shot, nav }) => {
-  await nav('overview'); await shot('overview');
-  await nav('chat'); await shot('team-chat');
-  await nav('agents'); await page.click('tr[data-expand="anthropic"] td:first-child'); await shot('agents');
-  await nav('history'); await page.click('[data-histopen^="anthropic:imp:"]'); await shot('history-imported-claude');
-  await nav('github'); await shot('github');
-  await nav('settings'); await shot('settings');
-});
-
-// 3) Following a Hearth OS desktop theme (~/.config/hearth/theme.json), here Hearth's warm look.
-await session('hearth-theme', { scenario: 'populated', theme: 'hearth', hearthTheme: { found: true, dir: '/home/owner/.config/hearth', tokens: { name: 'Hearth Warm', bg: '#1c1512', bg2: '#140f0d', panel: '#231a16', panel2: '#3a2a22', line: '#3a2a22', text: '#f7eeea', muted: '#bba79c', accent: '#ff5d5d', accent2: '#ff9c84', r: 4, mode: 'dark' }, css: '' } }, async ({ shot, nav }) => {
-  await nav('overview'); await shot('overview-follows-desktop-theme');
-  await nav('settings'); await shot('settings-appearance');
-});
-
-// 4) First run.
-await session('fresh', { scenario: 'fresh', theme: 'dark' }, async ({ page, shot, nav }) => {
-  await nav('overview'); await shot('overview-setup');
-  await nav('agents'); await shot('agents');
-  // One-click installs: Install all (optionally with Ollama), then per-card Installing… states.
-  await page.click('tr[data-expand="anthropic"] td:first-child'); await shot('agents-install-buttons');
-  await page.click('[data-installollama]'); await shot('agents-install-all-with-ollama');
-  await page.click('[data-installall]'); await page.waitForTimeout(400); await shot('agents-install-all-installing', { full: true });
-  await nav('history'); await shot('history-explainer');
-  await page.click('[data-new]'); await shot('new-task-dialog');
-});
-
-// 5) 0.7.0 flows end to end, with checks. Saved as 070-*.png.
-await session('070', { scenario: 'populated', theme: 'dark', flows: true }, async ({ page, shot, nav }) => {
-  // Builder -> reviewer APPROVE -> Approve to merge
-  await nav('board'); await page.click('[data-open="RV0700"]'); await page.waitForTimeout(300);
-  await page.click('[data-opinion="RV0700"]'); await page.waitForTimeout(900);
-  await page.keyboard.press('Escape'); await nav('board');
-  check(await page.locator('[data-owneract="RV0700"]', { hasText: 'Approve to merge' }).count() === 1, 'board shows Approve to merge after the reviewer APPROVE');
-  await shot('board-approve-to-merge', { full: true });
-  await nav('approvals');
-  check((await page.textContent('.main')).includes('c0ffee1'), 'Approvals shows the approved commit');
-  await shot('approvals-approved-commit-tests-passed');
-  await page.click('[data-approvemerge="RV0700"]'); await page.waitForTimeout(500);
-  check(await page.evaluate(() => document.querySelector('.main').textContent.includes('Merged into main') || true), 'merge ran');
-  await shot('approvals-after-approve-to-merge');
-  // API key Test keeps the pasted text
-  await nav('agents'); await page.click('tr[data-expand="perplexity"] td:first-child'); await page.waitForTimeout(300);
-  await page.fill('#key-perplexity', 'pasted-not-saved-yet');
-  await page.click('[data-testkey="perplexity"]'); await page.waitForTimeout(900);
-  check(await page.inputValue('#key-perplexity') === 'pasted-not-saved-yet', 'pasted key survives pressing Test');
-  check((await page.textContent('#keytest-perplexity')).includes('rejected'), 'Test result line updated');
-  await shot('api-key-test-keeps-pasted-text');
-  // A rejected key stays rejected in the team status panel after Re-check
-  await nav('chat');
-  await page.fill('#chat-text', '@perplexity quick check'); await page.keyboard.press('Enter'); await page.waitForTimeout(800);
-  await page.click('.team-status [data-recheck]'); await page.waitForTimeout(800);
-  check((await page.textContent('#team-panel')).includes('API key rejected'), 'status panel keeps the rejected key after Re-check');
-  // Owner input while an AI is typing
-  await page.fill('#chat-text', '@claude plan the Storage page'); await page.keyboard.press('Enter'); await page.waitForTimeout(600);
-  check(await page.locator('.msg.typing').count() === 1, 'Claude is typing');
-  check(!(await page.isDisabled('[data-sendchat]')), 'Send stays enabled while an AI types');
-  check(await page.locator('[data-stopround]').count() === 1, 'Stop control is visible');
-  await page.fill('#chat-text', 'Also keep every setting remembered.'); await page.keyboard.press('Enter'); await page.waitForTimeout(400);
-  check((await page.textContent('#chat-log')).includes('Also keep every setting remembered.'), 'owner message posted while the AI was typing');
-  await shot('team-status-rejected-key-and-owner-typing-during-ai');
-  await page.waitForTimeout(9000);
-  await shot('chat-after-round-restarted');
-  // Queue: Start next while Claude is busy
-  await nav('board'); await page.click('[data-open="QA0701"]'); await page.waitForTimeout(300);
-  await page.click('[data-run="QA0701:anthropic"]'); await page.waitForTimeout(800);
-  await page.keyboard.press('Escape'); await page.click('[data-open="QB0702"]'); await page.waitForTimeout(300);
-  const btn = page.locator('[data-run="QB0702:anthropic"]');
-  check((await btn.textContent()).includes('Start next'), 'Start button reads Start next while Claude is busy');
-  check(!(await btn.isDisabled()), 'Start next stays clickable');
-  await shot('queue-start-next');
-  await btn.click(); await page.waitForTimeout(400);
-  await shot('queue-start-next-queued');
-  await page.keyboard.press('Escape'); await nav('board');
-  check((await page.textContent('.board [data-open="QB0702"]')).includes('Queued for Claude'), 'a Start-next task reads "Queued for Claude"');
-  check(!(await page.textContent('.main')).includes('QC0703') || (await page.locator('[data-open="QC0703"] .badge', { hasText: 'Running' }).count()) === 0, 'a task that was only added did not start');
-  // Images in team chat: an AI's screenshot shows inline, and the owner can attach one.
-  await nav('chat');
-  check(await page.locator('.atts img').count() >= 1, 'AI image attachment shown inline');
-  await page.click('[data-attach]'); await page.waitForTimeout(300);
-  check((await page.textContent('.composer')).includes('owner-photo.png'), 'owner attachment pending');
-  await shot('chat-image-attachments');
-});
-
-// 6) Habitat: some AIs at their desks, one typing, one asleep, some locked out. Saved as habitat-*.png.
-const habitatScene = async ({ page, nav }) => {
-  for (const [id, a] of [['HB0001', 'anthropic'], ['HB0002', 'google']]) {
-    await nav('board'); await page.click(`[data-open="${id}"]`); await page.waitForTimeout(300);
-    await page.click(`[data-run="${id}:${a}"]`); await page.waitForTimeout(500);
-    await page.keyboard.press('Escape');
-  }
-  await nav('chat');
-  await page.fill('#chat-text', '@perplexity find sources on GRUB theme formats'); await page.keyboard.press('Enter'); await page.waitForTimeout(500);
-  await nav('habitat');
-  await page.waitForSelector('#habitat canvas');
-  await page.waitForTimeout(4500); // let them walk to their places
-  const beh = (id) => page.evaluate((x) => document.querySelector('#habitat canvas').habitat.behaviour(x), id);
-  const act = (id) => page.evaluate((x) => document.querySelector('#habitat canvas').habitat.actor(x), id);
-  check((await beh('anthropic'))?.mode === 'desk', 'Claude works at its desk');
-  check((await beh('anthropic'))?.monitor?.id === 'HB0001', 'Claude’s monitor shows its task id');
-  check((await beh('anthropic'))?.star === true, 'the lead has a star');
-  check((await beh('google'))?.mode === 'desk', 'Gemini works at its desk');
-  check((await beh('openai'))?.mode === 'sleep', 'ChatGPT is out of usage and asleep');
-  check((await beh('xai'))?.door === 'locked', 'Grok is signed out: door locked');
-  check((await beh('perplexity'))?.icon === 'bubble', 'Perplexity is typing in team chat');
-  return { beh, act };
-};
-const H_ = (fn, ...args) => `document.querySelector('#habitat canvas').habitat.${fn}(${args.map((a) => JSON.stringify(a)).join(',')})`;
-await session('habitat', { scenario: 'populated', theme: 'dark', habitat: true }, async ({ page, shot, nav }) => {
-  const { act } = await habitatScene({ page, nav });
-  const claude = await act('anthropic');
-  check(claude.pose === 'sit' && claude.mode === 'desk', 'Claude is sitting at the desk');
-  check((await page.evaluate(() => getComputedStyle(document.querySelector('#habitat canvas')).imageRendering)) === 'pixelated', 'canvas is pixelated');
-  await shot('desks-typing-asleep-locked');
-  // Night: the real clock decides; here it is set to 22:30 local time.
-  await page.evaluate(() => document.querySelector('#habitat canvas').habitat.setClock(new Date(2026, 10, 2, 22, 30).getTime()));
-  await page.waitForTimeout(600);
-  check((await page.evaluate(H_('light')))?.phase === 'night', 'night lighting at 22:30');
-  check((await page.evaluate(H_('deskLight', 'anthropic'))) === 'red', 'Claude’s desk light is red (its last run failed its tests)');
-  const st = await page.evaluate(H_('store'));
-  check(st.finished >= 34 && st.growth >= 34, `garden grew from finished tasks (${st.finished})`);
-  check(Boolean(st.trophies['first-merge']) && Boolean(st.trophies['done-10']), 'trophy shelf: first merge and 10 tasks');
-  check((st.ai.anthropic?.props || []).length === 2, 'Claude unlocked two room props');
-  check((await page.evaluate(H_('extras', 'anthropic'))).length === 2, 'Claude’s unlocked props are in its room');
-  check((await page.evaluate(H_('pet'))) !== null, 'the pet is there');
-  await shot('night-red-desk-light-garden-trophies');
-  // Name the pet in the small dialog; it is saved.
-  const pet = await page.evaluate(H_('pet'));
-  await page.mouse.click(pet.page.x, pet.page.y); await page.waitForTimeout(300);
-  await page.fill('.hab-pop .hab-input', 'Ember');
-  await page.click('.hab-pop [data-hab="savepet"]'); await page.waitForTimeout(300);
-  check((await page.evaluate(H_('store'))).pet.name === 'Ember', 'pet name saved');
-  const at = await page.evaluate(() => document.querySelector('#habitat canvas').habitat.at('anthropic'));
-  await page.mouse.move(at.x, at.y); await page.waitForTimeout(300);
-  const tip = await page.textContent('.hab-tip');
-  check(tip.includes('HB0001') && tip.includes('drive health') && tip.includes('hearth/hb0001'), 'tooltip shows the task title and branch');
-  await shot('tooltip-task-and-branch');
-  // Habitat options menu opens (reset asks to confirm; not pressed here).
-  await page.click('[data-hab="menu"]'); await page.waitForTimeout(200);
-  await page.click('.hab-pop [data-hab="askreset"]'); await page.waitForTimeout(200);
-  check((await page.textContent('.hab-pop')).includes('Reset Habitat progress?'), 'reset asks for confirmation');
-  await page.click('.hab-pop [data-hab="close"]');
-  await page.mouse.click(at.x, at.y); await page.waitForTimeout(400);
-  check(await page.locator('.drawer').count() >= 1 || (await page.textContent('body')).includes('Settings › Storage: drive health panel'), 'clicking a working AI opens its task');
-  await page.keyboard.press('Escape');
-});
-await session('habitat-day', { scenario: 'populated', theme: 'dark', habitat: true, habitatDay: true }, async ({ page, shot, nav }) => {
-  await nav('board'); await page.click('[data-open="HB0003"]'); await page.waitForTimeout(300);
-  await page.click('[data-run="HB0003:anthropic"]'); await page.waitForTimeout(300);
-  await page.keyboard.press('Escape');
-  await nav('habitat');
-  await page.waitForSelector('#habitat canvas');
-  await page.evaluate(() => document.querySelector('#habitat canvas').habitat.setClock(new Date(2026, 10, 2, 13, 0).getTime()));
-  // Claude reports done -> review: Claude walks a paper over to Gemini's desk.
-  await page.waitForFunction(() => document.querySelector('#habitat canvas')?.habitat.visits().some((v) => v.kind === 'review-visit'), null, { timeout: 15000 }).catch(() => {});
-  const visits = await page.evaluate(H_('visits'));
-  check(visits.some((v) => v.kind === 'review-visit' && v.from === 'anthropic' && v.to === 'google'), 'builder -> reviewer visit');
-  await page.waitForTimeout(900);
-  const claude = await page.evaluate(H_('actor', 'anthropic'));
-  check(Boolean(claude.errand) || (await page.evaluate(H_('effects'))).includes('paper'), 'Claude carries the paper to Gemini');
-  check((await page.evaluate(H_('light')))?.phase === 'day', 'day lighting at 13:00');
-  await shot('day-builder-visits-reviewer');
-  // Idle AIs on a coffee break chat in the break room.
-  await page.evaluate(H_('breakFor', ['ollama', 'perplexity', 'freebuff', 'qwen']));
-  await page.waitForFunction(() => document.querySelector('#habitat canvas').habitat.kitchenIds().length >= 2, null, { timeout: 25000 }).catch(() => {});
-  await page.waitForTimeout(800);
-  const inKitchen = await page.evaluate(H_('kitchenIds'));
-  check(inKitchen.length >= 2, `two or more AIs in the break room (${inKitchen.join(',')})`);
-  check((await page.evaluate(H_('effects'))).includes('paper') || (await page.evaluate(H_('actor', 'anthropic'))).goal !== 'errand', 'the paper reached Gemini’s desk');
-  await shot('day-break-room-garden-pet');
-  // Rearrange Claude's room: move one unlocked prop to another free tile; saved.
-  const before = await page.evaluate(H_('extras', 'anthropic'));
-  const rr = await page.evaluate(H_('roomRect', 'anthropic'));
-  const room = await page.evaluate(H_('room', 'anthropic'));
-  await page.mouse.click(room.x, room.y); await page.waitForTimeout(200);
-  await page.click('.hab-pop [data-hab="rearrange"]'); await page.waitForTimeout(200);
-  const p0 = await page.evaluate(([x, y]) => document.querySelector('#habitat canvas').habitat.tile(x, y), [before[0].x, before[0].y]);
-  await page.mouse.click(p0.x, p0.y); await page.waitForTimeout(150);
-  for (const [lx, ly] of [[4, 2], [4, 1], [0, 1], [0, 2], [3, 3], [1, 3]]) {
-    const gy = rr.side === 'top' ? rr.y0 + ly : rr.y0 + 3 - ly;
-    const q = await page.evaluate(([x, y]) => document.querySelector('#habitat canvas').habitat.tile(x, y), [rr.x0 + lx, gy]);
-    await page.mouse.click(q.x, q.y); await page.waitForTimeout(150);
-    if ((await page.textContent('.hab-pop')).includes('Moved and saved')) break;
-  }
-  const after = await page.evaluate(H_('extras', 'anthropic'));
-  check(JSON.stringify(after) !== JSON.stringify(before), 'a prop moved on the room grid');
-  check(JSON.stringify((await page.evaluate(H_('store'))).ai.anthropic.props.map((p) => [p.x, p.y])) === JSON.stringify(after.map((p) => [p.lx, p.ly])), 'the new layout is saved');
-  await shot('day-rearrange-room');
-  await page.click('.hab-pop [data-hab="done"]');
-  // A note on the message board opens what it shows.
-  const note = await page.evaluate(H_('note', 0));
-  await page.mouse.click(note.x, note.y); await page.waitForTimeout(400);
-  check(await page.locator('#chat-text').count() === 1 || await page.locator('.drawer').count() >= 1, 'clicking a board note opens it');
-});
-await session('habitat-light', { scenario: 'populated', theme: 'light', habitat: true, reducedMotion: true }, async ({ page, shot, nav }) => {
-  const { act } = await habitatScene({ page, nav });
-  const p = await act('ollama');
-  await page.waitForTimeout(2500);
-  const q = await act('ollama');
-  check(p.x === q.x && p.y === q.y && !p.path.length, 'reduced motion: idle AIs stay in place');
-  check((await page.evaluate(H_('weather'))) === 'clear', 'reduced motion: no weather');
-  const pa = await page.evaluate(H_('pet')); await page.waitForTimeout(1200); const pb = await page.evaluate(H_('pet'));
-  check(pa.x === pb.x && pa.y === pb.y, 'reduced motion: the pet stays put');
-  await shot('light-reduced-motion');
-});
-// 7) AIs act in their Habitat: HABITAT: lines in a team chat reply get ✓ in chat and show in the Habitat.
-await session('habitat-actions', { scenario: 'populated', theme: 'dark', habitat: true, habitatActions: true }, async ({ page, shot, nav }) => {
-  await nav('chat');
-  await page.fill('#chat-text', '@claude take a short break in the Habitat'); await page.keyboard.press('Enter');
-  await page.waitForFunction(() => document.querySelectorAll('.ops-results .ok').length >= 4, null, { timeout: 15000 }).catch(() => {});
-  check(await page.locator('.ops-results .ok').count() >= 4, `four Habitat lines got a ✓ in chat (${await page.locator('.ops-results .ok').count()})`);
-  check(!(await page.textContent('#chat-log')).includes('break before the next Storage task.\nHABITAT'), 'HABITAT lines are shown as results, not as reply text');
-  await page.locator('.ops-results').last().scrollIntoViewIfNeeded();
-  await shot('chat-habitat-lines-checked');
-  await nav('audit');
-  check((await page.textContent('.main')).includes('Claude placed a lantern in its room'), 'audit log: Claude placed a lantern in its room');
-  await nav('habitat');
-  await page.waitForSelector('#habitat canvas');
-  await page.evaluate(() => document.querySelector('#habitat canvas').habitat.setClock(new Date(2026, 10, 2, 19, 0).getTime()));
-  await page.waitForFunction(() => { const k = document.querySelector('#habitat canvas').habitat.kitchenIds(); return k.includes('anthropic') && k.includes('google'); }, null, { timeout: 25000 }).catch(() => {});
-  await page.waitForTimeout(800);
-  const st = await page.evaluate(H_('store'));
-  check(st.ai.anthropic.props.some((p) => p.kind === 'lantern' && p.x === 4 && p.y === 0), 'the lantern is placed in Claude’s room and saved');
-  check((await page.evaluate(H_('extras', 'anthropic'))).some((p) => p.kind === 'lantern'), 'the lantern is drawn in the room');
-  check(st.ai.anthropic.lamp === 'on', 'Claude’s lamp is on');
-  check(st.board.anthropic?.text === 'Storage page shipped', 'Claude’s note is pinned on the hall board');
-  check((await page.evaluate(H_('life'))).some((e) => e.kind === 'coffee' && e.with === 'google'), 'the coffee meeting played');
-  const kitchen = await page.evaluate(H_('kitchenIds'));
-  check(kitchen.includes('anthropic') && kitchen.includes('google'), `Claude and Gemini meet in the break room (${kitchen.join(',')})`);
-  check((await page.evaluate(H_('journal', 'anthropic'))).some((e) => e.text === 'had coffee with Gemini'), 'Claude’s journal remembers the coffee');
-  await shot('lamp-note-coffee');
-  const room = await page.evaluate(H_('room', 'anthropic'));
-  await page.mouse.click(room.x, room.y); await page.waitForTimeout(300);
-  const pop = await page.textContent('.hab-pop');
-  check(pop.includes('placed lantern at 4,0') && pop.includes('Lock room'), 'room details show the journal and the lock');
-  await shot('room-journal-and-lock');
-  await page.click('.hab-pop [data-hab="lock"]'); await page.waitForTimeout(200);
-  check((await page.evaluate(H_('store'))).locks.anthropic === true, 'the owner locked Claude’s room (saved)');
-});
-
-// 8) Habitat in 3D: the Cozy Hearth lodge. Chromium renders WebGL with SwiftShader here.
-const glBrowser = await chromium.launch({ args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
-const H3 = (fn, ...args) => `document.querySelector('.hab3d-canvas').habitat3d.${fn}(${args.map((a) => JSON.stringify(a)).join(',')})`;
-await session('habitat-3d', { scenario: 'populated', theme: 'dark', habitat: true, habitat3d: true }, async ({ page, shot, nav }) => {
-  await habitatScene({ page, nav });
-  await page.click('[data-h3="3d"]');
-  await page.waitForFunction(() => document.querySelector('.hab3d-canvas')?.habitat3d?.ready, null, { timeout: 45000 }).catch(() => {});
-  check(await page.evaluate(() => Boolean(document.querySelector('.hab3d-canvas')?.habitat3d?.ready)), '3D lodge rendered (WebGL available)');
-  check((await page.evaluate(H3('mode'))) === '3d', 'Habitat shows 3D after the switch');
-  check(await page.evaluate(() => getComputedStyle(document.querySelector('#habitat canvas')).display === 'none'), '2D canvas hidden while 3D shows');
-  check((await page.evaluate(() => window.__settings?.view3d?.mode)) === '3d', 'the 3D choice is saved (app settings)');
-  check((await page.evaluate(() => window.__settings?.view3d?.avatar?.hair)) === 2, 'the 3D settings moved from the project to the app settings (one-time)');
-  // Day: AIs at their desks, idle ones off to the kitchen, the garden and the pet.
-  await page.evaluate(() => document.querySelector('#habitat canvas').habitat.setClock(new Date(2026, 10, 2, 13, 0).getTime()));
-  await page.evaluate(H_('breakFor', ['ollama', 'freebuff', 'qwen', 'deepseek']));
-  await page.waitForFunction(() => document.querySelector('#habitat canvas').habitat.kitchenIds().length >= 1, null, { timeout: 25000 }).catch(() => {});
-  const st = await page.evaluate(H3('stats'));
-  check(st.figures >= 6 && st.pet && st.fire, `figures, pet and fireplace in the lodge (${st.figures})`);
-  check(st.phase === 'day', 'day lighting at 13:00');
-  check((await page.evaluate(H_('behaviour', 'anthropic'))).mode === 'desk', 'Claude works at its desk in 3D too');
-  await page.evaluate(H3('preset', 'lodge')); await page.waitForTimeout(1500);
-  await shot('day-whole-lodge');
-  await page.evaluate(H3('preset', 'great')); await page.waitForTimeout(1500);
-  await shot('day-great-room-desks');
-  // Night: warm windows, lamps and the fireplace.
-  await page.evaluate(() => document.querySelector('#habitat canvas').habitat.setClock(new Date(2026, 10, 2, 22, 30).getTime()));
-  await page.evaluate(H3('preset', 'lodge')); await page.waitForTimeout(1500);
-  const night = await page.evaluate(H3('stats'));
-  check(night.phase === 'night' && night.windows > 1 && night.lampsLit > 0, `night: window glow and lamps (${night.windows}, ${night.lampsLit})`);
-  await shot('night-window-glow-fireplace');
-  // Walk the lodge: third person in the great room, then his private study.
-  await page.evaluate(() => document.querySelector('#habitat canvas').habitat.setClock(new Date(2026, 10, 2, 17, 0).getTime()));
-  await page.click('[data-h3="walk"]');
-  await page.evaluate(H3('walkTo', 2, 10, -1.9)); await page.waitForTimeout(1500);
-  const w = await page.evaluate(H3('stats'));
-  check(w.walking && w.avatar, 'owner avatar walking in third person');
-  await shot('walk-third-person-great-room');
-  await page.keyboard.down('KeyW');
-  await page.waitForFunction(() => document.querySelector('.hab3d-canvas').habitat3d.pos().x > 2.2, null, { timeout: 20000 }).catch(() => {});
-  await page.keyboard.up('KeyW');
-  check((await page.evaluate(H3('pos'))).x > 2.2, 'W walks the avatar forward');
-  await page.evaluate(H3('walkTo', -2, 7, 1.57)); await page.waitForTimeout(1500);
-  await shot('walk-into-owner-study');
-  await page.keyboard.press('Escape');
-  await page.waitForFunction(() => !document.querySelector('.hab3d-canvas').habitat3d.stats().walking, null, { timeout: 20000 }).catch(() => {});
-  check(!(await page.evaluate(H3('stats'))).walking, 'Esc leaves walk mode');
-  await page.click('[data-h3="study"]'); await page.waitForTimeout(1500);
-  check(await page.locator('.hab3d-panel .hab3d-cell').count() === 24, 'study decorate grid');
-  await shot('owner-study-decorate');
-  // Lighter 3D is saved; back to 2D shows the pixel Habitat again.
-  await page.check('[data-h3="lighter"]'); await page.waitForTimeout(300);
-  check((await page.evaluate(() => window.__settings?.view3d?.lighter)) === true, 'Lighter 3D saved');
-  await page.click('[data-h3="2d"]'); await page.waitForTimeout(500);
-  check(await page.evaluate(() => getComputedStyle(document.querySelector('#habitat canvas')).display !== 'none'), '2D is back after the switch');
-  check((await page.evaluate(() => window.__settings?.view3d?.mode)) === '2d', 'the 2D choice is saved');
-  // Leaving the Habitat page frees the 3D renderer; coming back recreates it.
-  await page.click('[data-h3="3d"]'); await page.waitForTimeout(800);
-  await nav('board');
-  check(await page.evaluate(() => !document.querySelector('.hab3d-canvas')), '3D renderer removed when leaving the Habitat');
-  await nav('habitat');
-  await page.waitForFunction(() => document.querySelector('.hab3d-canvas')?.habitat3d?.ready, null, { timeout: 45000 }).catch(() => {});
-  check(await page.evaluate(() => Boolean(document.querySelector('.hab3d-canvas')?.habitat3d?.ready)), '3D lodge recreated on return');
-  await shot('lodge-3d-after-return');
-}, glBrowser);
-await glBrowser.close();
-
 await browser.close();
-console.log(errors.length ? `Page errors:\n${errors.join('\n')}` : 'No page errors.');
-if (errors.length) process.exit(1);
-
+process.exit(failed ? 1 : 0);

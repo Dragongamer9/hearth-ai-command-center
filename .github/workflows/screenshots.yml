@@ -46,16 +46,10 @@ jobs:
           for i in $(seq 1 60); do curl -sf http://127.0.0.1:4173/ >/dev/null && break; sleep 1; done
           mkdir -p shots
           set +e
+          # 2.x chats: home, a chat working on a repo, live preview, connect a repo, settings,
+          # light theme, diff viewer, temporary copies, a failed Actions run, app updates, a sent message.
           OUT_DIR=shots node ci/screenshots/shoot.mjs 2>&1 | tee shots/log.txt
           status=${PIPESTATUS[0]}
-          # Team ops screens (summary, budget, CI failure, projects, logs, phone).
-          OUT_DIR=shots node ci/screenshots/shoot-ops.mjs 2>&1 | tee -a shots/log.txt
-          ops_status=${PIPESTATUS[0]}
-          [ "$status" -ne 0 ] || status=$ops_status
-          # Team workflow screens (truth card, refused action, review packet, release gate, jobs, blockers).
-          OUT_DIR=shots node ci/screenshots/shoot-workflow.mjs 2>&1 | tee -a shots/log.txt
-          wf_status=${PIPESTATUS[0]}
-          [ "$status" -ne 0 ] || status=$wf_status
           set -e
           ls -la shots
           exit $status

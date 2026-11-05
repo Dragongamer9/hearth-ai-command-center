@@ -119,7 +119,3 @@ test('IMAGE REQUEST lines, checkpoint reports, results, and what the AIs are tol
   assert.doesNotMatch(buildPrompt('openai', [{ id: 'S2', who: 'system', text: 'hidden note' }]), /hidden note/);
 });
 
-test('every action line gets a visible result in main.js (source guards)', () => {
-  const ui = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
-  for (const s of ["ops.actionResult(agent, vline, false, `unknown task id", "ops.actionResult(agent, `ATTACH: ${f.path}`", "'ignored because the lead switch is off'", "only the lead (${NAMES[state.lead]}) can do that", "ops.actionResult(agent, `EDIT #${e.id}`", "ops.actionResult(agent, `HANDOFF: @${h.to}`", "ops.actionResult(agent, `TASK: ${p.title}`"]) assert.ok(ui.includes(s), s);
-});

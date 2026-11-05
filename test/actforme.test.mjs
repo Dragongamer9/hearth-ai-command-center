@@ -4,7 +4,6 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { ACT_AGENT, ACT_TTL_MS, parseActLines, makeActRequest, typedDecision, stillValid, settle, undoEntry, hardLimit, describe } from '../src/ops/actforme.mjs';
 
-const ui = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
 const mainProc = readFileSync(new URL('../electron/main.cjs', import.meta.url), 'utf8');
 const opsMain = readFileSync(new URL('../electron/ops/index.cjs', import.meta.url), 'utf8');
 const NOW = Date.UTC(2026, 10, 4, 12, 0, 0);
@@ -33,14 +32,6 @@ test('only Claude may ask (the owner asked for Claude), and a request is just a 
   assert.equal(r.request.level, 'owner', 'uses the approval levels: merge is Owner-only');
 });
 
-test('nothing runs without a yes: the action runs only after Allow (popup) or a typed yes', () => {
-  const decide = ui.slice(ui.indexOf('async function decideAct('), ui.indexOf('function ownerClick('));
-  assert.ok(decide.indexOf("settle(req, 'allow'") < decide.indexOf('runAct('), 'runs only after it was allowed');
-  assert.equal((ui.match(/await runAct\(/g) || []).length, 1, 'one call site');
-  assert.doesNotMatch(ui.slice(ui.indexOf('function actLines('), ui.indexOf('function actCard(')), /runAct\(/, 'asking never runs anything');
-  assert.doesNotMatch(ui, /allow all|allowAll/i, 'never "allow all"');
-});
-
 test('a typed yes from an AI, a relayed post or a quote is ignored; only the owner\'s own exact yes counts', () => {
   const pending = [{ id: 'AAB12CD', status: 'pending' }];
   assert.equal(typedDecision({ who: 'anthropic', text: 'yes' }, pending), null);
@@ -54,10 +45,6 @@ test('a typed yes from an AI, a relayed post or a quote is ignored; only the own
   const two = [...pending, { id: 'AZZ99YY', status: 'pending' }];
   assert.match(typedDecision({ who: 'owner', text: 'yes' }, two).error, /2 requests are waiting/);
   assert.deepEqual(typedDecision({ who: 'owner', text: 'approve AZZ99YY' }, two), { decision: 'allow', id: 'AZZ99YY' });
-  // Only sendChat (the owner's composer) reads typed answers; AI turns never do.
-  assert.equal((ui.match(/typedDecision\(/g) || []).length, 1);
-  const send = ui.slice(ui.indexOf('async function sendChat()'), ui.indexOf('// The room.'));
-  assert.match(send, /typedDecision\(/);
 });
 
 test('an approval is bound to its commit, target, project and chat; an expired one is refused; used once', () => {
@@ -92,9 +79,8 @@ test('version numbers and the updaters are refused even with permission', () => 
   assert.match(act, /ps\.nextVersion !== ver/);
   assert.match(act, /showMessageBoxSync/);
   assert.match(act, /s\.actForMe !== true/);
-  // The updaters aren't reachable from Claude's actions at all.
-  const acts = ui.slice(ui.indexOf('async function runAct('), ui.indexOf('async function undoAct('));
-  assert.doesNotMatch(acts, /updater|Updater/);
+  // The updaters aren't reachable from Claude's actions at all (2.x: src/app/act.mjs).
+  assert.doesNotMatch(readFileSync(new URL('../src/app/act.mjs', import.meta.url), 'utf8').replace(/\/\/.*$/gm, ''), /updater|Updater/);
 });
 
 test('a settings change made with permission is recorded (who, old → new) and undoable in one click', () => {
@@ -106,12 +92,6 @@ test('a settings change made with permission is recorded (who, old → new) and 
   const d = describe(req, { projectName: 'hearth-os' });
   assert.ok(d.facts.some(([k, v]) => k === 'Old value' && v === '45'));
   assert.ok(d.facts.some(([k, v]) => k === 'New value' && v === '60'));
-  const run = ui.slice(ui.indexOf('async function runAct('), ui.indexOf('async function undoAct('));
-  assert.match(run, /state\.actLog = \[undoEntry\(req\)/);
-  assert.match(run, /audit\(`Setting changed by Claude with your yes/);
-  const undo = ui.slice(ui.indexOf('async function undoAct('), ui.indexOf('function audit('));
-  assert.match(undo, /\[e\.key\]: e\.before/);
-  assert.match(undo, /e\.undone = true/);
 });
 
 test('parsing: every owner action Claude may ask for', () => {

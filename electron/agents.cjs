@@ -336,10 +336,30 @@ const uuid = () => crypto.randomUUID();
 // resumeId: continue that CLI session (its own session list keeps the whole
 // conversation); on success the result carries sessionId for next time.
 const runTool = (...a) => run(...a);
-async function runAgent({ agent, prompt, cwd, mode = 'read', model, timeoutMs, signal, bin, extraDirs = [], resumeId = null, images = [], onData, extraEnv = null }) {
+// 2.x chats: onEvent(json) gets every JSON line a CLI prints while it works (Claude Code's
+// stream-json, Codex's --json), so the window can show the steps. claude: { perm,
+// allowedTools, web } narrows Claude Code's permissions for a chat turn (see electron/v2.cjs).
+const CLAUDE_PERMS = ['plan', 'acceptEdits', 'auto', 'bypassPermissions'];
+function lineSplitter(fn) {
+  let buf = '';
+  return (d) => {
+    buf += String(d);
+    let i;
+    while ((i = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, i).trim();
+      buf = buf.slice(i + 1);
+      if (line.startsWith('{')) { try { fn(JSON.parse(line)); } catch {} }
+    }
+    if (buf.length > 4e6) buf = '';
+  };
+}
+async function runAgent({ agent, prompt, cwd, mode = 'read', model, timeoutMs, signal, bin, extraDirs = [], resumeId = null, images = [], onData, extraEnv = null, onEvent = null, claude = null }) {
   // Output activity feeds the stall watchdog (electron/ops/watchdog.cjs).
   // extraEnv: e.g. HEARTH_AI_ASSETS, the AI's own folder for generated files.
-  const run = (f, a, o) => runTool(f, a, { ...o, onData, extraEnv });
+  let resultEvent = null;
+  const lines = typeof onEvent === 'function' ? lineSplitter((ev) => { if (ev && ev.type === 'result') resultEvent = ev; try { onEvent(ev); } catch {} }) : null;
+  const feed = lines ? (d) => { lines(d); onData?.(d); } : onData;
+  const run = (f, a, o) => runTool(f, a, { ...o, onData: feed, extraEnv });
   if (mode === 'edit') mode = 'standard';
   const file = agent === 'ollama' ? null : bin || findBinary(agent);
   const img = imageInputs(agent, images, { agy: agent === 'google' && isAgy(file) });
@@ -354,9 +374,13 @@ async function runAgent({ agent, prompt, cwd, mode = 'read', model, timeoutMs, s
   const resume = resumeId && SAFE_ID.test(resumeId) ? resumeId : null;
 
   if (agent === 'anthropic') {
-    const perm = { read: 'plan', standard: 'auto', full: 'bypassPermissions' }[mode];
+    const perm = claude && CLAUDE_PERMS.includes(claude.perm) ? claude.perm : { read: 'plan', standard: 'auto', full: 'bypassPermissions' }[mode];
     const sid = resume || uuid();
-    const args = ['-p', '--output-format', 'json', '--permission-mode', perm, '--allowedTools', 'WebSearch', 'WebFetch'];
+    const web = !claude || claude.web !== false;
+    const allowed = [...(web ? ['WebSearch', 'WebFetch'] : []), ...((claude && Array.isArray(claude.allowedTools)) ? claude.allowedTools.filter((t) => typeof t === 'string' && /^[A-Za-z]+(\([^()\n]{1,120}\))?$/.test(t)) : [])];
+    const args = ['-p', '--output-format', lines ? 'stream-json' : 'json', ...(lines ? ['--verbose'] : []), '--permission-mode', perm];
+    if (allowed.length) args.push('--allowedTools', ...allowed);
+    if (!web) args.push('--disallowedTools', 'WebSearch', 'WebFetch');
     const settingsFile = claudeSettingsFile();
     if (settingsFile) args.push('--settings', settingsFile);
     args.push(...(resume ? ['--resume', resume] : ['--session-id', sid]));
@@ -364,7 +388,8 @@ async function runAgent({ agent, prompt, cwd, mode = 'read', model, timeoutMs, s
     for (const d of dirs) args.push('--add-dir', d);
     if (model) args.push('--model', model);
     const res = await run(file, args, { cwd: workdir, input: prompt, timeoutMs, signal });
-    const parsed = parseClaude(res.out);
+    // stream-json: the final "result" event (caught while streaming, so a long transcript can't push it out).
+    const parsed = resultEvent ? { text: typeof resultEvent.result === 'string' ? resultEvent.result : '', isError: Boolean(resultEvent.is_error), raw: resultEvent } : parseClaude(res.out);
     const sessionId = (parsed.raw && parsed.raw.session_id) || sid;
     if (res.code === 0 && !parsed.isError && parsed.text) return { ok: true, text: parsed.text, via: 'Claude Code', sessionId, usage: claudeUsage(parsed.raw) };
     return { ok: false, error: classify(agent, res, parsed.text), partial: parsed.text || null, resumeFailed: Boolean(resume) };
