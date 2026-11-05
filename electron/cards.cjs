@@ -14,6 +14,7 @@ const path = require('node:path');
 const zlib = require('node:zlib');
 const crypto = require('node:crypto');
 const { createJsonFile, atomicWrite } = require('./jsonfile.cjs');
+const { cleanVoice } = require('./voice-chat.cjs');
 
 // ---------- PNG chunks ----------
 const SIG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
@@ -145,8 +146,11 @@ function normalizeCard(j) {
   return card;
 }
 
-function toV2(card) {
-  const hearth = { ...(card.extensions?.hearth || {}), ...(card.voice ? { voice: card.voice } : {}) };
+// forExport: a card file never carries the voices picked in this app (voice chat keeps them in
+// the character store only: ownerVoice, and the older read-aloud voice name).
+function toV2(card, { forExport = false } = {}) {
+  const { voice: _v, ...ownHearth } = card.extensions?.hearth || {};
+  const hearth = forExport ? ownHearth : { ...ownHearth, ...(card.voice ? { voice: card.voice } : {}) };
   return {
     spec: 'chara_card_v2', spec_version: '2.0',
     data: {
@@ -155,12 +159,12 @@ function toV2(card) {
       system_prompt: card.system_prompt || '', post_history_instructions: card.post_history_instructions || '',
       alternate_greetings: card.alternate_greetings || [], tags: card.tags || [], creator: card.creator || '', character_version: card.character_version || '',
       ...(card.character_book ? { character_book: { ...card.character_book, extensions: {} } } : {}),
-      extensions: { ...(card.extensions || {}), ...(Object.keys(hearth).length ? { hearth } : {}) },
+      extensions: (() => { const { hearth: _h, ...rest } = card.extensions || {}; return { ...rest, ...(Object.keys(hearth).length ? { hearth } : {}) }; })(),
     },
   };
 }
-function toV3(card) {
-  const v2 = toV2(card);
+function toV3(card, o = {}) {
+  const v2 = toV2(card, o);
   return { spec: 'chara_card_v3', spec_version: '3.0', data: { ...v2.data, group_only_greetings: [], assets: [{ type: 'icon', uri: 'ccdefault:', name: 'main', ext: 'png' }] } };
 }
 const b64 = (o) => Buffer.from(JSON.stringify(o), 'utf8').toString('base64');
@@ -326,14 +330,25 @@ function createCards({ dataDir }) {
     cards.write({ version: 1, cards: all });
     return view(all[i]);
   }
+  // The character's voice for voice chat (a voice per provider, speed, pitch). Kept with the
+  // character in this app only; exported card files never include it. null clears it.
+  function setVoice(id, voice) {
+    const all = cards.read().cards.map((c) => ({ ...c }));
+    const i = all.findIndex((c) => c.id === id);
+    if (i < 0) throw new Error('No such character.');
+    const v = voice === null ? null : cleanVoice(voice);
+    if (v) all[i].ownerVoice = v; else delete all[i].ownerVoice;
+    cards.write({ version: 1, cards: all });
+    return view(all[i]);
+  }
   function remove(id) { const all = cards.read().cards; if (!all.some((c) => c.id === id)) return { ok: false }; cards.write({ version: 1, cards: all.filter((c) => c.id !== id) }); return { ok: true }; }
   function exportCard(id, fmt) {
     const c = get(id);
     if (!c) throw new Error('No such character.');
-    if (fmt === 'json') return { name: `${c.name}.json`, buf: Buffer.from(JSON.stringify(toV2(c), null, 2), 'utf8') };
+    if (fmt === 'json') return { name: `${c.name}.json`, buf: Buffer.from(JSON.stringify(toV2(c, { forExport: true }), null, 2), 'utf8') };
     const pic = picBuf(c.avatar);
     const png = pic && isPng(pic) ? pic : plainPng();
-    return { name: `${c.name}.png`, buf: withPngText(png, { chara: b64(toV2(c)), ccv3: b64(toV3(c)) }) };
+    return { name: `${c.name}.png`, buf: withPngText(png, { chara: b64(toV2(c, { forExport: true })), ccv3: b64(toV3(c, { forExport: true })) }) };
   }
 
   // Lorebooks
@@ -360,7 +375,7 @@ function createCards({ dataDir }) {
     return persona();
   }
 
-  return { confirmAdult, list, get, add, importFile, save, remove, exportCard, bookList, addBook, saveBook, removeBook, exportBook, importBook, persona, setPersona, broken: () => cards.broken() || books.broken() || rp.broken(), dir };
+  return { confirmAdult, setVoice, list, get, add, importFile, save, remove, exportCard, bookList, addBook, saveBook, removeBook, exportBook, importBook, persona, setPersona, broken: () => cards.broken() || books.broken() || rp.broken(), dir };
 }
 
 module.exports = { createCards, readCardFile, normalizeCard, toV2, toV3, cleanBook, cleanEntry, pngText, withPngText, plainPng, isPng, crc32, cardLimits, checkRequest, isSexual, b64, unb64 };

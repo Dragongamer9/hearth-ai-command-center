@@ -28,6 +28,8 @@ import { mountHabitat3d, stopHabitat3d } from './habitat3d/view.mjs';
 import { applyHabitatLines, habitatSection, stripHabitatLines } from './habitat/actions.mjs';
 import { teamHabitatLine } from './habitat/status.mjs';
 import { activateLore, nextSpeakers, rpPrompt, addSwipe, moveSwipe, isSexual, fill, spriteFor } from './app/roleplay.mjs';
+import { createVoice } from './voice.mjs';
+import { voiceSettings, routeFor } from './app/voice-logic.mjs';
 
 const api = window.hearth || null;
 const TEAM_IDS = ['anthropic', 'openai', 'google', 'xai', 'mistral', 'qwen', 'perplexity', 'deepseek', 'ollama', ...TEAMMATE_IDS];
@@ -40,7 +42,7 @@ const QUICK = [
   ['stats', 'Analyse a spreadsheet', 'Analyse the CSV I attached: summarise it and make charts of '],
   ['flag', 'Prepare a release', 'Prepare a release: list what changed since the last release and draft the release notes. Don\'t pick a version number; ask me for it.'],
 ];
-const SECTIONS = [['team', 'AI team'], ['accounts', 'Accounts'], ['github', 'GitHub'], ['tools', 'Tools'], ['memory', 'Memory'], ['scheduled', 'Scheduled'], ['connectors', 'Connectors'], ['perms', 'Permissions'], ['alerts', 'Notifications & voice'], ['look', 'Appearance'], ['updates', 'App updates'], ['data', 'Saved data']];
+const SECTIONS = [['team', 'AI team'], ['accounts', 'Accounts'], ['github', 'GitHub'], ['tools', 'Tools'], ['memory', 'Memory'], ['scheduled', 'Scheduled'], ['connectors', 'Connectors'], ['perms', 'Permissions'], ['alerts', 'Notifications'], ['voice', 'Voice'], ['look', 'Appearance'], ['updates', 'App updates'], ['data', 'Saved data']];
 const IDLE = [[1, '1 hour'], [6, '6 hours'], [24, '1 day'], [72, '3 days'], [168, '1 week'], [0, 'Never']];
 const MAX_CHATS = [1, 2, 3, 4, 5, 6, 8, 10];
 const IMAGE_MAKERS = ['openai', 'google', 'xai', 'venice', 'civitai', 'gpu'];
@@ -52,7 +54,7 @@ const S = {
   view: 'home', tab: 'team',
   chats: [], temps: [], trash: [], notices: [], broken: false,
   open: null, lastChat: null,
-  draft: '', attach: [], conn: null, mode: 'team', web: true, build: true, deep: false, talk: false, homeModels: {},
+  draft: '', attach: [], conn: null, mode: 'team', web: true, build: true, deep: false, homeModels: {},
   pane: null, pop: null, modal: null, toast: null, editing: null,
   search: '', hits: null, showTrash: false, showHidden: false, renaming: null,
   repos: null, reposMsg: '', repoQuery: '', branches: {}, pick: null,
@@ -130,7 +132,7 @@ const runner = createTeamRunner({
   onPreview: (R, msg) => { if (R.id === S.open && S.view === 'chat') openPane(msg.id, msg.previews[0].id); },
   beforeRound: async () => { S.memPrompt = (await call('memoryPrompt')) || ''; },
   afterSave: (R, msg) => { loadChats().then(renderSide); pushPhone(); if (msg && ((msg.acts || []).length || (msg.memo || []).length)) notify(R, 'needs your answer'); },
-  onRoundDone: (R, { stopped }) => { if (!stopped) { notify(R, 'reply is ready'); autoRead(R); } },
+  onRoundDone: (R, { stopped }) => { if (!stopped) { notify(R, 'reply is ready'); if (!voice.roundDone(R)) autoRead(R); } },
   isRoleplay: (R) => Boolean(entry(R.id)?.rp),
   roleplayTurn: (R, text, opts) => roleplayTurn(R, text, opts),
   uid, now,
@@ -169,7 +171,7 @@ function toast(text, undo = null) {
   toast.t = setTimeout(() => { S.toast = null; renderOverlay(); }, undo ? 9000 : 5000);
 }
 
-// Desktop notification (Settings › Notifications & voice): only when the owner isn't looking at that chat.
+// Desktop notification (Settings › Notifications): only when the owner isn't looking at that chat.
 function notify(R, what) {
   if (S.settings.notify === false) return;
   const looking = document.hasFocus?.() && !document.hidden && S.view === 'chat' && S.open === R.id;
@@ -859,57 +861,55 @@ window.addEventListener('message', (e) => {
   for (const f of document.querySelectorAll('iframe.dg-frame')) if (f.contentWindow === e.source) f.style.height = `${Math.min(900, Math.max(60, Number(e.data.h) || 200))}px`;
 });
 
-// ---------- voice: talk, and read answers aloud ----------
-async function toggleVoice() {
-  if (S.rec) { S.rec.stop(); return; }
-  if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined' || !api?.opsVoiceSave) return toast('Voice isn\'t available here.');
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    const rec = new MediaRecorder(stream);
-    const parts = [];
-    rec.ondataavailable = (e) => parts.push(e.data);
-    rec.onstop = async () => {
-      stream.getTracks().forEach((t) => t.stop());
-      S.rec = null;
-      render();
-      const blob = new Blob(parts, { type: rec.mimeType || 'audio/webm' });
-      toast('Turning your voice into text on this PC…');
-      const r = await call('opsVoiceSave', await blob.arrayBuffer());
-      const t = r?.text || r?.transcript || '';
-      if (t) { S.draft = `${S.draft ? `${S.draft} ` : ''}${t}`; render(true); focusComposer(); if (S.talk) send(); }
-      else toast(r?.message || 'No words were heard (voice needs whisper.cpp on this PC).');
-    };
-    rec.start();
-    S.rec = rec;
-    render();
-  } catch (e) { toast(`Microphone: ${cleanErr(e)}`); }
-}
-let speakingId = null;
-async function readAloud(m) {
-  const text = plainText(m?.text || '');
-  if (!text) return;
-  if (speakingId === m.id) { stopSpeaking(); return; }
-  stopSpeaking();
-  speakingId = m.id;
-  const synth = window.speechSynthesis;
-  if (synth && synth.getVoices().length) {
-    const u = new SpeechSynthesisUtterance(text.slice(0, 8000));
-    const vname = cardById(m.char)?.voice;
-    const v = vname ? synth.getVoices().find((x) => x.name === vname) : null;
-    if (v) u.voice = v;
-    u.onend = () => { speakingId = null; render(); };
-    synth.speak(u);
-  } else {
-    const r = await call('ttsSpeak', text);
-    if (!r?.ok) { speakingId = null; toast(r?.message || 'Reading aloud isn\'t available on this PC.'); }
-  }
-  render();
-}
-function stopSpeaking() { try { window.speechSynthesis?.cancel(); } catch {} call('ttsStop'); speakingId = null; }
+// ---------- voice: Talk view, dictation, read aloud (src/voice.mjs) ----------
+const voice = createVoice({
+  call, api, esc, icon, toast,
+  settings: () => S.settings,
+  renderOverlay: () => renderOverlay(),
+  rerender: () => render(),
+  entry: (id) => entry(id),
+  rt: (id) => (id ? rt(id) : null),
+  openId: () => S.open,
+  mode: () => S.mode,
+  cards: () => S.cards || [],
+  cardById: (id) => cardById(id),
+  aiName: (a) => aiName(a),
+  avatar: (c) => avatarHtml(c, 'sm'),
+  mono: (a) => mono(a, 'sm'),
+  lead: () => team().lead,
+  members: () => team().members.filter((a) => !AGENTS[a]?.imagesOnly),
+  // What he said, sent as his message in the chat the Talk view belongs to.
+  send: async (text) => { if (S.open !== voice.chatId()) return; await send(text); },
+  addDraft: (t, via) => { S.draft = `${S.draft ? `${S.draft} ` : ''}${t}`; render(true); focusComposer(); if (via) toast(`Heard with ${via}.`); },
+});
+function toggleVoice() { return voice.dictate(); }
+function readAloud(m) { return voice.readAloud(m); }
+function stopSpeaking() { voice.stopSpeaking(); }
 function autoRead(R) {
-  if (!(S.settings.autoRead || S.talk) || R.id !== S.open) return;
+  if (!S.settings.autoRead || R.id !== S.open || voice.isOpen()) return;
   const last = [...R.msgs].reverse().find((m) => m.who !== 'owner' && m.who !== 'system' && !m.err);
   if (last) readAloud(last);
+}
+function openTalk() {
+  if (S.view !== 'chat' || !S.open) { toast('Open a chat first, then press Talk.'); return; }
+  S.pop = null;
+  voice.openView(S.open);
+}
+// A voice picked from a picker: 'set:<key>' gives the settings change to save (the change handler
+// saves it: his pick), 'card' goes into the character being edited (saved when he presses Save).
+function pickVoice(key, provider, id) {
+  const list = voice.state.lists[provider] || [];
+  const val = !id ? null : provider === 'elevenlabs' ? { id, name: list.find((x) => x.id === id)?.name || id } : id;
+  if (key === 'card') { const c = S.cardEdit; if (!c) return null; c.ownerVoice = { ...(c.ownerVoice || {}), [provider]: val || undefined }; c.voiceChanged = true; renderMain(); return null; }
+  if (key.startsWith('set:')) return { voices: { [key.slice(4)]: { [provider]: val } } };
+  return null;
+}
+function previewVoice(key, provider, who) {
+  const v = voiceSettings(S.settings);
+  const sel = key === 'card' ? (S.cardEdit?.ownerVoice || {}) : (v.voices[key.slice(4)] || {});
+  const id = document.querySelector(`[data-vpick="${CSS.escape(key)}"]`)?.value || (provider === 'elevenlabs' ? sel.elevenlabs?.id : sel[provider]) || (voice.state.lists[provider] || [])[0]?.id || '';
+  const name = key === 'card' ? (S.cardEdit?.name || 'your character') : key === 'set:narrator' ? 'the narrator' : key === 'set:default' ? 'the default voice' : aiName(key.slice(4));
+  voice.preview({ provider, voice: id, speed: sel.speed, pitch: sel.pitch, who: who || 'owner' }, `Hello, ${ownerName()}. I'm ${name}, and this is how I sound.`);
 }
 
 // ---------- export ----------
@@ -966,6 +966,8 @@ function shell() {
 
 function render(scroll = false) {
   if (!document.getElementById('shell')) shell();
+  // The Talk view belongs to one chat: leaving it closes the view (and the microphone).
+  if (voice.isOpen() && (S.view !== 'chat' || S.open !== voice.chatId())) voice.closeView();
   renderSide();
   renderMain(scroll);
   renderPane();
@@ -1102,7 +1104,7 @@ function composer(placeholder) {
     ${thumbs ? `<div class="thumbs">${thumbs}</div>` : ''}
     ${c && !c.rp && !(c.repo || c.repoDir) ? `<div class="cnote" id="no-push-note">${icon('gh', 'sm')}<span>This chat has no repo, so the team can't commit or push anything. Connect a repo if the work should go to GitHub.</span><button class="mini" data-a="repo-pop">Connect a repo</button></div>` : ''}
     ${missingNote()}
-    ${S.deep || S.talk ? `<div class="modes">${S.deep ? `<button class="chip on" data-a="toggle-deep" title="Turn deep research off">${icon('globe', 'sm')}Deep research ×</button>` : ''}${S.talk ? `<button class="chip on" data-a="toggle-talk" title="Turn talk mode off">${icon('mic', 'sm')}Talk mode ×</button>` : ''}</div>` : ''}
+    ${S.deep ? `<div class="modes"><button class="chip on" data-a="toggle-deep" title="Turn deep research off">${icon('globe', 'sm')}Deep research ×</button></div>` : ''}
     <textarea id="composer" rows="1" placeholder="${esc(placeholder)}" aria-label="Message">${esc(S.draft)}</textarea>
     <div class="row">
       <button class="ib" data-a="attach" title="Attach files, images, videos, PDFs or spreadsheets (or paste a screenshot)" aria-label="Attach">${icon('plus', 'sm')}</button>
@@ -1112,7 +1114,8 @@ function composer(placeholder) {
       <button class="chip sw ${S.build ? 'on' : ''}" data-a="toggle-build" aria-pressed="${S.build}" title="Run quick checks here, push to the chat's branch, builds in GitHub Actions">${icon('play', 'sm')}Run &amp; build</button>`}
       <button class="chip" data-a="options-pop" title="Models, deep research, talk mode">${icon('more', 'sm')}${picked ? `Models (${picked})` : 'More'}</button>
       <span class="grow"></span>
-      <button class="ib ${S.rec ? 'rec' : ''}" data-a="voice" title="${S.rec ? 'Stop recording' : 'Talk instead of typing'}" aria-label="Voice">${icon('mic', 'sm')}</button>
+      <button class="ib ${voice.dictating() ? 'rec' : ''}" data-a="voice" title="${voice.dictating() ? 'Stop and turn it into text' : 'Dictate: say your message, it becomes text'}" aria-label="Dictate">${icon('mic', 'sm')}</button>
+      ${c ? `<button class="chip talk" data-a="talk" id="talk-btn" title="Voice chat: talk with ${c.rp ? 'the characters' : 'the team'} and hear the answers">${icon('wave', 'sm')}Talk</button>` : ''}
       ${busy ? `<button class="send stop" data-a="stop" title="Stop this chat" aria-label="Stop">${icon('stop', 'sm')}</button>` : ''}<button class="send" data-a="send" title="Send (Enter)" aria-label="Send">${icon('up', 'sm')}</button>
     </div>
   </div>`;
@@ -1185,7 +1188,7 @@ function controlsHtml(m, owner = false) {
   const ver = m.versions?.length > 1 ? `<span class="ver"><button class="ib sm ghost" data-a="ver" data-m="${esc(m.id)}" data-d="-1" ${(m.v ?? m.versions.length - 1) === 0 ? 'disabled' : ''} aria-label="Previous version">‹</button>${(m.v ?? m.versions.length - 1) + 1}/${m.versions.length}<button class="ib sm ghost" data-a="ver" data-m="${esc(m.id)}" data-d="1" ${(m.v ?? m.versions.length - 1) === m.versions.length - 1 ? 'disabled' : ''} aria-label="Next version">›</button></span>` : '';
   const br = m.branches?.length > 1 ? `<span class="ver"><button class="ib sm ghost" data-a="branch" data-m="${esc(m.id)}" data-d="-1" ${(m.b || 0) === 0 || busy ? 'disabled' : ''} aria-label="Previous version">‹</button>${(m.b || 0) + 1}/${m.branches.length}<button class="ib sm ghost" data-a="branch" data-m="${esc(m.id)}" data-d="1" ${(m.b || 0) === m.branches.length - 1 || busy ? 'disabled' : ''} aria-label="Next version">›</button></span>` : '';
   if (owner) return `<div class="mctl u">${br}<button class="ib sm ghost" data-a="msg-copy" data-m="${esc(m.id)}" title="Copy">${icon('doc', 'sm')}</button>${!S.readOnly ? `<button class="ib sm ghost" data-a="msg-edit" data-m="${esc(m.id)}" title="Edit and resend" ${busy ? 'disabled' : ''}>${icon('pencil', 'sm')}</button>` : ''}</div>`;
-  return `<div class="mctl">${ver}<button class="ib sm ghost" data-a="msg-copy" data-m="${esc(m.id)}" title="Copy">${icon('doc', 'sm')}</button><button class="ib sm ghost ${speakingId === m.id ? 'rec' : ''}" data-a="msg-read" data-m="${esc(m.id)}" title="${speakingId === m.id ? 'Stop reading' : 'Read aloud'}">${icon(speakingId === m.id ? 'stop' : 'mic', 'sm')}</button>${!S.readOnly && AGENTS[m.who] ? `<button class="ib sm ghost" data-a="msg-retry" data-m="${esc(m.id)}" title="Retry (a new version of this answer)" ${busy ? 'disabled' : ''}>${icon('refresh', 'sm')}</button>` : ''}</div>`;
+  return `<div class="mctl">${ver}<button class="ib sm ghost" data-a="msg-copy" data-m="${esc(m.id)}" title="Copy">${icon('doc', 'sm')}</button><button class="ib sm ghost ${voice.isReading(m.id) ? 'rec' : ''}" data-a="msg-read" data-m="${esc(m.id)}" title="${voice.isReading(m.id) ? 'Stop reading' : 'Read aloud'}">${icon(voice.isReading(m.id) ? 'stop' : 'mic', 'sm')}</button>${!S.readOnly && AGENTS[m.who] ? `<button class="ib sm ghost" data-a="msg-retry" data-m="${esc(m.id)}" title="Retry (a new version of this answer)" ${busy ? 'disabled' : ''}>${icon('refresh', 'sm')}</button>` : ''}</div>`;
 }
 
 function message(m, latestChanges, last = false) {
@@ -1289,10 +1292,9 @@ function cardEditView() {
   const c = S.cardEdit;
   if (!c) return '';
   const f = (k, label, rows = 3, ph = '') => `<label class="field">${label}<textarea data-cf="${k}" rows="${rows}" placeholder="${esc(ph)}">${esc(c[k] || '')}</textarea></label>`;
-  const voices = (window.speechSynthesis?.getVoices?.() || []).map((v) => v.name);
   return `<div class="lib edit"><div class="lib-hd"><button class="tb" data-a="characters">${icon('chevr', 'sm')}Characters</button><h1>${esc(c.id ? `Edit ${c.name}` : 'New character')}</h1><span class="grow"></span><button class="btn ghost" data-a="characters">Cancel</button><button class="btn p" data-a="card-save">Save</button></div>
     <div class="cedit"><div class="cleft">${c.avatarUrl ? `<img class="big" src="${esc(c.avatarUrl)}" alt="">` : '<div class="big noimg">?</div>'}<button class="mini" data-a="card-pic">Change picture</button>${c.limits ? limitBadge(c) : ''}${adultBox(c)}
-      <label class="field">Voice for read aloud<input data-cf="voice" list="voice-list" value="${esc(c.voice || '')}" placeholder="system default"><datalist id="voice-list">${voices.map((v) => `<option>${esc(v)}</option>`).join('')}</datalist></label>
+      ${voice.cardHtml(c)}
       <label class="field">Lorebooks<select data-cf="lorebooks" multiple size="4">${(S.books || []).map((b) => `<option value="${esc(b.id)}" ${(c.lorebooks || []).includes(b.id) ? 'selected' : ''}>${esc(b.name)}</option>`).join('')}</select></label>
       ${c.character_book ? `<div class="fine">Embedded lorebook: ${c.character_book.entries?.length || 0} entries <button class="mini" data-a="lore-from-card" data-id="${esc(c.id || '')}">Copy to Lorebooks</button></div>` : ''}</div>
     <div class="cright"><label class="field">Name<input data-cf="name" value="${esc(c.name || '')}" maxlength="120"></label>
@@ -1337,7 +1339,7 @@ function rpMessage(m) {
   return `<div class="msg-a rp ${m.err ? 'err' : ''}" data-msg="${esc(m.id)}"><div class="rp-row">${avatarHtml(card, 'lg')}<div class="rp-body">
     <div class="who"><b>${esc(card?.name || aiName(m.who))}</b><span class="faint">· played by ${esc(aiName(m.who))}${UNFILTERED.includes(m.who) ? ' · not shown to your other AIs' : ''}</span>${m.greeting ? '<span class="faint">· greeting</span>' : ''}</div>
     <div class="text">${rich(m.text)}</div>${mediaHtml(m)}
-    <div class="mctl">${swipe}<button class="ib sm ghost" data-a="msg-copy" data-m="${esc(m.id)}" title="Copy">${icon('doc', 'sm')}</button><button class="ib sm ghost ${speakingId === m.id ? 'rec' : ''}" data-a="msg-read" data-m="${esc(m.id)}" title="Read aloud${card?.voice ? ` (${esc(card.voice)})` : ''}">${icon(speakingId === m.id ? 'stop' : 'mic', 'sm')}</button><button class="ib sm ghost" data-a="msg-edit" data-m="${esc(m.id)}" title="Edit" ${busy ? 'disabled' : ''}>${icon('pencil', 'sm')}</button>${isLast && !m.greeting ? `<button class="ib sm ghost" data-a="rp-swipe" data-m="${esc(m.id)}" data-d="99" title="Regenerate (a new swipe)" ${busy ? 'disabled' : ''}>${icon('refresh', 'sm')}</button><button class="ib sm ghost" data-a="rp-continue" data-m="${esc(m.id)}" title="Continue this reply" ${busy ? 'disabled' : ''}>${icon('chevr', 'sm')}</button>` : ''}</div></div></div></div>`;
+    <div class="mctl">${swipe}<button class="ib sm ghost" data-a="msg-copy" data-m="${esc(m.id)}" title="Copy">${icon('doc', 'sm')}</button><button class="ib sm ghost ${voice.isReading(m.id) ? 'rec' : ''}" data-a="msg-read" data-m="${esc(m.id)}" title="Read aloud${card?.voice ? ` (${esc(card.voice)})` : ''}">${icon(voice.isReading(m.id) ? 'stop' : 'mic', 'sm')}</button><button class="ib sm ghost" data-a="msg-edit" data-m="${esc(m.id)}" title="Edit" ${busy ? 'disabled' : ''}>${icon('pencil', 'sm')}</button>${isLast && !m.greeting ? `<button class="ib sm ghost" data-a="rp-swipe" data-m="${esc(m.id)}" data-d="99" title="Regenerate (a new swipe)" ${busy ? 'disabled' : ''}>${icon('refresh', 'sm')}</button><button class="ib sm ghost" data-a="rp-continue" data-m="${esc(m.id)}" title="Continue this reply" ${busy ? 'disabled' : ''}>${icon('chevr', 'sm')}</button>` : ''}</div></div></div></div>`;
 }
 function rpBar(c) {
   const cards = rpCards(c);
@@ -1372,6 +1374,7 @@ function renderOverlay() {
   let html = '';
   if (S.pop) html += popHtml();
   if (S.modal) html += modalHtml();
+  if (voice.isOpen()) html += voice.viewHtml();
   if (S.toast) html += `<div class="toast">${esc(S.toast.text)}${S.toast.undo ? `<button class="mini" data-a="undo">${icon('undo', 'sm')}Undo</button>` : ''}</div>`;
   setRegion('overlay', html);
   if (S.pop?.kind === 'repo') { const el = document.getElementById('repo-q'); if (el && document.activeElement !== el && !S.pop.noFocus) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } }
@@ -1407,7 +1410,7 @@ function popHtml() {
     return `<div class="scrim" data-a="close-pop"></div><div class="pop opts" style="left:${p.x}px;${p.b != null ? `bottom:${p.b}px` : `top:${p.y}px`}">
       <div class="mh">For this message</div>
       <button class="it" data-a="toggle-deep">${icon('globe', 'sm')}Deep research<small>${S.deep ? 'on' : 'off'} · a long report with sources</small></button>
-      <button class="it" data-a="toggle-talk">${icon('mic', 'sm')}Talk mode<small>${S.talk ? 'on' : 'off'} · send what you say, read answers aloud</small></button>
+      <button class="it" data-a="toggle-talk">${icon('wave', 'sm')}Talk<small>${voice.isOpen() ? 'on' : 'off'} · voice chat: say it, hear the answers</small></button>
       <div class="sep"></div><div class="mh">Model per AI ${R ? '(this chat)' : '(the next chat)'}</div>
       ${t.members.filter((a) => !AGENTS[a]?.imagesOnly).map((a) => `<div class="it static">${mono(a, 'sm')}${esc(aiName(a))}<select data-a="pick-model" data-v="${a}"><option value="default">default</option>${opts(a).map((o) => `<option ${models[a] === o ? 'selected' : ''}>${esc(o)}</option>`).join('')}${models[a] && models[a] !== 'default' && !opts(a).includes(models[a]) ? `<option selected>${esc(models[a])}</option>` : ''}</select></div>`).join('')}
       <div class="note">Default uses each AI's own setting. Models are kept with the chat, not in your settings.</div></div>`;
@@ -1629,13 +1632,12 @@ function section(k) {
       ${permsTableBox()}`;
   }
   if (k === 'alerts') {
-    return `<h1>Notifications &amp; voice</h1><div class="box"><h3>${icon('flag', 'sm')}Notifications</h3>
+    return `<h1>Notifications</h1><div class="box"><h3>${icon('flag', 'sm')}Notifications</h3>
       <div class="srow">Desktop notifications<span class="d">when a reply is ready or an AI needs your answer, naming the chat (only when you're not looking at it)</span><span class="grow"></span>${tog(s.notify !== false, 'notify-toggle')}</div></div>
       <div class="box"><h3>${icon('users', 'sm')}Several chats at once</h3><div class="srow">Chats working at the same time<span class="d">more wait in line and say so</span><span class="grow"></span><select data-a="max-chats">${MAX_CHATS.map((n) => `<option value="${n}" ${(s.maxChats || 3) === n ? 'selected' : ''}>${n}</option>`).join('')}</select></div></div>
-      <div class="box"><h3>${icon('mic', 'sm')}Voice</h3>
-      <div class="srow">Read every answer aloud<span class="d">off: use the read-aloud button on any answer</span><span class="grow"></span>${tog(s.autoRead === true, 'auto-read')}</div>
-      <div class="srow">How<span class="d">your system's voices (Web Speech), or espeak-ng / speech-dispatcher on this PC; talking uses whisper.cpp on this PC. Nothing leaves your PC.</span></div></div>`;
+      <div class="box"><h3>${icon('mic', 'sm')}Voice</h3><div class="srow">Voice chat, read aloud and voices<span class="d">moved to their own page</span><span class="grow"></span><button class="mini" data-a="tab" data-t="voice">Settings › Voice</button></div></div>`;
   }
+  if (k === 'voice') return voice.settingsHtml({ tog, team: t, mono, aiName });
   if (k === 'look') {
     return `<h1>Appearance</h1><div class="box"><h3>Look</h3>
       <div class="srow">Theme<span class="grow"></span>${['hearth', 'dark', 'light', 'system'].map((v) => `<button class="seg ${s.theme === v ? 'on' : ''}" data-a="theme" data-v="${v}">${{ hearth: 'Follow Hearth OS', dark: 'Dark', light: 'Light', system: 'System' }[v]}</button>`).join('')}</div>
@@ -1723,6 +1725,7 @@ function foundHtml() {
 
 async function loadCopies() { S.copies = await call('copiesList'); render(); }
 async function loadSection(t) {
+  if (t === 'voice') { await voice.loadLists(); return render(); }
   if (t === 'data') { loadCopies(); S.boards = await call('savedBoards'); S.slog = await call('settingsLog'); }
   if (t === 'perms') { refreshAgents(); loadPerms(); }
   if (t === 'tools') loadMissing();
@@ -1829,7 +1832,7 @@ document.addEventListener('click', async (ev) => {
     case 'lorebooks': S.view = 'lorebooks'; S.loreEdit = null; render(true); S.books = (await call('loreList')) || []; return render();
     case 'card-import': { const r = await call('cardsPick'); return afterImport(r || []); }
     case 'card-new': S.cardEdit = { name: '', tags: [], alternate_greetings: [], lorebooks: [] }; S.view = 'card'; return render(true);
-    case 'card-edit': S.cardEdit = JSON.parse(JSON.stringify(cardById(d.id) || {})); S.view = 'card'; return render(true);
+    case 'card-edit': S.cardEdit = JSON.parse(JSON.stringify(cardById(d.id) || {})); S.view = 'card'; render(true); await voice.loadLists(); return render();
     case 'card-pic': { readCardForm(); const f = await pickFile('image/png,image/jpeg,image/webp'); if (f) { const url = await fileUrl(f); S.cardEdit.avatarData = url; S.cardEdit.avatarUrl = url; } return render(); }
     case 'card-adult': case 'card-adult-undo': {
       const c = S.cardEdit; if (!c?.id) return;
@@ -1842,7 +1845,7 @@ document.addEventListener('click', async (ev) => {
       toast(d.a === 'card-adult' ? `${r.name} is confirmed as an adult (age ${r.limits?.adultConfirmed?.age}).` : `Adult confirmation removed from ${r.name}.`);
       await loadCards(); return render();
     }
-    case 'card-save': { readCardForm(); const c = S.cardEdit; if (!String(c.name || '').trim()) return toast('Give the character a name.'); const r = await call('cardsSave', c); if (r?.ok === false || r?.message) return toast(r.message || 'Not saved.'); toast(`Saved ${r.name}.`); await loadCards(); S.cardEdit = null; S.view = 'characters'; return render(true); }
+    case 'card-save': { readCardForm(); const c = S.cardEdit; if (!String(c.name || '').trim()) return toast('Give the character a name.'); const r = await call('cardsSave', c); if (r?.ok === false || r?.message) return toast(r.message || 'Not saved.'); if (c.voiceChanged && r?.id) { const vr = await call('cardsSetVoice', r.id, c.ownerVoice || null); if (vr?.message) toast(vr.message); } toast(`Saved ${r.name}.`); await loadCards(); S.cardEdit = null; S.view = 'characters'; return render(true); }
     case 'card-export': { const r = await call('cardsExport', d.id, d.f); if (r?.ok) toast(`Exported to ${r.file}.`); else if (r && !r.cancelled) toast(r.message || 'Not exported.'); return; }
     case 'find-chars': S.findSites = (await call('cardsFindSites')) || S.findSites; S.modal = { kind: 'find' }; return renderOverlay();
     case 'find-open': { const r = await call('cardsFindOpen', d.v); if (r?.ok === false) toast(r.message || 'Couldn\'t open it.'); return; }
@@ -1895,7 +1898,34 @@ document.addEventListener('click', async (ev) => {
     case 'toggle-web': S.web = !S.web; return render();
     case 'toggle-build': S.build = !S.build; return render();
     case 'toggle-deep': S.deep = !S.deep; if (S.deep) S.web = true; S.pop = null; return render();
-    case 'toggle-talk': S.talk = !S.talk; S.pop = null; if (!S.talk) stopSpeaking(); return render();
+    case 'toggle-talk': S.pop = null; if (voice.isOpen()) voice.closeView(); else openTalk(); return render();
+    case 'talk': return openTalk();
+    case 'voice-close': return voice.closeView();
+    case 'voice-settings': voice.closeView(); S.view = 'settings'; S.tab = 'voice'; render(true); return loadSection('voice');
+    case 'voice-turn': voice.setTurn(d.v); return setSettings({ voice: { turn: d.v } });
+    case 'voice-barge': { const on = !voiceSettings(S.settings).bargeIn; voice.setBarge(on); return setSettings({ voice: { bargeIn: on } }); }
+    case 'voice-set': if (d.v) { await setSettings({ voice: { [d.k]: d.v } }); return loadSection('voice'); } return;
+    case 'voice-keep': return setSettings({ voice: { keepAudio: !voiceSettings(S.settings).keepAudio } });
+    case 'voice-uncensored': {
+      const on = !voiceSettings(S.settings).openaiForUncensored;
+      if (on && !window.confirm?.('Allow OpenAI for Venice, Civitai and your GPU server?\n\nTheir replies would then be sent to OpenAI to be spoken (and your voice, in chats only with them, to be turned into text). They are otherwise never sent to Claude, OpenAI or Google.')) return;
+      return setSettings({ voice: { openaiForUncensored: on } });
+    }
+    case 'voice-key': { const el = document.getElementById(`vkey-${d.k}`); const k2 = String(el?.value || '').trim(); if (!k2) return toast('Paste the key into the box first.'); if (el) el.value = ''; const r = await call('mediaSetKey', d.k, k2.trim()); toast(r?.ok ? 'Saved, encrypted on this PC.' : r?.message || 'Not saved.'); await refreshMates(); return loadSection('voice'); }
+    case 'voice-key-remove': await call('mediaRemoveKey', d.k); await refreshMates(); return loadSection('voice');
+    case 'voice-preview': return previewVoice(d.k, d.prov, d.who);
+    case 'voice-clone': {
+      const name = document.getElementById('clone-name')?.value || '';
+      const consent = Boolean(document.getElementById('clone-consent')?.checked);
+      if (!consent) return toast('Tick the box first: only your own voice, or one you have permission to use.');
+      if (!name.trim()) return toast('Give the voice a name.');
+      toast('Sending the recordings to ElevenLabs…');
+      const r = await call('voiceClone', { name, consent: true });
+      if (r?.cancelled) return;
+      toast(r?.ok ? `Added “${r.voice.name}” to your ElevenLabs voices${r.requiresVerification ? ' (ElevenLabs asks you to verify it on its website first)' : ''}.` : r?.message || 'Not added.');
+      if (r?.ok) { await voice.loadList('elevenlabs', true); render(); }
+      return;
+    }
     case 'toggle-pane': if (S.pane) { S.pane = null; } else { const m = [...S.msgs].reverse().find((x) => x.previews?.length); if (m) return openPane(m.id, m.previews[0].id); toast('No live preview or canvas in this chat yet.'); } return render();
     case 'attach': { const r = await call('attachPickAny'); for (const x of r || []) { if (x?.ok) S.attach.push(x.att); else if (x?.message) toast(x.message); } return render(); }
     case 'unattach': S.attach.splice(Number(d.i), 1); return render();
@@ -2014,6 +2044,9 @@ document.addEventListener('change', (ev) => {
   const t = ev.target;
   if (t.matches?.('[data-a="idle-hours"]')) setSettings({ copyIdleHours: Number(t.value) });
   if (t.matches?.('[data-a="max-chats"]')) setSettings({ maxChats: Number(t.value) });
+  if (t.matches?.('select[data-a="voice-set"]')) setSettings({ voice: { [t.dataset.k]: t.value } }).then(() => loadSection('voice'));
+  if (t.matches?.('[data-vpick]')) { const vp = pickVoice(t.dataset.vpick, t.dataset.prov, t.value); if (vp) setSettings({ voice: vp }); }
+  if (t.matches?.('[data-cvoice]') && S.cardEdit) { const c = S.cardEdit; c.ownerVoice = { ...(c.ownerVoice || {}), [t.dataset.cvoice]: Number(t.value) }; c.voiceChanged = true; renderMain(); }
   if (t.matches?.('[data-a="venice-model"]')) setSettings({ teammates: { venice: { model: t.value } } });
   if (t.matches?.('[data-a="venice-image"]')) setSettings({ teammates: { venice: { imageModel: t.value } } });
   if (t.matches?.('[data-a="civitai-engine"]')) setSettings({ teammates: { civitai: { engine: t.value } } });
@@ -2054,6 +2087,7 @@ document.addEventListener('keydown', (ev) => {
   if (t.id === 'composer' && ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); send(); return; }
   if (t.id === 'edit-text' && ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); resendEdited(S.editing, t.value); return; }
   if (t.id === 'rename-input') { if (ev.key === 'Enter') { ev.preventDefault(); finishRename(true); } if (ev.key === 'Escape') finishRename(false); return; }
+  if (ev.key === 'Escape' && voice.isOpen() && !S.modal && !S.pop) { voice.closeView(); return; }
   if (ev.key === 'Escape') { if (S.modal) { S.modal = null; renderOverlay(); } else if (S.pop) { S.pop = null; renderOverlay(); } else if (S.editing) { S.editing = null; render(); } }
 });
 document.addEventListener('focusout', (ev) => { if (ev.target.id === 'rename-input') setTimeout(() => { if (S.renaming) finishRename(true); }, 120); });

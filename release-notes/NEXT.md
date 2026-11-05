@@ -1,0 +1,39 @@
+### What's new in the next update
+
+(Draft for the next release. The version number is yours to pick.)
+
+## Voice chat
+
+Talk with your AI team and your characters, and hear them answer in their own voices.
+
+- **A Talk button** next to the message box opens the voice view: a big microphone, a live waveform, and the last few lines of the chat.
+  - **Hands-free:** it listens, and when you stop talking it sends what you said. The answer is spoken, then it listens again.
+  - **Push to talk:** hold the big mic (or Space) while you talk, let go to send.
+  - **Interrupt by talking:** talk over a reply and it stops at once and listens to you. You can turn this off.
+  - The view shows who speaks in which voice, and who is speaking right now.
+- **Your speech becomes text** with whisper.cpp on your PC when it's installed (free and private, the default). Otherwise it uses OpenAI with your OpenAI key. The voice view and Settings › Voice always say which one is in use.
+- **Realistic voices. Pick one provider in Settings › Voice:**
+  - **ElevenLabs:** the most realistic. Uses your own ElevenLabs key (saved encrypted on your PC). It lists your voices, and speech is streamed, so it starts talking quickly.
+  - **OpenAI:** its preset voices, with your OpenAI key, also streamed.
+  - **This PC (free):** Kokoro or Piper if you've installed them, otherwise espeak-ng or your system voices. They all run on the CPU, so they suit your laptop.
+- **Every character has its own voice.** Pick it in the character's editor, with speed (and pitch for espeak-ng and system voices) and a Preview button.
+  - In group roleplay, each character speaks in their own voice. Characters with no voice yet get an automatic one, so they never all sound the same.
+  - Text in *asterisks* can be read in the same voice, by a separate narrator voice, or skipped.
+  - Voices are kept with the character in the app. They are never written into exported card files.
+- **A voice for each AI teammate** in normal chats, plus a default voice.
+- **Add your own voice (ElevenLabs):** give it a few clean recordings, and it can speak in your voice. This only works after you tick the box saying it's your own voice or you have the speaker's permission. There are no ready-made voices of real people. ElevenLabs needs a paid plan for this and may ask you to verify the voice.
+- **Privacy and cost:**
+  - Settings › Voice shows who gets your voice and the reply text.
+  - **Venice, Civitai and your GPU server stay private.** Their replies are never sent to OpenAI to be spoken: they use ElevenLabs or your PC instead. Your voice in a chat that's only with them isn't sent to OpenAI either. You can allow OpenAI for them yourself; the app asks you first.
+  - Only the transcript is saved in the chat. No audio is kept unless you turn on **Keep voice recordings**.
+  - Your PC's voices are free. ElevenLabs and OpenAI charge your own accounts.
+- **The microphone is only for the app's own window.** Live previews, the Find characters windows and the official web app windows never get it.
+- The mic button in the message box still types what you say into the box. Read aloud on any message now uses the voices you picked. Voice settings moved from Notifications to their own **Settings › Voice** page.
+
+## Fixed
+
+- **Gemini's team test runs one step per run.** agy stops at the first tool it refuses and doesn't say which one, so each step now gets its own run and the result shows exactly which step failed.
+- **When Gemini refuses in a chat, you see agy's own words** and the mode it ran in, instead of a generic error.
+- **The "Not installed on this PC" note** lists each missing tool once, and you can hide it. It comes back only when the list of missing tools changes.
+- **A false "under 18" flag can be cleared.** When a character was flagged only because of a word or an age somewhere in its text (like "she has two kids"), you can confirm the character's adult age in its editor. Cards that themselves say the character is a minor (its age field, a minor tag, or words like "underage") can never be cleared; they stay stories only.
+- **"16 years ago" or "for 16 years" no longer counts as an age** when checking characters.

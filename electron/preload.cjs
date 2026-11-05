@@ -68,6 +68,25 @@ contextBridge.exposeInMainWorld('hearth', {
   mediaScreenshot: (chatId, url) => ipcRenderer.invoke('media:screenshot', chatId, url),
   ttsSpeak: (text) => ipcRenderer.invoke('tts:speak', text),
   ttsStop: () => ipcRenderer.invoke('tts:stop'),
+  // Voice chat (electron/voice-chat.cjs): speech to text, voices, cloning with consent.
+  voiceStatus: () => ipcRenderer.invoke('voice:status'),
+  voiceVoices: (provider, fresh) => ipcRenderer.invoke('voice:voices', provider, Boolean(fresh)),
+  voiceTranscribe: (data, o) => ipcRenderer.invoke('voice:transcribe', data, o || {}),
+  voiceSpeak: (o) => ipcRenderer.invoke('voice:speak', o || {}),
+  voiceCancel: (token) => ipcRenderer.invoke('voice:cancel', token),
+  voiceStopAll: () => ipcRenderer.invoke('voice:stopAll'),
+  voiceClone: (o) => ipcRenderer.invoke('voice:clone', o || {}),
+  onVoiceChunk: (cb) => {
+    const listener = (_e, payload) => cb(payload);
+    ipcRenderer.on('voice:chunk', listener);
+    return () => ipcRenderer.removeListener('voice:chunk', listener);
+  },
+  onVoiceEnd: (cb) => {
+    const listener = (_e, payload) => cb(payload);
+    ipcRenderer.on('voice:end', listener);
+    return () => ipcRenderer.removeListener('voice:end', listener);
+  },
+  cardsSetVoice: (id, voice) => ipcRenderer.invoke('cards:setVoice', id, voice),
   memoryList: () => ipcRenderer.invoke('memory:list'),
   memoryAdd: (text) => ipcRenderer.invoke('memory:add', text),
   memoryUpdate: (id, text) => ipcRenderer.invoke('memory:update', id, text),

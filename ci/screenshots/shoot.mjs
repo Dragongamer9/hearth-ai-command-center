@@ -88,16 +88,23 @@ function stub(opts) {
   msgs.c0000000015 = [{ id: 'h1', who: 'owner', text: 'Tobin, what do you think? Ash, keep watch.', at: ago(6) }, { id: 'h2', who: 'anthropic', char: 'a000000002', text: '*Tobin scratches his beard.* "I think we wait for dawn. Roads are no place at night."', at: ago(5) }, { id: 'h3', who: 'openai', char: 'a000000003', text: '*Ash climbs the rock and scans the dark.* "Nothing moves. Yet."', at: ago(4) }, { id: 'h4', who: 'venice', char: 'a000000001', text: '"Dawn it is," *Mira agrees, handing out bowls.*', at: ago(3) }];
   msgs.c0000000016 = [{ id: 'l1', who: 'anthropic', char: 'a000000004', greeting: true, text: '"Hi! Want to help me find my lost kite?"', at: ago(5) }, { id: 'l2', who: 'owner', text: 'something sexual', at: ago(4) }, { id: 'l3', who: 'system', block: true, text: 'Blocked: Lena reads as under 18 (it says the character is 12), so no sexual roleplay with this character. The card can still be used for non-sexual stories.', at: ago(4) }];
   const card = (id, name, pic, extra = {}) => ({ id, name, description: `${name} is a traveller of the north woods.`, personality: 'calm', scenario: 'A campfire on the road to Emberfall.', first_mes: `Hello, {{user}}. I'm ${name}.`, alternate_greetings: ['Evening.'], tags: ['fantasy', 'adventure'], creator: 'Dragongamer9', creator_notes: `A ${name.toLowerCase()} for long stories.`, avatarUrl: pic, spriteUrls: {}, limits: { minor: false, real: false }, lorebooks: [], ...extra });
-  const CARDS = [card('a000000001', 'Mira', P.mira, { backgroundUrl: P.scene, character_book: { entries: [{}, {}] } }), card('a000000002', 'Tobin', P.tobin), card('a000000003', 'Ash', P.ash), card('a000000004', 'Lena', null, { description: 'Lena is 12 years old.', tags: ['slice of life'], limits: { minor: true, minorWhy: 'it says the character is 12' } })];
+  const CARDS = [card('a000000001', 'Mira', P.mira, { backgroundUrl: P.scene, character_book: { entries: [{}, {}] }, ownerVoice: { elevenlabs: { id: 'VoiceAria0001', name: 'Aria' }, speed: 1.05 } }), card('a000000002', 'Tobin', P.tobin, { ownerVoice: { elevenlabs: { id: 'VoiceRoger0002', name: 'Roger' } } }), card('a000000003', 'Ash', P.ash), card('a000000004', 'Lena', null, { description: 'Lena is 12 years old.', tags: ['slice of life'], limits: { minor: true, minorWhy: 'it says the character is 12' } })];
   const BOOKS = [{ id: 'b000000001', name: 'The North', scan_depth: 4, token_budget: 1024, entries: [{ name: 'Emberfall', keys: ['Emberfall', 'old capital'], content: 'Emberfall was the capital before the long winter.', insertion_order: 10, enabled: true }, { name: 'Winter', keys: [], content: 'Winter never ends in the north.', constant: true, insertion_order: 5, enabled: true }] }];
   const listeners = { step: [] };
   const ok = (v) => Promise.resolve(v);
-  const settings = { notify: true, autoRead: false, maxChats: 3, customInstructions: { about: 'I build Hearth OS. My laptop has Intel graphics and 8 GB of RAM.', style: 'Plain language, short answers.' }, teammates: {}, theme: opts.light ? 'light' : 'dark', textSize: 100, connection: {}, bins: {}, extraDirs: [], access: 'standard', autoPush: true, actForMe: true, previewNetwork: false, copyIdleHours: 24, tools: { web: true, build: true, quickChecks: ['node --check', 'node --test', 'python3 -m py_compile', 'bash -n'] }, team: opts.allCli ? { lead: 'anthropic', reviewer: 'openai', members: ['anthropic', 'openai', 'google', 'xai', 'mistral', 'venice'] } : null, leadMerge: true, leadRelease: true, leadTag: true, ownerIdentity: { name: 'Dragongamer9', email: 'Dragongamer9@users.noreply.github.com', emails: ['Dragongamer9@users.noreply.github.com'] } };
+  const settings = { voice: { tts: 'elevenlabs', turn: opts.ptt ? 'ptt' : 'auto', bargeIn: true, narration: opts.narrator ? 'narrator' : 'same', voices: { anthropic: { elevenlabs: { id: 'VoiceGeorg0006', name: 'George' } }, narrator: { elevenlabs: { id: 'VoiceLaura0004', name: 'Laura' } } } }, notify: true, autoRead: false, maxChats: 3, customInstructions: { about: 'I build Hearth OS. My laptop has Intel graphics and 8 GB of RAM.', style: 'Plain language, short answers.' }, teammates: {}, theme: opts.light ? 'light' : 'dark', textSize: 100, connection: {}, bins: {}, extraDirs: [], access: 'standard', autoPush: true, actForMe: true, previewNetwork: false, copyIdleHours: 24, tools: { web: true, build: true, quickChecks: ['node --check', 'node --test', 'python3 -m py_compile', 'bash -n'] }, team: opts.allCli ? { lead: 'anthropic', reviewer: 'openai', members: ['anthropic', 'openai', 'google', 'xai', 'mistral', 'venice'] } : null, leadMerge: true, leadRelease: true, leadTag: true, ownerIdentity: { name: 'Dragongamer9', email: 'Dragongamer9@users.noreply.github.com', emails: ['Dragongamer9@users.noreply.github.com'] } };
   window.__calls = [];
   window.hearth = new Proxy({
     appInfo: () => ok({ appVersion: '1.5.0', dataPath: '/home/you/.config/Hearth AI Command Center', electron: '45', packaged: true }),
     settings: () => ok(settings),
-    setSettings: (p) => { Object.assign(settings, p, p.tools ? { tools: { ...settings.tools, ...p.tools } } : {}); return ok({ ...settings }); },
+    setSettings: (p) => { const v = p.voice ? { voice: { ...settings.voice, ...p.voice, voices: { ...settings.voice.voices, ...(p.voice.voices || {}) } } } : {}; Object.assign(settings, p, p.tools ? { tools: { ...settings.tools, ...p.tools } } : {}, v); return ok({ ...settings }); },
+    // Voice chat: fake provider lists and a short generated tone instead of real speech.
+    voiceStatus: () => ok({ encryption: true, keys: { elevenlabs: true, openai: true }, stt: { local: { tool: 'whisper.cpp' }, using: 'whisper.cpp on this PC (private, free)', ffmpeg: true }, local: { kokoro: true, piper: 2, espeak: 'espeak-ng', spd: true, notes: [] }, openaiVoices: ['alloy', 'coral', 'nova', 'onyx'], elevenModels: ['eleven_flash_v2_5', 'eleven_turbo_v2_5', 'eleven_multilingual_v2'], openaiModels: ['gpt-4o-mini-tts', 'tts-1', 'tts-1-hd'], sttModels: ['gpt-transcribe', 'gpt-4o-mini-transcribe', 'whisper-1'] }),
+    voiceVoices: (p) => ok({ ok: true, voices: p === 'elevenlabs' ? [['VoiceAria0001', 'Aria'], ['VoiceRoger0002', 'Roger'], ['VoiceSarah0003', 'Sarah'], ['VoiceLaura0004', 'Laura'], ['VoiceCharl0005', 'Charlie'], ['VoiceGeorg0006', 'George'], ['VoiceMine00007', 'My voice', 'cloned']].map(([id, name, category]) => ({ id, name, category: category || 'premade' })) : p === 'openai' ? ['alloy', 'coral', 'nova', 'onyx'].map((id) => ({ id, name: id[0].toUpperCase() + id.slice(1) })) : [{ id: 'kokoro:af_heart', name: 'Heart (Kokoro, American female)' }, { id: 'kokoro:bm_george', name: 'George (Kokoro, British male)' }, { id: 'espeak:en-gb', name: 'en-gb (espeak-ng)' }] }),
+    voiceTranscribe: () => { window.__calls.push(['voiceTranscribe']); return ok({ ok: true, text: 'Tobin and Ash, what do you think?', via: 'whisper.cpp on this PC (private, free)' }); },
+    voiceSpeak: (o) => { window.__calls.push(['voiceSpeak', o]); const n = 8000 * 4; const b = new Uint8Array(44 + n * 2); const dv = new DataView(b.buffer); const w = (o2, t) => [...t].forEach((c, i) => dv.setUint8(o2 + i, c.charCodeAt(0))); w(0, 'RIFF'); dv.setUint32(4, 36 + n * 2, true); w(8, 'WAVEfmt '); dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true); dv.setUint32(24, 8000, true); dv.setUint32(28, 16000, true); dv.setUint16(32, 2, true); dv.setUint16(34, 16, true); w(36, 'data'); dv.setUint32(40, n * 2, true); for (let i = 0; i < n; i++) dv.setInt16(44 + i * 2, Math.round((Math.sin(i / 8000 * 2 * Math.PI * 220) + 0.4 * Math.sin(i / 8000 * 2 * Math.PI * 550)) * 7000), true); return ok({ ok: true, audio: b, mime: 'audio/wav', via: 'kokoro' }); },
+    voiceStopAll: () => ok({ ok: true }),
+    cardsSetVoice: (id, v) => ok({ ...CARDS.find((c) => c.id === id), ownerVoice: v }),
     themeGet: () => ok({ found: false, tokens: {} }),
     v2Boot: () => ok({ migrated: true, notices: [] }),
     chatsList2: () => ok({ list: chats, notices: [], broken: false }),
@@ -147,7 +154,7 @@ function stub(opts) {
     ] }),
     savedBoards: () => ok([{ id: 'default', name: 'hearth-os', file: '/home/you/.config/Hearth AI Command Center/command-center-state.json', ok: true, tasks: [{ id: 'K7Q2MA', title: 'Add Settings › Storage page to Mantel', stage: 'approval', assignee: 'anthropic' }, { id: 'P3LX9Z', title: 'Fix Wi-Fi list not refreshing after resume', stage: 'implementing', assignee: 'openai' }], approvals: 3, audit: 412, chat: 230 }, { id: 'b7e1c2d3', name: 'beacon', file: '/home/you/.config/Hearth AI Command Center/projects/b7e1c2d3/command-center-state.json', ok: true, tasks: [], approvals: 0, audit: 12, chat: 18 }]),
     teammatesStatus: () => ok({ ready: { venice: true, civitai: true, gpu: true }, keys: { venice: true, civitai: true }, servers: [{ id: 'aa11bb22', name: 'RunPod 4090', type: 'comfy', url: 'https://abc123-8188.proxy.runpod.net', model: 'sd_xl_base_1.0.safetensors', key: true }, { id: 'cc33dd44', name: 'Home server', type: 'openai', url: 'http://192.168.1.20:8000/v1', model: 'llama3.1-8b', key: false }], imagesOnly: { venice: false, civitai: true, gpu: false }, conf: { venice: { model: 'venice-uncensored-1-2', imageModel: 'lustify-sdxl' }, civitai: { engine: 'sdcpp', fields: '{"prompt": "{prompt}"}' } }, models: { venice: ['venice-uncensored-1-2', 'llama-3.3-70b'], veniceImage: ['lustify-sdxl', 'lustify-v7', 'lustify-v8'], civitaiEngines: ['sdcpp', 'comfy', 'flux2', 'qwen'] } }),
-    mediaKeys: () => ok({ encryption: true, keys: { google: true, openai: true, xai: false, mistral: false }, screenshot: true, tts: 'espeak-ng', pdftotext: true }),
+    mediaKeys: () => ok({ encryption: true, keys: { google: true, openai: true, xai: false, mistral: false, elevenlabs: true }, screenshot: true, tts: 'espeak-ng', pdftotext: true }),
     memoryList: () => ok({ facts: [{ id: 'm1', text: 'The owner picks every version number.', at: ago(3000), by: 'owner' }, { id: 'm2', text: 'Commit only as Dragongamer9, no AI lines.', at: ago(2000), by: 'owner' }, { id: 'm3', text: 'His laptop has Intel graphics and about 8 GB of RAM.', at: ago(60), by: 'owner', suggestedBy: 'anthropic' }], pending: [{ id: 'p1', text: 'Prefers short answers in plain language.', agent: 'openai', at: ago(5) }], broken: null }),
     memoryPrompt: () => ok(''),
     scheduleList: () => ok({ list: [{ id: 's1', title: 'Check new crash logs', kind: 'daily', time: '09:00', chatId: 'c0000000006', enabled: true, nextRun: Date.now() + 3600e3, lastRun: ago(1440), lastResult: 'ok' }, { id: 's2', title: 'Weekly release notes draft', kind: 'weekly', days: [5], time: '17:30', chatId: 'c0000000004', enabled: false, nextRun: null }], broken: null }),
@@ -161,6 +168,7 @@ function stub(opts) {
     chatRun: (o) => {
       window.__calls.push(['chatRun', o]);
       if (opts.hang && opts.hang.includes(o.chatId)) return new Promise(() => {});
+      if (o.rp) return new Promise((r) => setTimeout(() => r({ ok: true, text: (window.__rpn = (window.__rpn || 0) + 1) === 1 ? '*Tobin leans on his staff.* "We wait for dawn. The road is no place at night."' : '*Ash keeps her eyes on the dark.* "Agreed. I\'ll take first watch."', via: 'CLI' }), 400));
       if (opts.allCli && o.agent === 'google') return new Promise((r) => setTimeout(() => r({ ok: false, error: { kind: 'failed', message: 'jetski: agent session ended unexpectedly (code 13)' } }), 150));
       if (opts.allCli && o.agent !== 'anthropic') return new Promise((r) => setTimeout(() => r({ ok: true, text: `${{ openai: 'ChatGPT', xai: 'Grok', mistral: 'Mistral' }[o.agent]}: two ideas from me.`, via: 'CLI' }), 150));
       const steps = [{ kind: 'search', label: 'Searched the repo', detail: 'for “storage”' }, { kind: 'read', label: 'Read', detail: 'StoragePage.qml' }];
@@ -204,6 +212,12 @@ const SHOTS = [
   { file: '28-lorebook-editor.png', opts: {}, click: '[data-a="characters"]', then: '[data-a="lorebooks"]', then2: '[data-a="lore-edit"]', expect: ['The North', 'Scan depth', 'Token budget', 'Always on', 'Add entry'], selector: ['[data-le="0"][data-k="keys"]', 'textarea[data-k="content"]'] },
   { file: '29-card-import.png', opts: {}, click: '[data-a="characters"]', run: 'import', expect: ['Imported Seren', 'Seren'] },
   { file: '30-minor-block.png', opts: { open: 'c0000000016' }, expect: ['Blocked: Lena reads as under 18', 'non-sexual stories'], selector: ['.msg-s.block'] },
+  // voice chat
+  { file: '40-voice-view-listening.png', opts: { open: 'c0000000015' }, click: '#talk-btn', wait: 900, expect: ['Talk', 'Listening', 'Hands-free', 'Push to talk', 'Interrupt by talking', 'Speech to text', 'whisper.cpp on this PC', 'ElevenLabs', 'Mira', 'Tobin', 'Ash', 'Aria', 'Roger', 'only the transcript is saved'], selector: ['#voice-view', '#vmic.listening', '#vwave', '#vcast'] },
+  { file: '41-voice-view-speaking-group.png', opts: { open: 'c0000000015', ptt: true }, click: '#talk-btn', run: 'ptt', expect: ['Talk', 'Tobin', 'We wait for dawn', 'Push to talk'], selector: ['#vmic.speaking', '.vcast-it.on'] },
+  { file: '42-settings-voice.png', opts: {}, click: '[data-a="settings"]', then: '[data-a="tab"][data-t="voice"]', wait: 500, expect: ['Voice chat', 'Speech to text', 'whisper.cpp on this PC', 'ElevenLabs', 'OpenAI', 'This PC (free)', 'Default voice', 'Narration', 'A voice per AI teammate', 'Privacy and cost', 'Venice, Civitai and your GPU server with OpenAI', 'Keep voice recordings', 'Add your own voice', "I have the speaker's permission"], selector: ['#voice-tts .vp.on', '[data-vpick="set:default"]', '#clone-consent'] },
+  { file: '44-settings-voice-privacy-cloning.png', opts: {}, click: '[data-a="settings"]', then: '[data-a="tab"][data-t="voice"]', scrollTo: '#voice-privacy-box', wait: 500, expect: ['Who gets what', 'never sent to OpenAI', 'Keep voice recordings', 'only the transcript is saved', 'Add your own voice', 'paid plan'], selector: ['#clone-consent', '#vkey-elevenlabs'] },
+  { file: '43-character-voice-picker.png', opts: {}, click: '[data-a="characters"]', then: '[data-a="card-edit"][data-id="a000000001"]', wait: 500, expect: ['Voice', 'Aria', 'Preview', 'Speed', 'not in exported cards'], selector: ['#card-voice [data-vpick="card"]', '[data-a="voice-preview"]'] },
   // 1.8
   { file: '31-teammates-failed-with-retry.png', opts: { open: 'c0000000005', allCli: true }, send: '@ChatGPT @Gemini @Grok @Mistral ideas for the weekend?', expect: ['This turn', 'failed', 'done', 'Retry', 'internal error', 'Grok: two ideas', 'Mistral: two ideas', "can't commit or push"], selector: ['#turn-strip', '#no-push-note', '[data-a="turn-retry"]'] },
   { file: '32-test-team.png', opts: {}, click: '[data-a="settings"]', then: '[data-a="tab"][data-t="team"]', then2: '[data-a="team-test"]', scrollTo: '#team-test', wait: 900, expect: ['Test team', 'Read a file', 'Search the web', 'node --check on its own file', 'Delete that file', 'checked by the app', 'headless mode cannot prompt'], selector: ['#team-test .tt'] },
@@ -216,9 +230,12 @@ const SHOTS = [
   { file: '39-character-imported-notice.png', opts: {}, click: '[data-a="characters"]', run: 'found', expect: ['Imported Seren', 'Open', 'Start chat'], selector: ['.note.found'] },
 ];
 
-const browser = await chromium.launch();
+// A fake microphone and sound that plays without a click, for the Talk view.
+const browser = await chromium.launch({ args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', '--autoplay-policy=no-user-gesture-required'] });
 let failed = 0;
+const ONLY = process.env.ONLY ? new RegExp(process.env.ONLY) : null;
 for (const s of SHOTS) {
+  if (ONLY && !ONLY.test(s.file)) continue;
   const page = await browser.newPage({ viewport: { width: 1600, height: 1000 }, bypassCSP: Boolean(s.bypassCSP) });
   const errors = [];
   page.on('pageerror', (e) => errors.push(String(e.message || e)));
@@ -247,6 +264,13 @@ for (const s of SHOTS) {
     await page.click('[data-chat="c0000000005"]'); await page.waitForTimeout(300);
     await page.fill('#composer', 'Ideas for the weekend?'); await page.keyboard.press('Enter'); await page.waitForTimeout(200);
     await page.click('[data-chat="c0000000001"]'); await page.waitForTimeout(4000);
+  }
+  if (s.run === 'ptt') {
+    // Push to talk: hold Space, let go; the fake transcript goes out and the replies are spoken.
+    await page.waitForTimeout(600);
+    await page.keyboard.down('Space'); await page.waitForTimeout(1600); await page.keyboard.up('Space');
+    await page.waitForSelector('#vmic.speaking', { timeout: 15000 }).catch(() => {});
+    await page.waitForTimeout(700);
   }
   if (s.run === 'import') {
     await page.evaluate(() => { const ev = new Event('drop', { bubbles: true }); ev.dataTransfer = { files: [new File(['x'], 'seren.png', { type: 'image/png' })], types: ['Files'] }; document.dispatchEvent(ev); });
