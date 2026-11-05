@@ -7,7 +7,7 @@ const nm = (a) => AGENTS[a]?.name || a;
 // Known raw errors from the AI tools, in plain words. First match wins.
 const KNOWN = [
   [/headless mode cannot prompt|auto-?denied|cannot prompt for (approval|permission)|requires? (user )?approval|permission (was )?denied|not (on|in) (the|its) allow-?list|tool .* (was )?(denied|blocked)|denied by (the )?(policy|user)/i,
-    (a) => `${nm(a)} needed permission for a command, file or web page that isn't on its allow-list, so its tool refused it.${a === 'google' ? ' Set up Gemini\'s allow-list in Settings › Permissions.' : ' Check what it may do in Settings › Permissions.'}`, 'blocked'],
+    (a) => `${nm(a)} needed permission for a command, file or web page that isn't on its allow-list, so its tool refused it.${a === 'google' ? ' agy only says which kind of permission it needed (not which command or file) and stops its whole run. If Run & build is off, Gemini runs in plan mode, which may refuse commands even when they are allowed: turn on Run & build and retry, or run Test team, which tries each step on its own. Set up Gemini\'s allow-list in Settings › Permissions if you haven\'t yet.' : ' Check what it may do in Settings › Permissions.'}`, 'blocked'],
   [/jetski/i, (a) => `${nm(a)}'s tool (agy) stopped with an internal error ("jetski" comes from inside agy, not from the app). Press Retry; if it keeps happening, update agy.`, 'failed'],
   [/eligibility check failed|not eligible/i, (a) => `${nm(a)}: Google says this account can't use the Antigravity CLI right now. Sign in again in a terminal (run agy).`, 'blocked'],
   [/out of usage|usage limit|rate[ _-]?limit|quota|\b429\b/i, (a) => `${nm(a)} is out of usage for now.`, 'blocked'],

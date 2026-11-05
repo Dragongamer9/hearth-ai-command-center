@@ -17,8 +17,10 @@ const { createConnectors } = require('./connectors.cjs');
 const { createJsonFile } = require('./jsonfile.cjs');
 const { createTeammates } = require('./teammates.cjs');
 const cardsLib = require('./cards.cjs');
+const voiceChat = require('./voice-chat.cjs');
 
-const KEY_NAMES = ['google', 'openai', 'xai', 'mistral'];
+// elevenlabs: voice chat's most realistic voices (electron/voice-chat.cjs).
+const KEY_NAMES = ['google', 'openai', 'xai', 'mistral', 'elevenlabs'];
 const whoName = { owner: 'Owner', system: 'App', anthropic: 'Claude', openai: 'ChatGPT', google: 'Gemini', xai: 'Grok', mistral: 'Mistral', qwen: 'Qwen', perplexity: 'Perplexity', deepseek: 'DeepSeek', ollama: 'Local AI', venice: 'Venice', civitai: 'Civitai', gpu: 'Your GPU server' };
 // Teammates whose output never reaches the other AIs (the same rule as src/app/brief.mjs).
 const UNFILTERED = ['venice', 'civitai', 'gpu'];
@@ -320,6 +322,14 @@ function register(d) {
   handle('cards:findSites', () => ({ sites: Object.entries(finder.SITES).map(([id, x]) => ({ id, ...x })), notListed: finder.NOT_LISTED, maxMb: finder.MAX_CARD / 1048576 }));
   handle('cards:findOpen', (id) => (openSite ? openSite(String(id)) : { ok: false, message: 'Not available here.' }));
   handle('cards:remove', (id) => cards.remove(String(id)));
+  // Owner only: clears a false "under 18" alarm by confirming the character's adult age.
+  handle('cards:confirmAdult', (id, age, on) => {
+    const c = cards.confirmAdult(String(id), age, on !== false);
+    if (typeof d.audit === 'function') d.audit(on === false ? 'Adult confirmation removed' : 'Character confirmed as an adult by the owner', `${c.name}${on === false ? '' : ` (age ${c.limits?.adultConfirmed?.age})`}`);
+    return c;
+  });
+  // A character's voice (voice chat): kept with the character in this app, never in exported cards.
+  handle('cards:setVoice', (id, voice) => cards.setVoice(String(id), voice));
   handle('cards:export', async (id, fmt) => {
     const x = cards.exportCard(String(id), fmt === 'json' ? 'json' : 'png');
     const s2 = await dialog.showSaveDialog(getWindow(), { title: 'Export character card', defaultPath: path.join(os.homedir(), 'Downloads', media.safeName(x.name)) });
@@ -402,7 +412,10 @@ function register(d) {
     return { ok: true };
   });
 
-  return { memory, scheduler, connectors, teammates, cards, rpGuard, docText, mcpForRun: (dir) => connectors.forRun(dir), stop() { scheduler.stop(); makers.stopSpeaking(); } };
+  // ---- voice chat: speech to text, voices, cloning (electron/voice-chat.cjs) ----
+  const voice = voiceChat.register({ handle, secrets, readSettings, send, which: makers.which, media, mediaRoot: root, dialog, getWindow });
+
+  return { memory, scheduler, connectors, teammates, cards, rpGuard, docText, mcpForRun: (dir) => connectors.forRun(dir), stop() { scheduler.stop(); makers.stopSpeaking(); voice.stop(); } };
 }
 
 module.exports = { register, transcriptOf, shieldLine, KEY_NAMES, UNFILTERED };

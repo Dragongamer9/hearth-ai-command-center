@@ -30,6 +30,8 @@ const v2 = require('./v2.cjs');
 const parity = require('./parity.cjs');
 const { diffSettings, applyChanges, createSettingsLog } = require('./settings-log.cjs');
 const teamCheck = require('./team-check.cjs');
+const voiceChat = require('./voice-chat.cjs');
+const voicePerms = require('./voice-perms.cjs');
 
 // No Hearth OS version pin: the app never changes, bumps, publishes or deploys
 // Hearth OS versions (the owner picks every number). It only shows which Hearth
@@ -160,6 +162,9 @@ function normalSettings(s) {
     customInstructions: cleanInstructions(s.customInstructions),
     // Venice and Civitai choices (models, engine, request fields). Defaults until he picks.
     teammates: cleanTeammates(s.teammates),
+    // Voice chat (Settings › Voice): speech to text, the voice provider, voices per teammate.
+    // Defaults filled in here at read time; only what he changes is saved.
+    voice: voiceChat.cleanSettings(s.voice),
   };
 }
 const MODEL_OK = /^[A-Za-z0-9._:\-/]{1,100}$/;
@@ -296,6 +301,8 @@ function createWindow() {
     mainWindow.webContents.setZoomFactor(readSettings().textSize / 100);
   });
   mainWindow.once('ready-to-show', () => mainWindow.show());
+  // The microphone (voice chat) only for this window's own page; never for previews or web windows.
+  voicePerms.install(mainWindow, { devUrl: process.env.VITE_DEV_SERVER_URL });
   // No navigating away from the app. Reloading the app's own page is allowed: switching projects and
   // chats reloads the window (in 1.3–1.4 the reload was blocked here, so a switch only showed after a restart).
   mainWindow.webContents.on('will-navigate', (e, url) => { if (!sameDocument(url, mainWindow.webContents.getURL())) e.preventDefault(); });
@@ -502,6 +509,7 @@ function registerIpc() {
       s.maxChats = patch.maxChats;
     }
     if ('customInstructions' in patch) s.customInstructions = cleanInstructions(patch.customInstructions);
+    if ('voice' in patch) s.voice = voiceChat.mergeSettings(s.voice, patch.voice);
     if ('teammates' in patch) {
       const t = cleanTeammates(patch.teammates);
       if (t.civitai?.fields) { try { JSON.parse(t.civitai.fields); } catch { throw new Error('The Civitai request fields must be JSON, like {"prompt": "{prompt}"}.'); } }

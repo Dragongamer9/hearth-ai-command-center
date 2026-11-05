@@ -257,6 +257,16 @@ async function ollamaStatus() {
   }
 }
 
+// The lines agy printed about a refusal (tool, permission kind, target if it gave one), plus the mode.
+function agyRefusalDetail(message, res, agyMode) {
+  const lines = `${res.err || ''}\n${res.out || ''}`.split('\n').map((l) => l.trim()).filter((l) => /permission|denied|refus|not allowed|headless|cannot prompt|tool/i.test(l)).slice(-8);
+  const extra = [...new Set(lines)].filter((l) => !String(message || '').includes(l));
+  const mode = agyMode === 'plan'
+    ? 'agy ran in plan mode (Run & build is off in this chat): plan mode is for reading and planning and may refuse every command, even ones on the allow-list.'
+    : 'agy ran in accept-edits mode: edits in its folder are allowed; commands and web pages follow the allow-list.';
+  return [String(message || '').trim(), ...extra, mode].filter(Boolean).join('\n').slice(0, 2000);
+}
+
 function parseGemini(stdout) {
   const s = stdout.trim();
   const start = s.indexOf('{');
@@ -433,14 +443,20 @@ async function runAgent({ agent, prompt, cwd, mode = 'read', model, timeoutMs, s
     // Commands and web pages follow the allow-list in agy's own settings.json, which the owner
     // sets up with one click in Settings › Permissions (agy has no per-run rules flag).
     // Never --dangerously-skip-permissions.
-    const args = ['-p', capArgPrompt(prompt), '--output-format', 'json', '--mode', mode === 'read' && !test ? 'plan' : 'accept-edits'];
+    const agyMode = mode === 'read' && !test ? 'plan' : 'accept-edits';
+    const args = ['-p', capArgPrompt(prompt), '--output-format', 'json', '--mode', agyMode];
     if (resume) args.push('--conversation', resume);
     for (const d of dirs) args.push('--add-dir', d);
     if (model) args.push('--model', model);
     const res = await run(file, args, { cwd: workdir, timeoutMs, signal });
     const parsed = parseGemini(res.out);
     if (res.code === 0 && !parsed.error && parsed.text) return { ok: true, text: parsed.text, via: 'Antigravity CLI', sessionId: parsed.sessionId || resume || null };
-    return { ok: false, error: classify(agent, res, `${parsed.error || ''}\n${parsed.text}`), partial: parsed.text || null, resumeFailed: Boolean(resume) };
+    const error = classify(agent, res, `${parsed.error || ''}\n${parsed.text}`);
+    // agy's refusal names only the kind of permission, not the tool or target, and it ends the
+    // whole headless run. Keep every line agy printed about it, and say which mode it ran in.
+    error.message = agyRefusalDetail(error.message, res, agyMode);
+    error.agyMode = agyMode;
+    return { ok: false, error, partial: parsed.text || null, resumeFailed: Boolean(resume) };
   }
 
   if (agent === 'google' || agent === 'qwen') {
@@ -653,4 +669,4 @@ async function install(list, { fetchImpl } = {}) {
   return r.ok ? { ...r, agents: plan.agents, plan: plan.plan } : r;
 }
 
-module.exports = { isAgy, capArgPrompt, ARG_PROMPT_LIMIT, imageInputs, runAgent, status, login, logout, install, openTerminal, findBinary, isLimit, resetHint, parseClaude, parseGemini, parseCodexEvents, parseGrok, parseVibe, lastJson, run, searchDirs, BIN, CLI_AGENTS, NPM_PACKAGE, execFile };
+module.exports = { agyRefusalDetail, isAgy, capArgPrompt, ARG_PROMPT_LIMIT, imageInputs, runAgent, status, login, logout, install, openTerminal, findBinary, isLimit, resetHint, parseClaude, parseGemini, parseCodexEvents, parseGrok, parseVibe, lastJson, run, searchDirs, BIN, CLI_AGENTS, NPM_PACKAGE, execFile };

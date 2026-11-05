@@ -534,3 +534,46 @@ table.perms tr.off td { color: var(--faint); }
 .srow.log { font-size: 12.5px; }
 .note.found { color: var(--text); background: var(--good-soft); border-radius: 10px; padding: 8px 12px; margin: 4px 0 10px; font-size: 13px; }
 .note.found svg { color: var(--good); }
+
+/* Voice chat: the Talk view (src/voice.mjs), Settings › Voice, the character voice box. */
+.chip.talk { color: var(--accent-ink); background: var(--accent); border-color: var(--accent); font-weight: 600; }
+.voice { position: fixed; z-index: 19; inset: 0; background: var(--bg); display: flex; flex-direction: column; gap: 14px; padding: 18px 28px 20px; --vw-listen: var(--accent); --vw-speak: var(--good); }
+.voice-hd { display: flex; align-items: center; gap: 10px; }
+.voice-hd b { display: inline-flex; align-items: center; gap: 8px; font-family: 'Lora', serif; font-size: 18px; color: var(--strong); }
+.voice-mid { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; min-height: 0; }
+.vmic { --lvl: 0; width: 148px; height: 148px; border-radius: 50%; border: 2px solid var(--accent); background: var(--accent-soft); color: var(--accent); display: grid; place-items: center; box-shadow: 0 0 0 calc(var(--lvl) * 26px) color-mix(in srgb, var(--accent) 22%, transparent); transition: box-shadow .08s linear, background .2s; touch-action: none; }
+.vmic .i { width: 54px; height: 54px; }
+.vmic.speaking { border-color: var(--good); background: var(--good-soft); color: var(--good); box-shadow: 0 0 0 10px color-mix(in srgb, var(--good) 16%, transparent); }
+.vmic.hearing { background: var(--accent); color: var(--accent-ink); }
+.vmic.thinking, .vmic.transcribing { opacity: .75; animation: vpulse 1.4s ease-in-out infinite; }
+.vmic.off { border-color: var(--line-2); color: var(--faint); background: var(--panel-2); }
+@keyframes vpulse { 50% { transform: scale(.94); } }
+.vwave { width: min(720px, 90%); height: 90px; }
+.vphase { font-size: 17px; color: var(--strong); }
+.vheard { color: var(--muted); font-style: italic; max-width: 720px; text-align: center; }
+.voice .note { max-width: 720px; }
+.vlog { max-width: 900px; width: 100%; margin: 0 auto; display: grid; gap: 4px; font-size: 13px; color: var(--muted); max-height: 22vh; overflow-y: auto; }
+.vlog .vl b { color: var(--text); }
+.vlog .vl.me b { color: var(--accent); }
+.voice-ft { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted); border-top: 1px solid var(--line); padding-top: 10px; }
+.voice-ft b { color: var(--text); font-weight: 600; }
+.voice-ft .mini { margin-left: auto; }
+.vcast { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
+.vcast-it { display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px 6px 6px; border: 1px solid var(--line-2); border-radius: 999px; background: var(--panel); font-size: 12.5px; }
+.vcast-it.on { border-color: var(--good); box-shadow: 0 0 0 3px color-mix(in srgb, var(--good) 25%, transparent); }
+.vprov { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 8px; }
+.vp { text-align: left; padding: 12px; border: 1px solid var(--line-2); border-radius: 12px; background: var(--panel-2); display: grid; gap: 6px; color: var(--text); }
+.vp small { color: var(--muted); font-size: 12px; line-height: 1.4; }
+.vp.on { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+.vp .chip { justify-self: start; }
+.vpick { display: inline-flex; align-items: center; gap: 8px; }
+.vpick select { max-width: 280px; background: var(--panel-2); border: 1px solid var(--line-2); border-radius: 8px; padding: 4px 8px; color: var(--text); }
+.vcard { display: grid; gap: 8px; padding: 10px; }
+.vcard .vpick select { max-width: 200px; }
+#voice-clone .srow input[type="text"], #clone-name { min-width: 220px; }
+.vkey { width: 230px; background: var(--panel-2); border: 1px solid var(--line-2); border-radius: 8px; padding: 4px 8px; color: var(--text); }
+/* Key and token entry (the app's own dialog; Electron has no window.prompt). */
+.secret-bg { position: fixed; inset: 0; z-index: 90; background: rgba(0, 0, 0, .45); display: grid; place-items: center; }
+.secret-modal { width: min(460px, calc(100% - 32px)); background: var(--panel); border: 1px solid var(--line-2); border-radius: 14px; box-shadow: var(--shadow); padding: 18px; display: flex; flex-direction: column; gap: 10px; }
+.secret-modal input[type="password"], .secret-modal input#secret-in { width: 100%; font-family: var(--mono); }
+.secret-modal .mft { display: flex; justify-content: flex-end; gap: 8px; }

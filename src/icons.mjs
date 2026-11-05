@@ -15,6 +15,8 @@ const P = {
   clip: '<path d="M20 11.5l-8 8a5 5 0 0 1-7-7l8.5-8.5a3.3 3.3 0 0 1 4.7 4.7l-8.4 8.4a1.7 1.7 0 0 1-2.4-2.4L15 7"/>',
   at: '<circle cx="12" cy="12" r="4"/><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8"/>',
   mic: '<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/>',
+  wave: '<path d="M3 12h1.5M7 9v6M10.5 5v14M14 8v8M17.5 10v4M21 12h0"/>',
+  speaker: '<path d="M4 9.5h3.5L12 6v12l-4.5-3.5H4z"/><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11"/>',
   up: '<path d="M12 19V5M5.5 11.5L12 5l6.5 6.5"/>',
   chev: '<path d="M6 9l6 6 6-6"/>',
   chevr: '<path d="M9 6l6 6-6 6"/>',

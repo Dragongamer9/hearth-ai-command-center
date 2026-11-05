@@ -150,6 +150,16 @@ function register(d) {
         fs.writeFileSync(path.join(dir, 'probe.txt'), `Hearth team test token: ${token}\n`, { mode: 0o600 });
         const started = Date.now();
         try {
+          const agy = agent === 'google' && agents.isAgy(agents.findBinary(agent, s.bins[agent]) || '');
+          if (agy) {
+            // One step per run (see STEP_PROMPTS); a fresh token-checked answer per step.
+            let runs = [];
+            for (const p of STEP_PROMPTS(token)) runs = [...runs, await agents.runAgent({ agent, prompt: p, cwd: dir, mode: 'standard', web: true, test: true, runDir: dir, quickChecks: ['node --check'], timeoutMs: 3 * 60000, bin: s.bins[agent] })];
+            const text = stepwiseText(runs);
+            const r = { ok: true, text, via: 'Antigravity CLI, one step per run' };
+            const firstErr = runs.find((x) => !x.ok)?.error || null;
+            return { agent, ok: runs.every((x) => x.ok), via: r.via, ms: Date.now() - started, error: firstErr, steps: judge({ r, token, dir }), answer: text.slice(0, 2000), stepwise: true };
+          }
           const r = await agents.runAgent({
             agent, prompt: TEST_PROMPT(token), cwd: dir, mode: 'standard', web: true, test: true, runDir: dir,
             quickChecks: ['node --check'], timeoutMs: 6 * 60000, bin: s.bins[agent],
@@ -170,4 +180,20 @@ function register(d) {
   return { capabilities };
 }
 
-module.exports = { register, capabilities, parseSteps, judge, TEST_PROMPT, CLI };
+// agy stops its whole headless run at the first refused tool and doesn't say which tool it was,
+// so Gemini (agy) does the test one step per run: each step gets its own pass/fail and error.
+const STEP_PROMPTS = (token) => [
+  'Team test, step 1 only: read the file probe.txt in your current folder and quote the token written in it. Do nothing else. Answer with one line: "STEP 1: PASS <token>" or "STEP 1: FAIL <exact error>".',
+  'Team test, step 2 only: search the web for "Hearth OS gamepad shell" and give the https link of one result. Do nothing else. Answer with one line: "STEP 2: PASS <link>" or "STEP 2: FAIL <exact error>".',
+  'Team test, step 3 only: create a file hearth-check.js in your current folder containing exactly: console.log("hearth");  then run exactly: node --check hearth-check.js  Do nothing else. Answer with one line: "STEP 3: PASS <what you saw>" or "STEP 3: FAIL <exact error>".',
+  'Team test, step 4 only: run exactly: rm hearth-check.js  Do nothing else. Answer with one line: "STEP 4: PASS" or "STEP 4: FAIL <exact error>".',
+].map((p) => `${p}\n(The token starts with ${token.slice(0, 2)}.)`);
+// One answer text from the per-step runs (a failed run becomes that step's FAIL with agy's words).
+function stepwiseText(runs) {
+  return runs.map((r, i) => {
+    if (r.ok) { const m = String(r.text || '').match(new RegExp(`STEP\\s*${i + 1}\\s*[:.-]\\s*(PASS|FAIL)\\b[^\\n]*`, 'i')); return m ? m[0] : `STEP ${i + 1}: FAIL no step line in the answer: ${String(r.text || '').replace(/\s+/g, ' ').slice(0, 300)}`; }
+    return `STEP ${i + 1}: FAIL ${String(r.error?.message || 'the run failed').replace(/\s+/g, ' ').slice(0, 500)}`;
+  }).join('\n');
+}
+
+module.exports = { register, capabilities, parseSteps, judge, TEST_PROMPT, STEP_PROMPTS, stepwiseText, CLI };
