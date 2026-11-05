@@ -122,3 +122,21 @@ test('phone snapshot carries only a sanitised team list for the team chips', () 
   assert.deepEqual(s.team, [{ id: 'anthropic', dot: 'work', lead: true }, { id: 'openai', dot: 'off', lead: false }]);
   assert.deepEqual(phoneSnapshot({ state: {} }).team, []);
 });
+
+test('project switching: the top bar has a switcher that works with the sidebar narrowed, and a click always answers', () => {
+  const top = between(ui, 'function topbar(waiting, title) {', '\nfunction boardList(');
+  assert.match(top, /data-ui="menu-project"/, 'project name opens the switcher');
+  assert.match(top, /data-ops="switch" data-arg=/, 'switch entries');
+  assert.match(top, /data-ops="addfolder"/, 'add a project folder');
+  assert.match(ui, /d\.ui === 'menu-project'/, 'the menu opens and closes');
+  const sw = between(ops, "if (op === 'switch') {", "if (op === 'addfolder'");
+  assert.match(sw, /Switching to \$\{name\}/, 'says it is switching');
+  assert.match(sw, /Could not switch to \$\{name\}/, 'says why it could not');
+  assert.match(sw, /catch \(err\)/, 'an error never fails silently');
+  assert.match(sw, /T-\$\{id\}/, 'names the running tasks that block it');
+});
+
+test('a failed run without an error object never leaves its task stuck as running', () => {
+  const ca = between(ui, 'async function callAgent(', '\nfunction setHold(');
+  assert.match(ca, /if \(!res\.ok && !res\.error\) res\.error = \{ kind: 'error'/);
+});

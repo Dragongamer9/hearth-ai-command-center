@@ -794,11 +794,16 @@ async function onClick(e) {
     return C.render();
   }
   if (op === 'switch') {
-    if (Object.keys(C.ui().running || {}).length) return C.toast('Wait until the running tasks finish (or stop them) before switching projects.');
-    await C.save();
-    const r = await call('opsProjectSwitch', arg);
-    if (r?.ok) { location.reload(); return; }
-    return C.toast(r?.message || 'Could not switch.');
+    const running = Object.keys(C.ui().running || {});
+    if (running.length) return C.toast(`Wait until the running task${running.length > 1 ? 's' : ''} (${running.map((id) => `T-${id}`).join(', ')}) finish, or stop them, before switching projects.`);
+    const name = (local.projects?.list || []).find((x) => x.id === arg)?.name || 'the project';
+    C.toast(`Switching to ${name}…`);
+    try {
+      await C.save();
+      const r = await call('opsProjectSwitch', arg);
+      if (r?.ok) { location.reload(); return; }
+      return C.toast(`Could not switch to ${name}: ${r?.message || 'no answer from the app'}`);
+    } catch (err) { return C.toast(`Could not switch to ${name}: ${String(err?.message || err)}`); }
   }
   if (op === 'addfolder' || op === 'addclone') {
     const input = op === 'addclone' ? document.getElementById('ops-clone')?.value.trim() : '';

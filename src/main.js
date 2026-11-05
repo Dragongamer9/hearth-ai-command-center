@@ -838,6 +838,9 @@ async function callAgent(agent, prompt, opts = {}) {
   } catch (e) {
     res = { ok: false, error: { kind: 'error', message: cleanErr(e.message) } };
   }
+  // A failed run always carries an error object, so nothing below can throw and leave the task stuck as running.
+  if (!res || typeof res !== 'object') res = { ok: false };
+  if (!res.ok && !res.error) res.error = { kind: 'error', message: String(res.message || 'The run failed without saying why.') };
   if (!res.ok && res.error.kind === 'limit') markOut(agent, res.error);
   // A refused sign-in or key becomes a saved hold and a badge, shown once.
   if (!res.ok) {
@@ -2045,12 +2048,19 @@ function topbar(waiting, title) {
   const live = liveAgents();
   const proj = projectName();
   const sel = ui.view === 'board' && ui.selected ? state.tasks.find((t) => t.id === ui.selected) : null;
+  // The project name is the project switcher (it works with the sidebar narrowed too).
+  const plist = ops.projectsList?.() || { list: [] };
+  const pMenu = ui.menu === 'project' ? `<div class="menu proj-menu" role="menu"><div class="mh">Switch project</div>${plist.list.map((x) => x.id === plist.active
+    ? `<button class="chip on" data-nav="project" title="${esc(x.dir || '')}">${icon('check', 'sm')}<span class="t">${esc(x.name)}</span><small>open</small></button>`
+    : `<button class="chip" data-ops="switch" data-arg="${esc(x.id)}" title="${esc(x.dir || '')}">${icon('folder', 'sm')}<span class="t">${esc(x.name)}</span></button>`).join('')}
+    <button class="chip" data-ops="addfolder">${icon('plus', 'sm')}Add a project folder</button></div>` : '';
+  const projBtn = `<div class="proj-wrap"><button class="proj-btn" data-ui="menu-project" aria-expanded="${ui.menu === 'project'}" title="Switch project">${icon('folder', 'sm')}<span>${esc(proj || 'Choose a project')}</span>${icon('chev', 'sm')}</button>${pMenu}</div>`;
   const crumb = ui.view === 'overview'
-    ? `<span>${esc(proj || 'Hearth AI Command Center')}</span>${repo.branch ? `<span class="faint">· ${esc(repo.branch)}</span>` : ''}`
-    : `${proj ? `<span>${esc(proj)}</span><span class="faint">/</span>` : ''}<b>${esc(title)}</b>${sel ? `<span class="sub">· T-${esc(sel.id)}</span>` : ''}`;
+    ? `${repo.branch ? `<span class="faint">${esc(repo.branch)}</span>` : ''}`
+    : `<b>${esc(title)}</b>${sel ? `<span class="sub">· T-${esc(sel.id)}</span>` : ''}`;
   const tb = (id, ic, label, n = '') => `<button class="tb" data-panel="${id}" title="Open ${label} beside the conversation">${icon(ic, 'sm')}${label}${n}</button>`;
   const updOn = ['available', 'ready'].includes(upd.status?.state);
-  return `<div class="topbar"><div class="crumb">${crumb}</div><div class="grow"></div>
+  return `<div class="topbar">${projBtn}<div class="crumb">${crumb}</div><div class="grow"></div>
     ${updOn ? '<button class="pill acc" data-goupdates title="Open Settings › App updates">Update available</button>' : ''}<span class="pill" title="This app is in beta">Beta</span>
     ${round ? '<button class="tb b" data-stopround title="End this chat round: nobody else starts, and the AIs typing now are cancelled" style="color:var(--bad)">Stop</button>' : ''}
     ${ui.view === 'chat' ? `<button class="tb b" data-checkin ${live.length && !round ? '' : 'disabled'}>${icon('users', 'sm')}${ui.panel ? 'Check-in' : 'Team check-in'}</button>` : ''}
@@ -3084,7 +3094,7 @@ document.addEventListener('click', async (e) => {
     savePref('panel', ui.panel === 'task' ? null : ui.panel);
     return render();
   }
-  if (d.ui === 'menu-target' || d.ui === 'menu-mode') { const m = d.ui.slice(5); ui.menu = wasMenu === m ? null : m; return render(); }
+  if (d.ui === 'menu-target' || d.ui === 'menu-mode' || d.ui === 'menu-project') { const m = d.ui.slice(5); ui.menu = wasMenu === m ? null : m; return render(); }
   if (d.panel) { ui.panel = d.panel; savePref('panel', d.panel === 'task' ? null : d.panel); if (d.panel === 'approvals') recheckApprovals(); return render(); }
   if (d.pickmode) { ui.mode = d.pickmode === 'major' ? 'major' : 'routine'; ui.menu = null; render(); return document.getElementById('chat-text')?.focus(); }
   if (d.prefill) { ui.draft = PREFILL[d.prefill] || ''; render(); return document.getElementById('chat-text')?.focus(); }
