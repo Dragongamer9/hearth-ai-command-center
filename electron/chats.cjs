@@ -38,6 +38,14 @@ function chatOrder(a, b) {
   return String(b.updatedAt || b.createdAt || '').localeCompare(String(a.updatedAt || a.createdAt || ''));
 }
 
+const CARD_ID = /^[0-9a-f]{10}$/;
+const PLAYER = /^[a-z]{2,12}$/;
+function cleanRp(r) {
+  const characters = r.characters.filter((x) => typeof x === 'string' && CARD_ID.test(x)).slice(0, 8);
+  const players = Object.fromEntries(Object.entries(r.players && typeof r.players === 'object' ? r.players : {}).filter(([k, v]) => characters.includes(k) && typeof v === 'string' && PLAYER.test(v)));
+  return { characters, players, order: r.order === 'list' ? 'list' : 'natural', lorebooks: (Array.isArray(r.lorebooks) ? r.lorebooks : []).filter((x) => typeof x === 'string' && CARD_ID.test(x)).slice(0, 10), ...(typeof r.background === 'string' && r.background.length < 300 ? { background: r.background } : {}) };
+}
+
 function createChats(dataDir, { now = () => new Date().toISOString() } = {}) {
   const dir = path.join(dataDir, 'chats');
   const indexFile = path.join(dir, 'index.json');
@@ -76,6 +84,11 @@ function createChats(dataDir, { now = () => new Date().toISOString() } = {}) {
     ...(typeof e.repoDir === 'string' && path.isAbsolute(e.repoDir) && !cleanRepo(e.repo) ? { repoDir: e.repoDir } : {}),
     ...(e.migratedV2 === true ? { migratedV2: true } : {}),
     ...(typeof e.importError === 'string' ? { importError: e.importError.slice(0, 300) } : {}),
+    // Per-chat knowledge: custom instructions and pinned reference files (attachments).
+    ...(typeof e.instructions === 'string' && e.instructions.trim() ? { instructions: e.instructions.slice(0, 4000) } : {}),
+    // A roleplay chat: its characters (card ids), who plays each one, turn order, lorebooks, view.
+    ...(e.rp && typeof e.rp === 'object' && Array.isArray(e.rp.characters) && e.rp.characters.length ? { rp: cleanRp(e.rp) } : {}),
+    ...(Array.isArray(e.refs) && e.refs.length ? { refs: e.refs.filter((r) => r && typeof r.path === 'string' && path.isAbsolute(r.path) && typeof r.name === 'string').slice(0, 12).map((r) => ({ name: String(r.name).slice(0, 120), path: r.path, kind: ['image', 'video', 'file'].includes(r.kind) ? r.kind : 'file' })) } : {}),
   } : null);
   const cleanTrash = (t) => (t && typeof t === 'object' && typeof t.trashId === 'string' && /^[a-z0-9-]{8,40}$/.test(t.trashId) && clean(t.entry) ? { trashId: t.trashId, deletedAt: String(t.deletedAt || ''), file: String(t.file || ''), entry: clean(t.entry) } : null);
 
@@ -203,6 +216,17 @@ function createChats(dataDir, { now = () => new Date().toISOString() } = {}) {
       delete e.repoDir;
       e.linkedBy = 'owner';
       e.linkedAt = now();
+    }
+    if ('instructions' in patch) {
+      const t = String(patch.instructions || '').slice(0, 4000);
+      if (t.trim()) e.instructions = t; else delete e.instructions;
+    }
+    if ('rp' in patch) {
+      if (patch.rp && Array.isArray(patch.rp.characters) && patch.rp.characters.length) e.rp = cleanRp(patch.rp); else delete e.rp;
+    }
+    if ('refs' in patch) {
+      const c = clean({ ...e, refs: Array.isArray(patch.refs) ? patch.refs : [] });
+      if (c.refs) e.refs = c.refs; else delete e.refs;
     }
     if ('projectId' in patch) {
       if (e.team) throw new Error("A project's team chat stays linked to its project. Start a new chat to link another one.");

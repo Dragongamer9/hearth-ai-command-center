@@ -1,7 +1,7 @@
 // Hearth AI Command Center — Electron main process.
 // All privileged work (files, secrets, provider APIs, updates) happens here.
 // The renderer only gets the narrow API exposed in preload.cjs.
-const { app, BrowserWindow, ipcMain, shell, Menu, safeStorage, dialog, clipboard, protocol } = require('electron');
+const { app, BrowserWindow, Notification, ipcMain, shell, Menu, safeStorage, dialog, clipboard, protocol } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -27,6 +27,7 @@ const ops = require('./ops/index.cjs');
 const guard = require('./ops/project-guard.cjs');
 const { createChats } = require('./chats.cjs');
 const v2 = require('./v2.cjs');
+const parity = require('./parity.cjs');
 
 // No Hearth OS version pin: the app never changes, bumps, publishes or deploys
 // Hearth OS versions (the owner picks every number). It only shows which Hearth
@@ -40,7 +41,8 @@ if (!app.requestSingleInstanceLock()) {
   process.exit(0);
 }
 // Live previews are served from their own scheme with their own CSP (electron/previews.cjs).
-protocol.registerSchemesAsPrivileged([{ scheme: 'hearth-preview', privileges: { standard: true, secure: true } }]);
+// Pictures and videos the AIs made are served from hearth-media: (only the app's media folder).
+protocol.registerSchemesAsPrivileged([{ scheme: 'hearth-preview', privileges: { standard: true, secure: true } }, { scheme: 'hearth-media', privileges: { standard: true, secure: true, stream: true, supportFetchAPI: true } }]);
 
 let mainWindow = null;
 let secrets = null;
@@ -118,9 +120,34 @@ function readSettings() {
     previewNetwork: s.previewNetwork === true,
     // Who's in chats: { lead, reviewer, members }. null = the default team (Claude leads).
     team: cleanTeam(s.team),
+    // New in this version: defaults shown at read time, saved only when the owner changes one.
+    // A desktop notification when a long turn finishes or an AI needs him.
+    notify: s.notify !== false,
+    // Read every answer aloud. Off unless the owner turns it on.
+    autoRead: s.autoRead === true,
+    // How many chats may have their team working at once.
+    maxChats: v2.MAX_CHAT_CHOICES.includes(s.maxChats) ? s.maxChats : 3,
+    // Custom instructions every AI gets in every chat (empty until he writes them).
+    customInstructions: cleanInstructions(s.customInstructions),
+    // Venice and Civitai choices (models, engine, request fields). Defaults until he picks.
+    teammates: cleanTeammates(s.teammates),
   };
 }
-const TEAM_IDS = ['anthropic', 'openai', 'google', 'xai', 'mistral', 'qwen', 'perplexity', 'deepseek', 'ollama'];
+const MODEL_OK = /^[A-Za-z0-9._:\-/]{1,100}$/;
+function cleanTeammates(t) {
+  const o = t && typeof t === 'object' && !Array.isArray(t) ? t : {};
+  const out = {};
+  if (o.venice && typeof o.venice === 'object') out.venice = { ...(MODEL_OK.test(o.venice.model || '') ? { model: o.venice.model } : {}), ...(MODEL_OK.test(o.venice.imageModel || '') ? { imageModel: o.venice.imageModel } : {}) };
+  if (o.civitai && typeof o.civitai === 'object') out.civitai = { ...(['sdcpp', 'comfy', 'flux2', 'qwen'].includes(o.civitai.engine) ? { engine: o.civitai.engine } : {}), ...(typeof o.civitai.fields === 'string' ? { fields: o.civitai.fields.slice(0, 4000) } : {}) };
+  return out;
+}
+function cleanInstructions(c) {
+  const t = (v) => (typeof v === 'string' ? v.slice(0, 3000) : '');
+  return c && typeof c === 'object' && !Array.isArray(c) ? { about: t(c.about), style: t(c.style) } : { about: '', style: '' };
+}
+const TEAM_IDS = ['anthropic', 'openai', 'google', 'xai', 'mistral', 'qwen', 'perplexity', 'deepseek', 'ollama', 'venice', 'civitai', 'gpu'];
+// Teammates by key or URL (electron/teammates.cjs): answered through their own API.
+const TEAMMATES = ['venice', 'civitai', 'gpu'];
 function cleanTeam(t) {
   if (!t || typeof t !== 'object' || Array.isArray(t)) return null;
   const members = [...new Set((Array.isArray(t.members) ? t.members : []).filter((a) => TEAM_IDS.includes(a)))];
@@ -430,6 +457,18 @@ function registerIpc() {
     }
     if ('previewNetwork' in patch) s.previewNetwork = patch.previewNetwork === true;
     if ('team' in patch) s.team = cleanTeam(patch.team);
+    if ('notify' in patch) s.notify = patch.notify === true;
+    if ('autoRead' in patch) s.autoRead = patch.autoRead === true;
+    if ('maxChats' in patch) {
+      if (!v2.MAX_CHAT_CHOICES.includes(patch.maxChats)) throw new Error('Invalid number of chats');
+      s.maxChats = patch.maxChats;
+    }
+    if ('customInstructions' in patch) s.customInstructions = cleanInstructions(patch.customInstructions);
+    if ('teammates' in patch) {
+      const t = cleanTeammates(patch.teammates);
+      if (t.civitai?.fields) { try { JSON.parse(t.civitai.fields); } catch { throw new Error('The Civitai request fields must be JSON, like {"prompt": "{prompt}"}.'); } }
+      s.teammates = { ...s.teammates, ...Object.fromEntries(Object.entries(t).map(([k, v]) => [k, { ...(s.teammates[k] || {}), ...v }])) };
+    }
     // Only the owner turns it on: a native confirmation the window can't answer for him.
     if ('actForMe' in patch) {
       const on = patch.actForMe === true;
@@ -928,19 +967,33 @@ function registerIpc() {
   handle('attach:saveAny', (name, data) => {
     const buf = Buffer.from(data instanceof ArrayBuffer ? new Uint8Array(data) : data || []);
     if (attachments.kindOf(String(name || ''))) return withFrames(attachments.saveBuffer(worktreeRoot(), String(name || ''), buf));
+    if (/\.pdf$/i.test(String(name || ''))) return savePdf(String(name), buf);
     const r = attachments.saveText(worktreeRoot(), String(name || ''), buf);
     return r.ok ? { ok: true, att: { ...r.att, url: null } } : r;
   });
   handle('attach:pickAny', async () => {
-    const r = await dialog.showOpenDialog(mainWindow, { title: 'Attach files', properties: ['openFile', 'multiSelections'], filters: [{ name: 'Images, videos and text files', extensions: [...Object.keys(attachments.TYPES), ...attachments.TEXT_EXT] }, { name: 'All files', extensions: ['*'] }] });
+    const r = await dialog.showOpenDialog(mainWindow, { title: 'Attach files', properties: ['openFile', 'multiSelections'], filters: [{ name: 'Images, videos, PDFs and text files', extensions: [...Object.keys(attachments.TYPES), 'pdf', ...attachments.TEXT_EXT] }, { name: 'All files', extensions: ['*'] }] });
     if (r.canceled) return [];
     const out = [];
     for (const f of r.filePaths.slice(0, 10)) {
       if (attachments.kindOf(f)) out.push(await withFrames(attachments.saveFromPath(worktreeRoot(), f)));
+      else if (/\.pdf$/i.test(f)) out.push(await savePdf(path.basename(f), fs.readFileSync(f)));
       else { const t = attachments.saveText(worktreeRoot(), path.basename(f), fs.readFileSync(f)); out.push(t.ok ? { ok: true, att: { ...t.att, url: null } } : t); }
     }
     return out;
   });
+
+  // PDFs: kept in the attachments folder; their text (pdftotext, else Mistral OCR with the
+  // owner's key) goes to the AIs so they can answer questions about long documents.
+  async function savePdf(name, buf) {
+    if (buf.length > 100 * 1024 * 1024) return { ok: false, message: 'That PDF is over 100 MB.' };
+    const dir = attachments.attachDir(worktreeRoot());
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const file = path.join(dir, `${Date.now()}-${require('node:crypto').randomBytes(3).toString('hex')}-${attachments.safeName(name)}`);
+    fs.writeFileSync(file, buf, { mode: 0o600 });
+    const t = parityApi ? await parityApi.docText(file) : { text: '' };
+    return { ok: true, att: { kind: 'file', name, path: file, size: buf.length, url: null, pdf: true, text: t.text ? t.text.slice(0, 200000) : '', textVia: t.via || null, ...(t.text ? {} : { note: 'No text could be read from this PDF here (install pdftotext, or add a Mistral key for OCR); the AIs get the file itself.' }) } };
+  }
 
   handle('updater:info', () => updater.info());
   handle('updater:check', () => updater.check());
@@ -949,6 +1002,18 @@ function registerIpc() {
   handle('updater:restart', () => updater.restart());
   registerOps();
   registerV2();
+  registerParity();
+}
+
+let parityApi = null;
+function registerParity() {
+  parityApi = parity.register({
+    handle, dataDir, readSettings, chats, secrets, shell, dialog, send, protocol, attachments, worktreeRoot, BrowserWindow, Notification,
+    getWindow: () => mainWindow,
+    v2: () => v2Api,
+    // The Habitat from the old (1.x) project boards: read-only, never written.
+    oldHabitat: () => { const list = ops.projectsList().list; for (const p of list) { const st = require('./migrate-v2.cjs').readStateReadOnly(ops.projectStateFile(p.id)).state; if (st?.habitat) return st.habitat; } return null; },
+  });
 }
 
 // 2.x chats (electron/v2.cjs): runs in temporary copies, GitHub, previews, saved data.
@@ -957,12 +1022,16 @@ function registerV2() {
   v2Api = v2.register({
     handle, dataDir, readSettings, chats, agents, gitops, attachments, history, redact, send, dialog, shell, worktreeRoot, runs, protocol,
     getWindow: () => mainWindow,
+    mcpForRun: (dir) => (parityApi ? parityApi.mcpForRun(dir) : null),
+    rpGuard: (...a) => (parityApi ? parityApi.rpGuard(...a) : { ok: true }),
     assetsEnv: (agent, cwd) => (opsApi ? opsApi.assetsEnv(agent, cwd) : undefined),
     validateProvider, validatePrompt, validateModel,
     projects: () => ops.projectsList(),
     stateFileFor: (id) => ops.projectStateFile(id),
-    apiConnected: (agent) => API_ONLY.includes(agent) || (LIVE_PROVIDERS.includes(agent) && readSettings().connection[agent] === 'api'),
-    callApi: async (agent, model, prompt) => {
+    extraAgents: TEAMMATES,
+    apiConnected: (agent) => TEAMMATES.includes(agent) || API_ONLY.includes(agent) || (LIVE_PROVIDERS.includes(agent) && readSettings().connection[agent] === 'api'),
+    callApi: async (agent, model, prompt, signal) => {
+      if (TEAMMATES.includes(agent)) return parityApi ? parityApi.teammates.chat(agent, { prompt, model, signal }) : { ok: false, error: { kind: 'auth', message: 'Not ready.' } };
       const r = await callProvider({ provider: agent, apiKey: secrets.get(agent), model: validateModel(model || DEFAULT_MODELS[agent]), prompt });
       if (!r.ok) {
         if (r.error.kind === 'rate_limit' || agents.isLimit(r.error.message)) r.error.kind = 'limit';
@@ -1018,6 +1087,7 @@ app.on('before-quit', () => {
   for (const c of runs.values()) c.abort();
   opsApi?.stop();
   v2Api?.stop();
+  parityApi?.stop();
 });
 
 app.on('window-all-closed', () => {

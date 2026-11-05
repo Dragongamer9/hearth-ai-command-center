@@ -141,7 +141,9 @@ test('Claude acting for the owner: asks only, nothing without a yes, hard limits
   assert.ok(decide.indexOf("a.status = yes ? 'approved' : 'denied'") < decide.indexOf('cardAction('), 'acts only after the yes');
   assert.equal((ui.match(/call\('chatMerge'/g) || []).length, 1, 'one merge call site');
   assert.match(between(ui, 'async function send(', 'async function runTeam('), /typedAnswer\(text\)/, 'typed answers come only from the owner\'s composer');
-  assert.doesNotMatch(between(ui, 'async function turn(', 'const changesOf'), /typedAnswer/, 'never from an AI\'s reply');
+  const runner = read('src/app/team-run.mjs');
+  assert.doesNotMatch(between(runner, 'async function turn(', 'async function runHelpers('), /typedAnswer/, 'never from an AI\'s reply');
+  assert.match(decide, /a\.chatId && a\.chatId !== R\.id/, 'an approval stays bound to the chat it was asked in');
 });
 
 test('RED FLAG: the in-app update UI stays visible and working (Settings › App updates)', () => {
@@ -154,9 +156,12 @@ test('RED FLAG: the in-app update UI stays visible and working (Settings › App
 });
 
 test('the owner\'s input is never blocked by AI activity', () => {
-  const send = between(ui, 'async function send(', 'async function runTeam(');
-  assert.match(send, /if \(S\.busy\) \{[\s\S]*S\.queued = /, 'a message sent while the team works is queued, not refused');
-  assert.match(ui, /if \(S\.queued\?\.length && !S\.stop\)/, 'and answered right after');
+  const send = between(ui, 'async function send(', '// Retry an answer');
+  assert.match(send, /if \(S\.busy \|\| S\.working\) \{[\s\S]*runner\.start\(R0, text\)/, 'a message sent while the team works is queued, not refused');
+  const runner = read('src/app/team-run.mjs');
+  assert.match(runner, /if \(R\.round \|\| R\.waiting\) \{ R\.queued\.push\(text\)/, 'queued for that chat');
+  assert.match(runner, /next = R\.queued\.length && !R\.stop \?/, 'and answered right after');
+  assert.doesNotMatch(between(ui, 'async function openChat(', 'function goHome('), /toast\(/, 'switching chats never blocks');
   assert.match(ui, /<button class="send" data-a="send"/);
   assert.doesNotMatch(ui, /data-a="send"[^>]*disabled/);
   assert.doesNotMatch(ui, /id="composer"[^>]*disabled/);
@@ -173,10 +178,16 @@ test('settings never change by themselves: the window writes settings only from 
   assert.match(ui, /if \(t\.matches\?\.\('\[data-a="idle-hours"\]'\)\) setSettings/, 'plus the owner\'s own idle-time choice');
 });
 
-test('no Projects list, no Board, Approvals, Jobs or Habitat in the window', () => {
+test('no Projects list, no Board, Approvals or Jobs; the Habitat only as a sidebar entry', () => {
   const side = between(ui, 'function renderSide() {', '\nfunction topbar(');
-  assert.doesNotMatch(side, /Projects|Board|Approvals|Jobs|Habitat/);
-  assert.doesNotMatch(ui, /from '\.\/habitat|from '\.\/ops\/ui\.mjs'|from '\.\/team\.mjs'/);
+  assert.doesNotMatch(side, /Projects|Board|Approvals|Jobs/);
+  assert.match(side, /data-a="habitat"[^>]*>\$\{icon\('home', 'sm'\)\}Habitat/, 'a Habitat entry in the sidebar');
+  assert.ok(side.indexOf('data-a="habitat"') < side.indexOf('id="chat-list"'), 'just above the chats list');
+  const top = between(ui, 'function topbar() {', '\nfunction renderMain(');
+  assert.doesNotMatch(top, /data-a="habitat"/, 'no top-bar button');
+  assert.doesNotMatch(between(ui, 'function renderPane(', '// ---------- popovers'), /habitat/i, 'no side panel tab');
+  assert.match(ui, /saveView3d: \(v\) => \{ call\('setSettings', \{ view3d: v \}\)/, 'the saved 3D settings change only from the owner\'s own 3D controls');
+  assert.doesNotMatch(ui, /from '\.\/ops\/ui\.mjs'|from '\.\/team\.mjs'/);
   for (const s of ['New chat', 'Search chats', 'data-a="chat-menu"', 'data-a="settings"']) assert.ok(side.includes(s), s);
   for (const k of ['rename', 'pin', 'unpin', 'up', 'down', 'connect', 'close', 'hide', 'delete']) assert.ok(ui.includes(`'${k}'`), `chat menu: ${k}`);
   assert.match(ui, /dropInGroup\(S\.chats, dragId/, 'drag to reorder');

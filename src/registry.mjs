@@ -35,6 +35,11 @@ export const AGENTS = {
   deepseek: { name: 'DeepSeek', vendor: 'DeepSeek', cls: 'a-deepseek', kind: 'api', tool: 'DeepSeek API', plan: 'an API key from your DeepSeek platform account', install: '', headless: true, edits: false, api: true, mention: ['deepseek'], web: 'https://chat.deepseek.com/', signin: 'https://platform.deepseek.com/api_keys', export: 'chat.deepseek.com → Settings → Data → Export data (JSON)' },
   ollama: { name: 'Local AI', vendor: 'Ollama, on this computer', cls: 'a-ollama', kind: 'local', tool: 'Ollama', plan: 'no account — runs on your own hardware', install: 'Ollama’s official installer (ollama.com/install.sh)', installNote: OLLAMA_NOTE, headless: true, edits: false, api: false, mention: ['local', 'ollama', 'localai'], web: null, signin: null, export: null },
   freebuff: { name: 'FreeBuff', vendor: 'FreeBuff', cls: 'a-freebuff', kind: 'manual', tool: 'FreeBuff CLI', plan: 'your free FreeBuff account', install: 'npm install -g --prefix ~/.local freebuff', installNote: NPM_NOTE, headless: false, edits: true, api: false, mention: ['freebuff'], web: 'https://freebuff.com/', signin: 'https://freebuff.com/', export: null, resume: 'freebuff --continue' },
+  // More teammates by API key or URL (2.x). Unfiltered: what they make is never forwarded
+  // to the other AIs' context (placeholders instead), to protect the owner's other accounts.
+  venice: { name: 'Venice', vendor: 'Venice AI', cls: 'a-venice', kind: 'api', tool: 'Venice API', plan: 'an API key from your Venice account', install: '', headless: true, edits: false, api: true, unfiltered: true, images: true, mention: ['venice', 'veniceai'], web: 'https://venice.ai/', signin: 'https://venice.ai/settings/api', export: null },
+  civitai: { name: 'Civitai', vendor: 'Civitai', cls: 'a-civitai', kind: 'api', tool: 'Civitai image API', plan: 'an API token from your Civitai account (billed in Buzz)', install: '', headless: true, edits: false, api: true, unfiltered: true, images: true, imagesOnly: true, mention: ['civitai', 'civit'], web: 'https://civitai.com/', signin: 'https://civitai.com/user/account', export: null },
+  gpu: { name: 'Your GPU server', vendor: 'your own server', cls: 'a-gpu', kind: 'api', tool: 'your server (OpenAI-compatible chat or ComfyUI)', plan: 'your own rented or local GPU', install: '', headless: true, edits: false, api: true, unfiltered: true, images: true, mention: ['gpu', 'myserver', 'server', 'runpod', 'comfy', 'comfyui'], web: null, signin: null, export: null },
   // Web-window only (no CLI or consumer API for personal accounts).
   copilot: { name: 'Copilot', vendor: 'Microsoft', cls: 'a-copilot', kind: 'web', tool: 'copilot.microsoft.com', plan: 'your Microsoft account', headless: false, edits: false, api: false, mention: [], web: 'https://copilot.microsoft.com/', signin: 'https://copilot.microsoft.com/', export: 'account.microsoft.com/privacy → Copilot activity (view/clear; no chat-file download)' },
   meta: { name: 'Meta AI', vendor: 'Meta', cls: 'a-meta', kind: 'web', tool: 'meta.ai', plan: 'your Meta account', headless: false, edits: false, api: false, mention: [], web: 'https://www.meta.ai/', signin: 'https://www.meta.ai/', export: 'Accounts Center → Your information → Download your information' },
@@ -42,7 +47,7 @@ export const AGENTS = {
 };
 
 // Each AI's color (the same as the .a-* chips in styles.css).
-export const COLORS = { anthropic: '#d4a27f', openai: '#74c7a4', google: '#8ab4f8', xai: '#c9ccd1', mistral: '#fa7a35', qwen: '#8a7cf6', perplexity: '#20b8cd', deepseek: '#4d6bfe', ollama: '#e6ebe7', freebuff: '#a99be0', copilot: '#36b37e', meta: '#0a7cff' };
+export const COLORS = { venice: '#e05a4f', civitai: '#3b82f6', gpu: '#8f9a5b', anthropic: '#d4a27f', openai: '#74c7a4', google: '#8ab4f8', xai: '#c9ccd1', mistral: '#fa7a35', qwen: '#8a7cf6', perplexity: '#20b8cd', deepseek: '#4d6bfe', ollama: '#e6ebe7', freebuff: '#a99be0', copilot: '#36b37e', meta: '#0a7cff' };
 
 // Why each provider is a full team member or a web window (shown on the Agents page).
 export const ACCESS_NOTE = {
@@ -97,8 +102,12 @@ export const EDITORS = AGENT_IDS.filter((a) => AGENTS[a].headless && AGENTS[a].e
 // Agents that can be linked with an official API key.
 export const API_CAPABLE = AGENT_IDS.filter((a) => AGENTS[a].api);
 
+// Teammates added in 2.x by key or URL (not part of the 1.x agent list).
+export const TEAMMATE_IDS = ['venice', 'civitai', 'gpu'];
+export const UNFILTERED = TEAMMATE_IDS.filter((a) => AGENTS[a].unfiltered);
+
 // @local, @LocalAI, @Local_AI, display names ("@Claude", "@ChatGPT"): case-insensitive.
 export function aliasOf(word) {
   const w = String(word || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-  return AGENT_IDS.find((a) => AGENTS[a].mention.includes(w) || AGENTS[a].name.toLowerCase().replace(/[^a-z0-9]/g, '') === w) || null;
+  return [...AGENT_IDS, ...TEAMMATE_IDS].find((a) => AGENTS[a].mention.includes(w) || AGENTS[a].name.toLowerCase().replace(/[^a-z0-9]/g, '') === w) || null;
 }

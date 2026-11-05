@@ -2,52 +2,72 @@
 // GitHub repos; Claude, ChatGPT, Gemini and the others work together in it, Claude leading.
 // Work happens in a small temporary copy of the repo on this PC (electron/copies.cjs);
 // builds and tests run in GitHub Actions after a push to the chat's own branch.
+// Several chats can have their teams working at the same time (src/app/team-run.mjs): every
+// chat keeps its own messages, sessions, step stream, Stop and queue, and results always land
+// in the chat they belong to, whichever chat is open.
 import './styles.css';
-import { AGENTS, COLORS, AGENT_IDS } from './registry.mjs';
+import './vendor/katex/katex.min.css';
+import './vendor/highlight/github-dark.min.css';
+import { AGENTS, COLORS, TEAMMATE_IDS, UNFILTERED } from './registry.mjs';
 import { icon } from './icons.mjs';
 import { tokensToCss, pickMode } from './theme.mjs';
 import { autoTitle, moveInGroup, dropInGroup } from './chats.mjs';
 import { groupChats, repoHint, greeting, fmtBytes, ago } from './app/groups.mjs';
-import { groupSteps, outcomeSteps } from './app/steps.mjs';
-import { extractPreviews, previewDoc, frameHtml, kindOf } from './app/previews.mjs';
-import { md, esc } from './app/text.mjs';
+import { groupSteps } from './app/steps.mjs';
+import { previewDoc, frameHtml } from './app/previews.mjs';
+import { esc } from './app/text.mjs';
+import { rich, sourcesOf, plainText, hostOf } from './app/rich.mjs';
 import { parseDiff } from './app/diff.mjs';
-import { teamOf, planTurn, handoffs, pickReviewer, brief, turnPrompt, name as aiName } from './app/brief.mjs';
-import { parseActs, makeAct, expired, typedAnswer, ACT_KINDS } from './app/act.mjs';
+import { teamOf, mentionsIn, name as aiName } from './app/brief.mjs';
+import { expired, typedAnswer, ACT_KINDS } from './app/act.mjs';
+import { pickMaker, toolsBrief } from './app/tools.mjs';
+import { createTeamRunner } from './app/team-run.mjs';
+import { viewHabitat, mountHabitat, stopHabitat } from './habitat.mjs';
+import { mountHabitat3d, stopHabitat3d } from './habitat3d/view.mjs';
+import { applyHabitatLines, habitatSection, stripHabitatLines } from './habitat/actions.mjs';
+import { teamHabitatLine } from './habitat/status.mjs';
+import { activateLore, nextSpeakers, rpPrompt, addSwipe, moveSwipe, isSexual, fill, spriteFor } from './app/roleplay.mjs';
 
 const api = window.hearth || null;
-const TEAM_IDS = ['anthropic', 'openai', 'google', 'xai', 'mistral', 'qwen', 'perplexity', 'deepseek', 'ollama'];
-const MONO = { anthropic: ['C', '#c96b3c'], openai: ['G', '#3f8f6f'], google: ['Ge', '#4b6fd0'], xai: ['X', '#5d636b'], mistral: ['M', '#6b5bd2'], qwen: ['Q', '#7a5cc9'], perplexity: ['P', '#1f8a99'], deepseek: ['D', '#3d56c9'], ollama: ['L', '#6d746e'], freebuff: ['F', '#8a7bc6'] };
+const TEAM_IDS = ['anthropic', 'openai', 'google', 'xai', 'mistral', 'qwen', 'perplexity', 'deepseek', 'ollama', ...TEAMMATE_IDS];
+const MONO = { anthropic: ['C', '#c96b3c'], openai: ['G', '#3f8f6f'], google: ['Ge', '#4b6fd0'], xai: ['X', '#5d636b'], mistral: ['M', '#6b5bd2'], qwen: ['Q', '#7a5cc9'], perplexity: ['P', '#1f8a99'], deepseek: ['D', '#3d56c9'], ollama: ['L', '#6d746e'], freebuff: ['F', '#8a7bc6'], venice: ['V', '#c2453b'], civitai: ['Ci', '#2f6fd6'], gpu: ['GP', '#6f7a3e'] };
 const QUICK = [
   ['gh', 'Fix a bug in a repo', 'There\'s a bug I want fixed: '],
   ['dl', 'Look at a sent log', 'Look at the log I attached (or the newest one in Dragongamer9/hearth-logs) and find the cause: '],
   ['globe', 'Research something', 'Research this and give me a short answer with sources: '],
   ['eye', 'Make a mockup', 'Make a live preview mockup of '],
-  ['branch', 'Review open pull requests', 'Review the open pull requests in this repo and tell me which are ready.'],
+  ['stats', 'Analyse a spreadsheet', 'Analyse the CSV I attached: summarise it and make charts of '],
   ['flag', 'Prepare a release', 'Prepare a release: list what changed since the last release and draft the release notes. Don\'t pick a version number; ask me for it.'],
 ];
-const SECTIONS = [['team', 'AI team'], ['accounts', 'Accounts'], ['github', 'GitHub'], ['tools', 'Tools'], ['perms', 'Permissions'], ['look', 'Appearance'], ['updates', 'App updates'], ['data', 'Saved data']];
+const SECTIONS = [['team', 'AI team'], ['accounts', 'Accounts'], ['github', 'GitHub'], ['tools', 'Tools'], ['memory', 'Memory'], ['scheduled', 'Scheduled'], ['connectors', 'Connectors'], ['perms', 'Permissions'], ['alerts', 'Notifications & voice'], ['look', 'Appearance'], ['updates', 'App updates'], ['data', 'Saved data']];
 const IDLE = [[1, '1 hour'], [6, '6 hours'], [24, '1 day'], [72, '3 days'], [168, '1 week'], [0, 'Never']];
+const MAX_CHATS = [1, 2, 3, 4, 5, 6, 8, 10];
+const IMAGE_MAKERS = ['openai', 'google', 'xai', 'venice', 'civitai', 'gpu'];
+const VIDEO_MAKERS = ['openai', 'google'];
+const MODEL_PRESETS = { anthropic: ['opus', 'sonnet', 'haiku'], openai: ['gpt-5', 'gpt-5-codex', 'o4-mini'], google: ['gemini-2.5-pro', 'gemini-2.5-flash'], xai: ['grok-4', 'grok-code-fast-1'], mistral: ['mistral-large-latest', 'codestral-latest'], perplexity: ['sonar', 'sonar-pro', 'sonar-reasoning-pro'], deepseek: ['deepseek-chat', 'deepseek-reasoner'], qwen: [], ollama: [], venice: [], civitai: [], gpu: [] };
+const MEDIA_KEYS = [['google', 'Gemini API key', 'pictures (Gemini image model), Veo videos'], ['openai', 'OpenAI API key', 'pictures and edits (OpenAI Images), Sora videos; the same key as ChatGPT by API'], ['xai', 'xAI API key', 'Grok pictures'], ['mistral', 'Mistral API key', 'reading PDFs and scans (Mistral OCR)']];
 
 const S = {
   view: 'home', tab: 'team',
-  chats: [], trash: [], notices: [], broken: false,
-  open: null, msgs: [], sessions: {}, readOnly: false, copy: null,
-  draft: '', attach: [], conn: null, mode: 'team', web: true, build: true,
-  busy: null, stop: false,
-  pane: null, pop: null, modal: null, toast: null, undo: null,
+  chats: [], temps: [], trash: [], notices: [], broken: false,
+  open: null, lastChat: null,
+  draft: '', attach: [], conn: null, mode: 'team', web: true, build: true, deep: false, talk: false, homeModels: {},
+  pane: null, pop: null, modal: null, toast: null, editing: null,
   search: '', hits: null, showTrash: false, showHidden: false, renaming: null,
   repos: null, reposMsg: '', repoQuery: '', branches: {}, pick: null,
-  settings: { tools: { web: true, build: true, quickChecks: [] }, team: null, copyIdleHours: 24, theme: 'hearth', textSize: 100, connection: {}, bins: {}, extraDirs: [] },
+  settings: { tools: { web: true, build: true, quickChecks: [] }, team: null, copyIdleHours: 24, theme: 'hearth', textSize: 100, connection: {}, bins: {}, extraDirs: [], notify: true, autoRead: false, maxChats: 3, customInstructions: { about: '', style: '' }, teammates: {} },
   info: {}, upd: { enabled: false, status: { state: 'idle' } }, gh: {}, cli: {}, prov: { keys: {} }, theme: { found: false, tokens: {} },
-  copies: null, boards: null, phone: null, idle: [], rec: null, voice: null,
+  mates: { ready: {}, keys: {}, servers: [], imagesOnly: {}, conf: { venice: {}, civitai: {} }, models: { venice: [], veniceImage: [], civitaiEngines: [] } },
+  mkeys: { keys: {} }, memory: null, memPrompt: '', schedules: null, connectors: null, skills: null, habitat: null,
+  copies: null, boards: null, phone: null, idle: [], rec: null,
+  cards: null, books: null, persona: null, cardEdit: null, loreEdit: null, cardQuery: '',
 };
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 const now = () => new Date().toISOString();
 const cleanErr = (e) => String(e?.message || e || '').replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
 const call = async (fn, ...a) => { if (!api || typeof api[fn] !== 'function') return null; try { return await api[fn](...a); } catch (e) { return { ok: false, message: cleanErr(e), error: { message: cleanErr(e) } }; } };
-const entry = (id = S.open) => S.chats.find((c) => c.id === id) || null;
+const entry = (id = S.open) => S.chats.find((c) => c.id === id) || S.temps.find((c) => c.id === id) || null;
 const ownerName = () => S.settings.ownerIdentity?.name || S.gh.ghUser || 'Dragongamer9';
 const team = () => teamOf(S.settings.team);
 
@@ -55,33 +75,85 @@ const team = () => teamOf(S.settings.team);
 function method(a) { return AGENTS[a]?.kind === 'api' ? 'api' : S.settings.connection?.[a] === 'api' ? 'api' : 'cli'; }
 function ready(a) {
   if (!AGENTS[a]?.headless) return false;
+  if (TEAMMATE_IDS.includes(a)) return Boolean(S.mates.ready?.[a]);
   if (method(a) === 'api') return Boolean(S.prov.keys?.[a]);
   const c = S.cli[a];
   return Boolean(c && c.installed && c.signedIn !== false);
 }
 const live = () => team().members.filter(ready);
 const mono = (a, cls = '') => { const m = MONO[a] || [(AGENTS[a]?.name || '?')[0], '#7a7166']; return `<span class="ava ${cls}" style="background:${m[1]}">${esc(m[0])}</span>`; };
+const setupHint = (a) => (a === 'gpu' ? 'Add your GPU server in Settings › Accounts' : TEAMMATE_IDS.includes(a) ? `Add your ${aiName(a)} key in Settings › Accounts` : `set up ${aiName(a)} in Settings › Accounts`);
+const makerReady = (a) => (TEAMMATE_IDS.includes(a) ? Boolean(S.mates.ready?.[a]) && team().members.includes(a) : Boolean(S.mkeys.keys?.[a]));
 
-// ---------- saving ----------
-let saveChain = Promise.resolve();
-function save() {
-  const id = S.open;
-  if (!id || S.readOnly) return saveChain;
-  const data = { messages: S.msgs.filter((m) => !m.local), sessions: S.sessions };
-  saveChain = saveChain.then(async () => {
+// ---------- every chat's own runtime ----------
+const runner = createTeamRunner({
+  call: (fn, ...a) => call(fn, ...a),
+  save: (R) => saveRt(R),
+  render: (R) => { renderSide(); if (R.id === S.open && S.view === 'chat') renderMain(); if (S.view === 'habitat') pokeHabitat(); },
+  openId: () => (S.view === 'chat' && document.hasFocus?.() !== false ? S.open : (S.view === 'chat' ? S.open : null)),
+  entry: (id) => entry(id),
+  settings: () => S.settings,
+  team, live, method, setupHint,
+  modeFor: (R) => R.mode || S.mode,
+  webFor: (R) => (R.deep ? true : R.web ?? S.web),
+  buildFor: (R) => R.build ?? S.build,
+  imagesOnly: (a) => Boolean(S.mates.imagesOnly?.[a]),
+  makeImage: async (R, { agent, prompt }) => { const r = await call('mediaImage', R.id, { provider: agent, prompt }); return r?.ok ? { ok: true, items: r.items || [r.item].filter(Boolean), via: r.via, text: `Made: “${prompt.slice(0, 200)}”${r.notes?.length ? `\n\n${r.notes.join(' ')}` : ''}` } : { ok: false, message: r?.error?.message || r?.message || 'No picture came back.' }; },
+  modelFor: (R, a) => { const m = R.sessions?._models?.[a]; return m && m !== 'default' ? m : null; },
+  refsFor: (R) => (entry(R.id)?.refs || []),
+  briefExtra: (R, agent, role, resumed) => briefExtra(R, agent, role, resumed),
+  afterReply: (R, agent, text) => habitatLines(R, agent, text),
+  onTools: (R, msg, tools, agent) => onTools(R, msg, tools, agent),
+  onPreview: (R, msg) => { if (R.id === S.open && S.view === 'chat') openPane(msg.id, msg.previews[0].id); },
+  beforeRound: async () => { S.memPrompt = (await call('memoryPrompt')) || ''; },
+  afterSave: (R, msg) => { loadChats().then(renderSide); pushPhone(); if (msg && ((msg.acts || []).length || (msg.memo || []).length)) notify(R, 'needs your answer'); },
+  onRoundDone: (R, { stopped }) => { if (!stopped) { notify(R, 'reply is ready'); autoRead(R); } },
+  isRoleplay: (R) => Boolean(entry(R.id)?.rp),
+  roleplayTurn: (R, text, opts) => roleplayTurn(R, text, opts),
+  uid, now,
+});
+const rt = (id) => runner.rt(id);
+const cur = () => (S.open ? runner.rt(S.open) : null);
+// The open chat's state, read through its runtime (so a background chat is never touched).
+Object.defineProperties(S, {
+  msgs: { get: () => cur()?.msgs || [], set: (v) => { const R = cur(); if (R) R.msgs = v; } },
+  sessions: { get: () => cur()?.sessions || {}, set: (v) => { const R = cur(); if (R) R.sessions = v; } },
+  readOnly: { get: () => Boolean(cur()?.readOnly), set: (v) => { const R = cur(); if (R) R.readOnly = v; } },
+  copy: { get: () => cur()?.copy || null, set: (v) => { const R = cur(); if (R) R.copy = v; } },
+  busy: { get: () => cur()?.busy || null },
+  working: { get: () => Boolean(cur()?.round || cur()?.waiting) },
+});
+
+// ---------- saving (each chat to its own file) ----------
+function saveRt(R) {
+  if (!R || R.readOnly || R.temp) return Promise.resolve();
+  const id = R.id;
+  const data = { messages: R.msgs.filter((m) => !m.local), sessions: R.sessions };
+  R.chain = R.chain.then(async () => {
     const r = await call('chatsSave', id, data);
     if (r && r.ok === false) toast(r.message || 'Not saved.');
     const c = entry(id);
     if (c) c.updatedAt = now();
   });
-  return saveChain;
+  return R.chain;
 }
+const save = () => saveRt(cur());
 
 function toast(text, undo = null) {
   S.toast = { text, undo, at: Date.now() };
   renderOverlay();
   clearTimeout(toast.t);
   toast.t = setTimeout(() => { S.toast = null; renderOverlay(); }, undo ? 9000 : 5000);
+}
+
+// Desktop notification (Settings › Notifications & voice): only when the owner isn't looking at that chat.
+function notify(R, what) {
+  if (S.settings.notify === false) return;
+  const looking = document.hasFocus?.() && !document.hidden && S.view === 'chat' && S.open === R.id;
+  if (looking) return;
+  const c = entry(R.id);
+  const last = [...R.msgs].reverse().find((m) => m.who !== 'owner' && m.who !== 'system');
+  call('notifyShow', { title: `“${c?.title || 'Chat'}”: ${what}`, body: last ? `${aiName(last.who)}: ${plainText(last.text).slice(0, 140)}` : '', chatId: R.id });
 }
 
 // ---------- chats ----------
@@ -92,31 +164,43 @@ async function loadChats() {
   S.trash = Array.isArray(t) ? t : [];
 }
 
+async function loadRt(id) {
+  const c = entry(id);
+  const R = rt(id);
+  if (c?.temp) R.temp = true;
+  if (R.loaded || R.round || R.temp) { R.loaded = true; return R; }
+  const r = await call('chatsGet2', id);
+  if (R.loaded || R.round) return R;
+  R.msgs = r?.ok ? (r.messages || []) : [];
+  R.sessions = r?.ok ? (r.sessions || {}) : {};
+  R.readOnly = Boolean(r?.readOnly) || (r && r.ok === false);
+  if (r && r.ok === false) R.msgs = [{ id: 'x', who: 'system', local: true, text: r.message || 'This chat could not be read. It was left exactly as it is.', at: now() }];
+  if (c?.importError) R.msgs.unshift({ id: 'ie', who: 'system', local: true, text: c.importError, at: now() });
+  R.loaded = true;
+  return R;
+}
+
+// Switching chats never stops or blocks a chat that is working: it keeps going in the background.
 async function openChat(id) {
-  if (S.busy && S.open !== id) { toast('An AI is still working in this chat. Stop it or wait, then switch.'); return; }
   const c = entry(id);
   if (!c) return;
-  const r = await call('chatsGet2', id);
+  const R = await loadRt(id);
   S.open = id;
+  S.lastChat = id;
   S.view = 'chat';
   S.pane = null;
   S.pop = null;
-  S.msgs = r?.ok ? (r.messages || []) : [];
-  S.sessions = r?.ok ? (r.sessions || {}) : {};
-  S.readOnly = Boolean(r?.readOnly) || (r && r.ok === false);
-  S.copy = null;
-  if (r && r.ok === false) S.msgs = [{ id: 'x', who: 'system', local: true, text: r.message || 'This chat could not be read. It was left exactly as it is.', at: now() }];
-  if (c.importError) S.msgs.unshift({ id: 'ie', who: 'system', local: true, text: c.importError, at: now() });
-  try { localStorage.setItem('hearth.v2.open', id); } catch {}
+  S.editing = null;
+  R.unseen = false;
+  try { if (!c.temp) localStorage.setItem('hearth.v2.open', id); } catch {}
   render(true);
-  if (c.hasCopy) { const st = await call('copiesStatus', id); if (st?.exists) { S.copy = st; render(); } }
-  for (const m of S.msgs) if (m.actions && ['pending', 'queued'].includes(m.actions.state)) pollRuns(m.id);
+  if (c.hasCopy && !R.copy) { const st = await call('copiesStatus', id); if (st?.exists) { R.copy = st; render(); } }
+  for (const m of R.msgs) if (m.actions && ['pending', 'queued'].includes(m.actions.state)) pollRuns(R, m.id);
   pushPhone();
 }
 
 function goHome() {
-  if (S.busy) { toast('An AI is still working. Stop it or wait first.'); return; }
-  S.view = 'home'; S.open = null; S.msgs = []; S.sessions = {}; S.pane = null; S.pop = null; S.copy = null;
+  S.view = 'home'; S.open = null; S.pane = null; S.pop = null; S.editing = null;
   try { localStorage.removeItem('hearth.v2.open'); } catch {}
   render(true);
 }
@@ -127,9 +211,31 @@ async function ensureChat(firstText) {
   const e = await call('chatsCreate2', { repo: S.conn?.repo || null, branch: S.conn?.branch || null, title });
   if (!e || !e.id) { toast(e?.message || 'Could not start a chat.'); return null; }
   await loadChats();
-  S.open = e.id; S.view = 'chat'; S.msgs = []; S.sessions = {}; S.readOnly = false; S.copy = null;
+  const R = rt(e.id);
+  R.loaded = true;
+  if (Object.keys(S.homeModels).length) R.sessions._models = { ...S.homeModels };
+  S.open = e.id; S.lastChat = e.id; S.view = 'chat';
   try { localStorage.setItem('hearth.v2.open', e.id); } catch {}
   return entry(e.id) || e;
+}
+
+// A temporary chat: nothing is saved (no file, no history, no memory); it ends when closed.
+async function startTemp() {
+  const e = await call('chatsTemp');
+  if (!e?.id) return toast('Temporary chats need the app.');
+  S.temps.push(e);
+  const R = rt(e.id);
+  R.temp = true;
+  R.loaded = true;
+  await openChat(e.id);
+}
+async function endTemp(id) {
+  const R = runner.runtimes.get(id);
+  if (R?.round) await runner.stop(R);
+  await call('chatsTempEnd', id);
+  S.temps = S.temps.filter((t) => t.id !== id);
+  runner.runtimes.delete(id);
+  if (S.open === id) goHome(); else render();
 }
 
 async function chatAction(kind, id) {
@@ -141,6 +247,8 @@ async function chatAction(kind, id) {
   if (kind === 'up' || kind === 'down') { const ids = moveInGroup(S.chats, id, kind === 'up' ? -1 : 1); if (ids) await call('chatsReorder', ids); }
   if (kind === 'hide' || kind === 'unhide') { const r = await call('chatsUpdate', id, { hidden: kind === 'hide' }); if (r?.ok === false) toast(r.message); if (kind === 'hide' && S.open === id) goHome(); }
   if (kind === 'connect') { S.pick = { chatId: id }; S.pop = { kind: 'repo', chatId: id }; loadRepos(); return render(); }
+  if (kind === 'knowledge') { S.modal = { kind: 'knowledge', chatId: id, instructions: c.instructions || '', refs: (c.refs || []).slice() }; return render(); }
+  if (kind === 'export') { S.modal = { kind: 'export', chatId: id }; return render(); }
   if (kind === 'close') return closeCopy(id);
   if (kind === 'delete') return deleteChat(id);
   await loadChats();
@@ -148,11 +256,13 @@ async function chatAction(kind, id) {
 }
 
 async function deleteChat(id, opts = {}) {
-  if (S.busy && S.open === id) return toast('Stop the AI first.');
+  const R = runner.runtimes.get(id);
+  if (R?.round || R?.waiting) return toast('Stop the team in that chat first.');
   const title = entry(id)?.title || 'chat';
   const r = await call('chatsDelete2', id, opts);
   if (r?.unpushed) return askUnpushed(id, 'delete');
   if (!r || r.ok === false) { if (!r?.cancelled) toast(r?.message || 'Not deleted.'); return; }
+  runner.runtimes.delete(id);
   if (S.open === id) goHome();
   await loadChats();
   render();
@@ -162,7 +272,7 @@ async function deleteChat(id, opts = {}) {
 async function closeCopy(id, force = false) {
   const r = await call('copiesRemove', id, force);
   if (r?.unpushed) return askUnpushed(id, 'close');
-  if (r?.ok) { toast(`Removed the temporary copy${r.freed ? ` (${fmtBytes(r.freed)} freed)` : ''}. It comes back when the team works here again.`); if (S.open === id) S.copy = null; }
+  if (r?.ok) { toast(`Removed the temporary copy${r.freed ? ` (${fmtBytes(r.freed)} freed)` : ''}. It comes back when the team works here again.`); const R = runner.runtimes.get(id); if (R) R.copy = null; }
   else if (!r?.cancelled) toast(r?.message || 'Not removed.');
   await loadChats();
   if (S.copies) await loadCopies();
@@ -198,10 +308,13 @@ async function chooseRepo(repo, branch) {
   if (!chatId && S.view !== 'chat') { S.conn = repo ? { repo, branch: branch || null } : null; return render(); }
   const id = chatId || S.open;
   if (!id) { S.conn = repo ? { repo, branch } : null; return render(); }
+  if (entry(id)?.temp) return toast('A temporary chat can\'t connect to a repo (nothing of it is kept).');
+  const R = runner.runtimes.get(id);
+  if (R?.round) return toast('Wait for the team in that chat to finish (or stop it) before switching repos.');
   const r = await call('chatsConnect', id, repo ? { repo, branch } : null);
   if (r?.unpushed) { S.modal = { kind: 'unpushed', chatId: id, then: 'connect', conn: repo ? { repo, branch } : null }; return render(); }
   if (!r?.ok) return toast(r?.message || 'Not connected.');
-  if (S.open === id) S.copy = null;
+  if (R) R.copy = null;
   await loadChats();
   render();
   toast(repo ? `Connected to ${repo}${branch ? ` · ${branch}` : ''}.` : 'This chat has no repo now; the team just talks.');
@@ -218,20 +331,29 @@ async function addFiles(fileList) {
 }
 
 // ---------- the team at work ----------
+// Who a message is for when it names only unfiltered teammates: kept away from the other AIs.
+function targetsOf(text) {
+  const named = mentionsIn(text);
+  if (named.length) return named;
+  return S.mode !== 'team' ? [S.mode] : [];
+}
+
 async function send(textIn) {
   const text = String(textIn ?? S.draft).trim();
   if (!text && !S.attach.length) return;
-  // The owner is never blocked: while the team works, his message is posted now and
-  // answered as soon as the current turn ends.
-  if (S.busy) {
+  const R0 = cur();
+  // The owner is never blocked: while this chat's team works, his message is posted now and
+  // answered as soon as the current turn ends. Other chats are not affected.
+  if (S.busy || S.working) {
     if (S.readOnly || !S.open) return;
-    S.msgs.push({ id: uid(), who: 'owner', text, at: now(), attachments: S.attach.slice() });
+    const to = entry()?.rp ? rpShield(entry(), text) : targetsOf(text);
+    R0.msgs.push({ id: uid(), who: 'owner', text, at: now(), attachments: S.attach.slice(), ...(to.length && to.every((a) => UNFILTERED.includes(a)) ? { to } : {}) });
     S.draft = '';
     S.attach = [];
-    S.queued = [...(S.queued || []), text];
+    runner.start(R0, text);
     await save();
     render(true);
-    return toast('Sent. The team reads it as soon as the current step is done.');
+    return toast(R0.waiting ? 'Sent. This chat is waiting for a free slot; it answers when its turn comes.' : 'Sent. The team reads it as soon as the current step is done.');
   }
   // "yes" / "no" answers Claude's newest request in this chat.
   const pendingAct = [...S.msgs].reverse().flatMap((m) => (m.acts || []).filter((a) => a.status === 'pending' && !expired(a))).shift();
@@ -239,126 +361,305 @@ async function send(textIn) {
   if (S.readOnly) return toast('This chat could not be read, so nothing is added to it.');
   const c = await ensureChat(text || 'Files');
   if (!c) return;
-  const msg = { id: uid(), who: 'owner', text, at: now(), attachments: S.attach.slice() };
-  S.msgs.push(msg);
+  const R = rt(c.id);
+  const to = c.rp ? rpShield(c, text) : targetsOf(text);
+  const msg = { id: uid(), who: 'owner', text, at: now(), attachments: S.attach.slice(), ...(to.length && to.every((a) => UNFILTERED.includes(a)) ? { to } : {}) };
+  R.msgs.push(msg);
   S.draft = '';
   S.attach = [];
-  if (c.titleAuto && S.msgs.filter((m) => m.who === 'owner').length === 1 && text) {
+  if (c.titleAuto && R.msgs.filter((m) => m.who === 'owner').length === 1 && text && !c.temp) {
     await call('chatsUpdate', c.id, { title: autoTitle(text), auto: true });
     await loadChats();
   }
-  await save();
+  await saveRt(R);
   render(true);
   if (typed && pendingAct) return decideAct(pendingAct.id, typed === 'yes', 'typed');
-  await runTeam(text);
-}
-
-async function runTeam(text) {
-  // Right after start the AIs' sign-in checks may still be running: wait for them once.
+  // This round's switches come from the composer now; changing them later doesn't touch it.
+  Object.assign(R, { mode: S.mode, web: S.web, build: S.build, deep: S.deep });
   if (team().members.some((a) => method(a) !== 'api' && !S.cli[a])) await refreshAgents();
-  const t = team();
-  const L = live();
-  const order = planTurn({ text, mode: S.mode, team: t, live: L });
-  if (!order.length) {
-    post({ who: 'system', text: L.length ? 'The AI you picked isn\'t ready. Set it up in Settings › Accounts, or pick another one.' : 'No AI is ready yet. Sign in to Claude (or another AI) in Settings › Accounts.' });
-    return save();
-  }
-  S.stop = false;
-  const done = [];
-  let changed = null;
-  for (let i = 0; i < order.length && !S.stop; i++) {
-    const agent = order[i];
-    const role = S.mode === 'team' && agent === t.lead ? 'lead' : 'member';
-    const r = await turn(agent, { role });
-    done.push(agent);
-    if (!r) break;
-    if (r.changes?.files?.length) changed = { by: agent, msgId: r.msgId };
-    if (role === 'lead') for (const h of handoffs(r.text, { team: t, live: L, done: [...done, ...order] })) order.push(h);
-  }
-  const reviewer = changed && S.mode === 'team' && !S.stop ? pickReviewer({ team: t, live: L, author: changed.by }) : null;
-  if (reviewer) {
-    const d = await call('chatDiff', S.open);
-    const diff = String(d?.diff || '').slice(0, 40000);
-    await turn(reviewer, { role: 'reviewer', task: `Review ${aiName(changed.by)}'s changes on this chat's branch. Say plainly if they are right and what (if anything) must change. Keep it short. Don't edit files.\n\nTHE CHANGES:\n${diff || '(no diff available)'}`, readOnly: true });
-  }
-  S.busy = null;
-  render();
-  // Messages the owner sent while the team was working.
-  if (S.queued?.length && !S.stop) { const next = S.queued.join('\n\n'); S.queued = []; return runTeam(next); }
-  S.queued = [];
+  await runner.start(R, text);
 }
 
-function post(m) {
-  const msg = { id: uid(), at: now(), ...m };
-  S.msgs.push(msg);
-  render();
-  return msg;
+// Retry an answer: a new version of the same message (← 1/2 →).
+async function regenerate(msgId) {
+  const R = cur();
+  const m = R?.msgs.find((x) => x.id === msgId);
+  if (!m || R.round || R.waiting) return toast(R?.round ? 'Wait for the team to finish first.' : 'Nothing to retry.');
+  Object.assign(R, { mode: S.mode, web: S.web, build: S.build, deep: S.deep });
+  await runner.start(R, '', { only: m.who, regenerate: m.id, mode: m.role === 'lead' ? 'team' : m.who });
 }
 
-async function turn(agent, { role = 'member', task = '', readOnly = false } = {}) {
-  const c = entry();
-  if (!c) return null;
-  const runId = uid().replace(/[^a-z0-9]/gi, '').slice(0, 10) + 'r';
-  S.busy = { agent, role, runId, steps: [], startedAt: Date.now() };
+// Edit and resend: the old message and everything after it stay as an earlier version.
+async function resendEdited(msgId, text) {
+  const R = cur();
+  const i = R ? R.msgs.findIndex((x) => x.id === msgId) : -1;
+  if (i < 0 || !text.trim()) return;
+  if (R.round || R.waiting) return toast('Wait for the team to finish (or stop it) before editing.');
+  const m = R.msgs[i];
+  const branches = m.branches?.length ? m.branches : [{ text: m.text, tail: [] }];
+  branches[m.b || 0] = { text: m.text, tail: R.msgs.slice(i + 1) };
+  branches.push({ text: text.trim(), tail: [] });
+  m.branches = branches.slice(-10);
+  m.b = m.branches.length - 1;
+  m.text = text.trim();
+  m.editedAt = now();
+  R.msgs.splice(i + 1);
+  S.editing = null;
+  await saveRt(R);
   render(true);
-  const resumeId = typeof S.sessions[agent] === 'string' ? S.sessions[agent] : null;
-  const copy = S.copy ? { base: S.copy.base, work: S.copy.work } : null;
-  const opts = { agent, role, chat: c, copy, build: S.build && !readOnly, web: S.web, quickChecks: S.settings.tools?.quickChecks || [], team: team(), live: live(), actForMe: S.settings.actForMe === true, apiOnly: method(agent) === 'api' };
-  const briefText = brief(opts);
-  const prompt = turnPrompt({ agent, role, messages: S.msgs, briefText, resumed: Boolean(resumeId), task });
-  const fallbackPrompt = turnPrompt({ agent, role, messages: S.msgs, briefText, resumed: false, task });
-  const lastOwner = [...S.msgs].reverse().find((m) => m.who === 'owner');
-  const atts = lastOwner?.attachments || [];
-  const r = await call('chatRun', {
-    chatId: c.id, agent, runId, prompt: prompt.slice(-58000), fallbackPrompt: fallbackPrompt.slice(-58000), resumeId,
-    images: atts.filter((a) => a.kind === 'image').map((a) => a.path).concat(atts.filter((a) => a.kind === 'video').flatMap((a) => a.frames || [])),
-    files: atts.filter((a) => a.kind === 'file').map((a) => a.path),
-    web: S.web, build: S.build && !readOnly, title: c.title, historyText: lastOwner?.text || '',
-  }) || { ok: false, error: { message: 'The app could not start the AI.' } };
-  const steps = S.busy?.steps || [];
-  S.busy = null;
-  if (r.sessionId) S.sessions[agent] = r.sessionId;
-  if (r.resumeReset && r.sessionId) S.sessions[agent] = r.sessionId;
-  if (r.status) S.copy = { ...r.status, exists: true };
-  if (!r.ok) {
-    const kind = r.error?.kind;
-    const why = kind === 'limit' ? `${aiName(agent)} is out of usage${r.error.reset ? ` (${r.error.reset})` : ''}.` : kind === 'auth' ? `${aiName(agent)} isn't signed in. Sign in under Settings › Accounts.` : kind === 'cancelled' ? 'Stopped.' : kind === 'wrong_repo' ? r.error.message : r.error?.message || 'Something went wrong.';
-    post({ who: agent, role, err: true, text: why + (r.partial ? `\n\n${r.partial}` : ''), steps, outcome: outcomeSteps(r), ...(r.changes?.files?.length ? { changes: changesOf(r) } : {}) });
-    await save();
-    await loadChats();
-    return null;
-  }
-  const { text, previews: fenced } = extractPreviews(r.text || '');
-  const previews = [...(r.previews || []), ...fenced].map((p) => ({ id: uid(), name: p.name, kind: p.kind || kindOf(p.name), content: p.content }));
-  const { acts, refused } = parseActs(text, { agent, enabled: S.settings.actForMe === true });
-  const shown = text.split('\n').filter((l) => !/^\s*ACT FOR OWNER:/i.test(l.replace(/[*`]/g, ''))).join('\n').trim();
-  const msg = post({
-    who: agent, role, text: shown || (previews.length ? 'Here\'s the preview.' : '(no text)'), via: r.via, steps,
-    outcome: outcomeSteps({ ...r, previews }), previews,
-    ...(r.changes?.files?.length ? { changes: changesOf(r) } : {}),
-    ...(r.pushed?.ok ? { actions: { branch: r.pushed.branch, sha: r.pushed.sha, state: 'queued', since: now() } } : {}),
-    ...(acts.length ? { acts: acts.map((a) => makeAct(a.kind, { chatId: c.id, sha: r.status?.head || null })) } : {}),
-    ...(refused.length ? { refusedActs: refused } : {}),
-  });
-  if (previews.length) openPane(msg.id, previews[0].id);
-  await save();
-  await loadChats();
-  if (msg.actions) pollRuns(msg.id);
-  pushPhone();
-  return { text: shown, changes: r.changes, msgId: msg.id };
+  Object.assign(R, { mode: S.mode, web: S.web, build: S.build, deep: S.deep });
+  await runner.start(R, m.text);
 }
-const changesOf = (r) => ({ ...r.changes, head: r.status?.head || null, unpushed: Boolean(r.status?.unpushed), pushed: r.pushed?.ok ? r.pushed.branch : null, base: r.changes?.base || r.status?.base, repo: entry()?.repo || null });
+async function switchBranch(msgId, dir) {
+  const R = cur();
+  const i = R ? R.msgs.findIndex((x) => x.id === msgId) : -1;
+  const m = R?.msgs[i];
+  if (!m?.branches?.length || R.round) return;
+  const to = Math.max(0, Math.min(m.branches.length - 1, (m.b || 0) + dir));
+  if (to === (m.b || 0)) return;
+  m.branches[m.b || 0] = { text: m.text, tail: R.msgs.slice(i + 1) };
+  const b = m.branches[to];
+  m.text = b.text;
+  m.b = to;
+  R.msgs.splice(i + 1, Infinity, ...(b.tail || []));
+  m.branches[to] = { text: b.text, tail: [] };
+  await saveRt(R);
+  render();
+}
+function switchVersion(msgId, dir) {
+  const m = S.msgs.find((x) => x.id === msgId);
+  if (!m?.versions?.length) return;
+  const to = Math.max(0, Math.min(m.versions.length - 1, (m.v ?? m.versions.length - 1) + dir));
+  Object.assign(m, m.versions[to], { v: to, versions: m.versions });
+  save();
+  render();
+}
 
-async function stopRun() {
-  S.stop = true;
-  if (S.open) await call('chatCancel', S.open);
+async function stopRun(R = cur()) {
+  if (!R) return;
+  await runner.stop(R);
+  call('mediaCancel', R.id);
   toast('Stopping…');
 }
 
+// What every AI also gets: memory, the owner's custom instructions, this chat's own
+// instructions and files, the Habitat, the app lines, and the mode of this round.
+function briefExtra(R, agent, role, resumed) {
+  const c = entry(R.id) || {};
+  const ci = S.settings.customInstructions || {};
+  const L = [];
+  if (S.memPrompt && !c.temp) L.push('', S.memPrompt);
+  if (ci.about || ci.style) L.push('', 'THE OWNER\'S CUSTOM INSTRUCTIONS:', ...(ci.about ? [`About him: ${ci.about}`] : []), ...(ci.style ? [`How to answer: ${ci.style}`] : []));
+  if (c.instructions) L.push('', `THIS CHAT'S INSTRUCTIONS (from the owner): ${c.instructions}`);
+  if (c.refs?.length) L.push('', `THIS CHAT'S REFERENCE FILES (always attached): ${c.refs.map((r) => `${r.name} (${r.path})`).join(', ')}`);
+  if (!resumed) {
+    const imgs = IMAGE_MAKERS.filter(makerReady).map(aiName);
+    const vids = VIDEO_MAKERS.filter((a) => S.mkeys.keys?.[a]).map((a) => (a === 'openai' ? 'Sora' : 'Veo'));
+    L.push(toolsBrief({ role, memory: !c.temp, images: imgs, video: vids, screenshots: Boolean(S.mkeys.screenshot) }));
+  }
+  if (R.deep) L.push('', 'DEEP RESEARCH MODE (the owner turned it on for this message): search widely (many sources, primary ones first), cross-check facts, then write a long, well-structured report with numbered citations [1] … and a Sources list of full https links at the end. Save the full report as .hearth-out/report-<short-topic>.md too. Lead: you may hand parts to teammates with HELPER lines.');
+  const lastOwner = [...R.msgs].reverse().find((m) => m.who === 'owner');
+  if ((lastOwner?.attachments || []).some((a) => /\.(csv|tsv|xlsx?|ods|json)$/i.test(a.name || ''))) L.push('', 'DATA ANALYSIS: the owner attached data. Analyse it locally (python3 with pandas/matplotlib if installed, else plain python or a ```chart block) in your folder; never upload it anywhere. Save every chart as a PNG in .hearth-media/ so it shows in the chat, and say what each one shows.');
+  if (R.canvas) {
+    const p = previewOf(R.canvas.msgId, R.canvas.pid, R);
+    if (p) L.push('', `THE CANVAS (the document open next to the chat, exactly as the owner left it; name ${p.name}):\n\`\`\`\n${String(p.content).slice(0, 30000)}\n\`\`\`\nTo change it, reply with the whole new version in one fenced block whose first line is \`\`\`${p.kind === 'markdown' ? 'markdown' : p.kind === 'svg' ? 'svg' : 'html'} preview ${p.name}`);
+  }
+  const hab = habitatPrompt(agent, resumed);
+  if (hab) L.push('', hab);
+  return L.join('\n');
+}
+
+// ---------- the Habitat (sidebar › Habitat; the AIs act in it with HABITAT: lines) ----------
+const NAMES = Object.fromEntries(TEAM_IDS.map((a) => [a, aiName(a)]));
+function habitatAgents() {
+  const t = team();
+  const R = S.lastChat ? runner.runtimes.get(S.lastChat) : null;
+  const helping = new Set((R?.msgs || []).flatMap((m) => (m.helpers || []).filter((h) => h.state === 'working').map((h) => h.agent)));
+  return t.members.slice(0, 12).map((a) => {
+    const busy = R?.busy?.agent === a;
+    const brief = busy ? { id: 'chat', title: entry(R.id)?.title || 'Chat', branch: R.copy?.work || '' } : null;
+    return { id: a, name: aiName(a), color: COLORS[a] || '#888888', lead: a === t.lead, status: ready(a) ? 'idle' : 'signedout', task: busy && R.busy.role !== 'reviewer' ? brief : null, reviewing: busy && R.busy.role === 'reviewer' ? brief : null, typing: busy || helping.has(a), waiting: Boolean(R?.waiting), note: ready(a) ? (busy ? 'working in this chat' : 'ready') : 'not set up' };
+  });
+}
+const habitatHooks = {
+  snapshot: () => {
+    const R = S.lastChat ? runner.runtimes.get(S.lastChat) : null;
+    return { tasks: [], chat: (R?.msgs || []).filter((m) => !m.local).slice(-12).map((m) => ({ id: m.id, who: m.who, text: String(m.text || '').slice(0, 200) })), store: S.habitat || null, ops: {}, reduced: S.settings.reduceMotion === true || (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false), agents: habitatAgents() };
+  },
+  openTask: () => { if (S.lastChat) openChat(S.lastChat); },
+  openAgent: () => { S.view = 'settings'; S.tab = 'team'; render(true); },
+  openChat: () => { if (S.lastChat) openChat(S.lastChat); else goHome(); },
+  // The Habitat's progress: written only when it really changes (electron/parity.cjs habitat:save).
+  saveStore: (h) => { const before = JSON.stringify({ ...(S.habitat || {}), rev: 0 }); S.habitat = h; if (JSON.stringify({ ...h, rev: 0 }) !== before) call('habitatSave', h); },
+  // 2D/3D, Lighter 3D, walk view, avatar, the study: the owner's own saved choices (Settings view3d).
+  view3d: () => S.settings.view3d || null,
+  saveView3d: (v) => { call('setSettings', { view3d: v }).then((s2) => { if (s2 && !s2.message && s2.tools) S.settings = s2; }); },
+  audit: () => {},
+};
+let habMounted = false;
+function pokeHabitat() { /* the Habitat polls habitatHooks.snapshot() itself */ }
+function habitatLines(R, agent, text) {
+  if (!/HABITAT:/i.test(text)) return text;
+  const ids = habitatAgents().map((a) => a.id);
+  const r = applyHabitatLines(S.habitat, { agent, text, ids, agents: habitatAgents(), names: NAMES, reduced: S.settings.reduceMotion === true, local: agent === 'ollama' });
+  if (r.changed) { S.habitat = r.store; call('habitatSave', r.store); }
+  if (r.results?.length) runner.post(R, { who: 'system', local: false, text: r.results.map((x) => `${aiName(agent)} · Habitat: ${x.ok ? '✓' : '✗'} ${x.reason}`).join('\n') });
+  return stripHabitatLines(text);
+}
+function habitatPrompt(agent, resumed) {
+  if (UNFILTERED.includes(agent)) return '';
+  const ids = habitatAgents().map((a) => a.id);
+  const r = habitatSection(S.habitat, { agent, ids, names: NAMES, local: agent === 'ollama', full: !resumed });
+  if (r.changed) S.habitat = r.store;
+  const others = r.text ? teamHabitatLine(S.habitat, habitatAgents(), NAMES, Date.now(), 360, agent) : '';
+  // The owner's presence line: whether he is looking at the Habitat right now.
+  const owner = S.view === 'habitat' ? 'The owner is in the Habitat right now, watching the team.' : '';
+  return [r.text, others, owner].filter(Boolean).join('\n');
+}
+
+// ---------- app lines from the AIs (pictures, memory, past chats, screenshots) ----------
+const newestImage = (R) => [...R.msgs].reverse().flatMap((m) => [...(m.media || [])].reverse()).find((x) => x.kind === 'image' && x.file) || null;
+async function onTools(R, msg, tools, agent) {
+  const answers = [];
+  for (const t of tools) {
+    if (R.stop) break;
+    if (t.kind === 'image' || t.kind === 'edit') {
+      const maker = pickMaker(t.to, { capable: t.kind === 'edit' ? ['openai', 'google'] : IMAGE_MAKERS, ready: makerReady });
+      if (!maker) { runner.post(R, { who: 'system', text: `${aiName(agent)} asked for a picture, but ${t.to ? `${aiName(t.to)} isn't set up for pictures (${setupHint(t.to)})` : t.kind === 'edit' ? 'editing needs an OpenAI or Gemini API key (Settings › Accounts)' : 'no image maker is set up yet (add a key in Settings › Accounts)'}.` }); continue; }
+      const edit = t.kind === 'edit' ? newestImage(R) : null;
+      if (t.kind === 'edit' && !edit) { runner.post(R, { who: 'system', text: 'There\'s no picture in this chat to edit.' }); continue; }
+      R.busy = { agent: maker, role: 'member', runId: `img${uid()}`, steps: [{ kind: 'image', label: t.kind === 'edit' ? 'Editing the picture' : 'Making a picture', detail: aiName(maker) }], startedAt: Date.now() };
+      renderSide(); if (R.id === S.open) renderMain();
+      const r = await call('mediaImage', R.id, { provider: maker, prompt: t.prompt, ...(edit ? { edit: edit.file } : {}) });
+      R.busy = null;
+      runner.post(R, r?.ok ? { who: maker, text: `${t.kind === 'edit' ? 'Edited' : 'Made'} for ${aiName(agent)}: “${t.prompt.slice(0, 240)}”`, via: r.via, media: r.items || [r.item].filter(Boolean) } : { who: maker, err: true, text: `${r?.error?.kind === 'refused' ? '' : 'No picture: '}${r?.error?.message || r?.message || 'it failed.'}` });
+    } else if (t.kind === 'video') {
+      const maker = pickMaker(t.to, { capable: VIDEO_MAKERS, ready: (a) => Boolean(S.mkeys.keys?.[a]) });
+      if (!maker) { runner.post(R, { who: 'system', text: 'Video needs your own OpenAI (Sora) or Gemini API (Veo) key in Settings › Accounts.' }); continue; }
+      R.busy = { agent: maker, role: 'member', runId: `vid${uid()}`, steps: [{ kind: 'image', label: 'Making a video', detail: `${maker === 'openai' ? 'Sora' : 'Veo'} · this can take several minutes` }], startedAt: Date.now() };
+      renderSide(); if (R.id === S.open) renderMain();
+      const r = await call('mediaVideo', R.id, { provider: maker, prompt: t.prompt });
+      R.busy = null;
+      runner.post(R, r?.ok ? { who: maker, text: `Video for ${aiName(agent)}: “${t.prompt.slice(0, 240)}”`, via: r.via, media: [r.item].filter(Boolean) } : { who: maker, err: true, text: `No video: ${r?.error?.message || r?.message || 'it failed.'}` });
+    } else if (t.kind === 'shot') {
+      const r = await call('mediaScreenshot', R.id, t.url);
+      runner.post(R, r?.ok ? { who: 'system', text: `Screenshot of ${hostOf(t.url)} for ${aiName(agent)}.`, media: [r.item].filter(Boolean) } : { who: 'system', text: `No screenshot of ${t.url}: ${r?.error?.message || r?.message || 'it failed.'}` });
+    } else if (t.kind === 'remember') {
+      if (UNFILTERED.includes(agent) || entry(R.id)?.temp) { runner.post(R, { who: 'system', text: entry(R.id)?.temp ? 'Memory suggestions aren\'t taken in a temporary chat.' : `Memory suggestions from ${aiName(agent)} aren't taken (its content stays away from your other AIs).` }); continue; }
+      const r = await call('memoryPropose', t.text, agent, R.id);
+      if (r?.proposal) msg.memo = [...(msg.memo || []), { id: r.proposal.id, text: r.proposal.text, status: 'pending' }];
+    } else if (t.kind === 'search') {
+      const r = await call('chatsRecall', t.query, R.id);
+      answers.push(`SEARCH CHATS "${t.query}":\n${(Array.isArray(r) && r.length ? r.map((h) => `- "${h.title}"${h.repo ? ` (${h.repo})` : ''}, ${String(h.updatedAt || '').slice(0, 10)}: ${(h.snippets || []).join(' … ')}`).join('\n') : '(no matching chats)')}`);
+      msg.steps = [...(msg.steps || []), { kind: 'search', label: 'Searched your chats', detail: `for “${t.query}”` }];
+    } else if (t.kind === 'read') {
+      const q = t.chat.toLowerCase();
+      const hit = S.chats.find((c) => c.id === t.chat) || S.chats.find((c) => c.title.toLowerCase() === q) || S.chats.find((c) => c.title.toLowerCase().includes(q));
+      if (!hit || hit.id === R.id) { answers.push(`READ CHAT "${t.chat}": no such chat.`); continue; }
+      const r = await call('chatsReadOther', hit.id);
+      answers.push(r?.ok ? `CHAT "${r.title}" (read-only):\n${r.text}` : `READ CHAT "${t.chat}": couldn't be read.`);
+      msg.steps = [...(msg.steps || []), { kind: 'read', label: 'Read another chat', detail: hit.title }];
+    }
+  }
+  return answers.length ? `RESULTS OF YOUR APP LINES (read-only; now answer the owner):\n\n${answers.join('\n\n')}` : null;
+}
+
+// ---------- roleplay chats (characters, lorebooks, swipes; src/app/roleplay.mjs) ----------
+const cardById = (id) => (S.cards || []).find((c) => c.id === id) || null;
+const rpCards = (c) => (c?.rp?.characters || []).map(cardById).filter(Boolean);
+const playerOf = (c, cardId) => c?.rp?.players?.[cardId] || team().lead;
+async function loadCards() {
+  const r = await call('cardsList');
+  S.cards = r?.list || [];
+  S.books = (await call('loreList')) || [];
+  S.persona = (await call('rpPersona')) || { name: '', description: '' };
+}
+// The owner's line in a roleplay with an uncensored teammate: kept away from the other AIs
+// when it reads as adult.
+function rpShield(c, text) {
+  const unf = [...new Set(Object.values(c.rp?.players || {}).filter((a) => UNFILTERED.includes(a)))];
+  return unf.length && isSexual(text) ? unf : [];
+}
+function loreFor(c, cards) {
+  const ids = new Set([...(c.rp?.lorebooks || []), ...cards.flatMap((x) => x.lorebooks || [])]);
+  return [...(S.books || []).filter((b) => ids.has(b.id)), ...cards.map((x) => x.character_book).filter(Boolean)];
+}
+// One owner message in a roleplay chat: the right character(s) answer, each played by its AI.
+async function roleplayTurn(R, text, opts = {}) {
+  const c = entry(R.id);
+  if (!S.cards) await loadCards();
+  const cards = rpCards(c);
+  if (!cards.length) { runner.post(R, { who: 'system', text: 'This roleplay chat has no characters (they may have been deleted).' }); return false; }
+  const lastChar = [...R.msgs].reverse().find((m) => m.char)?.char || null;
+  const who = opts.swipe || opts.cont ? [R.msgs.find((m) => m.id === (opts.swipe || opts.cont))?.char].filter(Boolean) : opts.impersonate ? [cards[0].id] : nextSpeakers({ cards, order: c.rp.order, text, lastSpeaker: lastChar, forced: opts.char || null });
+  let ok = true;
+  for (const id of who) {
+    if (R.stop) break;
+    const card = cardById(id);
+    const player = playerOf(c, id);
+    if (!ready(player)) { runner.post(R, { who: 'system', text: `${card.name} is played by ${aiName(player)}, which isn't set up: ${setupHint(player)}.` }); ok = false; continue; }
+    const mode = opts.impersonate ? 'impersonate' : opts.cont ? 'continue' : 'reply';
+    const upto = opts.swipe ? R.msgs.slice(0, R.msgs.findIndex((m) => m.id === opts.swipe)) : R.msgs;
+    const prompt = rpPrompt({ card, cards, persona: S.persona || {}, messages: upto, lore: activateLore(loreFor(c, cards), upto), mode, player, limits: card.limits });
+    R.busy = { agent: player, role: 'member', char: id, runId: `${uid().replace(/[^a-z0-9]/gi, '').slice(0, 10)}p`, steps: [], startedAt: Date.now() };
+    renderSide(); if (R.id === S.open) renderMain();
+    const lastOwner = [...upto].reverse().find((m) => m.who === 'owner');
+    const r = await call('chatRun', { chatId: R.id, agent: player, runId: R.busy.runId, prompt: prompt.slice(-58000), web: false, build: false, title: c.title, rp: { cardIds: cards.map((x) => x.id), check: opts.impersonate ? '' : String(lastOwner?.text || text || '') }, ...(runner.runtimes.get(R.id)?.sessions?._models?.[player] ? { model: R.sessions._models[player] } : {}) }) || { ok: false, error: { message: 'The app could not start the AI.' } };
+    R.busy = null;
+    if (!r.ok) {
+      ok = false;
+      runner.post(R, r.error?.kind === 'refused' ? { who: 'system', block: Boolean(r.error.limit), text: r.error.message } : { who: player, char: id, err: true, text: r.error?.message || 'Something went wrong.' });
+      continue;
+    }
+    const out = String(r.text || '').trim();
+    if (mode === 'impersonate') { S.draft = out.replace(new RegExp(`^${(S.persona?.name || 'You').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}:\\s*`, 'i'), ''); render(); focusComposer(); continue; }
+    if (opts.cont) { const m = R.msgs.find((x) => x.id === opts.cont); if (m) { const t = `${m.text}${/\s$/.test(m.text) ? '' : ' '}${out}`; Object.assign(m, Array.isArray(m.swipes) ? { text: t, swipes: m.swipes.map((x, i) => (i === (m.sw ?? 0) ? t : x)) } : { text: t }); } }
+    else if (opts.swipe) { const i = R.msgs.findIndex((x) => x.id === opts.swipe); if (i >= 0) R.msgs[i] = { ...addSwipe(R.msgs[i], out), via: r.via, at: now() }; if (S.open !== R.id) R.unseen = true; }
+    else runner.post(R, { who: player, char: id, text: out || '…', via: r.via, ...(Array.isArray(r.media) && r.media.length ? { media: r.media } : {}) });
+    await saveRt(R);
+  }
+  await saveRt(R);
+  return ok;
+}
+// Start a roleplay chat with one or several characters; their greetings start it.
+async function startRoleplay(m) {
+  const cards = m.chars.map(cardById).filter(Boolean);
+  if (!cards.length) return toast('Pick at least one character.');
+  for (const c of cards) if (c.limits?.minor && UNFILTERED.includes(m.players[c.id])) return toast(`${c.name} reads as under 18 (${c.limits.minorWhy}), so an uncensored teammate can't play it. Pick Claude, ChatGPT or Gemini for a non-sexual story.`);
+  const title = cards.map((c) => c.name).join(', ').slice(0, 100);
+  const e = await call('chatsCreate2', { title });
+  if (!e?.id) return toast(e?.message || 'Could not start a chat.');
+  const r = await call('chatsRp', e.id, { characters: cards.map((c) => c.id), players: m.players, order: m.order, lorebooks: m.lorebooks });
+  if (r?.ok === false || r?.message) return toast(r.message || 'Not saved.');
+  await loadChats();
+  const R = rt(e.id);
+  R.loaded = true;
+  const user = S.persona?.name || 'You';
+  for (const c of cards) {
+    const greets = [c.first_mes, ...(c.alternate_greetings || [])].filter((g) => String(g || '').trim()).map((g) => fill(g, { char: c.name, user }));
+    if (greets.length) R.msgs.push({ id: uid(), who: m.players[c.id], char: c.id, greeting: true, text: greets[0], swipes: greets.length > 1 ? greets : undefined, sw: 0, at: now() });
+  }
+  await saveRt(R);
+  S.modal = null;
+  await openChat(e.id);
+}
+function rpSwipe(msgId, dir) {
+  const R = cur();
+  const i = R ? R.msgs.findIndex((x) => x.id === msgId) : -1;
+  if (i < 0 || R.round) return;
+  const m = R.msgs[i];
+  const n = Array.isArray(m.swipes) ? m.swipes.length : 1;
+  // Past the last swipe: a new one (greetings only swipe through their alternates).
+  if (dir > 0 && ((m.sw ?? 0) >= n - 1 || dir === 999)) { if (m.greeting) return; Object.assign(R, { mode: 'team', web: false, build: false }); runner.start(R, '', { swipe: msgId }); return; }
+  R.msgs[i] = moveSwipe(m, dir);
+  saveRt(R);
+  render();
+}
+
 // ---------- the files-changed card ----------
-async function cardAction(kind, msgId) {
-  const m = S.msgs.find((x) => x.id === msgId);
-  const c = entry();
+async function cardAction(kind, msgId, R = cur()) {
+  const m = R?.msgs.find((x) => x.id === msgId);
+  const c = entry(R?.id);
   if (!m || !c) return;
   if (kind === 'diff') {
     const d = await call('chatDiff', c.id);
@@ -369,93 +670,107 @@ async function cardAction(kind, msgId) {
     m.busy = 'push'; render();
     const r = await call('chatPush', c.id);
     m.busy = null;
-    if (r?.ok) { m.changes = { ...m.changes, pushed: r.branch, unpushed: false, head: r.sha }; m.actions = { branch: r.branch, sha: r.sha, state: 'queued', since: now() }; pollRuns(m.id); toast(`Pushed ${r.branch}.`); }
+    if (r?.ok) { m.changes = { ...m.changes, pushed: r.branch, unpushed: false, head: r.sha }; m.actions = { branch: r.branch, sha: r.sha, state: 'queued', since: now() }; pollRuns(R, m.id); toast(`Pushed ${r.branch}.`); }
     else toast(r?.message || 'Not pushed.');
-    S.copy = await call('copiesStatus', c.id);
-    await save(); return render();
+    R.copy = await call('copiesStatus', c.id);
+    await saveRt(R); return render();
   }
   if (kind === 'pr') {
     m.busy = 'pr'; render();
     const r = await call('chatPr', c.id, { title: c.title, body: prBody(m) });
     m.busy = null;
-    if (r?.ok) { m.changes = { ...m.changes, pr: { number: r.number, url: r.url }, pushed: m.changes.branch, unpushed: false }; toast(`Pull request #${r.number || ''} is open.`); if (!m.actions) { const st = await call('copiesStatus', c.id); if (st?.head) { m.actions = { branch: m.changes.branch, sha: st.head, state: 'queued', since: now() }; pollRuns(m.id); } } }
+    if (r?.ok) { m.changes = { ...m.changes, pr: { number: r.number, url: r.url }, pushed: m.changes.branch, unpushed: false }; toast(`Pull request #${r.number || ''} is open.`); if (!m.actions) { const st = await call('copiesStatus', c.id); if (st?.head) { m.actions = { branch: m.changes.branch, sha: st.head, state: 'queued', since: now() }; pollRuns(R, m.id); } } }
     else toast(r?.message || 'Couldn\'t open a pull request.');
-    await save(); return render();
+    await saveRt(R); return render();
   }
   if (kind === 'merge') {
     m.busy = 'merge'; render();
     // The main process always asks the owner in its own popup before anything is merged.
     const r = await call('chatMerge', c.id, { sha: m.changes?.head || undefined, body: prBody(m) });
     m.busy = null;
-    if (r?.ok) { m.changes = { ...m.changes, merged: true, pr: { number: r.number, url: r.url } }; post({ who: 'system', text: `${r.message} (pull request #${r.number}).` }); }
+    if (r?.ok) { m.changes = { ...m.changes, merged: true, pr: { number: r.number, url: r.url } }; runner.post(R, { who: 'system', text: `${r.message} (pull request #${r.number}).` }); }
     else if (!r?.cancelled) toast(r?.message || 'Not merged.');
-    await save(); return render();
+    await saveRt(R); return render();
   }
 }
 const prBody = (m) => `${String(m.text || '').slice(0, 3000)}\n\nMade in Hearth AI Command Center; reviewed and merged by the owner.`;
 
-// GitHub Actions for a pushed commit: polled until it passes or fails.
+// GitHub Actions for a pushed commit: polled until it passes or fails (in the background too).
 const polling = new Set();
-async function pollRuns(msgId) {
-  if (polling.has(msgId)) return;
-  polling.add(msgId);
-  const chatId = S.open;
+async function pollRuns(R, msgId) {
+  const key = `${R.id}|${msgId}`;
+  if (polling.has(key)) return;
+  polling.add(key);
   const started = Date.now();
   try {
-    while (Date.now() - started < 90 * 60000) {
-      if (S.open !== chatId) break;
-      const m = S.msgs.find((x) => x.id === msgId);
+    while (Date.now() - started < 90 * 60000 && runner.runtimes.get(R.id) === R) {
+      const m = R.msgs.find((x) => x.id === msgId);
       if (!m?.actions) break;
-      const r = await call('chatRuns', chatId, { branch: m.actions.branch, sha: m.actions.sha });
-      if (S.open !== chatId) break;
+      const r = await call('chatRuns', R.id, { branch: m.actions.branch, sha: m.actions.sha });
       if (r?.ok) {
         const state = r.state === 'none' ? (Date.now() - Date.parse(m.actions.since || now()) > 10 * 60000 ? 'none' : 'queued') : r.state;
         m.actions = { ...m.actions, state, runs: r.runs || [], failedRun: r.failedRun || null, checkedAt: now() };
         if (state === 'failure' && r.failedRun && !m.actions.failure) {
-          const f = await call('chatFailure', chatId, r.failedRun.id);
+          const f = await call('chatFailure', R.id, r.failedRun.id);
           if (f?.ok) m.actions.failure = { job: f.job, annotations: f.annotations || [] };
         }
-        render();
-        if (['success', 'failure', 'none'].includes(state)) { await save(); break; }
-      } else if (r && r.message) { m.actions = { ...m.actions, note: r.message }; render(); }
+        if (R.id === S.open) render();
+        if (['success', 'failure', 'none'].includes(state)) { await saveRt(R); break; }
+      } else if (r && r.message) { m.actions = { ...m.actions, note: r.message }; if (R.id === S.open) render(); }
+      else if (!r) break;
       await new Promise((res) => setTimeout(res, 20000));
     }
-  } finally { polling.delete(msgId); }
+  } finally { polling.delete(key); }
 }
 
-// ---------- Claude acting for the owner ----------
+// ---------- Claude acting for the owner (bound to the chat it was asked in) ----------
 async function decideAct(actId, yes, how = 'button') {
-  const m = S.msgs.find((x) => (x.acts || []).some((a) => a.id === actId));
+  const R = [...runner.runtimes.values()].find((x) => x.msgs.some((m) => (m.acts || []).some((a) => a.id === actId)));
+  const m = R?.msgs.find((x) => (x.acts || []).some((a) => a.id === actId));
   const a = m?.acts.find((x) => x.id === actId);
   if (!a || a.status !== 'pending') return;
-  if (expired(a)) { a.status = 'expired'; await save(); return render(); }
+  if (a.chatId && a.chatId !== R.id) return;
+  if (expired(a)) { a.status = 'expired'; await saveRt(R); return render(); }
   a.status = yes ? 'approved' : 'denied';
   a.decidedAt = now();
   a.how = how;
-  post({ who: 'system', text: yes ? `You said yes: ${ACT_KINDS[a.kind]}.` : `You said no to: ${ACT_KINDS[a.kind]}.` });
-  await save();
+  runner.post(R, { who: 'system', text: yes ? `You said yes: ${ACT_KINDS[a.kind]}.` : `You said no to: ${ACT_KINDS[a.kind]}.` });
+  await saveRt(R);
   if (!yes) return render();
-  const target = [...S.msgs].reverse().find((x) => x.changes) || { id: null };
-  if (!target.id) { post({ who: 'system', text: 'There are no changes in this chat to do that with.' }); return save(); }
-  await cardAction(a.kind === 'pr' ? 'pr' : a.kind === 'merge' ? 'merge' : 'push', target.id);
+  const target = [...R.msgs].reverse().find((x) => x.changes) || { id: null };
+  if (!target.id) { runner.post(R, { who: 'system', text: 'There are no changes in this chat to do that with.' }); return saveRt(R); }
+  await cardAction(a.kind === 'pr' ? 'pr' : a.kind === 'merge' ? 'merge' : 'push', target.id, R);
 }
 
-// ---------- previews ----------
-function previewOf(msgId, pid) {
-  const m = S.msgs.find((x) => x.id === msgId);
+// Memory suggestions: saved only after the owner's yes.
+async function decideMemo(msgId, pid, yes) {
+  const R = cur();
+  const m = R?.msgs.find((x) => x.id === msgId);
+  const p = m?.memo?.find((x) => x.id === pid);
+  if (!p || p.status !== 'pending') return;
+  const r = await call('memoryDecide', pid, yes);
+  p.status = r?.ok ? (yes ? 'saved' : 'declined') : 'gone';
+  await saveRt(R);
+  render();
+  toast(yes && r?.saved ? 'Saved to memory. Every chat sees it now (Settings › Memory).' : r?.ok ? 'Not saved.' : (r?.message || 'That suggestion is gone.'));
+}
+
+// ---------- previews and the canvas ----------
+function previewOf(msgId, pid, R = cur()) {
+  const m = R?.msgs.find((x) => x.id === msgId);
   return m?.previews?.find((p) => p.id === pid) || null;
 }
 async function openPane(msgId, pid, tab = 'preview') {
   const p = previewOf(msgId, pid);
   if (!p) return;
   S.pane = { msgId, pid, tab, url: null };
-  const html = previewDoc({ kind: p.kind, content: p.content, name: p.name, dark: document.documentElement.dataset.mode !== 'light', allowNet: S.settings.previewNetwork === true });
+  const html = p.kind === 'code' ? `<!doctype html><meta charset="utf-8"><style>body{margin:0;background:#0d1117;color:#c9d1d9;font:13px/1.55 ui-monospace,monospace}pre{margin:0;padding:16px;white-space:pre-wrap}</style><pre>${esc(p.content)}</pre>` : previewDoc({ kind: p.kind, content: p.content, name: p.name, dark: document.documentElement.dataset.mode !== 'light', allowNet: S.settings.previewNetwork === true });
   if (api?.previewServe) { const r = await call('previewServe', html); if (r?.ok) S.pane.url = r.url; }
   S.pane.srcdoc = html;
   renderPane(true);
   renderMain();
 }
-async function savePreviewToRepo(msgId, pid) {
+function savePreviewToRepo(msgId, pid) {
   const p = previewOf(msgId, pid);
   const c = entry();
   if (!p || !c) return;
@@ -463,8 +778,65 @@ async function savePreviewToRepo(msgId, pid) {
   S.modal = { kind: 'saveto', msgId, pid, path: `docs/mockups/${p.name}` };
   render();
 }
+// Open a code block from an answer in the canvas (an editable document next to the chat).
+async function codeToCanvas(btn) {
+  const block = btn.closest('.codeblock');
+  const msgEl = btn.closest('[data-msg]');
+  const R = cur();
+  const m = R?.msgs.find((x) => x.id === msgEl?.dataset.msg);
+  if (!block || !m) return;
+  const lang = block.querySelector('.cb-hd span')?.textContent || 'text';
+  const kind = lang === 'html' ? 'html' : lang === 'svg' || lang === 'xml' ? 'svg' : ['markdown', 'md'].includes(lang) ? 'markdown' : 'code';
+  const ext = { html: 'html', svg: 'svg', markdown: 'md' }[kind] || (lang.replace(/[^a-z0-9]/gi, '') || 'txt');
+  const p = { id: uid(), name: `canvas-${(m.previews || []).length + 1}.${ext}`, kind, content: block.querySelector('code')?.innerText || '' };
+  m.previews = [...(m.previews || []), p];
+  await save();
+  openPane(m.id, p.id, 'canvas');
+}
 
-// ---------- voice ----------
+// ---------- pictures, videos and files in chat ----------
+const SAFE_MEDIA = /^(hearth-media:\/\/c\/[A-Za-z0-9-]+\/[A-Za-z0-9%._ -]+|data:(image|video)\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+|blob:[a-z0-9:/.-]+)$/i;
+function mediaHtml(m) {
+  const items = (m.media || []).filter((x) => x && SAFE_MEDIA.test(String(x.url || '')));
+  if (!items.length) return '';
+  const btns = (x) => `<button class="mini" data-a="media-save" data-f="${esc(x.file || '')}" data-n="${esc(x.name)}">${icon('dl', 'sm')}Download</button><button class="mini" data-a="media-repo" data-f="${esc(x.file || '')}" data-n="${esc(x.name)}">${icon('gh', 'sm')}Save to repo…</button>`;
+  const pics = items.filter((x) => x.kind === 'image').map((x) => `<figure class="media"><img src="${esc(x.url)}" alt="${esc(x.name)}" data-a="lightbox" data-src="${esc(x.url)}" data-f="${esc(x.file || '')}" data-n="${esc(x.name)}" loading="lazy"><figcaption><span>${esc(x.name)}</span><span class="grow"></span>${btns(x)}</figcaption></figure>`).join('');
+  const vids = items.filter((x) => x.kind === 'video').map((x) => `<figure class="media vid"><video controls preload="metadata" src="${esc(x.url)}"${x.poster && SAFE_MEDIA.test(x.poster) ? ` poster="${esc(x.poster)}"` : ''}></video><figcaption><span>${esc(x.name)}</span><span class="faint">${fmtBytes(x.size)}</span><span class="grow"></span>${btns(x)}</figcaption></figure>`).join('');
+  const files = items.filter((x) => x.kind === 'file').map((x) => `<div class="card filec"><div class="hd">${icon('doc')}<div class="fn"><b>${esc(x.name)}</b><span class="faint">${fmtBytes(x.size)} · ${esc(String(x.name).split('.').pop().toUpperCase())}</span></div><span class="grow"></span><button class="btn" data-a="media-open" data-f="${esc(x.file || '')}">Open</button><button class="btn" data-a="media-save" data-f="${esc(x.file || '')}" data-n="${esc(x.name)}">${icon('dl', 'sm')}Save</button><button class="btn ghost" data-a="media-repo" data-f="${esc(x.file || '')}" data-n="${esc(x.name)}">${icon('gh', 'sm')}To repo…</button></div></div>`).join('');
+  return `${pics ? `<div class="pics">${pics}</div>` : ''}${vids}${files}`;
+}
+
+// Mermaid diagrams: drawn in a sandboxed frame with the bundled library (never in this window).
+const diagramUrls = new Map();
+async function drawDiagrams() {
+  const boxes = [...document.querySelectorAll('.mermaid-box:not([data-drawn])')];
+  for (const box of boxes) {
+    box.dataset.drawn = '1';
+    const key = box.dataset.src || '';
+    let src = '';
+    try { src = decodeURIComponent(escape(atob(key))); } catch { continue; }
+    const dark = document.documentElement.dataset.mode !== 'light';
+    const pageFor = (lib) => `<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0;background:${dark ? '#1d1a17' : '#fffdf9'};color:${dark ? '#e9e2d7' : '#2d2822'};font:13px system-ui,sans-serif}.mermaid{display:flex;justify-content:center;padding:10px}</style><script src="${lib}"></script></head><body><pre class="mermaid">${esc(src)}</pre><script>mermaid.initialize({startOnLoad:false,securityLevel:'strict',theme:'${dark ? 'dark' : 'default'}'});mermaid.run({querySelector:'.mermaid'}).then(function(){parent.postMessage({hearthDiagram:1,h:document.documentElement.scrollHeight},'*')}).catch(function(e){document.body.textContent='This diagram has an error: '+(e&&e.message||e);parent.postMessage({hearthDiagram:1,h:60},'*')});</script></body></html>`;
+    let url = diagramUrls.get(key + dark);
+    if (!url && api?.previewServe) { const r = await call('previewServe', pageFor('hearth-preview://lib/mermaid.min.js'), { diagram: true }); if (r?.ok) { url = r.url; diagramUrls.set(key + dark, url); } }
+    // Outside the app (the screenshot harness) the frame loads the same bundled file over http.
+    const page = url ? '' : /^https?:/.test(location.protocol) ? pageFor(new URL('vendor/mermaid/mermaid.min.js', location.href).href) : '';
+    if (!url && !page) continue;
+    const f = document.createElement('iframe');
+    f.className = 'dg-frame';
+    f.setAttribute('sandbox', 'allow-scripts');
+    f.setAttribute('referrerpolicy', 'no-referrer');
+    f.title = 'Diagram';
+    if (url) f.src = url; else f.srcdoc = page;
+    box.replaceChildren(f);
+  }
+}
+window.addEventListener('message', (e) => {
+  if (!e.data || e.data.hearthDiagram !== 1) return;
+  for (const f of document.querySelectorAll('iframe.dg-frame')) if (f.contentWindow === e.source) f.style.height = `${Math.min(900, Math.max(60, Number(e.data.h) || 200))}px`;
+});
+
+// ---------- voice: talk, and read answers aloud ----------
 async function toggleVoice() {
   if (S.rec) { S.rec.stop(); return; }
   if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined' || !api?.opsVoiceSave) return toast('Voice isn\'t available here.');
@@ -481,13 +853,53 @@ async function toggleVoice() {
       toast('Turning your voice into text on this PC…');
       const r = await call('opsVoiceSave', await blob.arrayBuffer());
       const t = r?.text || r?.transcript || '';
-      if (t) { S.draft = `${S.draft ? `${S.draft} ` : ''}${t}`; render(true); focusComposer(); }
+      if (t) { S.draft = `${S.draft ? `${S.draft} ` : ''}${t}`; render(true); focusComposer(); if (S.talk) send(); }
       else toast(r?.message || 'No words were heard (voice needs whisper.cpp on this PC).');
     };
     rec.start();
     S.rec = rec;
     render();
   } catch (e) { toast(`Microphone: ${cleanErr(e)}`); }
+}
+let speakingId = null;
+async function readAloud(m) {
+  const text = plainText(m?.text || '');
+  if (!text) return;
+  if (speakingId === m.id) { stopSpeaking(); return; }
+  stopSpeaking();
+  speakingId = m.id;
+  const synth = window.speechSynthesis;
+  if (synth && synth.getVoices().length) {
+    const u = new SpeechSynthesisUtterance(text.slice(0, 8000));
+    const vname = cardById(m.char)?.voice;
+    const v = vname ? synth.getVoices().find((x) => x.name === vname) : null;
+    if (v) u.voice = v;
+    u.onend = () => { speakingId = null; render(); };
+    synth.speak(u);
+  } else {
+    const r = await call('ttsSpeak', text);
+    if (!r?.ok) { speakingId = null; toast(r?.message || 'Reading aloud isn\'t available on this PC.'); }
+  }
+  render();
+}
+function stopSpeaking() { try { window.speechSynthesis?.cancel(); } catch {} call('ttsStop'); speakingId = null; }
+function autoRead(R) {
+  if (!(S.settings.autoRead || S.talk) || R.id !== S.open) return;
+  const last = [...R.msgs].reverse().find((m) => m.who !== 'owner' && m.who !== 'system' && !m.err);
+  if (last) readAloud(last);
+}
+
+// ---------- export ----------
+async function exportChat(id, fmt) {
+  const R = await loadRt(id);
+  const c = entry(id);
+  const who = (m) => (m.who === 'owner' ? ownerName() : m.who === 'system' ? 'App' : aiName(m.who));
+  const msgs = R.msgs.filter((m) => !m.local && !m.deleted);
+  const md = [`# ${c?.title || 'Chat'}`, '', ...msgs.flatMap((m) => [`**${who(m)}** · ${String(m.at || '').slice(0, 16).replace('T', ' ')}`, '', String(m.text || ''), ...(m.media || []).map((x) => (x.kind === 'image' ? `![${x.name}](${x.url})` : `[${x.name}](${x.url})`)), ''])].join('\n');
+  const body = msgs.map((m) => `<section class="${m.who === 'owner' ? 'u' : 'a'}"><h4>${esc(who(m))} <small>${esc(String(m.at || '').slice(0, 16).replace('T', ' '))}</small></h4>${rich(m.text)}${(m.media || []).filter((x) => x.kind === 'image').map((x) => `<img src="${esc(x.url)}" alt="${esc(x.name)}">`).join('')}${(m.media || []).filter((x) => x.kind !== 'image').map((x) => `<p class="f">${esc(x.kind === 'video' ? 'Video' : 'File')}: ${esc(x.name)}</p>`).join('')}</section>`).join('');
+  const html = `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'"><title>${esc(c?.title || 'Chat')}</title><style>body{font:15px/1.6 system-ui,sans-serif;max-width:820px;margin:32px auto;padding:0 24px;color:#2d2822}h1{font-family:Georgia,serif}section{margin:0 0 22px}section.u{background:#f4efe7;border-radius:12px;padding:10px 16px}h4{margin:0 0 4px;font-size:13px}small{color:#9a9083;font-weight:400}img{max-width:100%;border-radius:10px;margin:6px 0}pre{background:#0d1117;color:#c9d1d9;padding:12px;border-radius:8px;overflow:auto;white-space:pre-wrap}table{border-collapse:collapse}td,th{border:1px solid #ddd;padding:4px 8px}.cb-hd button{display:none}.f{color:#71685c}</style></head><body><h1>${esc(c?.title || 'Chat')}</h1>${body}</body></html>`;
+  const r = await call('chatExport', id, fmt, { markdown: md, html });
+  if (r?.ok) toast(`Exported to ${r.file}.`); else if (!r?.cancelled) toast(r?.message || 'Not exported.');
 }
 
 // ---------- phone view (LAN only, off unless the owner turns it on) ----------
@@ -537,26 +949,42 @@ function render(scroll = false) {
   renderOverlay();
 }
 
+function chatStatus(id) {
+  const R = runner.runtimes.get(id);
+  if (!R) return '';
+  if (R.round) return `<span class="st" title="The team is working in this chat"><span class="spin"></span>replying…</span>`;
+  if (R.waiting) return `<span class="st" title="Over your limit of chats working at once: it waits its turn">waiting…</span>`;
+  if (R.unseen) return '<span class="dot" title="New results you haven\'t seen"></span>';
+  return null;
+}
+
 function renderSide() {
   const groups = groupChats(S.chats, { query: S.search, hits: S.hits });
   const hidden = S.chats.filter((c) => c.hidden);
-  const busyId = S.busy ? S.open : null;
   const item = (c) => {
     const on = S.view === 'chat' && S.open === c.id;
-    const pend = c.id === S.open && S.msgs.some((m) => (m.acts || []).some((a) => a.status === 'pending' && !expired(a)));
+    const R = runner.runtimes.get(c.id);
+    const pend = R && R.msgs.some((m) => (m.acts || []).some((a) => a.status === 'pending' && !expired(a)) || (m.memo || []).some((p) => p.status === 'pending'));
     if (S.renaming === c.id) return `<div class="item on renaming"><input id="rename-input" class="rename" value="${esc(c.title)}" maxlength="120" aria-label="Chat name"><button class="ib sm" data-a="rename-save" title="Save">${icon('check', 'sm')}</button></div>`;
-    return `<div class="item ${on ? 'on' : ''}" draggable="true" data-chat="${esc(c.id)}" data-drag="${esc(c.id)}" title="${esc(c.title)}${c.repo ? ` · ${esc(c.repo)}` : ''}">
-      ${icon(c.pinned ? 'pin' : 'chat', 'sm')}<span class="t">${esc(c.title)}</span>
-      ${busyId === c.id || pend ? '<span class="dot"></span>' : repoHint(c) ? `<span class="repo">${esc(repoHint(c))}</span>` : ''}
+    const st = chatStatus(c.id);
+    return `<div class="item ${on ? 'on' : ''} ${R?.round ? 'busy' : ''}" draggable="true" data-chat="${esc(c.id)}" data-drag="${esc(c.id)}" title="${esc(c.title)}${c.repo ? ` · ${esc(c.repo)}` : ''}">
+      ${c.rp ? avatarHtml(cardById(c.rp.characters[0]), 'xs') : icon(c.pinned ? 'pin' : 'chat', 'sm')}<span class="t">${esc(c.title)}</span>
+      ${st || (pend ? '<span class="dot"></span>' : repoHint(c) ? `<span class="repo">${esc(repoHint(c))}</span>` : '')}
       <button class="more" data-a="chat-menu" data-id="${esc(c.id)}" title="More" aria-label="More for ${esc(c.title)}">${icon('dots', 'sm')}</button>
     </div>`;
   };
+  const working = runner.busyIds().length;
   const html = `
     <div class="brand"><img src="./icon.png" alt=""><div><b>Hearth AI</b><span>Command Center</span></div></div>
     <button class="newchat" data-a="new-chat"><span class="plus">${icon('plus', 'sm')}</span>New chat</button>
+    <button class="navitem" data-a="temp-chat" title="Nothing is saved: no chat file, no history, no memory">${icon('eyeoff', 'sm')}Temporary chat</button>
     <label class="search">${icon('search', 'sm')}<input id="chat-search" placeholder="Search chats" value="${esc(S.search)}" aria-label="Search chats"></label>
+    <button class="navitem ${['characters', 'card', 'lorebooks'].includes(S.view) ? 'on' : ''}" data-a="characters" title="Character cards, lorebooks and your persona">${icon('user', 'sm')}Characters<span class="faint">${S.cards ? S.cards.length : ''}</span></button>
+    <button class="navitem hab ${S.view === 'habitat' ? 'on' : ''}" data-a="habitat" title="Your AI team's Habitat">${icon('home', 'sm')}Habitat<span class="faint">${esc(S.lastChat && entry(S.lastChat) ? entry(S.lastChat).title.slice(0, 22) : 'your team')}</span></button>
     <div class="list" id="chat-list">
       ${S.broken ? '<div class="note bad">Your chats list couldn\'t be read. It was left as it is; new chats can\'t be saved until it\'s fixed.</div>' : ''}
+      ${working ? `<div class="sec">${working} working · up to ${S.settings.maxChats || 3} at once</div>` : ''}
+      ${S.temps.length ? `<div class="sec">Temporary (not saved)</div>${S.temps.map((c) => `<div class="item ${S.view === 'chat' && S.open === c.id ? 'on' : ''}" data-chat="${esc(c.id)}">${icon('eyeoff', 'sm')}<span class="t">${esc(c.title)}</span>${chatStatus(c.id) || ''}<button class="more vis" data-a="temp-end" data-id="${esc(c.id)}" title="End and forget it">${icon('x', 'sm')}</button></div>`).join('')}` : ''}
       ${groups.map((g) => `<div class="sec">${esc(g.label)}</div>${g.items.map(item).join('')}`).join('') || `<div class="empty-list">${S.search ? 'No chats match.' : 'No chats yet.'}</div>`}
       ${hidden.length ? `<button class="sec link" data-a="toggle-hidden">${icon(S.showHidden ? 'chev' : 'chevr', 'sm')}Hidden (${hidden.length})</button>${S.showHidden ? hidden.map((c) => `<div class="item dim"><span class="t">${esc(c.title)}</span><button class="mini" data-a="unhide" data-id="${esc(c.id)}">Show</button></div>`).join('') : ''}` : ''}
       ${S.trash.length ? `<button class="sec link" data-a="toggle-trash">${icon(S.showTrash ? 'chev' : 'chevr', 'sm')}Recently deleted (${S.trash.length})</button>${S.showTrash ? S.trash.map((t) => `<div class="item dim"><span class="t">${esc(t.title)}</span><button class="mini" data-a="restore" data-id="${esc(t.trashId)}">Restore</button></div>`).join('') : ''}` : ''}
@@ -570,11 +998,15 @@ function renderSide() {
 
 function topbar() {
   const c = entry();
-  const title = S.view === 'settings' ? 'Settings' : S.view === 'chat' ? (c?.title || 'Chat') : '';
+  const title = S.view === 'settings' ? 'Settings' : S.view === 'habitat' ? 'Habitat' : ['characters', 'card', 'lorebooks'].includes(S.view) ? 'Characters' : S.view === 'chat' ? (c?.title || 'Chat') : '';
+  if (['characters', 'card', 'lorebooks'].includes(S.view)) return `<span class="ttl">${esc(title)}</span><span class="grow"></span>`;
   const chip = S.view === 'chat' && c && (c.repo || c.repoDir) ? `<button class="chip" data-a="repo-pop" title="Connected repo">${icon('gh', 'sm')}${esc(c.repo || c.repoDir)} <span class="faint">· ${esc(c.branch || S.copy?.base || 'default branch')}</span></button>` : '';
-  return `<span class="ttl">${esc(title)}</span>${chip}<span class="grow"></span>
+  const temp = S.view === 'chat' && c?.temp ? `<span class="chip">${icon('eyeoff', 'sm')}Temporary · nothing is saved</span><button class="mini" data-a="temp-end" data-id="${esc(c.id)}">End</button>` : '';
+  const know = S.view === 'chat' && c?.rp ? `<span class="chip">${rpCards(c).map((x) => avatarHtml(x, 'xs')).join('')}Roleplay${c.rp.characters.length > 1 ? ` · group · ${c.rp.order === 'list' ? 'in order' : 'natural order'}` : ''}</span>` : S.view === 'chat' && c && !c.temp ? `<button class="tb" data-a="chat-act" data-k="knowledge" data-id="${esc(c.id)}" title="This chat's instructions and reference files">${icon('doc', 'sm')}${c.instructions || c.refs?.length ? 'Instructions ✓' : 'Instructions'}</button>` : '';
+  if (S.view === 'habitat') return `<span class="ttl">Habitat</span><span class="faint hab-sub">${S.lastChat && entry(S.lastChat) ? `the team of “${esc(entry(S.lastChat).title)}”` : 'your AI team'}</span><span class="grow"></span>`;
+  return `<span class="ttl">${esc(title)}</span>${chip}${temp}<span class="grow"></span>${know}
     <button class="tb" data-a="team-pop" title="Who's in this chat">${icon('users', 'sm')}Team</button>
-    <button class="tb" data-a="toggle-pane" title="Live preview panel" ${S.view !== 'chat' ? 'disabled' : ''}>${icon('panel', 'sm')}</button>`;
+    <button class="tb" data-a="toggle-pane" title="Live preview and canvas panel" ${S.view !== 'chat' ? 'disabled' : ''}>${icon('panel', 'sm')}</button>`;
 }
 
 function renderMain(scroll = false) {
@@ -583,24 +1015,42 @@ function renderMain(scroll = false) {
   const atBottom = body ? body.scrollHeight - body.scrollTop - body.clientHeight < 120 : true;
   let html = '';
   let dock = '';
+  if (S.view !== 'habitat' && habMounted) { stopHabitat(); stopHabitat3d(); habMounted = false; }
   if (S.view === 'settings') { html = settingsView(); dock = ''; }
-  else if (S.view === 'chat') { html = chatView(); dock = composer(S.open && S.msgs.some((m) => m.previews?.length) && S.pane ? 'Ask for changes to the preview…' : 'Reply to the team…') + `<div class="hint">${esc(hintLine())}</div>`; }
+  else if (S.view === 'habitat') { html = `<div class="habwrap">${viewHabitat()}</div>`; dock = ''; }
+  else if (S.view === 'characters') { html = charactersView(); dock = ''; }
+  else if (S.view === 'card') { html = cardEditView(); dock = ''; }
+  else if (S.view === 'lorebooks') { html = lorebooksView(); dock = ''; }
+  else if (S.view === 'chat') { html = chatView(); dock = composer(entry()?.rp ? `Your line as ${S.persona?.name || 'you'}…` : cur()?.canvas ? 'Ask for changes to the canvas…' : S.open && S.msgs.some((m) => m.previews?.length) && S.pane ? 'Ask for changes to the preview…' : 'Reply to the team…') + `<div class="hint">${esc(hintLine())}</div>`; }
   else { html = homeView(); dock = ''; }
-  document.getElementById('main').classList.toggle('home-mode', S.view === 'home');
-  document.getElementById('main').classList.toggle('settings-mode', S.view === 'settings');
-  setRegion('body', html);
+  const main = document.getElementById('main');
+  main.classList.toggle('home-mode', S.view === 'home');
+  main.classList.toggle('settings-mode', S.view === 'settings');
+  main.classList.toggle('habitat-mode', S.view === 'habitat');
+  main.classList.toggle('lib-mode', ['characters', 'card', 'lorebooks'].includes(S.view));
+  const changed = setRegion('body', html);
+  if (S.view === 'habitat' && (changed || !habMounted)) {
+    const el = document.getElementById('habitat');
+    if (el) { mountHabitat(el, habitatHooks); mountHabitat3d(el, habitatHooks); habMounted = true; }
+  }
   const focused = document.activeElement?.id === 'composer';
   const caret = focused ? [document.activeElement.selectionStart, document.activeElement.selectionEnd] : null;
   if (setRegion('dock', dock) && focused) focusComposer(caret);
   if (S.view === 'home' && focused) focusComposer(caret);
   fitComposer();
+  if (S.editing) { const el = document.getElementById('edit-text'); if (el && document.activeElement !== el) { el.focus(); } }
   if (body && (scroll || atBottom) && S.view === 'chat') body.scrollTop = body.scrollHeight;
+  if (S.view === 'chat' && changed) drawDiagrams();
 }
 
 function hintLine() {
   const names = live().map(aiName);
   const c = entry();
+  const R = cur();
+  if (R?.waiting) return `Waiting: ${runner.queue.active.size} chats are already working (your limit is ${S.settings.maxChats || 3}). This one starts when one finishes.`;
   const who = names.length ? `${names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names.slice(-1)}` : names[0]} see${names.length > 1 ? '' : 's'} this chat` : 'No AI is set up yet';
+  if (c?.temp) return `${who} · temporary: nothing is saved`;
+  if (c?.rp) return `Roleplay · ${rpCards(c).map((x) => `${x.name} played by ${aiName(playerOf(c, x.id))}`).join(' · ')} · built-in limits always on`;
   return c && (c.repo || c.repoDir) ? `${who} · changes go to a branch · main only changes when you approve` : `${who} · no repo connected`;
 }
 
@@ -609,7 +1059,7 @@ function homeView() {
     <h1><img src="./icon.png" alt="">${esc(greeting())}, ${esc(ownerName())}</h1>
     ${composer('What should the team work on?')}
     <div class="sugs">${QUICK.map(([ic, label], i) => `<button class="sug" data-a="quick" data-i="${i}">${icon(ic, 'sm')}${esc(label)}</button>`).join('')}</div>
-    <div class="fine">Every chat can connect to one of your GitHub repos. The team works in a small temporary copy on this PC; builds and tests run in GitHub Actions.</div>
+    <div class="fine">Every chat can connect to one of your GitHub repos. The team works in a small temporary copy on this PC; builds and tests run in GitHub Actions. Several chats can work at once.</div>
     ${S.notices.length ? `<div class="notices">${S.notices.map((n, i) => `<div class="note">${esc(n)}<button class="mini" data-a="dismiss" data-i="${i}">Dismiss</button></div>`).join('')}</div>` : ''}
     ${S.idle.length ? `<div class="notices">${S.idle.map((c) => `<div class="note warn">The temporary copy for “${esc(entry(c.chatId)?.title || c.repo || 'a chat')}” has work that isn't on GitHub, so it was kept. <button class="mini" data-a="open-data">Look at it</button></div>`).join('')}</div>` : ''}
   </div>`;
@@ -621,19 +1071,23 @@ function composer(placeholder) {
   const t = team();
   const teamLabel = S.mode === 'team' ? `Team <span class="faint">(${esc(aiName(t.lead))} ★ leads)</span>` : esc(aiName(S.mode));
   const thumbs = S.attach.map((a, i) => a.kind === 'image' ? `<div class="th" style="background-image:url('${esc(a.url || '')}')" title="${esc(a.name)}"><button class="x" data-a="unattach" data-i="${i}" aria-label="Remove">${icon('x', 'sm')}</button></div>` : `<div class="th f" title="${esc(a.name)}"><span>${esc(a.name)}</span><button class="x" data-a="unattach" data-i="${i}" aria-label="Remove">${icon('x', 'sm')}</button></div>`).join('');
-  const busy = Boolean(S.busy);
-  return `<div class="composer ${busy ? 'busy' : ''}" id="composer-box">
+  const busy = Boolean(S.busy) || S.working;
+  const models = c ? (cur()?.sessions?._models || {}) : S.homeModels;
+  const picked = Object.entries(models).filter(([, v]) => v && v !== 'default').length;
+  return `${c?.rp ? rpBar(c) : ''}<div class="composer ${busy ? 'busy' : ''}" id="composer-box">
     ${thumbs ? `<div class="thumbs">${thumbs}</div>` : ''}
+    ${S.deep || S.talk ? `<div class="modes">${S.deep ? `<button class="chip on" data-a="toggle-deep" title="Turn deep research off">${icon('globe', 'sm')}Deep research ×</button>` : ''}${S.talk ? `<button class="chip on" data-a="toggle-talk" title="Turn talk mode off">${icon('mic', 'sm')}Talk mode ×</button>` : ''}</div>` : ''}
     <textarea id="composer" rows="1" placeholder="${esc(placeholder)}" aria-label="Message">${esc(S.draft)}</textarea>
     <div class="row">
-      <button class="ib" data-a="attach" title="Attach files and images (or paste a screenshot)" aria-label="Attach">${icon('plus', 'sm')}</button>
-      <button class="chip ${conn ? '' : 'off'}" data-a="repo-pop" title="Connect a GitHub repo">${icon('gh', 'sm')}${conn ? `${esc(String(conn.repo).split('/').pop())} <span class="faint">· ${esc(conn.branch || 'main')}</span>` : 'No repo'}</button>
+      <button class="ib" data-a="attach" title="Attach files, images, videos, PDFs or spreadsheets (or paste a screenshot)" aria-label="Attach">${icon('plus', 'sm')}</button>
+      ${c?.rp ? '' : `<button class="chip ${conn ? '' : 'off'}" data-a="repo-pop" title="Connect a GitHub repo">${icon('gh', 'sm')}${conn ? `${esc(String(conn.repo).split('/').pop())} <span class="faint">· ${esc(conn.branch || 'main')}</span>` : 'No repo'}</button>
       <button class="chip" data-a="team-pop" title="Who answers">${icon('at', 'sm')}${teamLabel}</button>
       <button class="chip sw ${S.web ? 'on' : ''}" data-a="toggle-web" aria-pressed="${S.web}" title="Web search and reading pages">${icon('globe', 'sm')}Web</button>
-      <button class="chip sw ${S.build ? 'on' : ''}" data-a="toggle-build" aria-pressed="${S.build}" title="Run quick checks here, push to the chat's branch, builds in GitHub Actions">${icon('play', 'sm')}Run &amp; build</button>
+      <button class="chip sw ${S.build ? 'on' : ''}" data-a="toggle-build" aria-pressed="${S.build}" title="Run quick checks here, push to the chat's branch, builds in GitHub Actions">${icon('play', 'sm')}Run &amp; build</button>`}
+      <button class="chip" data-a="options-pop" title="Models, deep research, talk mode">${icon('more', 'sm')}${picked ? `Models (${picked})` : 'More'}</button>
       <span class="grow"></span>
       <button class="ib ${S.rec ? 'rec' : ''}" data-a="voice" title="${S.rec ? 'Stop recording' : 'Talk instead of typing'}" aria-label="Voice">${icon('mic', 'sm')}</button>
-      ${busy ? `<button class="send stop" data-a="stop" title="Stop" aria-label="Stop">${icon('stop', 'sm')}</button>` : ''}<button class="send" data-a="send" title="Send (Enter)" aria-label="Send">${icon('up', 'sm')}</button>
+      ${busy ? `<button class="send stop" data-a="stop" title="Stop this chat" aria-label="Stop">${icon('stop', 'sm')}</button>` : ''}<button class="send" data-a="send" title="Send (Enter)" aria-label="Send">${icon('up', 'sm')}</button>
     </div>
   </div>`;
 }
@@ -653,12 +1107,18 @@ function fitComposer() {
 }
 
 function chatView() {
+  const R = cur();
   const msgs = S.msgs.filter((m) => !m.deleted);
   const lastChanges = [...msgs].reverse().find((m) => m.changes)?.id;
-  const items = msgs.map((m) => message(m, m.id === lastChanges)).join('');
-  const working = S.busy ? `<div class="msg-a working"><div class="who">${mono(S.busy.agent)}<b>${esc(aiName(S.busy.agent))}</b>${S.busy.role === 'lead' ? '<span class="star">★ lead</span>' : S.busy.role === 'reviewer' ? '<span>· reviewer</span>' : ''}<span>· working</span><span class="dots"><i></i><i></i><i></i></span></div>${stepsHtml(S.busy.steps, [], true)}</div>` : '';
-  const empty = !msgs.length && !S.busy ? `<div class="chat-empty"><p>Ask the team anything. ${entry()?.repo ? `They work in a temporary copy of <b>${esc(entry().repo)}</b> and push to their own branch.` : 'Connect a repo from the box below to let them change code.'}</p></div>` : '';
-  return `<div class="col">${empty}${items}${working}</div>`;
+  const lastAi = [...msgs].reverse().find((m) => m.who !== 'owner' && m.who !== 'system');
+  const items = msgs.map((m) => message(m, m.id === lastChanges, m === lastAi && !R?.round)).join('');
+  const b = S.busy;
+  const working = b ? `<div class="msg-a working"><div class="who">${b.char ? avatarHtml(cardById(b.char)) : mono(b.agent)}<b>${esc(b.char ? `${cardById(b.char)?.name || ''} (${aiName(b.agent)})` : aiName(b.agent))}</b>${b.role === 'lead' ? '<span class="star">★ lead</span>' : b.role === 'reviewer' ? '<span>· reviewer</span>' : ''}<span>· working</span><span class="dots"><i></i><i></i><i></i></span>${b.note ? `<span class="faint">· ${esc(b.note)}</span>` : ''}</div>${stepsHtml(b.steps, [], true)}</div>` : R?.waiting ? `<div class="msg-s waitline">${icon('clock', 'sm')} Waiting for a free slot: ${runner.queue.active.size} chats are already working (your limit is ${S.settings.maxChats || 3}). This chat starts by itself when one finishes.</div>` : '';
+  const empty = !msgs.length && !b ? `<div class="chat-empty"><p>${entry()?.temp ? 'A temporary chat: nothing is saved, and it ends when you close it.' : `Ask the team anything. ${entry()?.repo ? `They work in a temporary copy of <b>${esc(entry().repo)}</b> and push to their own branch.` : 'Connect a repo from the box below to let them change code.'}`}</p></div>` : '';
+  const c = entry();
+  if (c?.rp && R?.vn) return `<div class="col vncol">${vnStage(R, c)}</div>`;
+  const rpEmpty = c?.rp && !msgs.length && !b ? `<div class="chat-empty"><p>The story starts with your first line.</p></div>` : '';
+  return `<div class="col">${c?.rp ? rpEmpty : empty}${items}${working}</div>`;
 }
 
 function stepsHtml(steps = [], outcome = [], liveNow = false, actions = null) {
@@ -673,29 +1133,59 @@ function stepsHtml(steps = [], outcome = [], liveNow = false, actions = null) {
   return `<div class="steps">${rows.map((r) => `<div class="step ${r.bad ? 'bad' : ''}">${icon(r.icon || 'cpu', 'sm')}<b>${esc(r.label)}</b>${r.detail ? `<span class="d">${esc(r.detail)}</span>` : ''}${r.open ? `<button class="r link ok" data-a="open-preview-name" data-name="${esc(r.detail)}">${esc(r.note)}</button>` : r.note ? `<span class="r ${r.ok ? 'ok' : ''}">${esc(r.note)}</span>` : ''}</div>`).join('')}</div>`;
 }
 
-function message(m, latestChanges) {
+function helpersHtml(m) {
+  if (!m.helpers?.length) return '';
+  return `<div class="helpers">${m.helpers.map((h) => `<details class="helper ${h.state}"><summary>${mono(h.agent, 'sm')}<b>${esc(aiName(h.agent))}</b><span class="d">helper · ${esc(h.task.slice(0, 90))}</span><span class="r">${h.state === 'working' ? '<span class="spin"></span>working…' : h.state === 'done' ? '✓ reported back' : '✗ failed'}</span></summary>${h.text ? `<div class="text">${rich(h.text)}</div>` : ''}</details>`).join('')}</div>`;
+}
+
+function sourcesHtml(m) {
+  if (!(m.web || m.who === 'perplexity' || m.citations?.length)) return '';
+  const list = sourcesOf({ text: `${m.text || ''}\n${(m.citations || []).join('\n')}`, steps: m.steps || [] });
+  if (!list.length) return '';
+  return `<details class="sources"><summary>${icon('globe', 'sm')}Sources <span class="faint">${list.length}</span>${list.slice(0, 5).map((s) => `<span class="src-chip">${esc(s.host)}</span>`).join('')}</summary><ol>${list.map((s) => `<li><a href="${esc(s.url)}" target="_blank" rel="noopener noreferrer">${esc(s.title || s.host)}</a> <span class="faint">${esc(s.host)}</span></li>`).join('')}</ol></details>`;
+}
+
+function controlsHtml(m, owner = false) {
+  const R = cur();
+  const busy = R?.round || R?.waiting;
+  const ver = m.versions?.length > 1 ? `<span class="ver"><button class="ib sm ghost" data-a="ver" data-m="${esc(m.id)}" data-d="-1" ${(m.v ?? m.versions.length - 1) === 0 ? 'disabled' : ''} aria-label="Previous version">‹</button>${(m.v ?? m.versions.length - 1) + 1}/${m.versions.length}<button class="ib sm ghost" data-a="ver" data-m="${esc(m.id)}" data-d="1" ${(m.v ?? m.versions.length - 1) === m.versions.length - 1 ? 'disabled' : ''} aria-label="Next version">›</button></span>` : '';
+  const br = m.branches?.length > 1 ? `<span class="ver"><button class="ib sm ghost" data-a="branch" data-m="${esc(m.id)}" data-d="-1" ${(m.b || 0) === 0 || busy ? 'disabled' : ''} aria-label="Previous version">‹</button>${(m.b || 0) + 1}/${m.branches.length}<button class="ib sm ghost" data-a="branch" data-m="${esc(m.id)}" data-d="1" ${(m.b || 0) === m.branches.length - 1 || busy ? 'disabled' : ''} aria-label="Next version">›</button></span>` : '';
+  if (owner) return `<div class="mctl u">${br}<button class="ib sm ghost" data-a="msg-copy" data-m="${esc(m.id)}" title="Copy">${icon('doc', 'sm')}</button>${!S.readOnly ? `<button class="ib sm ghost" data-a="msg-edit" data-m="${esc(m.id)}" title="Edit and resend" ${busy ? 'disabled' : ''}>${icon('pencil', 'sm')}</button>` : ''}</div>`;
+  return `<div class="mctl">${ver}<button class="ib sm ghost" data-a="msg-copy" data-m="${esc(m.id)}" title="Copy">${icon('doc', 'sm')}</button><button class="ib sm ghost ${speakingId === m.id ? 'rec' : ''}" data-a="msg-read" data-m="${esc(m.id)}" title="${speakingId === m.id ? 'Stop reading' : 'Read aloud'}">${icon(speakingId === m.id ? 'stop' : 'mic', 'sm')}</button>${!S.readOnly && AGENTS[m.who] ? `<button class="ib sm ghost" data-a="msg-retry" data-m="${esc(m.id)}" title="Retry (a new version of this answer)" ${busy ? 'disabled' : ''}>${icon('refresh', 'sm')}</button>` : ''}</div>`;
+}
+
+function message(m, latestChanges, last = false) {
+  if (m.char) return rpMessage(m);
+  if (m.block) return `<div class="msg-s block">${icon('shield', 'sm')} ${esc(m.text)}</div>`;
   if (m.who === 'owner') {
     const atts = (m.attachments || []).map((a) => a.kind === 'image' ? `<img class="att" src="${esc(a.url || '')}" alt="${esc(a.name)}">` : `<span class="att-f">${icon('doc', 'sm')}${esc(a.name)}</span>`).join('');
-    return `<div class="msg-u">${atts ? `<div class="atts">${atts}</div>` : ''}${md(m.text)}</div>`;
+    if (S.editing === m.id) return `<div class="msg-u editing" data-msg="${esc(m.id)}"><textarea id="edit-text" rows="3">${esc(m.text)}</textarea><div class="mft"><button class="btn ghost" data-a="edit-cancel">Cancel</button><button class="btn p" data-a="edit-send" data-m="${esc(m.id)}">Save and send</button></div></div>`;
+    return `<div class="uwrap" data-msg="${esc(m.id)}"><div class="msg-u">${atts ? `<div class="atts">${atts}</div>` : ''}${rich(m.text)}${m.to ? `<div class="fine">only for ${esc(m.to.map(aiName).join(', '))}: not shown to your other AIs</div>` : ''}</div>${controlsHtml(m, true)}</div>`;
   }
-  if (m.who === 'system') return `<div class="msg-s">${md(m.text)}</div>`;
+  if (m.who === 'system') return `<div class="msg-s">${rich(m.text)}${mediaHtml(m)}</div>`;
   const role = m.role === 'lead' ? '<span class="star">★ lead</span>' : m.role === 'reviewer' ? '<span>· reviewer</span>' : '';
   const when = ago(m.at);
   return `<div class="msg-a ${m.err ? 'err' : ''}" data-msg="${esc(m.id)}">
-    <div class="who">${mono(m.who)}<b>${esc(aiName(m.who))}</b>${role}${when ? `<span>· ${esc(when)}</span>` : ''}${m.via ? `<span class="faint">· ${esc(m.via)}</span>` : ''}</div>
+    <div class="who">${mono(m.who)}<b>${esc(aiName(m.who))}</b>${role}${when ? `<span>· ${esc(when)}</span>` : ''}${m.via ? `<span class="faint">· ${esc(m.via)}</span>` : ''}${UNFILTERED.includes(m.who) ? '<span class="faint">· not shown to your other AIs</span>' : ''}</div>
     ${stepsHtml(m.steps, m.outcome || [], false, m.actions)}
-    <div class="text">${md(m.text)}</div>
+    ${helpersHtml(m)}
+    <div class="text">${rich(m.text)}</div>
+    ${mediaHtml(m)}
     ${(m.previews || []).map((p) => previewCard(m, p)).join('')}
+    ${sourcesHtml(m)}
     ${m.changes ? changesCard(m, latestChanges) : ''}
     ${m.actions && ['failure'].includes(m.actions.state) ? actionsCard(m) : ''}
     ${(m.acts || []).map((a) => actCard(a)).join('')}
+    ${(m.memo || []).map((p) => memoCard(m, p)).join('')}
     ${(m.refusedActs || []).map((r) => `<div class="msg-s">Claude asked to “${esc(r.kind)}”, which isn't allowed: ${esc(r.reason)}.</div>`).join('')}
+    ${controlsHtml(m)}
+    ${last && m.followUps?.length ? `<div class="chips">${m.followUps.map((f, i) => `<button class="sug" data-a="follow" data-m="${esc(m.id)}" data-i="${i}">${esc(f)}</button>`).join('')}</div>` : ''}
   </div>`;
 }
 
 function previewCard(m, p) {
-  return `<div class="card pv"><div class="hd">${icon('eye', 'sm')}<b>${esc(p.name)}</b><span class="grow"></span><span class="chip">Live preview</span></div>
-    <div class="ft"><button class="btn p" data-a="open-preview" data-m="${esc(m.id)}" data-p="${esc(p.id)}">Open</button><button class="btn" data-a="download-preview" data-m="${esc(m.id)}" data-p="${esc(p.id)}">${icon('dl', 'sm')}Download</button><button class="btn" data-a="save-preview" data-m="${esc(m.id)}" data-p="${esc(p.id)}">${icon('gh', 'sm')}Save to repo…</button></div></div>`;
+  return `<div class="card pv"><div class="hd">${icon(p.kind === 'code' ? 'code' : 'eye', 'sm')}<b>${esc(p.name)}</b><span class="grow"></span><span class="chip">${p.kind === 'code' ? 'Canvas' : 'Live preview'}</span></div>
+    <div class="ft"><button class="btn p" data-a="open-preview" data-m="${esc(m.id)}" data-p="${esc(p.id)}">Open</button><button class="btn" data-a="open-canvas" data-m="${esc(m.id)}" data-p="${esc(p.id)}">${icon('pencil', 'sm')}Edit in canvas</button><button class="btn" data-a="download-preview" data-m="${esc(m.id)}" data-p="${esc(p.id)}">${icon('dl', 'sm')}Download</button><button class="btn" data-a="save-preview" data-m="${esc(m.id)}" data-p="${esc(p.id)}">${icon('gh', 'sm')}Save to repo…</button></div></div>`;
 }
 
 function changesCard(m, latest) {
@@ -731,7 +1221,84 @@ function actCard(a) {
   return `<div class="card askc"><div class="hd">${icon('shield', 'sm')}<b>Claude asks: ${esc(ACT_KINDS[a.kind] || a.kind)}</b></div><div class="ft">${st === 'pending' ? `<button class="btn p" data-a="act-yes" data-id="${esc(a.id)}">Yes, do it</button><button class="btn" data-a="act-no" data-id="${esc(a.id)}">No</button><span class="fine">or type yes / no</span>` : `<span class="fine">${st === 'approved' ? 'You said yes.' : st === 'denied' ? 'You said no.' : 'Expired (30 minutes).'}</span>`}</div></div>`;
 }
 
-// ---------- the preview panel ----------
+function memoCard(m, p) {
+  return `<div class="card askc memo"><div class="hd">${icon('db', 'sm')}<b>Remember this in every chat?</b><span class="d">“${esc(p.text)}”</span></div><div class="ft">${p.status === 'pending' ? `<button class="btn p" data-a="memo-yes" data-m="${esc(m.id)}" data-id="${esc(p.id)}">Yes, remember</button><button class="btn" data-a="memo-no" data-m="${esc(m.id)}" data-id="${esc(p.id)}">No</button><span class="fine">${esc(aiName(m.who))} suggested it · nothing is saved without your yes</span>` : `<span class="fine">${p.status === 'saved' ? 'Saved to memory (Settings › Memory).' : p.status === 'declined' ? 'Not saved.' : 'That suggestion is gone.'}</span>`}</div></div>`;
+}
+
+// ---------- roleplay views: library, card editor, lorebooks, visual novel ----------
+const avatarHtml = (card, cls = '') => (card?.avatarUrl ? `<img class="cav ${cls}" src="${esc(card.avatarUrl)}" alt="">` : `<span class="cav ${cls} none">${esc((card?.name || '?')[0])}</span>`);
+const limitBadge = (c) => (c.limits?.minor ? `<span class="chip b" title="${esc(c.limits.minorWhy)}">stories only · reads as under 18</span>` : c.limits?.real ? `<span class="chip b" title="${esc(c.limits.realWhy)}">real person · nothing sexual</span>` : '');
+function charactersView() {
+  if (S.cards === null) return '<div class="col"><div class="fine">Loading…</div></div>';
+  const q = S.cardQuery.toLowerCase();
+  const list = S.cards.filter((c) => !q || `${c.name} ${(c.tags || []).join(' ')}`.toLowerCase().includes(q));
+  const p = S.persona || {};
+  return `<div class="lib" id="drop-cards">
+    <div class="lib-hd"><h1>Characters</h1><span class="grow"></span><label class="search in">${icon('search', 'sm')}<input id="card-q" placeholder="Search characters" value="${esc(S.cardQuery)}"></label><button class="btn" data-a="card-import">${icon('dl', 'sm')}Import</button><button class="btn" data-a="card-new">${icon('plus', 'sm')}Create</button><button class="btn" data-a="lorebooks">${icon('doc', 'sm')}Lorebooks</button></div>
+    <div class="persona">${p.avatarUrl ? `<img class="cav" src="${esc(p.avatarUrl)}" alt="">` : `<span class="cav none">${esc((p.name || 'Y')[0])}</span>`}<div><b>Your persona: ${esc(p.name || 'not set')}</b><span class="fine">${esc(String(p.description || 'Who you are in the stories. The characters call you by this name.').slice(0, 160))}</span></div><span class="grow"></span><button class="mini" data-a="persona-edit">Edit</button></div>
+    <p class="fine">Drop a character card here (PNG or JSON, Character Card V1, V2 or V3) or a lorebook JSON. Cards are kept on this PC with a backup. Built-in limits: no minors, no real people in anything sexual, nothing illegal.</p>
+    <div class="cgrid">${list.map((c) => `<div class="ccard" data-card="${esc(c.id)}">${c.avatarUrl ? `<img src="${esc(c.avatarUrl)}" alt="">` : `<div class="noimg">${esc(c.name[0])}</div>`}<div class="cbody"><b>${esc(c.name)}</b><span class="fine">${esc((c.tags || []).slice(0, 4).join(' · ') || c.creator || '')}</span>${limitBadge(c)}<p>${esc(String(c.creator_notes || c.description || '').slice(0, 120))}</p></div><div class="cft"><button class="btn p" data-a="card-chat" data-id="${esc(c.id)}">Start chat</button><button class="mini" data-a="card-edit" data-id="${esc(c.id)}">Edit</button><button class="mini" data-a="card-export" data-id="${esc(c.id)}" data-f="png">PNG</button><button class="mini" data-a="card-export" data-id="${esc(c.id)}" data-f="json">JSON</button></div></div>`).join('') || '<div class="empty-list">No characters yet. Import a card or create one.</div>'}</div></div>`;
+}
+function cardEditView() {
+  const c = S.cardEdit;
+  if (!c) return '';
+  const f = (k, label, rows = 3, ph = '') => `<label class="field">${label}<textarea data-cf="${k}" rows="${rows}" placeholder="${esc(ph)}">${esc(c[k] || '')}</textarea></label>`;
+  const voices = (window.speechSynthesis?.getVoices?.() || []).map((v) => v.name);
+  return `<div class="lib edit"><div class="lib-hd"><button class="tb" data-a="characters">${icon('chevr', 'sm')}Characters</button><h1>${esc(c.id ? `Edit ${c.name}` : 'New character')}</h1><span class="grow"></span><button class="btn ghost" data-a="characters">Cancel</button><button class="btn p" data-a="card-save">Save</button></div>
+    <div class="cedit"><div class="cleft">${c.avatarUrl ? `<img class="big" src="${esc(c.avatarUrl)}" alt="">` : '<div class="big noimg">?</div>'}<button class="mini" data-a="card-pic">Change picture</button>${c.limits ? limitBadge(c) : ''}
+      <label class="field">Voice for read aloud<input data-cf="voice" list="voice-list" value="${esc(c.voice || '')}" placeholder="system default"><datalist id="voice-list">${voices.map((v) => `<option>${esc(v)}</option>`).join('')}</datalist></label>
+      <label class="field">Lorebooks<select data-cf="lorebooks" multiple size="4">${(S.books || []).map((b) => `<option value="${esc(b.id)}" ${(c.lorebooks || []).includes(b.id) ? 'selected' : ''}>${esc(b.name)}</option>`).join('')}</select></label>
+      ${c.character_book ? `<div class="fine">Embedded lorebook: ${c.character_book.entries?.length || 0} entries <button class="mini" data-a="lore-from-card" data-id="${esc(c.id || '')}">Copy to Lorebooks</button></div>` : ''}</div>
+    <div class="cright"><label class="field">Name<input data-cf="name" value="${esc(c.name || '')}" maxlength="120"></label>
+      ${f('description', 'Description', 5, 'Who {{char}} is, what they look like…')}${f('personality', 'Personality', 2)}${f('scenario', 'Scenario', 2)}${f('first_mes', 'First message (greeting)', 4)}
+      <label class="field">Alternate greetings (one per block, separated by a line with ---)<textarea data-cf="alternate_greetings" rows="3">${esc((c.alternate_greetings || []).join('\n---\n'))}</textarea></label>
+      ${f('mes_example', 'Example dialogue', 4, '<START>\n{{user}}: Hi\n{{char}}: *waves* "Hello!"')}${f('creator_notes', 'Creator notes', 2)}
+      <label class="field">Tags (comma separated)<input data-cf="tags" value="${esc((c.tags || []).join(', '))}"></label>
+      <label class="field">Creator<input data-cf="creator" value="${esc(c.creator || '')}"></label></div></div></div>`;
+}
+function lorebooksView() {
+  const b = S.loreEdit;
+  if (b) {
+    return `<div class="lib edit"><div class="lib-hd"><button class="tb" data-a="lorebooks">${icon('chevr', 'sm')}Lorebooks</button><h1>${esc(b.name || 'New lorebook')}</h1><span class="grow"></span><button class="btn ghost" data-a="lorebooks">Cancel</button><button class="btn p" data-a="lore-save">Save</button></div>
+      <div class="srow"><label class="field">Name<input data-lf="name" value="${esc(b.name || '')}"></label><label class="field">Scan depth (messages)<input data-lf="scan_depth" type="number" min="1" max="100" value="${b.scan_depth || 4}"></label><label class="field">Token budget<input data-lf="token_budget" type="number" min="50" max="32000" value="${b.token_budget || 1024}"></label></div>
+      <div class="lore-list">${(b.entries || []).map((e, i) => `<div class="lentry"><div class="srow"><input data-le="${i}" data-k="name" placeholder="Entry name" value="${esc(e.name || '')}"><input data-le="${i}" data-k="keys" class="grow" placeholder="Keywords, comma separated" value="${esc((e.keys || []).join(', '))}"><label class="day">Order<input data-le="${i}" data-k="insertion_order" type="number" value="${e.insertion_order ?? 100}"></label><label class="day"><input type="checkbox" data-le="${i}" data-k="constant" ${e.constant ? 'checked' : ''}>Always on</label><label class="day"><input type="checkbox" data-le="${i}" data-k="enabled" ${e.enabled !== false ? 'checked' : ''}>On</label><button class="mini" data-a="lore-del-entry" data-i="${i}">Delete</button></div><textarea data-le="${i}" data-k="content" rows="3" placeholder="What the characters know when a keyword comes up">${esc(e.content || '')}</textarea></div>`).join('') || '<div class="fine">No entries yet.</div>'}</div>
+      <div class="mft left"><button class="btn" data-a="lore-add-entry">${icon('plus', 'sm')}Add entry</button></div></div>`;
+  }
+  return `<div class="lib"><div class="lib-hd"><button class="tb" data-a="characters">${icon('chevr', 'sm')}Characters</button><h1>Lorebooks</h1><span class="grow"></span><button class="btn" data-a="lore-import">${icon('dl', 'sm')}Import</button><button class="btn" data-a="lore-new">${icon('plus', 'sm')}Create</button></div>
+    <p class="fine">World info: entries with keywords. When a keyword comes up in the last few messages, its entry is added to the characters' context (within the token budget); always-on entries are always added. Attach lorebooks to a character (its editor) or to a chat (when you start it).</p>
+    ${(S.books || []).map((b) => `<div class="srow">${icon('doc', 'sm')}<b>${esc(b.name)}</b><span class="d">${(b.entries || []).length} entries · scan ${b.scan_depth} · budget ${b.token_budget}</span><span class="grow"></span><button class="mini" data-a="lore-edit" data-id="${esc(b.id)}">Edit</button><button class="mini" data-a="lore-export" data-id="${esc(b.id)}">Export</button><button class="mini" data-a="lore-remove" data-id="${esc(b.id)}">Delete</button></div>`).join('') || '<div class="fine">No lorebooks yet.</div>'}</div>`;
+}
+function vnStage(R, c) {
+  const cards = rpCards(c);
+  const last = [...R.msgs].reverse().find((m) => m.char) || null;
+  const card = cardById(last?.char) || cards[0];
+  const bgMedia = [...R.msgs].reverse().flatMap((m) => m.media || []).find((x) => x.kind === 'image' && /^scene-/.test(x.name || '')) || null;
+  const bg = card?.backgroundUrl || bgMedia?.url || '';
+  const sp = spriteFor(card, last?.text);
+  const art = sp ? card.spriteUrls[sp] : card?.avatarUrl;
+  return `<div class="vn" ${bg && SAFE_MEDIA.test(bg) ? `style="background-image:url('${esc(bg)}')"` : ''}>${art ? `<img class="vn-art" src="${esc(art)}" alt="${esc(card?.name || '')}">` : ''}
+    <div class="vn-box">${last ? `<div class="vn-name">${esc(card?.name || '')}${sp ? ` <span class="faint">· ${esc(sp)}</span>` : ''}</div><div class="text">${rich(last.text)}</div>` : '<div class="text faint">The story starts with your first line.</div>'}${R.busy ? `<div class="faint">${esc(cardById(R.busy.char)?.name || aiName(R.busy.agent))} is writing<span class="dots"><i></i><i></i><i></i></span></div>` : ''}</div></div>`;
+}
+function rpMessage(m) {
+  const c = entry();
+  const card = cardById(m.char);
+  const R = cur();
+  const busy = R?.round || R?.waiting;
+  const n = Array.isArray(m.swipes) ? m.swipes.length : 1;
+  const isLast = [...S.msgs].reverse().find((x) => x.char)?.id === m.id;
+  const swipe = (n > 1 || isLast) && !m.err ? `<span class="ver"><button class="ib sm ghost" data-a="rp-swipe" data-m="${esc(m.id)}" data-d="-1" ${(m.sw ?? 0) === 0 || busy ? 'disabled' : ''} aria-label="Previous reply">‹</button>${(m.sw ?? 0) + 1}/${n}<button class="ib sm ghost" data-a="rp-swipe" data-m="${esc(m.id)}" data-d="1" ${busy || ((m.sw ?? 0) >= n - 1 && (m.greeting || !isLast)) ? 'disabled' : ''} aria-label="Next reply">›</button></span>` : '';
+  if (S.editing === m.id) return `<div class="msg-a rp editing" data-msg="${esc(m.id)}"><div class="who">${avatarHtml(card)}<b>${esc(card?.name || aiName(m.who))}</b></div><textarea id="edit-text" rows="4">${esc(m.text)}</textarea><div class="mft"><button class="btn ghost" data-a="edit-cancel">Cancel</button><button class="btn p" data-a="rp-edit-save" data-m="${esc(m.id)}">Save</button></div></div>`;
+  return `<div class="msg-a rp ${m.err ? 'err' : ''}" data-msg="${esc(m.id)}"><div class="rp-row">${avatarHtml(card, 'lg')}<div class="rp-body">
+    <div class="who"><b>${esc(card?.name || aiName(m.who))}</b><span class="faint">· played by ${esc(aiName(m.who))}${UNFILTERED.includes(m.who) ? ' · not shown to your other AIs' : ''}</span>${m.greeting ? '<span class="faint">· greeting</span>' : ''}</div>
+    <div class="text">${rich(m.text)}</div>${mediaHtml(m)}
+    <div class="mctl">${swipe}<button class="ib sm ghost" data-a="msg-copy" data-m="${esc(m.id)}" title="Copy">${icon('doc', 'sm')}</button><button class="ib sm ghost ${speakingId === m.id ? 'rec' : ''}" data-a="msg-read" data-m="${esc(m.id)}" title="Read aloud${card?.voice ? ` (${esc(card.voice)})` : ''}">${icon(speakingId === m.id ? 'stop' : 'mic', 'sm')}</button><button class="ib sm ghost" data-a="msg-edit" data-m="${esc(m.id)}" title="Edit" ${busy ? 'disabled' : ''}>${icon('pencil', 'sm')}</button>${isLast && !m.greeting ? `<button class="ib sm ghost" data-a="rp-swipe" data-m="${esc(m.id)}" data-d="99" title="Regenerate (a new swipe)" ${busy ? 'disabled' : ''}>${icon('refresh', 'sm')}</button><button class="ib sm ghost" data-a="rp-continue" data-m="${esc(m.id)}" title="Continue this reply" ${busy ? 'disabled' : ''}>${icon('chevr', 'sm')}</button>` : ''}</div></div></div></div>`;
+}
+function rpBar(c) {
+  const cards = rpCards(c);
+  return `<div class="rpbar">${cards.map((x) => `<button class="mini" data-a="rp-reply-as" data-id="${esc(x.id)}" title="${esc(x.name)} replies next (played by ${esc(aiName(playerOf(c, x.id)))})">${avatarHtml(x, 'xs')}${esc(x.name)}</button>`).join('')}<span class="grow"></span><button class="mini" data-a="rp-impersonate" title="The AI writes your next line as a draft">${icon('pencil', 'sm')}Impersonate</button><button class="mini" data-a="rp-picture">${icon('eye', 'sm')}Picture</button><button class="mini ${cur()?.vn ? 'on' : ''}" data-a="rp-vn">${icon('panel', 'sm')}Visual novel</button></div>`;
+}
+
+// ---------- the preview panel and canvas ----------
 let paneKey = '';
 function renderPane(force = false) {
   const el = document.getElementById('pane');
@@ -744,8 +1311,13 @@ function renderPane(force = false) {
   const key = `${S.pane.msgId}|${S.pane.pid}|${S.pane.tab}|${S.pane.url || ''}|${S.pane.n || 0}`;
   if (!force && key === paneKey) return;
   paneKey = key;
-  el.innerHTML = `<div class="ph2"><b>${esc(p.name)}</b><div class="tabs"><button class="${S.pane.tab === 'preview' ? 'on' : ''}" data-a="pane-tab" data-t="preview">Preview</button><button class="${S.pane.tab === 'code' ? 'on' : ''}" data-a="pane-tab" data-t="code">Code</button></div><span class="grow"></span><button class="tb" data-a="pane-reload" title="Reload">${icon('refresh', 'sm')}</button><button class="tb" data-a="pane-close" title="Close">${icon('x', 'sm')}</button></div>
-    <div class="frame-wrap">${S.pane.tab === 'code' ? `<pre class="code-view"><code>${esc(p.content)}</code></pre>` : frameHtml({ url: S.pane.url, srcdoc: S.pane.url ? null : S.pane.srcdoc, title: p.name })}</div>
+  const tab = (t, label) => `<button class="${S.pane.tab === t ? 'on' : ''}" data-a="pane-tab" data-t="${t}">${label}</button>`;
+  const body = S.pane.tab === 'code' ? `<pre class="code-view"><code>${esc(p.content)}</code></pre>`
+    : S.pane.tab === 'canvas' ? `<div class="canvas-wrap"><textarea id="canvas-text" class="canvas" spellcheck="false" aria-label="Canvas">${esc(p.content)}</textarea></div>`
+      : frameHtml({ url: S.pane.url, srcdoc: S.pane.url ? null : S.pane.srcdoc, title: p.name });
+  el.innerHTML = `<div class="ph2"><b>${esc(p.name)}</b><div class="tabs">${p.kind !== 'code' ? tab('preview', 'Preview') : ''}${tab('code', 'Code')}${tab('canvas', 'Canvas')}</div><span class="grow"></span><button class="tb" data-a="pane-reload" title="Reload">${icon('refresh', 'sm')}</button><button class="tb" data-a="pane-close" title="Close">${icon('x', 'sm')}</button></div>
+    <div class="frame-wrap">${body}</div>
+    ${S.pane.tab === 'canvas' ? `<div class="canvas-bar"><button class="btn" data-a="canvas-save">${icon('check', 'sm')}Save version</button><button class="btn p" data-a="canvas-ask">${icon('users', 'sm')}Ask the team to change it</button><button class="btn ghost" data-a="download-preview" data-m="${esc(S.pane.msgId)}" data-p="${esc(S.pane.pid)}">${icon('dl', 'sm')}Download</button><span class="fine">${p.versions?.length ? `${p.versions.length} earlier version${p.versions.length === 1 ? '' : 's'} kept` : 'Your edits stay in this chat'}</span></div>` : ''}
     <div class="pfoot">${S.settings.previewNetwork ? 'Previews may load from the internet (Settings › Tools).' : 'Sandboxed: no internet, no access to the app or your files.'}</div>`;
 }
 
@@ -768,6 +1340,7 @@ function popHtml() {
     return `<div class="scrim" data-a="close-pop"></div><div class="pop menu" style="left:${p.x}px;top:${p.y}px">
       ${it('rename', 'pencil', 'Rename')}${it(c.pinned ? 'unpin' : 'pin', 'pin', c.pinned ? 'Unpin' : 'Pin to the top')}${it('up', 'up', 'Move up')}${it('down', 'chev', 'Move down')}
       ${it('connect', 'gh', c.repo || c.repoDir ? 'Connect to another repo…' : 'Connect to a repo…')}
+      ${it('knowledge', 'doc', 'Instructions and reference files…')}${it('export', 'dl', 'Export (Markdown, HTML, PDF)…')}
       ${c.hasCopy ? it('close', 'x', 'Close (remove its temporary copy)') : ''}
       ${it('hide', 'eyeoff', 'Hide')}<div class="sep"></div>${it('delete', 'trash', 'Delete')}</div>`;
   }
@@ -779,14 +1352,27 @@ function popHtml() {
       ${t.members.map((a) => opt(a, `${mono(a, 'sm')}${esc(aiName(a))}`, ready(a) ? (a === t.lead ? 'lead' : a === t.reviewer ? 'reviewer' : 'ready') : 'not set up')).join('')}
       <div class="note">Or type @name in your message to ask one AI. Change who's in the team in Settings › AI team.</div></div>`;
   }
+  if (p.kind === 'options') {
+    const R = S.view === 'chat' ? cur() : null;
+    const models = R ? (R.sessions._models || {}) : S.homeModels;
+    const t = team();
+    const opts = (a) => [...new Set([...(MODEL_PRESETS[a] || []), ...(a === 'venice' ? S.mates.models?.venice || [] : [])])];
+    return `<div class="scrim" data-a="close-pop"></div><div class="pop opts" style="left:${p.x}px;${p.b != null ? `bottom:${p.b}px` : `top:${p.y}px`}">
+      <div class="mh">For this message</div>
+      <button class="it" data-a="toggle-deep">${icon('globe', 'sm')}Deep research<small>${S.deep ? 'on' : 'off'} · a long report with sources</small></button>
+      <button class="it" data-a="toggle-talk">${icon('mic', 'sm')}Talk mode<small>${S.talk ? 'on' : 'off'} · send what you say, read answers aloud</small></button>
+      <div class="sep"></div><div class="mh">Model per AI ${R ? '(this chat)' : '(the next chat)'}</div>
+      ${t.members.filter((a) => !AGENTS[a]?.imagesOnly).map((a) => `<div class="it static">${mono(a, 'sm')}${esc(aiName(a))}<select data-a="pick-model" data-v="${a}"><option value="default">default</option>${opts(a).map((o) => `<option ${models[a] === o ? 'selected' : ''}>${esc(o)}</option>`).join('')}${models[a] && models[a] !== 'default' && !opts(a).includes(models[a]) ? `<option selected>${esc(models[a])}</option>` : ''}</select></div>`).join('')}
+      <div class="note">Default uses each AI's own setting. Models are kept with the chat, not in your settings.</div></div>`;
+  }
   if (p.kind === 'repo') {
     const q = S.repoQuery.toLowerCase();
     const repos = (S.repos || []).filter((r) => !q || r.full.toLowerCase().includes(q)).slice(0, 8);
     const c = p.chatId ? entry(p.chatId) : S.view === 'chat' ? entry() : null;
-    const cur = c ? c.repo : S.conn?.repo;
-    const sel = S.pickRepo || cur || repos[0]?.full || null;
+    const curRepo = c ? c.repo : S.conn?.repo;
+    const sel = S.pickRepo || curRepo || repos[0]?.full || null;
     const br = sel ? S.branches[sel] : null;
-    const curBranch = S.pickBranch || (sel === cur ? (c ? c.branch : S.conn?.branch) : null) || br?.default || 'main';
+    const curBranch = S.pickBranch || (sel === curRepo ? (c ? c.branch : S.conn?.branch) : null) || br?.default || 'main';
     return `<div class="scrim" data-a="close-pop"></div><div class="pop repo-pop" style="left:${p.x ?? 620}px;${p.b != null ? `bottom:${p.b}px` : `top:${p.y ?? 330}px`};${p.maxH ? `max-height:${p.maxH}px` : ''}"><div class="mh">Connect this chat to a GitHub repo</div>
       <label class="search in">${icon('search', 'sm')}<input id="repo-q" placeholder="Search your repos" value="${esc(S.repoQuery)}"></label>
       ${S.reposMsg ? `<div class="note">${esc(S.reposMsg)}</div>` : ''}
@@ -795,7 +1381,7 @@ function popHtml() {
       <div class="it static">${icon('branch', 'sm')}Branch<select id="branch-sel" ${sel ? '' : 'disabled'}>${(br?.branches?.length ? br.branches : [curBranch]).map((b) => `<option ${b === curBranch ? 'selected' : ''}>${esc(b)}</option>`).join('')}</select></div>
       <button class="it" data-a="connect-repo" ${sel ? '' : 'disabled'}>${icon('check', 'sm')}${sel ? `Use ${esc(sel.split('/').pop())}` : 'Pick a repo'}</button>
       <button class="it" data-a="no-repo">${icon('x', 'sm')}No repo, just talk</button>
-      <div class="note">The team works in a small temporary copy on this PC (newest commit only) and pushes to the chat's own branch; builds and tests run in GitHub Actions. The copy is deleted when you close the chat or it sits idle.</div></div>`;
+      <div class="note">The team works in a small temporary copy on this PC (newest commit only) and pushes to the chat's own branch; builds and tests run in GitHub Actions. The copy is deleted when you close the chat or it sits idle. The same repo in two chats gets two separate copies and branches.</div></div>`;
   }
   return '';
 }
@@ -815,11 +1401,56 @@ function modalHtml() {
       <p>The temporary copy of ${esc(c?.repo || c?.repoDir || 'the repo')} for “${esc(c?.title || 'this chat')}” holds changes that were never pushed. Before ${verb}, push them to the chat's own branch so nothing is lost.</p>
       <div class="mft"><button class="btn p" data-a="unpushed-push">${icon('push', 'sm')}Push to a branch first</button><button class="btn" data-a="unpushed-force">Delete the work…</button><button class="btn ghost" data-a="close-modal">Cancel</button></div></div>`;
   }
-  if (m.kind === 'saveto') {
-    return `<div class="scrim dark" data-a="close-modal"></div><div class="modal"><div class="mhd"><b>Save the preview to the repo</b></div>
+  if (m.kind === 'saveto' || m.kind === 'mediarepo') {
+    return `<div class="scrim dark" data-a="close-modal"></div><div class="modal"><div class="mhd"><b>Save ${m.kind === 'mediarepo' ? esc(m.name) : 'the preview'} to the repo</b></div>
       <p>It's saved in this chat's temporary copy and committed as you, on the chat's branch. Push or open a pull request to put it on GitHub.</p>
       <label class="field">Path in the repo<input id="saveto-path" value="${esc(m.path)}"></label>
       <div class="mft"><button class="btn p" data-a="saveto-do">Save</button><button class="btn ghost" data-a="close-modal">Cancel</button></div></div>`;
+  }
+  if (m.kind === 'lightbox') {
+    return `<div class="scrim dark lb" data-a="close-modal"></div><div class="lightbox"><img src="${esc(m.src)}" alt="${esc(m.name || '')}"><div class="lb-bar"><span>${esc(m.name || '')}</span><span class="grow"></span>${m.file ? `<button class="btn" data-a="media-save" data-f="${esc(m.file)}" data-n="${esc(m.name)}">${icon('dl', 'sm')}Download</button><button class="btn" data-a="media-repo" data-f="${esc(m.file)}" data-n="${esc(m.name)}">${icon('gh', 'sm')}Save to repo…</button>` : ''}<button class="btn ghost" data-a="close-modal">${icon('x', 'sm')}Close</button></div></div>`;
+  }
+  if (m.kind === 'export') {
+    return `<div class="scrim dark" data-a="close-modal"></div><div class="modal"><div class="mhd"><b>Export “${esc(entry(m.chatId)?.title || 'chat')}”</b></div>
+      <p>Pictures are included (next to a Markdown file, inside the HTML and PDF). Nothing is uploaded anywhere.</p>
+      <div class="mft"><button class="btn" data-a="export-do" data-f="md">Markdown</button><button class="btn" data-a="export-do" data-f="html">HTML</button><button class="btn p" data-a="export-do" data-f="pdf">PDF</button><button class="btn ghost" data-a="close-modal">Cancel</button></div></div>`;
+  }
+  if (m.kind === 'knowledge') {
+    return `<div class="scrim dark" data-a="close-modal"></div><div class="modal"><div class="mhd"><b>Instructions and reference files</b><span class="grow"></span><span class="faint">${esc(entry(m.chatId)?.title || '')}</span></div>
+      <p>Like a Project in the Claude app: every AI in this chat gets these instructions, and the files are attached to every turn.</p>
+      <label class="field">Instructions for this chat<textarea id="know-text" rows="5" maxlength="4000" placeholder="For example: answer in short bullet points; this repo uses tabs.">${esc(m.instructions)}</textarea></label>
+      <div class="field">Reference files<div class="refs">${m.refs.map((r, i) => `<span class="att-f">${icon('doc', 'sm')}${esc(r.name)}<button class="ib sm ghost" data-a="know-unref" data-i="${i}" aria-label="Remove">${icon('x', 'sm')}</button></span>`).join('') || '<span class="faint">None yet.</span>'}<button class="mini" data-a="know-add">${icon('plus', 'sm')}Add files</button></div></div>
+      <div class="mft"><button class="btn p" data-a="know-save">Save</button><button class="btn ghost" data-a="close-modal">Cancel</button></div></div>`;
+  }
+  if (m.kind === 'rpstart') {
+    const L = TEAM_IDS.filter(ready).filter((a) => !AGENTS[a]?.imagesOnly);
+    return `<div class="scrim dark" data-a="close-modal"></div><div class="modal"><div class="mhd"><b>Start a roleplay chat</b></div>
+      <p>Pick the characters (several make a group) and who plays each one. Venice plays adult scenes; the others play regular stories.</p>
+      <div class="rp-pick">${(S.cards || []).map((c) => { const on = m.chars.includes(c.id); return `<div class="srow"><label class="day"><input type="checkbox" data-a="rp-toggle" data-id="${esc(c.id)}" ${on ? 'checked' : ''}>${avatarHtml(c, 'xs')}<b>${esc(c.name)}</b></label>${limitBadge(c)}<span class="grow"></span>${on ? `played by <select data-a="rp-player" data-id="${esc(c.id)}">${L.map((a) => `<option value="${a}" ${m.players[c.id] === a ? 'selected' : ''} ${c.limits?.minor && UNFILTERED.includes(a) ? 'disabled' : ''}>${esc(aiName(a))}${c.limits?.minor && UNFILTERED.includes(a) ? ' (not for this card)' : ''}</option>`).join('')}</select>` : ''}</div>`; }).join('') || '<div class="fine">No characters yet.</div>'}</div>
+      ${m.chars.length > 1 ? `<div class="srow">Turn order<select data-a="rp-order"><option value="natural" ${m.order !== 'list' ? 'selected' : ''}>Natural (whoever is named, else the next one)</option><option value="list" ${m.order === 'list' ? 'selected' : ''}>In order (everyone, each turn)</option></select></div>` : ''}
+      ${(S.books || []).length ? `<div class="srow">Lorebooks for this chat${(S.books || []).map((b) => `<label class="day"><input type="checkbox" data-a="rp-lore" data-id="${esc(b.id)}" ${m.lorebooks.includes(b.id) ? 'checked' : ''}>${esc(b.name)}</label>`).join('')}</div>` : ''}
+      ${L.length ? '' : '<div class="note bad">No AI is set up to play a character yet (Settings › Accounts).</div>'}
+      <div class="mft"><button class="btn p" data-a="rp-start-do" ${m.chars.length && L.length ? '' : 'disabled'}>Start</button><button class="btn ghost" data-a="close-modal">Cancel</button></div></div>`;
+  }
+  if (m.kind === 'rppic') {
+    const c = entry(m.chatId);
+    const makers = IMAGE_MAKERS.filter((a) => (TEAMMATE_IDS.includes(a) ? S.mates.ready?.[a] : S.mkeys.keys?.[a]));
+    return `<div class="scrim dark" data-a="close-modal"></div><div class="modal"><div class="mhd"><b>A picture for this story</b></div>
+      <p>Made from the characters' descriptions. The built-in limits are checked before anything is sent.</p>
+      <div class="srow"><label class="day"><input type="radio" name="rpk" value="portrait" ${m.kind2 !== 'scene' ? 'checked' : ''}>Character portrait</label><label class="day"><input type="radio" name="rpk" value="scene" ${m.kind2 === 'scene' ? 'checked' : ''}>Scene</label></div>
+      <div class="srow">Characters${rpCards(c).map((x) => `<label class="day"><input type="checkbox" class="rpc" value="${esc(x.id)}" checked>${esc(x.name)}</label>`).join('')}</div>
+      <label class="field">Anything to add<input id="rp-note" placeholder="For example: by the campfire at night"></label>
+      <div class="srow">Made by<select id="rp-maker">${makers.map((a) => `<option value="${a}">${esc(aiName(a))}</option>`).join('')}</select></div>
+      ${makers.length ? '' : '<div class="note bad">No picture maker is set up (Settings › Accounts: Venice, Civitai, your GPU server, or an OpenAI/Gemini/xAI key).</div>'}
+      <div class="mft"><button class="btn p" data-a="rp-pic-do" ${makers.length ? '' : 'disabled'}>Make it</button><button class="btn ghost" data-a="close-modal">Cancel</button></div></div>`;
+  }
+  if (m.kind === 'persona') {
+    return `<div class="scrim dark" data-a="close-modal"></div><div class="modal"><div class="mhd"><b>Your persona</b></div>
+      <p>Who you are in roleplay chats. Characters see this name and description.</p>
+      <label class="field">Name<input id="pe-name" value="${esc(m.name || '')}" maxlength="80"></label>
+      <label class="field">Description<textarea id="pe-desc" rows="4">${esc(m.description || '')}</textarea></label>
+      <div class="srow">${m.avatarUrl ? `<img class="cav" src="${esc(m.avatarUrl)}" alt="">` : ''}<button class="mini" data-a="persona-pic">Choose a picture</button></div>
+      <div class="mft"><button class="btn p" data-a="persona-save">Save</button><button class="btn ghost" data-a="close-modal">Cancel</button></div></div>`;
   }
   if (m.kind === 'board') {
     const b = m.board;
@@ -836,18 +1467,40 @@ function settingsView() {
   return `<div class="set"><nav class="snav">${nav}</nav><div class="spage">${section(S.tab)}</div></div>`;
 }
 const tog = (on, a, extra = '') => `<button class="tog ${on ? 'on' : ''}" role="switch" aria-checked="${on}" data-a="${a}" ${extra}></button>`;
+const WEEK = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+function whenText(t) {
+  if (t.kind === 'once') return `once, ${new Date(t.at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`;
+  if (t.kind === 'daily') return `every day at ${t.time}`;
+  if (t.kind === 'weekly') return `every ${(t.days || []).map((d) => WEEK[d]).join(', ')} at ${t.time}`;
+  return `cron ${t.cron}`;
+}
 function section(k) {
   const s = S.settings;
   const t = team();
   if (k === 'team') {
     return `<h1>AI team</h1><div class="box"><h3>Who's in your chats</h3>
-      ${TEAM_IDS.map((a) => { const inTeam = t.members.includes(a); const r = ready(a); return `<div class="srow mem">${mono(a)}<b>${esc(aiName(a))}</b><span class="d">${a === t.lead ? 'lead ★ · ' : a === t.reviewer ? 'reviewer · ' : ''}${esc(AGENTS[a].tool)}${r ? `, ${esc(AGENTS[a].plan)}` : ' · not set up'}${inTeam ? '' : ' · off'}</span><span class="grow"></span>${inTeam && a !== t.lead && AGENTS[a].edits ? `<button class="mini" data-a="make-lead" data-v="${a}">Make lead</button>` : ''}${inTeam && a !== t.lead && a !== t.reviewer ? `<button class="mini" data-a="make-reviewer" data-v="${a}">Make reviewer</button>` : ''}${tog(inTeam, 'team-member', `data-v="${a}" ${a === t.lead ? 'disabled title="The lead is always in"' : ''}`)}</div>`; }).join('')}
-      <div class="note">The lead (Claude unless you change it) answers first and hands parts to teammates. When the lead changes files, the reviewer checks the diff. Type @name in a message to ask one AI. ${t.reviewer ? '' : 'No reviewer is set.'}</div>
+      ${TEAM_IDS.map((a) => { const inTeam = t.members.includes(a); const r = ready(a); return `<div class="srow mem">${mono(a)}<b>${esc(aiName(a))}</b><span class="d">${a === t.lead ? 'lead ★ · ' : a === t.reviewer ? 'reviewer · ' : ''}${esc(AGENTS[a].tool)}${r ? `, ${esc(AGENTS[a].plan)}` : ` · ${TEAMMATE_IDS.includes(a) ? esc(setupHint(a)) : 'not set up'}`}${inTeam ? '' : ' · off'}</span><span class="grow"></span>${inTeam && a !== t.lead && AGENTS[a].edits ? `<button class="mini" data-a="make-lead" data-v="${a}">Make lead</button>` : ''}${inTeam && a !== t.lead && a !== t.reviewer && !UNFILTERED.includes(a) ? `<button class="mini" data-a="make-reviewer" data-v="${a}">Make reviewer</button>` : ''}${tog(inTeam, 'team-member', `data-v="${a}" ${a === t.lead ? 'disabled title="The lead is always in"' : ''}`)}</div>`; }).join('')}
+      <div class="note">The lead (Claude unless you change it) answers first and hands parts to teammates. When the lead changes files, the reviewer checks the diff. Type @name in a message to ask one AI. ${t.reviewer ? '' : 'No reviewer is set.'} Venice, Civitai and your GPU server never see the other AIs' private context and what they make is never passed to Claude, ChatGPT or Gemini.</div>
       ${t.reviewer ? '<button class="mini" data-a="no-reviewer">No reviewer</button>' : ''}</div>`;
   }
   if (k === 'accounts') {
+    const M = S.mates;
+    const c = M.conf || {};
     return `<h1>Accounts</h1><div class="box"><h3>Your AI accounts</h3><p class="fine">Each AI signs in with your own account in its own official app. The Command Center never holds your passwords.</p>
-      ${TEAM_IDS.map((a) => { const c = S.cli[a] || {}; const isApi = method(a) === 'api'; const st = isApi ? (S.prov.keys?.[a] ? 'API key saved' : 'needs an API key') : !c.installed ? 'not installed' : c.signedIn === false ? 'not signed in' : c.signedIn ? 'signed in' : 'installed'; return `<div class="srow">${mono(a)}<b>${esc(aiName(a))}</b><span class="d">${esc(AGENTS[a].tool)} · ${esc(st)}</span><span class="grow"></span>${isApi ? `<button class="mini" data-a="set-key" data-v="${a}">${S.prov.keys?.[a] ? 'Change key' : 'Add key'}</button>` : !c.installed && a !== 'ollama' ? `<button class="mini" data-a="install" data-v="${a}">Install</button>` : c.signedIn === false ? `<button class="mini" data-a="signin" data-v="${a}">Sign in</button>` : ''}<button class="mini" data-a="recheck" data-v="${a}">Re-check</button></div>`; }).join('')}</div>
+      ${TEAM_IDS.filter((a) => !TEAMMATE_IDS.includes(a)).map((a) => { const cl = S.cli[a] || {}; const isApi = method(a) === 'api'; const st = isApi ? (S.prov.keys?.[a] ? 'API key saved' : 'needs an API key') : !cl.installed ? 'not installed' : cl.signedIn === false ? 'not signed in' : cl.signedIn ? 'signed in' : 'installed'; return `<div class="srow">${mono(a)}<b>${esc(aiName(a))}</b><span class="d">${esc(AGENTS[a].tool)} · ${esc(st)}</span><span class="grow"></span>${isApi ? `<button class="mini" data-a="set-key" data-v="${a}">${S.prov.keys?.[a] ? 'Change key' : 'Add key'}</button>` : !cl.installed && a !== 'ollama' ? `<button class="mini" data-a="install" data-v="${a}">Install</button>` : cl.signedIn === false ? `<button class="mini" data-a="signin" data-v="${a}">Sign in</button>` : ''}<button class="mini" data-a="recheck" data-v="${a}">Re-check</button></div>`; }).join('')}</div>
+      <div class="box"><h3>${icon('eye', 'sm')}Pictures, videos and documents</h3><p class="fine">The AIs' own picture and video tools through their official APIs, with your own keys (saved encrypted on this PC). Each use is billed to that account.</p>
+      ${MEDIA_KEYS.map(([k2, label, what]) => `<div class="srow"><b>${esc(label)}</b><span class="d">${esc(what)} · ${S.mkeys.keys?.[k2] ? 'saved' : 'not added'}</span><span class="grow"></span><button class="mini" data-a="media-key" data-v="${k2}">${S.mkeys.keys?.[k2] ? 'Change' : 'Add key'}</button>${S.mkeys.keys?.[k2] ? `<button class="mini" data-a="media-unkey" data-v="${k2}">Remove</button>` : ''}</div>`).join('')}
+      <div class="srow">On this PC<span class="d">web page screenshots: ${S.mkeys.screenshot ? 'yes (headless browser found)' : 'no Chromium or Chrome found'} · reading aloud: ${esc(S.mkeys.tts || 'Web Speech, or install espeak-ng')} · PDF text: ${S.mkeys.pdftotext ? 'pdftotext' : 'install poppler-utils, or add a Mistral key'}</span></div></div>
+      <div class="box"><h3>${icon('users', 'sm')}More teammates</h3><p class="fine">Each one joins your team (Settings › AI team) once you add its key or address. Keys stay in the encrypted store. They are told the same hard limits: never sexual content involving minors, never sexual images of real, identifiable people, nothing illegal. What they make is shown to you but never forwarded to Claude, ChatGPT or Gemini.</p>
+      <div class="srow">${mono('venice')}<b>Venice</b><span class="d">uncensored chat and pictures · ${M.keys?.venice ? 'key saved' : 'Add your Venice key'}</span><span class="grow"></span><button class="mini" data-a="mate-key" data-v="venice">${M.keys?.venice ? 'Change key' : 'Add key'}</button>${M.keys?.venice ? '<button class="mini" data-a="mate-unkey" data-v="venice">Remove</button>' : ''}</div>
+      <div class="srow sub">Text model<select data-a="venice-model">${(M.models?.venice || []).map((x) => `<option ${c.venice?.model === x ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select>Picture model<select data-a="venice-image">${(M.models?.veniceImage || []).map((x) => `<option ${c.venice?.imageModel === x ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select><span class="d">pictures use safe_mode off (Venice's default blurs adult pictures)</span></div>
+      <div class="srow">${mono('civitai')}<b>Civitai</b><span class="d">pictures (billed in Buzz) · mature content allowed · ${M.keys?.civitai ? 'token saved' : 'Add your Civitai key'}</span><span class="grow"></span><button class="mini" data-a="mate-key" data-v="civitai">${M.keys?.civitai ? 'Change token' : 'Add token'}</button>${M.keys?.civitai ? '<button class="mini" data-a="mate-unkey" data-v="civitai">Remove</button>' : ''}</div>
+      <div class="srow sub">Engine<select data-a="civitai-engine">${(M.models?.civitaiEngines || []).map((x) => `<option ${c.civitai?.engine === x ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select><input id="civitai-fields" class="mono grow" value="${esc(c.civitai?.fields || '{"prompt": "{prompt}"}')}" aria-label="Civitai request fields"><button class="mini" data-a="civitai-fields">Save fields</button><span class="d">the engine's own fields as JSON; {prompt} is filled in (check Civitai's docs for your engine)</span></div>
+      <div class="srow">${mono('gpu')}<b>Your GPU servers</b><span class="d">RunPod or any rented or local GPU: an OpenAI-compatible chat URL, or a ComfyUI image API · ${M.servers?.length ? `${M.servers.length} added` : 'Add your GPU server'}</span></div>
+      ${(M.servers || []).map((sv) => `<div class="srow sub">${icon('cpu', 'sm')}<b>${esc(sv.name)}</b><span class="d mono">${esc(sv.type === 'comfy' ? 'ComfyUI' : 'OpenAI-compatible')} · ${esc(sv.url)}${sv.model ? ` · ${esc(sv.model)}` : ''}${sv.key ? ' · key saved' : ''}${sv.workflow ? ' · own workflow' : ''}</span><span class="grow"></span><button class="mini" data-a="server-remove" data-id="${esc(sv.id)}">Remove</button></div>`).join('')}
+      <div class="srow sub form"><input id="sv-name" placeholder="Name (e.g. RunPod 4090)"><select id="sv-type"><option value="openai">OpenAI-compatible chat</option><option value="comfy">ComfyUI pictures</option></select><input id="sv-url" class="grow" placeholder="https://…/v1 or http://192.168.1.20:8188"><input id="sv-model" placeholder="Model or checkpoint (optional)"><input id="sv-key" type="password" placeholder="Key (optional)"><button class="mini" data-a="server-add">Add server</button></div>
+      <details class="sub"><summary class="fine">ComfyUI workflow (optional): paste your own workflow JSON; {prompt}, {negative}, {seed} and {ckpt} are filled in. Empty uses a stock SDXL text-to-image graph.</summary><textarea id="sv-workflow" rows="4" class="mono" placeholder='{"3": {"class_type": "KSampler", …}}'></textarea></details>
+      <div class="note">NovelAI isn't offered: it has no public developer API, and its terms restrict third-party apps.</div></div>
       <div class="box"><h3>${icon('phone', 'sm')}Your phone</h3><div class="srow">Phone view<span class="d">your chat on your phone, on your home network only</span><span class="grow"></span>${tog(Boolean(S.phone?.enabled), 'phone-toggle')}</div>${S.phone?.enabled ? `<div class="srow">Address<span class="d mono">${esc((S.phone.urls || []).join(', ') || 'starting…')}</span><span class="grow"></span><button class="mini" data-a="phone-code">Show pairing code</button></div>${S.phone.code ? `<div class="srow">Code<b class="mono big">${esc(S.phone.code)}</b><span class="d">type it on your phone within 5 minutes</span></div>` : ''}` : ''}</div>`;
   }
   if (k === 'github') {
@@ -863,18 +1516,66 @@ function section(k) {
   if (k === 'tools') {
     const qc = s.tools?.quickChecks || [];
     return `<h1>Tools</h1><div class="box"><h3>New messages start with</h3>
-      <div class="srow">Web<span class="d">search the web and read pages</span><span class="grow"></span>${tog(s.tools?.web !== false, 'tool-web')}</div>
+      <div class="srow">Web<span class="d">search the web and read pages; answers list their sources</span><span class="grow"></span>${tog(s.tools?.web !== false, 'tool-web')}</div>
       <div class="srow">Run &amp; build<span class="d">run quick checks on this PC and push to the chat's branch; heavy builds run in GitHub Actions</span><span class="grow"></span>${tog(s.tools?.build !== false, 'tool-build')}</div></div>
       <div class="box"><h3>Quick checks the AIs may run on this PC</h3><p class="fine">One per line: the start of a command. Claude can run only these (plus git and reading files); everything heavier goes to GitHub Actions.</p>
       <textarea id="quick-checks" rows="8" class="mono">${esc(qc.join('\n'))}</textarea><div class="mft left"><button class="btn" data-a="save-checks">Save</button></div></div>
+      <div class="box"><h3>${icon('star', 'sm')}Skills</h3><p class="fine">Claude Code skills from ~/.claude/skills and the chat's repo (.claude/skills) work in chats: Claude uses them by itself when they fit. The lead can also hand side tasks to helpers that work in parallel.</p>
+      ${S.skills === null ? '<div class="fine">Loading…</div>' : (S.skills || []).map((x) => `<div class="srow">${icon('star', 'sm')}<b>${esc(x.name)}</b><span class="d">${esc(x.description || '')} · ${esc(x.where)}</span></div>`).join('') || '<div class="fine">No skills installed. Put a skill folder with a SKILL.md in ~/.claude/skills, or in a repo\'s .claude/skills.</div>'}</div>
       <div class="box"><h3>Live previews</h3><div class="srow">Previews may load from the internet<span class="d">off: previews can't reach the network (safest)</span><span class="grow"></span>${tog(s.previewNetwork === true, 'preview-net')}</div></div>`;
+  }
+  if (k === 'memory') {
+    const mem = S.memory;
+    const ci = s.customInstructions || {};
+    return `<h1>Memory</h1>
+      <div class="box"><h3>${icon('user', 'sm')}Custom instructions</h3><p class="fine">Every AI gets these in every chat.</p>
+        <label class="field">About you<textarea id="ci-about" rows="3" maxlength="3000" placeholder="For example: I'm Dragongamer9; I build Hearth OS; my laptop has Intel graphics and 8 GB of RAM.">${esc(ci.about || '')}</textarea></label>
+        <label class="field">How the AIs should answer<textarea id="ci-style" rows="3" maxlength="3000" placeholder="For example: plain language, short answers, say what changed for me.">${esc(ci.style || '')}</textarea></label>
+        <div class="mft left"><button class="btn" data-a="save-ci">Save</button></div></div>
+      <div class="box"><h3>${icon('db', 'sm')}Memory across chats</h3><p class="fine">Facts every AI reads at the start of a chat. AIs can only suggest one; it's saved after your yes. Saved safely (with a backup) in memory.json.</p>
+        ${mem?.broken ? `<div class="note bad">${esc(mem.broken)}</div>` : ''}
+        ${(mem?.pending || []).map((p) => `<div class="srow">${icon('clock', 'sm')}<span class="d">${esc(aiName(p.agent) || 'An AI')} suggests:</span><b>${esc(p.text)}</b><span class="grow"></span><button class="mini" data-a="mem-decide" data-id="${esc(p.id)}" data-v="1">Remember</button><button class="mini" data-a="mem-decide" data-id="${esc(p.id)}" data-v="0">No</button></div>`).join('')}
+        ${(mem?.facts || []).map((f) => (S.memEdit === f.id ? `<div class="srow"><input id="mem-edit" class="grow" value="${esc(f.text)}" maxlength="500"><button class="mini" data-a="mem-save" data-id="${esc(f.id)}">Save</button><button class="mini" data-a="mem-cancel">Cancel</button></div>` : `<div class="srow">${icon('check', 'sm')}<span class="grow">${esc(f.text)}</span><span class="d">${f.suggestedBy ? `suggested by ${esc(aiName(f.suggestedBy))} · ` : ''}${esc(ago(f.at) || '')}</span><button class="mini" data-a="mem-edit" data-id="${esc(f.id)}">Edit</button><button class="mini" data-a="mem-del" data-id="${esc(f.id)}">Delete</button></div>`)).join('') || (mem ? '<div class="fine">Nothing remembered yet.</div>' : '<div class="fine">Loading…</div>')}
+        <div class="srow"><input id="mem-new" class="grow" maxlength="500" placeholder="Add something to remember"><button class="mini" data-a="mem-add">Add</button></div></div>`;
+  }
+  if (k === 'scheduled') {
+    const sc = S.schedules;
+    const chats = S.chats.filter((c) => !c.hidden);
+    return `<h1>Scheduled</h1><div class="box"><h3>${icon('clock', 'sm')}Scheduled tasks</h3><p class="fine">The team runs a message in a chat later, every day or every week, while the app is running. Each run posts its result into that chat. Nothing runs until you create a task.</p>
+      ${sc?.broken ? `<div class="note bad">${esc(sc.broken)}</div>` : ''}
+      ${(sc?.list || []).map((x) => `<div class="srow">${icon('clock', 'sm')}<b>${esc(x.title)}</b><span class="d">${esc(whenText(x))} · in “${esc(entry(x.chatId)?.title || 'a deleted chat')}”${x.nextRun ? ` · next ${esc(new Date(x.nextRun).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }))}` : ''}${x.lastRun ? ` · last ${esc(ago(x.lastRun))}: ${esc(x.lastResult === 'ok' ? 'done' : x.lastResult || '')}` : ''}${x.running ? ' · running now' : ''}</span><span class="grow"></span>${tog(x.enabled, 'sched-toggle', `data-id="${esc(x.id)}"`)}<button class="mini" data-a="sched-del" data-id="${esc(x.id)}">Delete</button></div>`).join('') || (sc ? '<div class="fine">No scheduled tasks.</div>' : '<div class="fine">Loading…</div>')}</div>
+      <div class="box"><h3>New scheduled task</h3>
+        <label class="field">What the team should do<textarea id="sc-prompt" rows="3" maxlength="4000" placeholder="For example: check the newest logs in Dragongamer9/hearth-logs and tell me about new crashes."></textarea></label>
+        <div class="srow">In chat<select id="sc-chat">${chats.map((c) => `<option value="${esc(c.id)}" ${c.id === S.lastChat ? 'selected' : ''}>${esc(c.title)}</option>`).join('')}</select>When<select id="sc-kind"><option value="daily">Every day</option><option value="weekly">Every week</option><option value="once">Once</option></select><input id="sc-time" type="time" value="09:00"><input id="sc-at" type="datetime-local"></div>
+        <div class="srow">Days (weekly)${WEEK.map((d, i) => `<label class="day"><input type="checkbox" class="sc-day" value="${i}" ${i === 1 ? 'checked' : ''}>${d}</label>`).join('')}</div>
+        <div class="mft left"><button class="btn p" data-a="sched-add" ${chats.length ? '' : 'disabled'}>Create</button></div></div>`;
+  }
+  if (k === 'connectors') {
+    const cn = S.connectors;
+    return `<h1>Connectors</h1><div class="box"><h3>${icon('cpu', 'sm')}Connectors (MCP servers)</h3><p class="fine">Tools the AIs can use, like in the Claude app. Passed to Claude Code (--mcp-config), Codex (its mcp_servers setting) and the Gemini CLI (its settings file) for every run. Secrets (tokens, keys) go only into the encrypted store; the files the AI apps read hold references, never the values.</p>
+      ${cn?.broken ? `<div class="note bad">${esc(cn.broken)}</div>` : ''}
+      ${(cn?.list || []).map((x) => `<div class="srow">${icon('cpu', 'sm')}<b>${esc(x.name)}</b><span class="d mono">${esc(x.type === 'http' ? x.url : `${x.command} ${(x.args || []).join(' ')}`)}${x.secrets?.length ? ` · ${x.secrets.map((q) => `${esc(q.key)} ${q.saved ? '✓' : '✗'}`).join(', ')}` : ''}</span><span class="grow"></span>${tog(x.enabled, 'conn-toggle', `data-id="${esc(x.id)}"`)}<button class="mini" data-a="conn-del" data-id="${esc(x.id)}">Remove</button></div>`).join('') || (cn ? '<div class="fine">No connectors yet.</div>' : '<div class="fine">Loading…</div>')}</div>
+      <div class="box"><h3>Add a connector</h3>
+        <div class="srow"><input id="cn-name" placeholder="Name (letters, numbers, - _)"><select id="cn-type"><option value="stdio">Runs on this PC (command)</option><option value="http">Remote (URL)</option></select></div>
+        <div class="srow"><input id="cn-command" class="grow" placeholder="Command, e.g. npx -y @modelcontextprotocol/server-github"><input id="cn-url" class="grow" placeholder="or https://… for a remote server"></div>
+        <label class="field">Secrets, one per line: NAME=value (environment variables for a command, headers like Authorization=Bearer … for a URL)<textarea id="cn-secrets" rows="3" class="mono" placeholder="GITHUB_PERSONAL_ACCESS_TOKEN=…"></textarea></label>
+        <div class="mft left"><button class="btn p" data-a="conn-add">Add</button></div></div>`;
   }
   if (k === 'perms') {
     return `<h1>Permissions</h1><div class="box"><h3>${icon('shield', 'sm')}Permissions</h3>
       <div class="srow">Claude can do everything I can<span class="d">asks me first every time (popup or typed yes)</span><span class="grow"></span>${tog(s.actForMe === true, 'act-for-me')}</div>
       <div class="srow">Merging into main, releases and tags<span class="d">always ask me</span></div>
       <div class="srow">Version numbers<span class="d">only you set them</span></div>
+      <div class="srow">Memory<span class="d">AIs only suggest; nothing is remembered without your yes</span></div>
       <div class="srow">Full access<span class="d">${s.access === 'full' ? 'on: with Run & build, AIs run any command with no checks' : 'off: AIs run only the quick checks you allow'}</span><span class="grow"></span>${tog(s.access === 'full', 'full-access')}</div></div>`;
+  }
+  if (k === 'alerts') {
+    return `<h1>Notifications &amp; voice</h1><div class="box"><h3>${icon('flag', 'sm')}Notifications</h3>
+      <div class="srow">Desktop notifications<span class="d">when a reply is ready or an AI needs your answer, naming the chat (only when you're not looking at it)</span><span class="grow"></span>${tog(s.notify !== false, 'notify-toggle')}</div></div>
+      <div class="box"><h3>${icon('users', 'sm')}Several chats at once</h3><div class="srow">Chats working at the same time<span class="d">more wait in line and say so</span><span class="grow"></span><select data-a="max-chats">${MAX_CHATS.map((n) => `<option value="${n}" ${(s.maxChats || 3) === n ? 'selected' : ''}>${n}</option>`).join('')}</select></div></div>
+      <div class="box"><h3>${icon('mic', 'sm')}Voice</h3>
+      <div class="srow">Read every answer aloud<span class="d">off: use the read-aloud button on any answer</span><span class="grow"></span>${tog(s.autoRead === true, 'auto-read')}</div>
+      <div class="srow">How<span class="d">your system's voices (Web Speech), or espeak-ng / speech-dispatcher on this PC; talking uses whisper.cpp on this PC. Nothing leaves your PC.</span></div></div>`;
   }
   if (k === 'look') {
     return `<h1>Appearance</h1><div class="box"><h3>Look</h3>
@@ -903,7 +1604,7 @@ function section(k) {
         <div class="srow">Space used<b>${cp ? fmtBytes(total) : '…'}</b><span class="d">${cp ? `${cp.list.length} cop${cp.list.length === 1 ? 'y' : 'ies'} · removed after ${esc(IDLE.find(([v]) => v === S.settings.copyIdleHours)?.[1] || '1 day')} idle` : ''}</span><span class="grow"></span><button class="btn" data-a="cleanup" ${cp?.list?.length ? '' : 'disabled'}>Clean up</button></div>
         ${(cp?.list || []).map((c) => `<div class="srow copy">${icon('gh', 'sm')}<b>${esc(c.repo || c.dir || '?')}</b><span class="d">${esc(entry(c.chatId)?.title || 'deleted chat')} · ${esc(c.work || c.branch || '')} · ${fmtBytes(c.size)} · used ${esc(ago(c.lastUsedAt) || 'never')}</span><span class="grow"></span>${c.unpushed ? `<span class="chip b">not on GitHub</span><button class="mini" data-a="copy-push" data-id="${esc(c.chatId)}">Push to a branch</button>` : ''}<button class="mini" data-a="copy-remove" data-id="${esc(c.chatId)}">Remove</button></div>`).join('') || '<div class="fine">No temporary copies right now.</div>'}
         <div class="note">Copies holding work that isn't on GitHub are never deleted without asking you. ${cp?.root ? `They live in ${esc(cp.root)}.` : ''}</div></div>
-      <div class="box"><h3>Backups</h3><div class="srow">Your chats list keeps its last good copy as a backup, and the list from before 2.0 is kept as index.json.pre-2.<span class="grow"></span><button class="mini" data-a="open-data-folder">Open the data folder</button></div></div>
+      <div class="box"><h3>Backups</h3><div class="srow">Your chats list keeps its last good copy as a backup, and the list from before 2.0 is kept as index.json.pre-2. Memory, scheduled tasks, connectors and the Habitat keep a .bak too.<span class="grow"></span><button class="mini" data-a="open-data-folder">Open the data folder</button></div></div>
       <div class="box"><h3>Old boards (read-only)</h3><p class="fine">The task boards, approvals and audit logs from 1.x are kept on disk exactly as they were. They're not used any more.</p>
         ${(S.boards || []).map((b) => `<div class="srow">${icon('board', 'sm')}<b>${esc(b.name)}</b><span class="d">${b.ok ? `${b.tasks.length} tasks · ${b.approvals} approvals · ${b.audit} audit entries` : 'couldn\'t be read (left as it is)'}</span><span class="grow"></span>${b.ok ? `<button class="mini" data-a="view-board" data-id="${esc(b.id)}">View</button>` : ''}</div>`).join('') || '<div class="fine">No old boards.</div>'}</div>`;
   }
@@ -911,10 +1612,25 @@ function section(k) {
 }
 
 async function loadCopies() { S.copies = await call('copiesList'); render(); }
+async function loadSection(t) {
+  if (t === 'data') { loadCopies(); S.boards = await call('savedBoards'); }
+  if (t === 'accounts' || t === 'team') { refreshAgents(); await refreshMates(); }
+  if (t === 'github') loadRepos();
+  if (t === 'memory') S.memory = await call('memoryList');
+  if (t === 'scheduled') S.schedules = await call('scheduleList');
+  if (t === 'connectors') S.connectors = await call('connectorsList');
+  if (t === 'tools') { S.skills = (await call('skillsList', S.lastChat)) || []; }
+  render();
+}
+async function refreshMates() {
+  S.mates = (await call('teammatesStatus')) || S.mates;
+  S.mkeys = (await call('mediaKeys')) || S.mkeys;
+}
 async function setSettings(patch) {
   const r = await call('setSettings', patch);
   if (r && !r.message && r.tools) { S.settings = r; applyTheme(); }
   else if (r?.message) toast(r.message);
+  if (patch.teammates) await refreshMates();
   render();
 }
 
@@ -928,6 +1644,51 @@ function applyTheme() {
   set('hearth-css', follow ? S.theme.css || '' : '');
 }
 
+// ---------- roleplay helpers ----------
+function defaultPlayer(c) {
+  const L = TEAM_IDS.filter(ready).filter((a) => !AGENTS[a]?.imagesOnly);
+  if (ready('venice') && !c?.limits?.minor) return 'venice';
+  return L.includes(team().lead) ? team().lead : L.find((a) => !UNFILTERED.includes(a)) || L[0] || team().lead;
+}
+function pickFile(accept) {
+  return new Promise((res) => { const i = document.createElement('input'); i.type = 'file'; i.accept = accept; i.onchange = () => res(i.files?.[0] || null); i.click(); });
+}
+const fileUrl = (f) => new Promise((res) => { const r = new FileReader(); r.onload = () => res(String(r.result)); r.onerror = () => res(null); r.readAsDataURL(f); });
+async function afterImport(list) {
+  const good = list.filter((x) => x?.ok !== false && (x?.card || x?.lorebook));
+  const bad = list.filter((x) => x?.ok === false || x?.message);
+  await loadCards();
+  render();
+  const young = good.filter((x) => x.card?.limits?.minor).map((x) => x.card.name);
+  toast([good.length ? `Imported ${good.map((x) => x.card?.name || x.lorebook?.name).join(', ')}.` : '', young.length ? `${young.join(', ')} read${young.length === 1 ? 's' : ''} as under 18: stories only, nothing sexual.` : '', bad.map((x) => x.message).join(' ')].filter(Boolean).join(' ') || 'Nothing imported.');
+  if (good.length === 1 && good[0].card) { S.lastImport = good[0].card.id; }
+}
+function readCardForm() {
+  const c = S.cardEdit;
+  if (!c) return;
+  for (const el of document.querySelectorAll('[data-cf]')) {
+    const k = el.dataset.cf;
+    if (k === 'tags') c.tags = el.value.split(',').map((x) => x.trim()).filter(Boolean);
+    else if (k === 'alternate_greetings') c.alternate_greetings = el.value.split(/\n-{3,}\n/).map((x) => x.trim()).filter(Boolean);
+    else if (k === 'lorebooks') c.lorebooks = [...el.selectedOptions].map((o) => o.value);
+    else c[k] = el.value;
+  }
+}
+function readLoreForm() {
+  const b = S.loreEdit;
+  if (!b) return;
+  for (const el of document.querySelectorAll('[data-lf]')) b[el.dataset.lf] = el.type === 'number' ? Number(el.value) : el.value;
+  for (const el of document.querySelectorAll('[data-le]')) {
+    const e = b.entries[Number(el.dataset.le)];
+    if (!e) continue;
+    const k = el.dataset.k;
+    if (k === 'keys') e.keys = el.value.split(',').map((x) => x.trim()).filter(Boolean);
+    else if (el.type === 'checkbox') e[k] = el.checked;
+    else if (el.type === 'number') e[k] = Number(el.value);
+    else e[k] = el.value;
+  }
+}
+
 // ---------- events ----------
 function popAt(el, kind, extra = {}) {
   const r = el.getBoundingClientRect();
@@ -935,6 +1696,9 @@ function popAt(el, kind, extra = {}) {
   const up = below < 520 && r.top > below;
   S.pop = { kind, x: Math.max(8, Math.min(r.left, window.innerWidth - 440)), ...(up ? { b: window.innerHeight - r.top + 8, maxH: r.top - 16 } : { y: r.bottom + 6, maxH: below - 16 }), ...extra };
 }
+const msgById = (id) => S.msgs.find((x) => x.id === id);
+const mediaChat = (el) => el.closest('[data-msg]') ? S.open : (S.modal?.chatId || S.open);
+async function secretPrompt(label) { return window.prompt?.(`${label} (saved encrypted on this PC):`) || null; }
 
 document.addEventListener('click', async (ev) => {
   const a = ev.target.closest('[data-a]');
@@ -943,13 +1707,48 @@ document.addEventListener('click', async (ev) => {
   if (!a) return;
   const d = a.dataset;
   const k = d.a;
-  if (a.tagName === 'SELECT') return;
+  if (a.tagName === 'SELECT' || a.tagName === 'INPUT') return;
+  if (a.tagName === 'A' && a.getAttribute('target') === '_blank') return;
   ev.preventDefault();
   switch (k) {
     case 'new-chat': return goHome();
-    case 'settings': S.view = 'settings'; S.pane = null; render(true); if (S.tab === 'data') { loadCopies(); S.boards = await call('savedBoards'); render(); } return;
-    case 'tab': S.tab = d.t; render(); if (d.t === 'data') { loadCopies(); S.boards = await call('savedBoards'); render(); } if (d.t === 'accounts' || d.t === 'team') refreshAgents(); if (d.t === 'github') loadRepos(); return;
-    case 'chat-menu': ev.stopPropagation(); { const r = a.getBoundingClientRect(); S.pop = { kind: 'menu', id: d.id, x: Math.min(r.left, window.innerWidth - 260), y: Math.min(r.bottom + 4, window.innerHeight - 330) }; } return renderOverlay();
+    // roleplay: characters, lorebooks, persona
+    case 'characters': S.view = 'characters'; S.cardEdit = null; S.loreEdit = null; S.pane = null; render(true); await loadCards(); return render();
+    case 'lorebooks': S.view = 'lorebooks'; S.loreEdit = null; render(true); S.books = (await call('loreList')) || []; return render();
+    case 'card-import': { const r = await call('cardsPick'); return afterImport(r || []); }
+    case 'card-new': S.cardEdit = { name: '', tags: [], alternate_greetings: [], lorebooks: [] }; S.view = 'card'; return render(true);
+    case 'card-edit': S.cardEdit = JSON.parse(JSON.stringify(cardById(d.id) || {})); S.view = 'card'; return render(true);
+    case 'card-pic': { readCardForm(); const f = await pickFile('image/png,image/jpeg,image/webp'); if (f) { const url = await fileUrl(f); S.cardEdit.avatarData = url; S.cardEdit.avatarUrl = url; } return render(); }
+    case 'card-save': { readCardForm(); const c = S.cardEdit; if (!String(c.name || '').trim()) return toast('Give the character a name.'); const r = await call('cardsSave', c); if (r?.ok === false || r?.message) return toast(r.message || 'Not saved.'); toast(`Saved ${r.name}.`); await loadCards(); S.cardEdit = null; S.view = 'characters'; return render(true); }
+    case 'card-export': { const r = await call('cardsExport', d.id, d.f); if (r?.ok) toast(`Exported to ${r.file}.`); else if (r && !r.cancelled) toast(r.message || 'Not exported.'); return; }
+    case 'card-chat': { const c = cardById(d.id); if (!c) return; const pl = defaultPlayer(c); S.modal = { kind: 'rpstart', chars: [c.id], players: { [c.id]: pl }, order: 'natural', lorebooks: [] }; return renderOverlay(); }
+    case 'lore-from-card': { const r = await call('loreFromCard', d.id); if (r?.ok) { toast(`Copied to Lorebooks as “${r.book.name}”.`); S.books = (await call('loreList')) || []; render(); } else toast(r?.message || 'Not copied.'); return; }
+    case 'lore-new': S.loreEdit = { name: 'New lorebook', scan_depth: 4, token_budget: 1024, entries: [] }; return render(true);
+    case 'lore-edit': S.loreEdit = JSON.parse(JSON.stringify((S.books || []).find((b) => b.id === d.id) || {})); return render(true);
+    case 'lore-add-entry': readLoreForm(); S.loreEdit.entries = [...(S.loreEdit.entries || []), { name: '', keys: [], content: '', insertion_order: 100, constant: false, enabled: true }]; return render();
+    case 'lore-del-entry': readLoreForm(); S.loreEdit.entries.splice(Number(d.i), 1); return render();
+    case 'lore-save': { readLoreForm(); const r = await call('loreSave', S.loreEdit); if (r?.ok === false || r?.message) return toast(r.message || 'Not saved.'); toast(`Saved ${r.name}.`); S.loreEdit = null; S.books = (await call('loreList')) || []; return render(true); }
+    case 'lore-import': { const f = await pickFile('application/json,.json'); if (!f) return; const r = await call('loreImport', f.name, await f.arrayBuffer()); if (r?.ok === false || r?.message) toast(r.message || 'Not imported.'); else toast(`Imported ${r.name} (${r.entries.length} entries).`); S.books = (await call('loreList')) || []; return render(); }
+    case 'lore-export': { const r = await call('loreExport', d.id); if (r?.ok) toast(`Exported to ${r.file}.`); else if (r && !r.cancelled) toast(r.message || 'Not exported.'); return; }
+    case 'lore-remove': await call('loreRemove', d.id); S.books = (await call('loreList')) || []; return render();
+    case 'persona-edit': S.modal = { kind: 'persona', ...(S.persona || {}) }; return renderOverlay();
+    case 'persona-pic': { S.modal.name = document.getElementById('pe-name')?.value ?? S.modal.name; S.modal.description = document.getElementById('pe-desc')?.value ?? S.modal.description; const f = await pickFile('image/png,image/jpeg,image/webp'); if (f) { const url = await fileUrl(f); S.modal.avatarData = url; S.modal.avatarUrl = url; } return renderOverlay(); }
+    case 'persona-save': { const r = await call('rpSetPersona', { name: document.getElementById('pe-name')?.value || '', description: document.getElementById('pe-desc')?.value || '', ...(S.modal.avatarData ? { avatarData: S.modal.avatarData } : {}) }); S.modal = null; if (r?.ok === false || r?.message) toast(r.message || 'Not saved.'); else S.persona = r; return render(); }
+    case 'rp-start-do': return startRoleplay(S.modal);
+    case 'rp-reply-as': { const R = cur(); if (!R || R.round) return toast('Wait for the current reply.'); runner.start(R, '', { char: d.id }); return; }
+    case 'rp-impersonate': { const R = cur(); if (!R || R.round) return toast('Wait for the current reply.'); runner.start(R, '', { impersonate: true }); return; }
+    case 'rp-continue': { const R = cur(); if (!R || R.round) return; runner.start(R, '', { cont: d.m }); return; }
+    case 'rp-swipe': return rpSwipe(d.m, Number(d.d) === 99 ? 999 : Number(d.d));
+    case 'rp-edit-save': { const m = msgById(d.m); const v = document.getElementById('edit-text')?.value; if (m && typeof v === 'string') { m.text = v; if (Array.isArray(m.swipes)) m.swipes[m.sw ?? 0] = v; } S.editing = null; await save(); return render(); }
+    case 'rp-vn': { const R = cur(); if (R) R.vn = !R.vn; return render(true); }
+    case 'rp-picture': S.modal = { kind: 'rppic', chatId: S.open }; return renderOverlay();
+    case 'rp-pic-do': { const m = S.modal; const R = rt(m.chatId); const kind = document.querySelector('input[name="rpk"]:checked')?.value || 'portrait'; const ids = [...document.querySelectorAll('.rpc:checked')].map((x) => x.value); const note = document.getElementById('rp-note')?.value || ''; const provider = document.getElementById('rp-maker')?.value || ''; S.modal = null; renderOverlay(); R.busy = { agent: provider, role: 'member', runId: `pic${uid()}`, steps: [{ kind: 'image', label: kind === 'scene' ? 'Making a scene picture' : 'Making a portrait', detail: aiName(provider) }], startedAt: Date.now() }; render(); const r = await call('rpImage', m.chatId, { kind, cardIds: ids, note, provider }); R.busy = null; runner.post(R, r?.ok ? { who: provider, text: `${kind === 'scene' ? 'Scene' : 'Portrait'}${note ? `: ${note}` : ''}`, via: r.via, media: r.items || [] } : r?.error?.kind === 'minor' || r?.error?.kind === 'real' ? { who: 'system', block: true, text: r.error.message } : { who: provider, err: true, text: r?.error?.message || r?.message || 'No picture came back.' }); await saveRt(R); return render(); }
+    case 'temp-chat': return startTemp();
+    case 'temp-end': ev.stopPropagation(); return endTemp(d.id);
+    case 'habitat': S.view = 'habitat'; S.pane = null; S.pop = null; if (!S.habitat) { const h = await call('habitatGet'); S.habitat = h?.store || null; } return render(true);
+    case 'settings': S.view = 'settings'; S.pane = null; render(true); return loadSection(S.tab);
+    case 'tab': S.tab = d.t; render(); return loadSection(d.t);
+    case 'chat-menu': ev.stopPropagation(); { const r = a.getBoundingClientRect(); S.pop = { kind: 'menu', id: d.id, x: Math.min(r.left, window.innerWidth - 260), y: Math.min(r.bottom + 4, window.innerHeight - 400) }; } return renderOverlay();
     case 'chat-act': return chatAction(d.k, d.id);
     case 'close-pop': S.pop = null; S.pickRepo = null; S.pickBranch = null; return renderOverlay();
     case 'close-modal': S.modal = null; return renderOverlay();
@@ -959,41 +1758,72 @@ document.addEventListener('click', async (ev) => {
     case 'unhide': await call('chatsUpdate', d.id, { hidden: false }); await loadChats(); return render();
     case 'restore': { const r = await call('chatsRestore', d.id); if (r?.ok === false || r?.message) toast(r.message || 'Not restored.'); await loadChats(); return render(); }
     case 'undo': { const u = S.toast?.undo; S.toast = null; if (u?.kind === 'restore') { await call('chatsRestore', u.trashId); await loadChats(); render(); toast('Restored.'); } return renderOverlay(); }
-    case 'repo-pop': S.pick = null; S.repoQuery = ''; S.pickRepo = null; S.pickBranch = null; popAt(a, 'repo', { chatId: S.view === 'chat' ? S.open : null }); renderOverlay(); await loadRepos(); { const c = S.view === 'chat' ? entry() : null; const cur = c?.repo || S.conn?.repo || S.repos?.[0]?.full; if (cur) loadBranches(cur); } return;
+    case 'repo-pop': S.pick = null; S.repoQuery = ''; S.pickRepo = null; S.pickBranch = null; popAt(a, 'repo', { chatId: S.view === 'chat' ? S.open : null }); renderOverlay(); await loadRepos(); { const c = S.view === 'chat' ? entry() : null; const cr = c?.repo || S.conn?.repo || S.repos?.[0]?.full; if (cr) loadBranches(cr); } return;
     case 'pick-repo': S.pickRepo = d.r; S.pickBranch = null; S.pop.noFocus = true; renderOverlay(); await loadBranches(d.r); return;
     case 'connect-repo': { const c = S.pop?.chatId ? entry(S.pop.chatId) : S.view === 'chat' ? entry() : null; const sel = S.pickRepo || c?.repo || S.conn?.repo || (S.repos || [])[0]?.full; const b = document.getElementById('branch-sel')?.value || null; S.pickRepo = null; return chooseRepo(sel, b); }
     case 'no-repo': S.pickRepo = null; return chooseRepo(null, null);
     case 'team-pop': popAt(a, 'team', { top: a.classList.contains('tb') }); return renderOverlay();
+    case 'options-pop': popAt(a, 'options'); return renderOverlay();
     case 'set-mode': S.mode = d.v; S.pop = null; return render();
     case 'toggle-web': S.web = !S.web; return render();
     case 'toggle-build': S.build = !S.build; return render();
-    case 'toggle-pane': if (S.pane) { S.pane = null; } else { const m = [...S.msgs].reverse().find((x) => x.previews?.length); if (m) return openPane(m.id, m.previews[0].id); toast('No live preview in this chat yet.'); } return render();
+    case 'toggle-deep': S.deep = !S.deep; if (S.deep) S.web = true; S.pop = null; return render();
+    case 'toggle-talk': S.talk = !S.talk; S.pop = null; if (!S.talk) stopSpeaking(); return render();
+    case 'toggle-pane': if (S.pane) { S.pane = null; } else { const m = [...S.msgs].reverse().find((x) => x.previews?.length); if (m) return openPane(m.id, m.previews[0].id); toast('No live preview or canvas in this chat yet.'); } return render();
     case 'attach': { const r = await call('attachPickAny'); for (const x of r || []) { if (x?.ok) S.attach.push(x.att); else if (x?.message) toast(x.message); } return render(); }
     case 'unattach': S.attach.splice(Number(d.i), 1); return render();
     case 'voice': return toggleVoice();
     case 'send': return send();
     case 'stop': return stopRun();
+    case 'follow': { const m = msgById(d.m); const f = m?.followUps?.[Number(d.i)]; if (f) send(f); return; }
     case 'quick': { const q = QUICK[Number(d.i)]; S.draft = q[2]; render(); focusComposer(); return; }
     case 'dismiss': S.notices.splice(Number(d.i), 1); return render();
-    case 'open-data': S.view = 'settings'; S.tab = 'data'; render(); loadCopies(); S.boards = await call('savedBoards'); return render();
+    case 'open-data': S.view = 'settings'; S.tab = 'data'; render(); return loadSection('data');
+    // message controls
+    case 'msg-copy': { const m = msgById(d.m); if (m) { try { await navigator.clipboard.writeText(String(m.text || '')); toast('Copied.'); } catch { toast('Couldn\'t copy.'); } } return; }
+    case 'msg-read': return readAloud(msgById(d.m));
+    case 'msg-retry': return regenerate(d.m);
+    case 'msg-edit': S.editing = d.m; return render();
+    case 'edit-cancel': S.editing = null; return render();
+    case 'edit-send': return resendEdited(d.m, document.getElementById('edit-text')?.value || '');
+    case 'ver': return switchVersion(d.m, Number(d.d));
+    case 'branch': return switchBranch(d.m, Number(d.d));
+    case 'copy-code': { const code = a.closest('.codeblock')?.querySelector('code')?.innerText || ''; try { await navigator.clipboard.writeText(code); a.textContent = 'Copied'; setTimeout(() => { a.textContent = 'Copy'; }, 1500); } catch { toast('Couldn\'t copy.'); } return; }
+    case 'code-canvas': return codeToCanvas(a);
+    // pictures, videos, files
+    case 'lightbox': S.modal = { kind: 'lightbox', src: d.src, file: d.f || null, name: d.n || '', chatId: S.open }; return renderOverlay();
+    case 'media-save': { const r = await call('mediaSave', mediaChat(a), d.f, d.n); if (r?.ok) toast(`Saved ${r.file}.`); else if (r && !r.cancelled) toast(r.message || 'Not saved.'); return; }
+    case 'media-open': { const r = await call('mediaOpen', mediaChat(a), d.f); if (r && !r.ok) toast(r.message || 'Couldn\'t open it.'); return; }
+    case 'media-repo': { const c = entry(mediaChat(a)); if (!c?.repo && !c?.repoDir) return toast('Connect this chat to a repo first (the repo chip above the box).'); S.modal = { kind: 'mediarepo', chatId: c.id, file: d.f, name: d.n, path: `assets/${d.n}` }; return renderOverlay(); }
+    case 'load-remote': { const msgEl = a.closest('[data-msg]'); const m = msgById(msgEl?.dataset.msg); a.disabled = true; a.textContent = 'Loading…'; const r = await call('mediaFetchRemote', S.open, d.url); if (r?.ok && r.item && m) { m.media = [...(m.media || []), r.item]; await save(); render(); } else toast(r?.message || 'Couldn\'t load that picture.'); return; }
+    // previews and the canvas
     case 'open-preview': return openPane(d.m, d.p);
-    case 'open-preview-name': { const m = a.closest('[data-msg]'); const msg = S.msgs.find((x) => x.id === m?.dataset.msg); const p = msg?.previews?.find((x) => x.name === d.name); if (p) openPane(msg.id, p.id); return; }
+    case 'open-canvas': return openPane(d.m, d.p, 'canvas');
+    case 'open-preview-name': { const m = a.closest('[data-msg]'); const msg = msgById(m?.dataset.msg); const p = msg?.previews?.find((x) => x.name === d.name); if (p) openPane(msg.id, p.id); return; }
     case 'download-preview': { const p = previewOf(d.m, d.p); if (p) { const r = await call('previewDownload', p.name, p.content); if (r === null) { const blob = new Blob([p.content], { type: 'text/plain' }); const u = URL.createObjectURL(blob); const l = document.createElement('a'); l.href = u; l.download = p.name; l.click(); URL.revokeObjectURL(u); } else if (r?.ok) toast(`Saved ${r.file}.`); } return; }
     case 'save-preview': return savePreviewToRepo(d.m, d.p);
-    case 'saveto-do': { const m = S.modal; const p = previewOf(m.msgId, m.pid); const rel = document.getElementById('saveto-path')?.value || m.path; S.modal = null; const r = await call('chatSaveFile', S.open, rel, p?.content || ''); toast(r?.ok ? `Saved ${r.path} in the chat's branch (committed as you). Push or open a pull request to put it on GitHub.` : r?.message || 'Not saved.'); if (r?.ok) S.copy = await call('copiesStatus', S.open); return render(); }
+    case 'saveto-do': { const m = S.modal; const rel = document.getElementById('saveto-path')?.value || m.path; S.modal = null; let r; if (m.kind === 'mediarepo') r = await call('mediaToRepo', m.chatId, m.file, rel); else { const p = previewOf(m.msgId, m.pid); r = await call('chatSaveFile', S.open, rel, p?.content || ''); } toast(r?.ok ? `Saved ${r.path || rel} in the chat's branch (committed as you). Push or open a pull request to put it on GitHub.` : r?.message || 'Not saved.'); if (r?.ok && S.open) { const R = cur(); if (R) R.copy = await call('copiesStatus', S.open); } return render(); }
     case 'pane-tab': S.pane.tab = d.t; return renderPane(true);
     case 'pane-reload': S.pane.n = (S.pane.n || 0) + 1; return renderPane(true);
-    case 'pane-close': S.pane = null; return render();
+    case 'pane-close': S.pane = null; { const R = cur(); if (R) R.canvas = null; } return render();
+    case 'canvas-save': { const p = previewOf(S.pane.msgId, S.pane.pid); const v = document.getElementById('canvas-text')?.value; if (p && typeof v === 'string' && v !== p.content) { p.versions = [...(p.versions || []), p.content].slice(-10); p.content = v; await save(); const tab = S.pane.tab; await openPane(S.pane.msgId, S.pane.pid, tab); toast('Saved this version in the chat.'); } return; }
+    case 'canvas-ask': { const p = previewOf(S.pane.msgId, S.pane.pid); const v = document.getElementById('canvas-text')?.value; if (p && typeof v === 'string' && v !== p.content) { p.versions = [...(p.versions || []), p.content].slice(-10); p.content = v; await save(); } const R = cur(); if (R) R.canvas = { msgId: S.pane.msgId, pid: S.pane.pid }; render(); focusComposer(); return; }
     case 'card-diff': return cardAction('diff', d.m);
     case 'card-push': return cardAction('push', d.m);
     case 'card-pr': return cardAction('pr', d.m);
     case 'card-merge': return cardAction('merge', d.m);
-    case 'fix-failure': { const m = S.msgs.find((x) => x.id === d.m); const f = m?.actions?.failure; S.draft = `GitHub Actions failed on ${m?.actions?.branch}${f?.job ? ` (${f.job.name}${f.job.step ? ` › ${f.job.step}` : ''})` : ''}. Fix it and push again.${f?.annotations?.length ? `\n\nErrors:\n${f.annotations.slice(0, 8).map((x) => `- ${x.path}${x.line ? `:${x.line}` : ''} ${x.message}`).join('\n')}` : ''}`; render(); focusComposer(); return; }
+    case 'fix-failure': { const m = msgById(d.m); const f = m?.actions?.failure; S.draft = `GitHub Actions failed on ${m?.actions?.branch}${f?.job ? ` (${f.job.name}${f.job.step ? ` › ${f.job.step}` : ''})` : ''}. Fix it and push again.${f?.annotations?.length ? `\n\nErrors:\n${f.annotations.slice(0, 8).map((x) => `- ${x.path}${x.line ? `:${x.line}` : ''} ${x.message}`).join('\n')}` : ''}`; render(); focusComposer(); return; }
     case 'act-yes': return decideAct(d.id, true);
     case 'act-no': return decideAct(d.id, false);
+    case 'memo-yes': return decideMemo(d.m, d.id, true);
+    case 'memo-no': return decideMemo(d.m, d.id, false);
+    case 'export-do': { const id = S.modal?.chatId; S.modal = null; renderOverlay(); if (id) await exportChat(id, d.f); return; }
+    case 'know-add': { const r = await call('attachPickAny'); for (const x of r || []) { if (x?.ok) S.modal.refs.push({ name: x.att.name, path: x.att.path, kind: x.att.kind }); else if (x?.message) toast(x.message); } S.modal.instructions = document.getElementById('know-text')?.value ?? S.modal.instructions; return renderOverlay(); }
+    case 'know-unref': S.modal.instructions = document.getElementById('know-text')?.value ?? S.modal.instructions; S.modal.refs.splice(Number(d.i), 1); return renderOverlay();
+    case 'know-save': { const m = S.modal; const r = await call('chatsKnowledge', m.chatId, { instructions: document.getElementById('know-text')?.value || '', refs: m.refs }); S.modal = null; if (r?.ok === false || r?.message) toast(r.message || 'Not saved.'); else toast('Saved. Every AI in this chat gets them from the next message.'); await loadChats(); return render(); }
     case 'unpushed-push': { const m = S.modal; S.modal = null; render(); const r = await call('chatPush', m.chatId); if (!r?.ok) return toast(r?.message || 'Not pushed.'); toast(`Pushed ${r.branch}. Your work is safe on GitHub.`); if (m.then === 'delete') return deleteChat(m.chatId); if (m.then === 'connect') { S.pop = { chatId: m.chatId }; return chooseRepo(m.conn?.repo || null, m.conn?.branch || null); } return closeCopy(m.chatId); }
     case 'unpushed-force': { const m = S.modal; S.modal = null; render(); if (m.then === 'delete') return deleteChat(m.chatId, { force: true }); const r = await call('copiesRemove', m.chatId, true); if (!r?.ok) { if (!r?.cancelled) toast(r?.message || 'Kept.'); return; } if (m.then === 'connect') { S.pop = { chatId: m.chatId }; return chooseRepo(m.conn?.repo || null, m.conn?.branch || null); } await loadChats(); if (S.copies) await loadCopies(); return render(); }
-    // settings
+    // settings (each one only from the owner's own click)
     case 'team-member': { const t = team(); const v = d.v; const members = t.members.includes(v) ? t.members.filter((x) => x !== v) : [...t.members, v]; return setSettings({ team: { ...t, members, reviewer: t.reviewer === v && !members.includes(v) ? null : t.reviewer } }); }
     case 'make-lead': { const t = team(); return setSettings({ team: { ...t, lead: d.v, reviewer: t.reviewer === d.v ? t.lead : t.reviewer } }); }
     case 'make-reviewer': return setSettings({ team: { ...team(), reviewer: d.v } });
@@ -1007,13 +1837,35 @@ document.addEventListener('click', async (ev) => {
     case 'theme': return setSettings({ theme: d.v });
     case 'text-size': return setSettings({ textSize: Number(d.v) });
     case 'reduce-motion': return setSettings({ reduceMotion: !S.settings.reduceMotion });
+    case 'notify-toggle': return setSettings({ notify: S.settings.notify === false });
+    case 'auto-read': return setSettings({ autoRead: !S.settings.autoRead });
+    case 'save-ci': return setSettings({ customInstructions: { about: document.getElementById('ci-about')?.value || '', style: document.getElementById('ci-style')?.value || '' } });
+    case 'civitai-fields': return setSettings({ teammates: { civitai: { fields: document.getElementById('civitai-fields')?.value || '' } } });
     case 'edit-identity': S.editIdentity = !S.editIdentity; return render();
     case 'save-identity': { const name = document.getElementById('id-name')?.value; const email = document.getElementById('id-email')?.value; S.editIdentity = false; await setSettings({ ownerIdentity: { name, email } }); await call('opsIdentityApply'); return; }
     case 'gh-login': { const r = await call('gitLogin'); toast(r?.ok ? 'GitHub sign-in opened in a terminal. Come back and press Re-check when done.' : r?.message || 'Couldn\'t start the sign-in.'); setTimeout(async () => { S.gh = (await call('gitTools')) || S.gh; S.repos = null; render(); }, 20000); return; }
     case 'install': { const r = await call('agentInstall', d.v); toast(r?.ok ? 'Installing in a terminal. Press Re-check when it\'s done.' : r?.message || 'Couldn\'t start the install.'); return; }
     case 'signin': { const r = await call('agentLogin', d.v); toast(r?.ok ? 'Sign-in opened in a terminal. Press Re-check when done.' : r?.message || 'Couldn\'t start the sign-in.'); return; }
     case 'recheck': S.cli[d.v] = (await call('agentStatus', d.v)) || {}; return render();
-    case 'set-key': { const key = window.prompt?.(`Paste your ${aiName(d.v)} API key (saved encrypted on this PC):`); if (key) { const r = await call('setKey', d.v, key); if (r?.ok === false) toast(r.message); S.prov = (await call('providerStatus')) || S.prov; render(); } return; }
+    case 'set-key': { const key = await secretPrompt(`Paste your ${aiName(d.v)} API key`); if (key) { const r = await call('setKey', d.v, key); if (r?.ok === false) toast(r.message); S.prov = (await call('providerStatus')) || S.prov; render(); } return; }
+    case 'media-key': { const key = await secretPrompt(`Paste your ${MEDIA_KEYS.find((x) => x[0] === d.v)?.[1] || 'API key'}`); if (key) { const r = await call('mediaSetKey', d.v, key); if (r?.ok === false) toast(r.message); await refreshMates(); render(); } return; }
+    case 'media-unkey': await call('mediaRemoveKey', d.v); await refreshMates(); return render();
+    case 'mate-key': { const key = await secretPrompt(`Paste your ${aiName(d.v)} ${d.v === 'civitai' ? 'API token' : 'API key'}`); if (key) { const r = await call('teammatesSetKey', d.v, key); if (r?.ok === false) toast(r.message); await refreshMates(); render(); } return; }
+    case 'mate-unkey': await call('teammatesRemoveKey', d.v); await refreshMates(); return render();
+    case 'server-add': { const v = (id) => document.getElementById(id)?.value || ''; const r = await call('teammatesAddServer', { name: v('sv-name'), type: v('sv-type'), url: v('sv-url'), model: v('sv-model').trim(), key: v('sv-key'), workflow: v('sv-workflow').trim() }); if (r?.ok === false || r?.message) toast(r.message || 'Not added.'); else toast(`Added ${r.name}. Turn on “Your GPU server” in Settings › AI team to use it.`); await refreshMates(); return render(); }
+    case 'server-remove': await call('teammatesRemoveServer', d.id); await refreshMates(); return render();
+    case 'mem-add': { const v = document.getElementById('mem-new')?.value || ''; const r = await call('memoryAdd', v); if (r?.ok === false || r?.message) toast(r.message || 'Not saved.'); S.memory = await call('memoryList'); return render(); }
+    case 'mem-edit': S.memEdit = d.id; return render();
+    case 'mem-cancel': S.memEdit = null; return render();
+    case 'mem-save': { const r = await call('memoryUpdate', d.id, document.getElementById('mem-edit')?.value || ''); if (r?.ok === false || r?.message) toast(r.message || 'Not saved.'); S.memEdit = null; S.memory = await call('memoryList'); return render(); }
+    case 'mem-del': await call('memoryRemove', d.id); S.memory = await call('memoryList'); return render();
+    case 'mem-decide': await call('memoryDecide', d.id, d.v === '1'); S.memory = await call('memoryList'); return render();
+    case 'sched-add': { const v = (id) => document.getElementById(id)?.value || ''; const kind = v('sc-kind'); const days = [...document.querySelectorAll('.sc-day:checked')].map((x) => Number(x.value)); const r = await call('scheduleAdd', { prompt: v('sc-prompt'), chatId: v('sc-chat'), kind, time: v('sc-time'), at: v('sc-at') ? new Date(v('sc-at')).toISOString() : '', days }); if (r?.ok === false || r?.message) toast(r.message || 'Not created.'); else toast('Scheduled. It runs while the app is open.'); S.schedules = await call('scheduleList'); return render(); }
+    case 'sched-toggle': { const x = S.schedules?.list?.find((y) => y.id === d.id); if (x) await call('scheduleUpdate', d.id, { enabled: !x.enabled }); S.schedules = await call('scheduleList'); return render(); }
+    case 'sched-del': await call('scheduleRemove', d.id); S.schedules = await call('scheduleList'); return render();
+    case 'conn-add': { const v = (id) => document.getElementById(id)?.value || ''; const type = v('cn-type'); const pairs = Object.fromEntries(v('cn-secrets').split('\n').map((l) => l.trim()).filter((l) => l.includes('=')).map((l) => [l.slice(0, l.indexOf('=')).trim(), l.slice(l.indexOf('=') + 1).trim()])); const words = v('cn-command').trim().split(/\s+/).filter(Boolean); const r = await call('connectorsAdd', { name: v('cn-name').trim(), type, command: words[0] || '', args: words.slice(1), url: v('cn-url').trim(), ...(type === 'http' ? { headers: pairs } : { env: pairs }) }); if (r?.ok === false || r?.message) toast(r.message || 'Not added.'); else toast(`Added ${r.name}. The AIs can use it from the next message.`); S.connectors = await call('connectorsList'); return render(); }
+    case 'conn-toggle': { const x = S.connectors?.list?.find((y) => y.id === d.id); if (x) await call('connectorsEnable', d.id, !x.enabled); S.connectors = await call('connectorsList'); return render(); }
+    case 'conn-del': await call('connectorsRemove', d.id); S.connectors = await call('connectorsList'); return render();
     case 'phone-toggle': S.phone = await call(S.phone?.enabled ? 'opsPhoneDisable' : 'opsPhoneEnable'); render(); pushPhone(); return;
     case 'phone-code': { const r = await call('opsPhoneNewCode'); S.phone = { ...(S.phone || {}), ...(r || {}) }; return render(); }
     case 'upd': { const fn = { check: 'checkForUpdates', download: 'downloadUpdate', install: 'installUpdate', restart: 'restartApp' }[d.v]; const r = await call(fn); if (r?.ok === false && r.message) toast(r.message); return; }
@@ -1029,7 +1881,24 @@ document.addEventListener('click', async (ev) => {
 document.addEventListener('change', (ev) => {
   const t = ev.target;
   if (t.matches?.('[data-a="idle-hours"]')) setSettings({ copyIdleHours: Number(t.value) });
+  if (t.matches?.('[data-a="max-chats"]')) setSettings({ maxChats: Number(t.value) });
+  if (t.matches?.('[data-a="venice-model"]')) setSettings({ teammates: { venice: { model: t.value } } });
+  if (t.matches?.('[data-a="venice-image"]')) setSettings({ teammates: { venice: { imageModel: t.value } } });
+  if (t.matches?.('[data-a="civitai-engine"]')) setSettings({ teammates: { civitai: { engine: t.value } } });
+  if (t.matches?.('[data-a="pick-model"]')) {
+    // A model per AI for this chat: kept with the chat's own data, never in settings.
+    const R = S.view === 'chat' ? cur() : null;
+    if (R) { R.sessions._models = { ...(R.sessions._models || {}), [t.dataset.v]: t.value }; save(); } else S.homeModels = { ...S.homeModels, [t.dataset.v]: t.value };
+    renderMain();
+  }
   if (t.id === 'branch-sel') S.pickBranch = t.value;
+  if (S.modal?.kind === 'rpstart') {
+    const m = S.modal;
+    if (t.matches('[data-a="rp-toggle"]')) { const id = t.dataset.id; if (t.checked) { m.chars.push(id); m.players[id] = defaultPlayer(cardById(id)); } else m.chars = m.chars.filter((x) => x !== id); renderOverlay(); }
+    if (t.matches('[data-a="rp-player"]')) m.players[t.dataset.id] = t.value;
+    if (t.matches('[data-a="rp-order"]')) m.order = t.value;
+    if (t.matches('[data-a="rp-lore"]')) m.lorebooks = t.checked ? [...m.lorebooks, t.dataset.id] : m.lorebooks.filter((x) => x !== t.dataset.id);
+  }
 });
 
 let searchTimer = null;
@@ -1044,14 +1913,16 @@ document.addEventListener('input', (ev) => {
     searchTimer = setTimeout(async () => { const r = await call('chatsSearch', S.search); S.hits = Array.isArray(r) ? new Set([...r.map((x) => x.id), ...S.chats.filter((c) => `${c.title} ${c.repo || ''}`.toLowerCase().includes(S.search.toLowerCase())).map((c) => c.id)]) : null; renderSide(); }, 250);
     return;
   }
+  if (t.id === 'card-q') { S.cardQuery = t.value; const el = t; const pos = el.selectionStart; renderMain(); const n = document.getElementById('card-q'); if (n) { n.focus(); n.setSelectionRange(pos, pos); } return; }
   if (t.id === 'repo-q') { S.repoQuery = t.value; S.pop.noFocus = false; renderOverlay(); }
 });
 
 document.addEventListener('keydown', (ev) => {
   const t = ev.target;
   if (t.id === 'composer' && ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); send(); return; }
+  if (t.id === 'edit-text' && ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); resendEdited(S.editing, t.value); return; }
   if (t.id === 'rename-input') { if (ev.key === 'Enter') { ev.preventDefault(); finishRename(true); } if (ev.key === 'Escape') finishRename(false); return; }
-  if (ev.key === 'Escape') { if (S.modal) { S.modal = null; renderOverlay(); } else if (S.pop) { S.pop = null; renderOverlay(); } }
+  if (ev.key === 'Escape') { if (S.modal) { S.modal = null; renderOverlay(); } else if (S.pop) { S.pop = null; renderOverlay(); } else if (S.editing) { S.editing = null; render(); } }
 });
 document.addEventListener('focusout', (ev) => { if (ev.target.id === 'rename-input') setTimeout(() => { if (S.renaming) finishRename(true); }, 120); });
 
@@ -1070,7 +1941,17 @@ document.addEventListener('paste', (ev) => {
   if (files.length) { ev.preventDefault(); addFiles(files); }
 });
 document.addEventListener('dragover', (ev) => { if (ev.dataTransfer?.types?.includes('Files')) ev.preventDefault(); });
-document.addEventListener('drop', (ev) => { if (ev.dataTransfer?.files?.length && S.view !== 'settings') { ev.preventDefault(); addFiles(ev.dataTransfer.files); } });
+document.addEventListener('drop', async (ev) => {
+  if (!ev.dataTransfer?.files?.length || S.view === 'settings') return;
+  ev.preventDefault();
+  // On the Characters and Lorebooks pages a dropped PNG or JSON is imported as a card or lorebook.
+  if (['characters', 'lorebooks', 'card'].includes(S.view)) {
+    const out = [];
+    for (const f of [...ev.dataTransfer.files].slice(0, 20)) { const r = await call(S.view === 'lorebooks' ? 'loreImport' : 'cardsImport', f.name, await f.arrayBuffer()); out.push(r && r.ok === false ? r : { ok: !r?.message, ...(S.view === 'lorebooks' ? { lorebook: r } : r), message: r?.message ? `${f.name}: ${r.message}` : undefined }); }
+    return afterImport(out);
+  }
+  addFiles(ev.dataTransfer.files);
+});
 
 // Drag a chat to reorder it within its group.
 let dragId = null;
@@ -1085,6 +1966,11 @@ document.addEventListener('drop', async (ev) => {
   if (ids) { await call('chatsReorder', ids); await loadChats(); renderSide(); }
 });
 document.addEventListener('dragend', () => { dragId = null; });
+
+// Code blocks get an "Open in canvas" button next to Copy (added after each render).
+new MutationObserver(() => {
+  for (const hd of document.querySelectorAll('.msg-a .cb-hd:not([data-cv])')) { hd.dataset.cv = '1'; const b = document.createElement('button'); b.className = 'mini'; b.dataset.a = 'code-canvas'; b.textContent = 'Open in canvas'; hd.appendChild(b); }
+}).observe(document.documentElement, { childList: true, subtree: true });
 
 window.addEventListener('resize', () => { fitComposer(); });
 
@@ -1111,12 +1997,24 @@ async function boot() {
     for (const n of b?.notices || []) if (!S.notices.includes(n)) S.notices.push(n);
     await loadChats();
     S.prov = (await call('providerStatus')) || S.prov;
+    await refreshMates();
+    await loadCards();
     S.upd = (await call('updaterInfo')) || S.upd;
     api.onUpdaterStatus?.((s) => { const prev = S.upd.status?.state; S.upd.status = s; if (s.state === 'available' && prev !== 'available') toast(`Update ${s.version} is available — see Settings › App updates.`); if (S.view === 'settings') render(); });
-    api.onChatStep?.((e) => { if (S.busy && e && e.runId === S.busy.runId && e.step) { S.busy.steps.push(e.step); renderMain(); } });
+    // Steps carry their chat: only that chat's runtime gets them, open or not.
+    api.onChatStep?.((e) => runner.onStep(e));
     api.onCopiesIdle?.((list) => { S.idle = Array.isArray(list) ? list : []; render(); });
     api.onCopiesRemoved?.(async () => { await loadChats(); renderSide(); });
     api.onOpsPhoneAction?.((a) => onPhone(a));
+    api.onNotifyOpen?.((id) => { if (id && entry(id)) openChat(id); });
+    // A scheduled task posted into a chat: reload that chat's messages (unless its team is working).
+    api.onChatExternal?.(async (e) => {
+      const R = e?.chatId ? runner.runtimes.get(e.chatId) : null;
+      if (R && !R.round) { R.loaded = false; await loadRt(e.chatId); if (S.open !== e.chatId) R.unseen = true; }
+      await loadChats();
+      render();
+      if (e?.scheduled) { toast(`Scheduled task ran in “${e.title || 'a chat'}”.`); notify(rt(e.chatId), 'scheduled task ran'); }
+    });
     S.phone = await call('opsPhoneStatus');
   } catch (e) { toast(`Startup problem: ${cleanErr(e)}`); }
   let remembered = null;
