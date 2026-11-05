@@ -124,6 +124,8 @@ function normalSettings(s) {
     textSize: TEXT_SIZES.includes(s.textSize) ? s.textSize : 100,
     // Habitat page: characters stay in place. Off unless the owner turns it on (the OS setting also counts).
     reduceMotion: s.reduceMotion === true,
+    // Keys without a keyring: basic (weak) protection, only if the owner chose it. Off unless he does.
+    secretsBasic: s.secretsBasic === true,
     // Approval levels: the owner's moves between Routine and Major (owner-only stays owner-only).
     approvalLevels: cleanSavedLevels(s.approvalLevels),
     // Local AI may review code (with a 7B or larger model). Off unless the owner turns it on.
@@ -484,6 +486,7 @@ function registerIpc() {
       s.textSize = patch.textSize;
     }
     if ('reduceMotion' in patch) s.reduceMotion = patch.reduceMotion === true;
+    if ('secretsBasic' in patch) s.secretsBasic = patch.secretsBasic === true;
     if ('approvalLevels' in patch) s.approvalLevels = cleanSavedLevels(patch.approvalLevels);
     if ('localReviewCode' in patch) s.localReviewCode = patch.localReviewCode === true;
     for (const k of ['leadMerge', 'leadRelease', 'leadTag']) if (k in patch) s[k] = patch[k] === true;
@@ -1121,9 +1124,11 @@ process.on('uncaughtException', (e) => {
   console.error('[hearth-ai] uncaught:', e?.message || e);
 });
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   Menu.setApplicationMenu(null);
-  secrets = createSecretStore({ safeStorage, dir: dataDir() });
+  secrets = createSecretStore({ safeStorage, dir: dataDir(), allowBasic: () => readSettings().secretsBasic === true });
+  // Decrypt saved keys once (async keyring API), so they can be read synchronously afterwards.
+  try { await secrets.load(); } catch (e) { console.error('[hearth-ai] keys:', e?.message || e); }
   // The active project's board (the data from before projects is the default project, in the same file).
   store = createStore(ops.stateFile(dataDir(), readSettings().project, readSettings().projects));
   binding.setActive(ops.activeProjectId());

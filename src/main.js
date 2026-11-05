@@ -1275,6 +1275,13 @@ const adultBox = (c) => {
   if (!c.limits?.canConfirmAdult) return c.limits?.hard ? `<div class="fine">The card itself says this character is under 18 (${esc(c.limits.minorWhy)}), so it stays stories only.</div>` : '';
   return `<div class="adult-box"><div class="fine">Flagged because ${esc(c.limits.minorWhy)}. If the character is actually an adult, confirm the age:</div><div class="row"><input type="number" id="adult-age" min="18" max="999" value="${esc(Number(c.age) >= 18 ? c.age : 18)}" aria-label="Character's age"><button class="mini" data-a="card-adult">This character is an adult</button></div></div>`;
 };
+// No keyring on this PC: keys can't be encrypted. Say so plainly, and offer basic protection
+// only as the owner's own choice (it is weak: the key file is protected only by file permissions).
+const keyringNote = () => {
+  if (S.prov?.encryption !== false && !S.prov?.weakEncryption) return '';
+  if (S.prov?.weakEncryption) return `<div class="note warn">${icon('shield', 'sm')}<div><b>Keys use basic protection.</b><div class="fine">This PC has no keyring, so saved keys are protected only by your user account's file permissions. To use real encryption, unlock or install GNOME Keyring or KWallet, then turn basic protection off and add your keys again.</div></div>${S.settings.secretsBasic ? '<button class="mini" data-a="secrets-basic" data-v="off">Turn off</button>' : ''}</div>`;
+  return `<div class="note warn">${icon('shield', 'sm')}<div><b>Keys can't be saved yet: this PC has no keyring.</b><div class="fine">The app encrypts keys with your desktop's keyring (GNOME Keyring, KWallet or the Secret portal), and none answered. Unlock or install one and press Re-check, or use basic protection: keys are then protected only by your user account's file permissions, which is weaker.</div></div><button class="mini" data-a="secrets-recheck">Re-check</button><button class="mini" data-a="secrets-basic" data-v="on">Use basic protection</button></div>`;
+};
 const limitBadge = (c) => (c.limits?.minor ? `<span class="chip b" title="${esc(c.limits.minorWhy)}">stories only · reads as under 18</span>` : c.limits?.real ? `<span class="chip b" title="${esc(c.limits.realWhy)}">real person · nothing sexual</span>` : '');
 function charactersView() {
   if (S.cards === null) return '<div class="col"><div class="fine">Loading…</div></div>';
@@ -1545,7 +1552,7 @@ function section(k) {
   if (k === 'accounts') {
     const M = S.mates;
     const c = M.conf || {};
-    return `<h1>Accounts</h1><div class="box"><h3>Your AI accounts</h3><p class="fine">Each AI signs in with your own account in its own official app. The Command Center never holds your passwords.</p>
+    return `<h1>Accounts</h1>${keyringNote()}<div class="box"><h3>Your AI accounts</h3><p class="fine">Each AI signs in with your own account in its own official app. The Command Center never holds your passwords.</p>
       ${TEAM_IDS.filter((a) => !TEAMMATE_IDS.includes(a)).map((a) => { const cl = S.cli[a] || {}; const isApi = method(a) === 'api'; const st = isApi ? (S.prov.keys?.[a] ? 'API key saved' : 'needs an API key') : !cl.installed ? 'not installed' : cl.signedIn === false ? 'not signed in' : cl.signedIn ? 'signed in' : 'installed'; return `<div class="srow">${mono(a)}<b>${esc(aiName(a))}</b><span class="d">${esc(AGENTS[a].tool)} · ${esc(st)}</span><span class="grow"></span>${isApi ? `<button class="mini" data-a="set-key" data-v="${a}">${S.prov.keys?.[a] ? 'Change key' : 'Add key'}</button>` : !cl.installed && a !== 'ollama' ? `<button class="mini" data-a="install" data-v="${a}">Install</button>` : cl.signedIn === false ? `<button class="mini" data-a="signin" data-v="${a}">Sign in</button>` : ''}<button class="mini" data-a="recheck" data-v="${a}">Re-check</button></div>`; }).join('')}</div>
       <div class="box"><h3>${icon('eye', 'sm')}Pictures, videos and documents</h3><p class="fine">The AIs' own picture and video tools through their official APIs, with your own keys (saved encrypted on this PC). Each use is billed to that account.</p>
       ${MEDIA_KEYS.map(([k2, label, what]) => `<div class="srow"><b>${esc(label)}</b><span class="d">${esc(what)} · ${S.mkeys.keys?.[k2] ? 'saved' : 'not added'}</span><span class="grow"></span><button class="mini" data-a="media-key" data-v="${k2}">${S.mkeys.keys?.[k2] ? 'Change' : 'Add key'}</button>${S.mkeys.keys?.[k2] ? `<button class="mini" data-a="media-unkey" data-v="${k2}">Remove</button>` : ''}</div>`).join('')}
@@ -2029,6 +2036,14 @@ document.addEventListener('click', async (ev) => {
     case 'install': { const r = await call('agentInstall', d.v); toast(r?.ok ? 'Installing in a terminal. Press Re-check when it\'s done.' : r?.message || 'Couldn\'t start the install.'); return; }
     case 'signin': { const r = await call('agentLogin', d.v); toast(r?.ok ? 'Sign-in opened in a terminal. Press Re-check when done.' : r?.message || 'Couldn\'t start the sign-in.'); return; }
     case 'recheck': S.cli[d.v] = (await call('agentStatus', d.v)) || {}; return render();
+    case 'secrets-recheck': { S.prov = (await call('providerStatus')) || S.prov; render(); return toast(S.prov.encryption ? 'A keyring answered: keys can be saved now.' : 'Still no keyring. Unlock or install GNOME Keyring or KWallet, or use basic protection.'); }
+    case 'secrets-basic': {
+      const on = d.v === 'on';
+      if (on && !confirm('Use basic protection for your keys? This PC has no keyring, so keys are then protected only by your user account\'s file permissions. Anyone who can read your files could read them.')) return;
+      const s2 = await call('setSettings', { secretsBasic: on }); if (s2 && !s2.message) S.settings = s2;
+      S.prov = (await call('providerStatus')) || S.prov; render();
+      return toast(on ? 'Basic protection is on. Add your keys again.' : 'Basic protection is off.');
+    }
     case 'set-key': { const key = await secretPrompt(`Paste your ${aiName(d.v)} API key`); if (key) { const r = await call('setKey', d.v, key); if (r?.ok === false) toast(r.message); S.prov = (await call('providerStatus')) || S.prov; render(); } return; }
     case 'media-key': { const key = await secretPrompt(`Paste your ${MEDIA_KEYS.find((x) => x[0] === d.v)?.[1] || 'API key'}`); if (key) { const r = await call('mediaSetKey', d.v, key); if (r?.ok === false) toast(r.message); await refreshMates(); render(); } return; }
     case 'media-unkey': await call('mediaRemoveKey', d.v); await refreshMates(); return render();
