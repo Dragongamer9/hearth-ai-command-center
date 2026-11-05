@@ -8,11 +8,16 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { createCopies, prePushHook, sourceOf } = require('../electron/copies.cjs');
 
+// Temp folders made by this file are removed when it finishes.
+const made = [];
+test.after(() => { for (const d of made) fs.rmSync(d, { recursive: true, force: true }); });
+
 const g = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8', env: { ...process.env, GIT_AUTHOR_NAME: 'Dragongamer9', GIT_AUTHOR_EMAIL: 'Dragongamer9@users.noreply.github.com', GIT_COMMITTER_NAME: 'Dragongamer9', GIT_COMMITTER_EMAIL: 'Dragongamer9@users.noreply.github.com' } }).trim();
 
 // Two "GitHub" repos as local bare repos, each with 3 commits on main.
 function fixture() {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hearth-copies-'));
+  made.push(tmp);
   const remotes = {};
   for (const name of ['Dragongamer9/alpha', 'Dragongamer9/beta']) {
     const bare = path.join(tmp, 'gh', `${name}.git`);

@@ -10,6 +10,10 @@ const steps = require('../electron/steps.cjs');
 const previews = require('../electron/previews.cjs');
 const { claudePolicy, cleanQuick } = require('../electron/v2.cjs');
 
+// Temp folders made by this file are removed when it finishes.
+const made = [];
+test.after(() => { for (const d of made) fs.rmSync(d, { recursive: true, force: true }); });
+
 const read = (p) => fs.readFileSync(path.join(__dirname, '..', p), 'utf8');
 
 test('steps from Claude Code stream-json tool uses', () => {
@@ -78,6 +82,7 @@ test('previews are served with their own CSP; network only when the owner allows
 
 test('previews written to .hearth-preview/ during the turn are picked up (and nothing else)', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hearth-pv-'));
+  made.push(dir);
   const d = path.join(dir, '.hearth-preview');
   fs.mkdirSync(d);
   fs.writeFileSync(path.join(d, 'page.html'), '<p>1</p>');

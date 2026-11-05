@@ -149,13 +149,14 @@ async function chatAction(kind, id) {
 
 async function deleteChat(id, opts = {}) {
   if (S.busy && S.open === id) return toast('Stop the AI first.');
+  const title = entry(id)?.title || 'chat';
   const r = await call('chatsDelete2', id, opts);
   if (r?.unpushed) return askUnpushed(id, 'delete');
   if (!r || r.ok === false) { if (!r?.cancelled) toast(r?.message || 'Not deleted.'); return; }
   if (S.open === id) goHome();
   await loadChats();
   render();
-  toast(`Deleted “${entry(id)?.title || 'chat'}”. It's in Recently deleted.`, { kind: 'restore', trashId: r.trashId });
+  toast(`Deleted “${title}”. It's in Recently deleted.`, { kind: 'restore', trashId: r.trashId });
 }
 
 async function closeCopy(id, force = false) {
@@ -193,6 +194,7 @@ async function loadBranches(repo) {
 async function chooseRepo(repo, branch) {
   const chatId = S.pop?.chatId || S.pick?.chatId || null;
   S.pop = null;
+  S.pick = null;
   if (!chatId && S.view !== 'chat') { S.conn = repo ? { repo, branch: branch || null } : null; return render(); }
   const id = chatId || S.open;
   if (!id) { S.conn = repo ? { repo, branch } : null; return render(); }
@@ -957,7 +959,7 @@ document.addEventListener('click', async (ev) => {
     case 'unhide': await call('chatsUpdate', d.id, { hidden: false }); await loadChats(); return render();
     case 'restore': { const r = await call('chatsRestore', d.id); if (r?.ok === false || r?.message) toast(r.message || 'Not restored.'); await loadChats(); return render(); }
     case 'undo': { const u = S.toast?.undo; S.toast = null; if (u?.kind === 'restore') { await call('chatsRestore', u.trashId); await loadChats(); render(); toast('Restored.'); } return renderOverlay(); }
-    case 'repo-pop': S.repoQuery = ''; S.pickRepo = null; S.pickBranch = null; popAt(a, 'repo', { chatId: S.view === 'chat' ? S.open : null }); renderOverlay(); await loadRepos(); { const c = S.view === 'chat' ? entry() : null; const cur = c?.repo || S.conn?.repo || S.repos?.[0]?.full; if (cur) loadBranches(cur); } return;
+    case 'repo-pop': S.pick = null; S.repoQuery = ''; S.pickRepo = null; S.pickBranch = null; popAt(a, 'repo', { chatId: S.view === 'chat' ? S.open : null }); renderOverlay(); await loadRepos(); { const c = S.view === 'chat' ? entry() : null; const cur = c?.repo || S.conn?.repo || S.repos?.[0]?.full; if (cur) loadBranches(cur); } return;
     case 'pick-repo': S.pickRepo = d.r; S.pickBranch = null; S.pop.noFocus = true; renderOverlay(); await loadBranches(d.r); return;
     case 'connect-repo': { const c = S.pop?.chatId ? entry(S.pop.chatId) : S.view === 'chat' ? entry() : null; const sel = S.pickRepo || c?.repo || S.conn?.repo || (S.repos || [])[0]?.full; const b = document.getElementById('branch-sel')?.value || null; S.pickRepo = null; return chooseRepo(sel, b); }
     case 'no-repo': S.pickRepo = null; return chooseRepo(null, null);

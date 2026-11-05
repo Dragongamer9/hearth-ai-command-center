@@ -9,12 +9,17 @@ const crypto = require('node:crypto');
 const { createChats } = require('../electron/chats.cjs');
 const { migrateV2 } = require('../electron/migrate-v2.cjs');
 
+// Temp folders made by this file are removed when it finishes.
+const made = [];
+test.after(() => { for (const d of made) fs.rmSync(d, { recursive: true, force: true }); });
+
 const sha = (f) => crypto.createHash('sha256').update(fs.readFileSync(f)).digest('hex');
 
 // A 1.5 data folder: two projects (one with a GitHub remote, one local-only), their boards and
 // team chats, a 1.4 chat linked to a project, a chat with no project, settings and the registry.
 function fixture() {
   const data = fs.mkdtempSync(path.join(os.tmpdir(), 'hearth-mig-'));
+  made.push(data);
   const projects = [
     { id: 'default', name: 'hearth-os', dir: '/home/o/hearth-os', createdAt: '2026-10-01T00:00:00Z' },
     { id: 'b7e1c2d3', name: 'beacon', dir: '/home/o/beacon', createdAt: '2026-10-02T00:00:00Z' },

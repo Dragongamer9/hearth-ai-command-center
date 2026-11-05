@@ -13,11 +13,16 @@ const { createChats } = require('../electron/chats.cjs');
 const attachments = require('../electron/attachments.cjs');
 const { validateProvider, validatePrompt, validateModel } = require('../electron/validate.cjs');
 
+// Temp folders made by this file are removed when it finishes.
+const made = [];
+test.after(() => { for (const d of made) fs.rmSync(d, { recursive: true, force: true }); });
+
 const ENV = { ...process.env, GIT_AUTHOR_NAME: 'Dragongamer9', GIT_AUTHOR_EMAIL: 'Dragongamer9@users.noreply.github.com', GIT_COMMITTER_NAME: 'Dragongamer9', GIT_COMMITTER_EMAIL: 'Dragongamer9@users.noreply.github.com' };
 const g = (cwd, ...a) => execFileSync('git', a, { cwd, encoding: 'utf8', env: ENV, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
 
 function setup({ settings = {} } = {}) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hearth-v2ipc-'));
+  made.push(tmp);
   const remotes = {};
   for (const name of ['Dragongamer9/alpha', 'Dragongamer9/beta']) {
     const bare = path.join(tmp, 'gh', `${name}.git`);
