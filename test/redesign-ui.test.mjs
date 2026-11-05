@@ -13,10 +13,13 @@ const wf = read('src/ops/workflow-ui.mjs');
 const css = read('src/styles.css');
 const between = (src, a, b) => { const i = src.indexOf(a); assert.ok(i >= 0, a); const j = src.indexOf(b, i + a.length); return src.slice(i, j < 0 ? undefined : j); };
 
-test('sidebar: New task, Team chat, Board, Approvals (count), Jobs, Habitat and a More menu', () => {
+test('sidebar: New task, Chats (list + New chat), Board, Approvals (count), Jobs, Habitat and a More menu', () => {
   const side = between(ui, 'function sidebar(waiting) {', '\nfunction topbar(');
   assert.match(side, /class="newtask" data-new/);
-  for (const [id, label] of [['chat', 'Team chat'], ['board', 'Board'], ['approvals', 'Approvals'], ['jobs', 'Jobs'], ['habitat', 'Habitat']]) assert.ok(side.includes(`nav('${id}', `) && side.includes(`'${label}'`), label);
+  assert.match(side, /data-ui="menu-chats"/, 'Chats button (opens the list when narrowed)');
+  assert.match(side, /data-newchat/, 'New chat in the sidebar');
+  assert.match(side, /chatItems\(/, 'the Chats list');
+  for (const [id, label] of [['board', 'Board'], ['approvals', 'Approvals'], ['jobs', 'Jobs'], ['habitat', 'Habitat']]) assert.ok(side.includes(`nav('${id}', `) && side.includes(`'${label}'`), label);
   assert.match(side, /nav\('approvals', 'shield', 'Approvals', waiting \? `<span class="n">\$\{waiting\}<\/span>`/, 'approvals count');
   assert.match(side, /data-ui="more"/);
   assert.match(side, /data-nav="overview"/, 'Home from the brand');
@@ -102,7 +105,8 @@ test('look-only preferences never change app settings by themselves', () => {
   const shell = between(ui, "const PREFILL = {", "document.addEventListener('change', async (e) => {");
   assert.doesNotMatch(shell, /api\.setSettings|save\(\)/, 'the shell controls never write settings or state');
   // Prefs are written only from the owner's own clicks on those controls.
-  const total = (ui.match(/savePref\(/g) || []).length;
+  // (the open chat is remembered when the owner opens one: savePref('openChat', …))
+  const total = (ui.match(/savePref\(/g) || []).length - (ui.match(/savePref\('openChat'/g) || []).length;
   assert.equal((shell.match(/savePref\(/g) || []).length, total - 1, 'savePref only in the click handler (plus its definition)');
 });
 

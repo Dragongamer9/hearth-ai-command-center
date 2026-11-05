@@ -97,6 +97,14 @@ export function chatRules(agent, lead, { leadActions = false } = {}) {
   ].join('\n');
 }
 
+// For Claude only, while the owner's "Claude can do everything I can" switch is on.
+export const ACT_RULES = [
+  'ACT FOR OWNER (the Owner turned on "Claude can do everything I can"): you may ASK to do any of the Owner\'s actions with one line each:',
+  '  ACT FOR OWNER: approve T-<id> | merge T-<id> | reject T-<id> | changes T-<id> <what to change> | push T-<id> | pr T-<id> | start T-<id> | stop T-<id> | assign T-<id> @<ai>',
+  '  ACT FOR OWNER: allow R-<id> | deny R-<id> | release v<Next version> | tag v<Next version> | setting <name> <value> | project setting <name> <value>',
+  'Nothing happens until the Owner says yes (popup or typing yes). Never write "yes" for the Owner. You never pick or change version numbers, the updaters or the Owner\'s identity.',
+].join('\n');
+
 export function buildPrompt(agent, messages, ctx = {}) {
   const lead = ctx.lead || 'anthropic';
   const lines = transcript(messages, MAX_TRANSCRIPT_CHARS);
@@ -106,6 +114,7 @@ export function buildPrompt(agent, messages, ctx = {}) {
     '',
     chatRules(agent, lead, { leadActions: ctx.leadActions === true }),
     ...(ctx.leadActions === true && agent === lead ? ['', waitingSection(ctx.waiting, NAMES), refusalSection(ctx.refusals)] : []),
+    ...(ctx.actForMe === true && agent === 'anthropic' ? ['', ACT_RULES] : []),
     '',
     '--- Chat so far ---',
     ...lines,
@@ -124,6 +133,7 @@ export function buildDelta(agent, newMessages, ctx = {}) {
     ctx.pending?.length ? `Waiting for the Owner${ctx.leadActions === true ? ' or the lead' : ''}: ${ctx.pending.map((p) => `R-${p.id} (${NAMES[p.agent]}: ${p.what})`).join('; ')}` : '',
     ctx.leadActions === true && agent === (ctx.lead || 'anthropic') ? waitingSection(ctx.waiting, NAMES) : '',
     ctx.leadActions === true && agent === (ctx.lead || 'anthropic') ? refusalSection(ctx.refusals) : '',
+    ctx.actForMe === true && agent === 'anthropic' ? ACT_RULES : '',
     '--- New messages since your last turn ---',
     ...(lines.length ? lines : ['(none)']),
     '--- End ---',

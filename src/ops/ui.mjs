@@ -728,8 +728,21 @@ function leadPowersCard() {
   const sw = (k, label) => `<label class="ops-check"><input type="checkbox" data-opslead="${k}" ${s[k] === true ? 'checked' : ''}> ${label}</label>`;
   return `<div class="card mb"><h3>What the lead may do on its own</h3>
     ${sw('leadMerge', 'Lead may merge to main')}${sw('leadRelease', 'Lead may publish releases (only the version you set)')}${sw('leadTag', 'Lead may create tags (only the version you set)')}
-    <div class="faint ops-note">Off by default; only you change them. Merges still need another AI's approving review and the exact approved commit. Releases and tags only for your Next version (${p.nextVersion ? `v${esc(p.nextVersion)}` : 'not set: Project page'}), and only when the version file on main already says it; the lead never edits version numbers. Merges, releases and tags can't be undone. Also needs “lead acts for me”.</div></div>`;
+    <div class="faint ops-note">Off by default; only you change them. Merges still need another AI's approving review and the exact approved commit. Releases and tags only for your Next version (${p.nextVersion ? `v${esc(p.nextVersion)}` : 'not set: Project page'}), and only when the version file on main already says it; the lead never edits version numbers. Merges, releases and tags can't be undone. Also needs “lead acts for me”.</div></div>
+    ${actForMeCard()}`;
 }
+// "Claude can do everything I can (asks me first every time)": the owner's switch, and the
+// settings Claude changed with his yes (who changed them, with one-click undo).
+function actForMeCard() {
+  const s = C.settings();
+  const log = (S().actLog || []).slice(0, 8);
+  return `<div class="card mb" id="act-for-me"><h3>Claude can do everything I can</h3>
+    <label class="ops-check"><input type="checkbox" data-opsact ${s.actForMe === true ? 'checked' : ''}> Claude can do everything I can (asks me first every time)</label>
+    <div class="faint ops-note">Off by default; only you turn it on or off (no AI or chat line can). When on, Claude may ask to do any of your actions: approve, reject or request changes, merge, push, open a pull request, start, stop or assign tasks, answer permission requests, release or tag your Next version${p0()}, and change settings. Nothing runs until you say yes, every time: Allow in the popup, or type <b>yes</b> (or <b>no</b>) in that chat. Requests expire after 30 minutes, or when the project or chat changes. Version numbers, the updaters and your identity stay yours.</div>
+    <div class="faint ops-note"><b>How this fits with the switches above:</b> “lead acts for me” and the three lead switches let the lead act <i>on its own</i>, without asking. This switch is different: Claude asks first, every time, and works even when those are off. If both are on, Claude's own board lines follow the lead switches, and anything it asks with ACT FOR OWNER always waits for your yes.</div>
+    ${log.length ? `<div class="sect">Changed by Claude with your yes</div>${log.map((e) => `<div class="row"><span style="flex:1"><span class="mono">${esc(e.key)}</span>: ${esc(JSON.stringify(e.before))} → ${esc(JSON.stringify(e.after))} <span class="faint">· ${esc(e.by)} · ${esc(C.ago(e.at))}${e.scope === 'project' ? ' · this project' : ''}</span></span>${e.undone ? '<span class="badge">Undone</span>' : `<button class="btn small" data-actundo="${esc(e.id)}">Undo</button>`}</div>`).join('')}` : ''}</div>`;
+}
+const p0 = () => { const n = syncPowers().nextVersion; return n ? ` (now v${esc(n)})` : ''; };
 
 // ---------- events ----------
 async function onClick(e) {
@@ -796,14 +809,20 @@ async function onClick(e) {
   if (op === 'switch') {
     const running = Object.keys(C.ui().running || {});
     if (running.length) return C.toast(`Wait until the running task${running.length > 1 ? 's' : ''} (${running.map((id) => `T-${id}`).join(', ')}) finish, or stop them, before switching projects.`);
+    // A chat round still answering would post (and save) into the wrong project.
+    const busy = C.beforeSwitch?.();
+    if (busy) return C.toast(busy);
     const name = (local.projects?.list || []).find((x) => x.id === arg)?.name || 'the project';
     C.toast(`Switching to ${name}…`);
     try {
       await C.save();
+      // From here this window saves nothing more (the main process would refuse it anyway).
+      C.switching?.(true);
       const r = await call('opsProjectSwitch', arg);
       if (r?.ok) { location.reload(); return; }
+      C.switching?.(false);
       return C.toast(`Could not switch to ${name}: ${r?.message || 'no answer from the app'}`);
-    } catch (err) { return C.toast(`Could not switch to ${name}: ${String(err?.message || err)}`); }
+    } catch (err) { C.switching?.(false); return C.toast(`Could not switch to ${name}: ${String(err?.message || err)}`); }
   }
   if (op === 'addfolder' || op === 'addclone') {
     const input = op === 'addclone' ? document.getElementById('ops-clone')?.value.trim() : '';
@@ -844,6 +863,13 @@ async function onChange(e) {
   if (el.matches?.('[data-opslocal]')) { S().models.ollama = el.value; C.audit('Local AI model chosen', null, el.value); syncLocal(); await C.save(); return C.render(); }
   if (el.dataset?.opslocalon) { const st = S(); st.opsLocal = st.opsLocal || { enabled: {} }; st.opsLocal.enabled = { ...(st.opsLocal.enabled || {}), [el.dataset.opslocalon]: el.checked }; C.audit('Local AI preset turned ' + (el.checked ? 'on' : 'off'), null, el.dataset.opslocalon); await C.save(); return C.render(); }
   if (el.matches?.('[data-opsphonehost]')) { const r = await call('opsPhoneHost', el.value); if (r) local.phone = r; C.audit('Phone view interface chosen', null, el.value); await C.save(); return C.render(); }
+  if (el.dataset && 'opsact' in el.dataset) {
+    // The main process asks for confirmation in its own dialog before turning it on.
+    const s2 = await call('setSettings', { actForMe: el.checked });
+    if (s2 && !s2.message) { C.setSettings(s2); C.audit(`"Claude can do everything I can (asks me first)" turned ${s2.actForMe ? 'on' : 'off'}`); await C.save(); }
+    else el.checked = !el.checked;
+    return C.render();
+  }
   if (el.dataset?.opslead) {
     const k = el.dataset.opslead;
     if (el.checked && !confirm({ leadMerge: 'Let the lead merge approved, independently reviewed work into main on its own?', leadRelease: 'Let the lead publish releases (only the Next version you set)?', leadTag: 'Let the lead create tags (only v<Next version>)?' }[k])) { el.checked = false; return; }
@@ -900,7 +926,7 @@ export function createOps(ctx) {
     summaryCard, summaryData, approvalCards, approvalSettings, levelsCard, leadPowersCard, identityCard, phoneBlock, capsCard, toolsCard, projectsList: () => local.projects, projectSwitcher, ciBadge, drawerPanel, voiceButton, suggestHint,
     afterRun, checkDone, handoff, recordVerdict, leadLines, auditRoutine, beforeStart, routeQueued,
     snapshot: opsSnapshot,
-    overlay, banner, syncPowers, docsPaths, watchRelease, actionResult, turnBegin, turnEnd, turnResults, resultsHtml, bodyHtml, mentionNotes, imageNotice, attMeta, checkpointLine, handleLines, localModels, localMayReview: localMayReviewTask, syncLocal,
+    overlay, banner, syncPowers, docsPaths, refreshProjects: async () => { await refreshProjects(); syncPowers(); }, watchRelease, actionResult, turnBegin, turnEnd, turnResults, resultsHtml, bodyHtml, mentionNotes, imageNotice, attMeta, checkpointLine, handleLines, localModels, localMayReview: localMayReviewTask, syncLocal,
     async boot() {
       setLevels(C.settings().approvalLevels);
       document.addEventListener('click', onClick);

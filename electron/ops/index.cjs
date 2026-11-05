@@ -173,7 +173,22 @@ function register(d) {
     const r = await workspace.git(projectDir(), ['remote', 'get-url', 'origin']);
     return r.ok ? ci.parseRemote(r.out) : null;
   };
-  handle('ops:leadRelease', async (kind, version) => {
+  handle('ops:leadRelease', (kind, version) => releaseOrTag(kind, version, null));
+  // "Claude can do everything I can": a release or tag Claude asked for and the owner
+  // allowed. Still only the owner's Next version, the version file, the gate and the guard;
+  // and a native confirmation here (it can't be undone), so the window alone can't start one.
+  handle('ops:actRelease', async (kind, version, request) => {
+    const s = readSettings();
+    if (s.actForMe !== true) return { ok: false, message: '"Claude can do everything I can" is off.' };
+    const ps = active().settings;
+    const ver = String(version || '').replace(/^v/, '');
+    if (!request || request.projectId !== active().id || request.version !== ver || ps.nextVersion !== ver) return { ok: false, message: `Only your Next version for this project (${ps.nextVersion ? `v${ps.nextVersion}` : 'not set'}) can be released or tagged.` };
+    const k = kind === 'tag' ? 'tag' : 'release';
+    const ok = dialog.showMessageBoxSync(getWindow(), { type: 'warning', message: `${k === 'tag' ? 'Tag' : 'Release'} v${ver} of ${active().name}?`, detail: `Claude asked for this and you allowed it (request ${String(request.id || '').slice(0, 10)}).\nIt uses the release gate for the exact commit on main and can't be undone.`, buttons: [k === 'tag' ? 'Tag now' : 'Release now', 'Cancel'], defaultId: 1, cancelId: 1 });
+    if (ok !== 0) return { ok: false, message: 'Cancelled.' };
+    return releaseOrTag(k, ver, { owner: true });
+  });
+  async function releaseOrTag(kind, version, viaOwner) {
     const s = readSettings();
     const dir = projectDir();
     if (!dir) return { ok: false, message: 'Pick a project first.' };
@@ -188,7 +203,8 @@ function register(d) {
     let exists = false;
     if (k === 'tag') exists = Boolean((await workspace.git(dir, ['ls-remote', '--tags', 'origin', `refs/tags/v${ver}`])).out) || (await workspace.git(dir, ['rev-parse', '--verify', '--quiet', `refs/tags/v${ver}`])).ok;
     else if (repo) exists = (await ghApi([`repos/${repo.owner}/${repo.repo}/releases/tags/v${ver}`])).ok;
-    const c = release.checkLead({ kind: k, leadActions: s.leadActions, switchOn: k === 'tag' ? s.leadTag : s.leadRelease, requested: version, next: ps.nextVersion, fileVer: release.fileVersion(ps.versionFile, file), exists });
+    // The owner's own yes stands in for the lead switches; every other check is the same.
+    const c = release.checkLead({ kind: k, leadActions: viaOwner?.owner ? true : s.leadActions, switchOn: viaOwner?.owner ? true : (k === 'tag' ? s.leadTag : s.leadRelease), requested: version, next: ps.nextVersion, fileVer: release.fileVersion(ps.versionFile, file), exists });
     if (!c.ok) return { ok: false, message: c.reason };
     const sha = (await workspace.git(dir, ['rev-parse', ref])).out;
     // The release gate: the checklist passed for exactly this commit (or the Owner overrode it).
@@ -219,7 +235,7 @@ function register(d) {
     if (!now.ok || now.out.trim() !== sha) return { ok: false, message: `Not released: ${def} on GitHub is ${now.ok ? now.out.trim().slice(0, 7) : 'unreadable'}, not the gated ${sha.slice(0, 7)}. Run the release preview again.` };
     const d = await ghApi(['-X', 'POST', `repos/${repo.owner}/${repo.repo}/actions/workflows/release.yml/dispatches`, '-f', `ref=${def}`]);
     return d.ok ? { ok: true, dispatched: true, message: `Started the release workflow for v${c.version} on ${def}. Progress is shown here as it runs.`, url: `https://github.com/${repo.owner}/${repo.repo}/actions/workflows/release.yml` } : { ok: false, message: `Couldn't start the release workflow: ${d.err.split('\n')[0]}` };
-  });
+  }
   handle('ops:releaseStatus', async (version, since) => {
     const repo = await ghRepo();
     if (!repo) return { ok: false };
@@ -273,7 +289,7 @@ function register(d) {
     if (!target) throw new Error('Unknown project.');
     projects.setDir(cur.id, projectDir());
     projects.switchTo(target.id);
-    setStore(projects.stateFile(target.id));
+    setStore(projects.stateFile(target.id), target.id);
     if (target.dir) useProject(target.dir);
     return { ok: true, ...listProjects() };
   });
@@ -772,7 +788,7 @@ function register(d) {
       projects.setDir(cur.id, projectDir());
       const p = known || projects.add({ dir });
       projects.switchTo(p.id);
-      setStore(projects.stateFile(p.id));
+      setStore(projects.stateFile(p.id), p.id);
       return { ...useProject(dir), projectSwitched: true };
     },
     assetsEnv: (agent, cwd) => assetsEnv(agent, cwd),
@@ -826,4 +842,8 @@ function phonePushData(snap, redactFn, set, max = 2e6) {
 
 const pickDispatchRun = (runs = [], after = null) => (runs || []).filter((r) => r.event === 'workflow_dispatch' && (!after || String(r.created_at) >= after.slice(0, 19))).sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))[0] || null;
 
-module.exports = { register, stateFile, jobLimits, jobMode, phonePushData, pickDispatchRun };
+const activeProjectId = () => (projects ? projects.get().active : 'default');
+const projectsList = () => projects.get();
+const projectStateFile = (id) => projects.stateFile(id);
+
+module.exports = { activeProjectId, projectsList, projectStateFile, register, stateFile, jobLimits, jobMode, phonePushData, pickDispatchRun };

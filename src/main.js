@@ -21,6 +21,8 @@ import { createWorkflow } from './ops/workflow-ui.mjs';
 import { instructionsBlock, recordReview, holdApproval, useHeldApproval, recordTest, shouldPing, lastReview } from './ops/workflow.mjs';
 import { teamHabitat, teamHabitatLine } from './habitat/status.mjs';
 import { icon } from './icons.mjs';
+import { ACT_AGENT, parseActLines, makeActRequest, describe as describeAct, typedDecision, stillValid, settle, undoEntry } from './ops/actforme.mjs';
+import { isTeam, teamChatId, sortChats, autoTitle, pickOpenChat, openPlan, savePlan, chatEditRule } from './chats.mjs';
 
 const api = window.hearth;
 
@@ -94,6 +96,8 @@ const ops = createOps({
   makeTask: (o, src) => makeTask(o, src), actionFor: (t) => actionFor(t),
   cli: () => cli, method: (a) => method(a), refreshAgents: async () => { await refreshAgents(); render(); },
   team: () => teamList().map((a) => ({ id: a, dot: dotOf(a), lead: a === state.lead })),
+  beforeSwitch: () => (round ? 'The team is still replying in this chat. Press Stop (top right) or wait for them, then switch projects.' : null),
+  switching: (on) => { ui.switching = Boolean(on); },
 });
 
 // Team workflow (src/ops/workflow*.mjs): truth card, run gates and modes, instruction log,
@@ -120,10 +124,307 @@ const ago = (iso) => {
 const cleanErr = (m) => String(m).replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
 
 let saveChain = Promise.resolve();
-// Serialized, atomic saves (the main process writes temp -> fsync -> rename).
+// The team chat's workspace for this session: chosen and verified by the main process
+// (it belongs to the open project's repository). Never taken from saved state.
+let chatWs = null;
+// Chats: the list, which one is open, and the project's own team chat while another is open.
+let chatsState = { list: [], open: null, team: null, teamSessions: null, notices: [], readOnly: false, lastSaved: '' };
+const openChatEntry = () => chatsState.list.find((c) => c.id === chatsState.open) || null;
+// Serialized, atomic saves (the main process writes temp -> fsync -> rename). The project
+// file only ever gets this project's state (stamped with its id; the main process refuses
+// anything else), and a separate chat's messages only go to that chat's own file.
 function save() {
-  saveChain = saveChain.then(() => api.saveState(state)).catch((e) => toast(`Could not save: ${cleanErr(e.message)}`));
+  if (ui.switching) return saveChain; // switching projects: nothing more is saved from this window
+  saveChain = saveChain.then(async () => {
+    const plan = savePlan({ state, openChatId: chatsState.open, teamChat: chatsState.team, teamSessions: chatsState.teamSessions });
+    const r = await api.saveState(plan.project);
+    if (r && r.refused) return refusedSave(r.message);
+    if (plan.chat && !chatsState.readOnly) {
+      const sig = `${plan.chat.id}:${plan.chat.messages.length}:${JSON.stringify(plan.chat.messages.slice(-1))}:${JSON.stringify(plan.chat.sessions)}`.slice(0, 20000);
+      if (sig !== chatsState.lastSaved) { await api.chatsSave(plan.chat.id, plan.chat); chatsState.lastSaved = sig; }
+    }
+  }).catch((e) => toast(`Could not save: ${cleanErr(e.message)}`));
   return saveChain;
+}
+// The main process refused a save: this window shows a project that is no longer open.
+// Nothing was written; reload to show the open project.
+let refusedOnce = false;
+function refusedSave(message) {
+  if (ui.switching || refusedOnce) return;
+  refusedOnce = true;
+  ui.switching = true;
+  toast(`${message || 'Not saved.'} Reloading to show the open project…`);
+  setTimeout(() => location.reload(), 1200);
+}
+
+// ---------- chats ----------
+// The list comes from the main process. A project's own team chat stays in its state;
+// other chats have their own files. Opening a chat linked to another project switches
+// projects through the normal (guarded) switch, so the board, approvals and Next version
+// on screen always belong to the chat's project.
+async function loadChats() {
+  const r = await api.chatsList?.().catch(() => null);
+  const fallback = [{ id: teamChatId(state.projectId), team: true, title: `${projectName() || 'Project'} team chat`, projectId: state.projectId }];
+  chatsState.list = sortChats(r?.list?.length ? r.list : fallback);
+  chatsState.notices = r?.notices || [];
+  chatsState.broken = Boolean(r?.broken);
+  const id = pickOpenChat(chatsState.list, loadPrefs().openChat, state.projectId);
+  if (!chatsState.list.some((c) => c.id === id)) chatsState.list.unshift({ ...fallback[0], id });
+  await openChatHere(id, { quiet: true });
+}
+function chatBusy() {
+  return round ? 'The team is still replying in this chat. Press Stop (top right) or wait for them, then switch chats.' : null;
+}
+async function openChatHere(id, { quiet = false } = {}) {
+  if (id === chatsState.open) return true;
+  const busy = chatBusy();
+  if (busy) { toast(busy); return false; }
+  const entry = chatsState.list.find((c) => c.id === id);
+  if (!entry) return false;
+  let next = null;
+  if (!entry.team) {
+    const r = await api.chatsGet(id).catch((e) => ({ ok: false, message: cleanErr(e.message) }));
+    if (!r?.ok) { toast(r?.message || 'This chat could not be opened.'); return false; }
+    next = r;
+  }
+  await saveChain; // anything pending for the chat being left is written first
+  // Keep the project's team chat aside while another chat is open (it is saved unchanged).
+  if (!chatsState.open || isTeam(chatsState.open)) { chatsState.team = state.chat; chatsState.teamSessions = state.chatSessions; }
+  if (entry.team) {
+    state.chat = chatsState.team || state.chat;
+    state.chatSessions = chatsState.teamSessions || state.chatSessions || {};
+    chatsState.readOnly = false;
+  } else {
+    state.chat = next.messages;
+    state.chatSessions = next.sessions || {};
+    chatsState.readOnly = Boolean(next.readOnly);
+    if (next.recovered && !quiet) toast('This chat was damaged; an earlier copy is shown and nothing is written to it.');
+  }
+  for (const m of state.chat) if (!m.id) m.id = uid();
+  chatsState.open = id;
+  chatsState.lastSaved = '';
+  ui.unlinkedNoted = false;
+  ui.renaming = false;
+  savePref('openChat', id);
+  return true;
+}
+// Open a chat from the list: here, or after switching to its project (the guarded switch).
+async function openChat(id) {
+  const entry = chatsState.list.find((c) => c.id === id);
+  const plan = openPlan(entry, state.projectId);
+  if (plan.kind === 'missing') return toast('That chat is gone from the list.');
+  if (plan.kind === 'switch') {
+    const busy = chatBusy();
+    if (busy) return toast(busy);
+    savePref('openChat', id);
+    return requestSwitch(plan.projectId);
+  }
+  if (await openChatHere(id)) { ui.view = 'chat'; ui.selected = null; ui.menu = null; }
+  render();
+  document.getElementById('chat-text')?.focus();
+}
+// The same switch the project switcher uses (src/ops/ui.mjs, op 'switch').
+function requestSwitch(projectId) {
+  const b = document.createElement('button');
+  b.dataset.ops = 'switch';
+  b.dataset.arg = projectId;
+  b.hidden = true;
+  document.body.appendChild(b);
+  b.click();
+  b.remove();
+}
+async function newChat() {
+  const busy = chatBusy();
+  if (busy) return toast(busy);
+  const e = await api.chatsCreate(state.projectId || null).catch((err) => ({ message: cleanErr(err.message) }));
+  if (!e?.id) return toast(`Couldn't start a new chat: ${e?.message || 'no answer from the app'}`);
+  chatsState.list = sortChats([e, ...chatsState.list.filter((c) => c.id !== e.id)]);
+  if (await openChatHere(e.id)) { ui.view = 'chat'; ui.selected = null; ui.menu = null; }
+  render();
+  document.getElementById('chat-text')?.focus();
+}
+async function updateChat(id, patch) {
+  const e = await api.chatsUpdate(id, patch).catch((err) => ({ message: cleanErr(err.message) }));
+  if (!e?.id) { toast(e?.message || 'Not changed.'); return null; }
+  chatsState.list = chatsState.list.map((c) => (c.id === id ? { ...c, ...e, updatedAt: c.updatedAt } : c));
+  return e;
+}
+// Link the open chat to a project (switching there), or unlink it (talk only, no edits).
+async function linkChat(projectId) {
+  const entry = openChatEntry();
+  if (!entry || entry.team) return toast("A project's team chat stays with its project. Start a new chat to link another project.");
+  const busy = chatBusy();
+  if (busy) return toast(busy);
+  const pid = projectId || null;
+  const e = await updateChat(entry.id, { projectId: pid });
+  if (!e) return render();
+  const pname = (ops.projectsList?.().list || []).find((x) => x.id === pid)?.name;
+  audit(pid ? 'Chat linked to a project' : 'Chat unlinked from its project', null, `${entry.title}${pid ? ` → ${pname || pid}` : ''}`);
+  post({ who: 'system', text: pid ? `This chat is now linked to ${pname || 'that project'}. The team works in that project's repository.` : chatEditRule({ projectId: null }, state.projectId).reason });
+  await save();
+  ui.menu = null;
+  if (pid && pid !== state.projectId) { savePref('openChat', entry.id); return requestSwitch(pid); }
+  render();
+}
+// Look only: the owner is told about data that looks copied between projects; nothing is repaired.
+async function checkHealth() {
+  const h = await api.stateHealth?.().catch(() => null);
+  ui.health = [...(h?.notices || []).map((n) => n.text), ...(chatsState.notices || [])];
+  if (ui.health.length) render();
+}
+function chatTitle(c) { return c.team ? `${(ops.projectsList?.().list || []).find((x) => x.id === c.projectId)?.name || 'Project'} team chat` : c.title || 'New chat'; }
+function chatProjName(c) { return c.projectId ? (ops.projectsList?.().list || []).find((x) => x.id === c.projectId)?.name || 'missing project' : 'No project'; }
+
+// ---------- "Claude can do everything I can (asks me first every time)" ----------
+// Claude asks with ACT FOR OWNER lines; each request waits for the owner's yes (popup or
+// typed in that chat), is bound to its project, chat, target and commit, expires after
+// 30 minutes and is used once. The action itself runs through the owner's own buttons.
+const actPending = () => (state.actRequests || []).filter((r) => r.status === 'pending');
+function actLines(agent, text) {
+  const cmds = parseActLines(text);
+  if (!cmds.length) return;
+  state.actRequests = state.actRequests || [];
+  const projName = projectName();
+  for (const cmd of cmds) {
+    const r = cmd.kind === 'unknown' ? { ok: false, reason: 'unknown action' } : makeActRequest(cmd, {
+      agent, on: settings.actForMe === true, projectId: state.projectId, chatId: chatsState.open, nextVersion: ops.syncPowers()?.nextVersion || '',
+      tasks: state.tasks, permissions: state.permissions, settings, projectSettings: ((ops.projectsList?.().list || []).find((x) => x.id === state.projectId) || {}).settings || {},
+      agents: AGENT_IDS, shaOf: (t) => (t.ws ? approvedSha(t) || t.runs?.slice(-1)[0]?.head || null : null), now: Date.now(),
+    });
+    ops.actionResult(agent, cmd.raw, r.ok, r.ok ? `waiting for your yes (${r.request.id})` : r.reason);
+    if (!r.ok) {
+      if (settings.actForMe === true) audit(`${NAMES[agent]} asked to act for you: refused`, null, `${cmd.raw}: ${r.reason}`, agent);
+      continue;
+    }
+    const req = r.request;
+    state.actRequests.push(req);
+    state.actRequests = state.actRequests.slice(-100);
+    const d = describeAct(req, { projectName: projName });
+    audit(`${NAMES[agent]} asked to act for you`, req.taskId || null, `${req.id}: ${d.what} (waiting for your yes)`, agent);
+    post({ who: 'system', actReq: req.id, text: `${NAMES[agent]} asks to act for you: ${d.what}. Allow or deny below, or type yes or no.` });
+    if (!ui.modal && !ui.lightbox) { ui.modal = 'act'; ui.actReq = req.id; }
+  }
+}
+function actCard(req) {
+  const d = describeAct(req, { projectName: projectName() });
+  const st = req.status;
+  const expired = st === 'pending' && Date.now() > Date.parse(req.expiresAt);
+  return `<div class="ask act ${st}">
+    <div class="hd"><span class="ic">${icon(st === 'pending' ? 'shield' : st === 'allowed' ? 'check' : 'x')}</span><div style="flex:1;min-width:0"><div class="w">${esc(d.what)}</div><div class="k">${st === 'pending' ? 'Claude asks to act for you' : st === 'allowed' ? 'Allowed by you' : st === 'denied' ? 'Denied by you' : `Not done: ${esc(req.reason || '')}`} · ${esc(req.id)}${req.how ? ` · ${req.how === 'typed' ? 'you typed it' : 'popup'}` : ''}</div></div></div>
+    <div class="facts">${d.facts.map(([k, v]) => `<span class="pill" title="${esc(k)}">${esc(k)}: ${esc(v)}</span>`).join('')}</div>
+    ${st === 'pending' && !expired ? `<div class="ft"><button class="btn small primary" data-actallow="${esc(req.id)}">Allow</button><button class="btn small" data-actdeny="${esc(req.id)}">Deny</button><button class="btn small ghost" data-actview="${esc(req.id)}">Details</button><span class="grow"></span><span class="faint">or type <b>yes</b> / <b>no</b> here · expires ${esc(time(req.expiresAt))}</span></div>`
+      : st === 'pending' ? '<div class="ft"><span class="faint">Expired: nothing was done. Claude can ask again.</span></div>' : ''}
+  </div>`;
+}
+function actModal() {
+  const req = (state.actRequests || []).find((r) => r.id === ui.actReq);
+  if (!req) { ui.modal = null; return ''; }
+  const d = describeAct(req, { projectName: projectName() });
+  return `<div class="modal-bg" data-modalbg><div class="modal act-modal" role="dialog" aria-label="Claude asks to act for you">
+    <h2>Claude asks to act for you</h2>
+    <div class="act-what">${esc(d.what)}</div>
+    <table class="act-facts"><tbody>${d.facts.map(([k, v]) => `<tr><td class="faint">${esc(k)}</td><td class="${/Commit|Branch|value/.test(k) ? 'mono' : ''}">${esc(v)}</td></tr>`).join('')}<tr><td class="faint">Expires</td><td>${esc(time(req.expiresAt))} (or when the project or chat changes)</td></tr></tbody></table>
+    <p class="muted" style="font-size:12.5px">This allows only this one action, for exactly this ${req.sha ? 'commit' : req.key ? 'value' : 'target'}. Recorded in the Audit log.${req.key ? ' You can undo it in one click afterwards.' : ''}</p>
+    ${req.status === 'pending' ? `<div class="row" style="margin-top:14px;justify-content:flex-end"><button class="btn" data-actdeny="${esc(req.id)}">Deny</button><button class="btn primary" data-actallow="${esc(req.id)}">Allow</button></div>` : `<div class="row" style="justify-content:flex-end"><span class="faint">${esc(req.status)}</span><button class="btn" data-cancel>Close</button></div>`}
+  </div></div>`;
+}
+// The owner's answer. Allow runs the action only if it is still exactly what was asked.
+async function decideAct(id, decision, how) {
+  const req = (state.actRequests || []).find((r) => r.id === id);
+  if (!req) return toast('That request is gone.');
+  if (ui.modal === 'act') ui.modal = null;
+  if (req.status !== 'pending') { render(); return toast(`Already ${req.status}.`); }
+  const d = describeAct(req, { projectName: projectName() });
+  if (decision !== 'allow') {
+    settle(req, 'deny', { how });
+    audit('Owner denied a Claude request', req.taskId || null, `${req.id}: ${d.what} (${how})`);
+    post({ who: 'system', text: `You denied ${req.id}: ${d.what}. Nothing was done.` });
+    save();
+    return render();
+  }
+  const t = req.taskId ? state.tasks.find((x) => x.id === req.taskId) : null;
+  const cur = { now: Date.now(), projectId: state.projectId, chatId: chatsState.open, nextVersion: ops.syncPowers()?.nextVersion || '' };
+  if (req.sha && t?.ws) cur.sha = await api.workspaceHead(t.id).catch(() => null);
+  if (req.key) cur.settingNow = req.kind === 'setting' ? settings[req.key] : (((ops.projectsList?.().list || []).find((x) => x.id === state.projectId) || {}).settings || {})[req.key];
+  if (req.taskId && !t) { settle(req, 'refused', { how, reason: `T-${req.taskId} is gone` }); save(); return render(); }
+  const v = stillValid(req, cur);
+  if (!v.ok) {
+    settle(req, 'refused', { how, reason: v.reason });
+    audit('Claude request not done', req.taskId || null, `${req.id}: ${d.what}: ${v.reason}`);
+    post({ who: 'system', text: `${req.id} was not done: ${v.reason}. Nothing changed.` });
+    save();
+    return render();
+  }
+  settle(req, 'allow', { how });
+  audit('Owner allowed a Claude request', req.taskId || null, `${req.id}: ${d.what} (${how}${req.sha ? ` at ${String(req.sha).slice(0, 7)}` : ''})`);
+  post({ who: 'system', text: `You allowed ${req.id}: ${d.what}. Doing it now.` });
+  save();
+  render();
+  const r = await runAct(req, t).catch((e) => ({ ok: false, message: cleanErr(e.message) }));
+  if (r && r.ok === false) {
+    req.result = r.message;
+    audit('Claude request failed', req.taskId || null, `${req.id}: ${r.message}`);
+    post({ who: 'system', text: `${req.id} stopped: ${r.message}` });
+  }
+  save();
+  render();
+}
+// Each action through the owner's own button or call (the same checks as when he clicks).
+function ownerClick(attr, value) {
+  const b = document.createElement('button');
+  b.dataset[attr] = value;
+  b.hidden = true;
+  document.body.appendChild(b);
+  b.click();
+  b.remove();
+}
+async function runAct(req, t) {
+  switch (req.kind) {
+    case 'approve': return ownerClick('approve', t.id);
+    case 'merge': return t.ws ? ownerClick('approvemerge', t.id) : ownerClick('approve', t.id);
+    case 'reject': return ownerClick('reject', t.id);
+    case 'changes': requestChanges(t, { by: 'owner', reason: req.note || 'Claude asked; you allowed it', at: now() }); return setStage(t, 'implementing', 'Changes requested', `Sent back to implementer (Claude asked; you allowed ${req.id})`);
+    case 'push': { const r = await api.gitPushTask(t.id).catch((e) => ({ ok: false, message: cleanErr(e.message) })); audit(r.ok ? 'Pushed to GitHub' : 'Push failed', t.id, r.message || ''); return r.ok ? null : r; }
+    case 'pr': return ownerClick('openpr', t.id);
+    case 'start': return startOrQueue(t, t.assignee);
+    case 'stop': return ownerClick('stop', t.id);
+    case 'assign': assignTask(t, req.agent, `Claude asked; you allowed ${req.id}`); return null;
+    case 'allow': return decide(req.permId, 'approved', 'Owner');
+    case 'deny': return decide(req.permId, 'denied', 'Owner');
+    case 'release': case 'tag': {
+      const r = await api.opsActRelease(req.kind, req.version, req).catch((e) => ({ ok: false, message: cleanErr(e.message) }));
+      if (!r?.ok) return { ok: false, message: r?.message || 'not available' };
+      audit(`${req.kind === 'tag' ? 'Tagged' : 'Released'} v${req.version} (Claude asked; you allowed it)`, null, r.message);
+      post({ who: 'system', text: r.message });
+      if (r.dispatched) ops.watchRelease(req.version);
+      wf.madeTag?.(req.version);
+      return null;
+    }
+    case 'setting': case 'projectsetting': {
+      const r = req.kind === 'setting' ? await api.setSettings({ [req.key]: req.after }).catch((e) => ({ message: cleanErr(e.message) })) : await api.opsProjectSettings({ [req.key]: req.after }).catch((e) => ({ ok: false, message: cleanErr(e.message) }));
+      if (!r || r.message || r.ok === false) return { ok: false, message: r?.message || 'not changed' };
+      if (req.kind === 'setting') { settings = r; setApprovalLevels(r.approvalLevels); ops.syncPowers(); } else await ops.refreshProjects?.();
+      state.actLog = [undoEntry(req), ...(state.actLog || [])].slice(0, 50);
+      audit(`Setting changed by Claude with your yes: ${req.key}`, null, `${JSON.stringify(req.before)} → ${JSON.stringify(req.after)} (${req.id}; Undo in Settings › Team)`);
+      post({ who: 'system', text: `${req.key} is now ${JSON.stringify(req.after)} (was ${JSON.stringify(req.before)}). Changed by Claude with your yes; Undo in Settings › Team.`, actUndo: req.id });
+      return null;
+    }
+    default: return { ok: false, message: 'unknown action' };
+  }
+}
+// One-click undo of a setting Claude changed with the owner's yes.
+async function undoAct(id) {
+  const e = (state.actLog || []).find((x) => x.id === id);
+  if (!e || e.undone) return;
+  if (e.scope === 'project' && e.projectId !== state.projectId) return toast('That setting belongs to another project; switch to it to undo.');
+  const r = e.scope === 'app' ? await api.setSettings({ [e.key]: e.before }).catch((err) => ({ message: cleanErr(err.message) })) : await api.opsProjectSettings({ [e.key]: e.before }).catch((err) => ({ ok: false, message: cleanErr(err.message) }));
+  if (!r || r.message || r.ok === false) return toast(`Not undone: ${r?.message || 'no answer'}`);
+  if (e.scope === 'app') { settings = r; setApprovalLevels(r.approvalLevels); ops.syncPowers(); } else await ops.refreshProjects?.();
+  e.undone = true;
+  e.undoneAt = now();
+  audit(`Owner undid a setting Claude changed: ${e.key}`, null, `${JSON.stringify(e.after)} → ${JSON.stringify(e.before)}`);
+  save();
+  render();
 }
 
 function audit(event, taskId, detail = '', actor = 'owner') {
@@ -555,6 +856,8 @@ function aliasOrNone(word, allowed) {
 async function agentAttachments(parsed, base, agent) {
   const atts = [];
   for (const f of parsed.files) {
+    // A chat with no project has no files to post from.
+    if (base === null && chatRule().unlinked) { ops.actionResult(agent, `ATTACH: ${f.path}`, false, 'this chat is not linked to a project'); continue; }
     const r = await api.attachFromAgent(f.path, base).catch((e) => ({ ok: false, message: cleanErr(e.message) }));
     if (r?.ok) { atts.push({ ...r.att, from: f.path }); audit('Routine: posted an attachment', null, `${NAMES[agent]}: ${f.path} (no approval needed)`, agent); }
     ops.actionResult(agent, `ATTACH: ${f.path}`, Boolean(r?.ok), r?.ok ? 'posted' : r?.message || 'failed');
@@ -735,7 +1038,10 @@ function chatId() {
   for (const c of String(settings.project || '')) h = (h * 31 + c.charCodeAt(0)) >>> 0;
   return `CHAT${h.toString(36).toUpperCase().padStart(6, '0').slice(-6)}`;
 }
-const chatCanEdit = () => Boolean(settings.chatEdits && settings.project && gh.git);
+// The workspace this session's chat edits happen in (verified by the main process).
+const wsId = () => chatWs?.id || chatId();
+const chatRule = () => chatEditRule(openChatEntry() || { id: teamChatId(state.projectId), projectId: state.projectId, team: true }, state.projectId);
+const chatCanEdit = () => Boolean(settings.chatEdits && settings.project && gh.git && chatRule().edit);
 
 // After a checkpoint, back the branch up to GitHub (never main).
 // Lead handles GitHub: on by default only when GitHub is already set up.
@@ -810,6 +1116,7 @@ function chatCtx() {
     roster: AGENT_IDS.map((id) => ({ id, role: state.roles[id] || DEFAULT_ROLES[id], status: statusText(id) })),
     board: openTasks().map((t) => ({ id: t.id, title: t.title, stage: STAGES[t.stage], assignee: t.assignee, reviewer: t.reviewer, state: RUN_STATES[taskRunState(t, { running: Boolean(ui.running[t.id]) })], queue: queueText(t), truth: t.ws ? wf.truthLine(t) : '' })),
     leadActions: settings.leadActions === true,
+    actForMe: settings.actForMe === true,
     // With the lead switch on, the lead sees what waits for it and its refused actions.
     ...(settings.leadActions === true ? { waiting: waitingForLead({ tasks: state.tasks, permissions: state.permissions, lead: state.lead, running: ui.running, editors: EDITORS }), refusals: state.leadRefusals || [] } : {}),
   };
@@ -834,7 +1141,7 @@ function markOut(a, err) {
 async function callAgent(agent, prompt, opts = {}) {
   let res;
   try {
-    res = await api.run({ agent, prompt, model: state.models[agent] || undefined, ...opts });
+    res = await api.run({ agent, prompt, model: state.models[agent] || undefined, ...(state.projectId ? { projectId: state.projectId } : {}), ...opts });
   } catch (e) {
     res = { ok: false, error: { kind: 'error', message: cleanErr(e.message) } };
   }
@@ -1020,7 +1327,9 @@ function chatMessage(m) {
       ${p.taskId ? `<button class="badge good" data-open="${p.taskId}" style="cursor:pointer">✓ T-${esc(p.taskId)} on board</button>` : p.dupOf && state.tasks.some((x) => x.id === p.dupOf) ? '' : `<button class="btn small" data-addprop="${m.id}:${i}">Add to board</button>${EDITORS.includes(p.assignee) ? `<button class="btn small primary" data-startprop="${m.id}:${i}" ${canRun(p.assignee) && settings.project ? '' : 'disabled'}>Add & start</button>` : ''}`}
     </div>`).join('');
   const pending = (m.proposals || []).filter((p) => !p.taskId).length;
-  const asks = (m.asks || []).map((id) => state.permissions.find((p) => p.id === id)).filter(Boolean).map(askCard).join('');
+  const asks = (m.asks || []).map((id) => state.permissions.find((p) => p.id === id)).filter(Boolean).map(askCard).join('')
+    + (m.actReq ? (() => { const r = (state.actRequests || []).find((x) => x.id === m.actReq); return r ? actCard(r) : ''; })() : '')
+    + (m.actUndo ? (() => { const e = (state.actLog || []).find((x) => x.id === m.actUndo); return e ? `<div class="row" style="margin-top:6px">${e.undone ? '<span class="badge">Undone</span>' : `<button class="btn small" data-actundo="${esc(e.id)}">Undo</button>`}</div>` : ''; })() : '');
   const edited = m.edited ? `<span class="edited" data-togglehist="${m.id}" title="Edited ${esc(time(m.editedAt))}${m.editedBy && m.editedBy !== m.who ? ` by ${esc(NAMES[m.editedBy])}` : ''} — click to see earlier versions">(edited)</span>` : '';
   const editing = ui.editing === m.id;
   const body = editing
@@ -1065,11 +1374,31 @@ function composer(placeholder, note) {
     </div>${note ? '<div class="composer-note">Everyone sees every message · @name talks to one AI · main only changes when you approve</div>' : ''}</div>`;
 }
 
+// The top of a chat: its title (rename), the linked project chip with its menu, and why
+// the team can't edit files when it can't.
+function chatHeader() {
+  const c = openChatEntry() || { id: teamChatId(state.projectId), team: true, projectId: state.projectId };
+  const projs = ops.projectsList?.() || { list: [] };
+  const rule = chatEditRule(c, state.projectId);
+  const title = ui.renaming
+    ? `<input type="text" id="chat-rename" value="${esc(chatTitle(c))}" maxlength="120" aria-label="Chat name"><button class="btn small primary" data-chatrenamesave>Save</button><button class="btn small ghost" data-chatrenamecancel>Cancel</button>`
+    : `<h2 class="chat-title" title="${esc(chatTitle(c))}">${esc(chatTitle(c))}</h2>${c.team ? '' : `<button class="btn small link" data-chatrename title="Rename this chat">Rename</button>`}`;
+  const menu = ui.menu === 'chatproj' ? `<div class="menu chatproj-menu" role="menu">${c.team
+    ? `<div class="mh">This is ${esc(chatProjName(c))}'s own team chat; its messages live with that project, so it stays linked to it. Start a new chat to link another project.</div><button class="chip" data-newchat>${icon('plus', 'sm')}<span class="t">New chat</span></button>`
+    : `<div class="mh">Link this chat to a project. The team works only in that project's repository.</div>${projs.list.map((x) => `<button class="chip ${x.id === c.projectId ? 'on' : ''}" data-chatlink="${esc(x.id)}">${icon(x.id === c.projectId ? 'check' : 'folder', 'sm')}<span class="t">${esc(x.name)}</span>${x.id === c.projectId ? '<small>linked</small>' : x.id === state.projectId ? '<small>open now</small>' : '<small>switches project</small>'}</button>`).join('')}
+      ${c.projectId ? `<button class="chip" data-chatlink="">${icon('x', 'sm')}<span class="t">Unlink (talk only, no file edits)</span></button>` : ''}`}</div>` : '';
+  return `<div class="chat-head">${title}<span class="grow"></span>
+    <div class="chip-wrap"><button class="proj-chip ${c.projectId ? '' : 'none'}" data-ui="menu-chatproj" aria-expanded="${ui.menu === 'chatproj'}" title="The project this chat is linked to">${icon('folder', 'sm')}<span>${esc(chatProjName(c))}</span>${icon('chev', 'sm')}</button>${menu}</div></div>
+    ${rule.unlinked ? `<div class="chat-note">${esc(rule.reason)}</div>` : ''}
+    ${chatsState.readOnly ? '<div class="chat-note warn">This chat was damaged; an earlier copy is shown and nothing new is saved to it.</div>' : ''}
+    ${(ui.health || []).length ? `<div class="chat-note warn"><b>Please check your saved data.</b> ${ui.health.map(esc).join(' ')} Nothing was changed or repaired; your data is kept exactly as it is until you decide.</div>` : ''}`;
+}
 function viewChat() {
   const live = liveAgents();
   const asks = pendingAsks().length;
   const typing = typingNow() ? `<div class="msg typing">${[...ui.typingSet].map((a) => `${mono(a, true)}<b style="color:var(--strong)">${esc(NAMES[a] || a)}</b>`).join(' ')} <span>${ui.typingSet.size > 1 ? 'are replying (in parallel)…' : 'is replying…'}</span><span class="dots"><i></i><i></i><i></i></span></div>` : '';
   return `<div class="chat">
+    ${chatHeader()}
     <div class="chat-top">${asks ? `<span class="badge warn">${asks} waiting for your answer</span>` : ''}<span style="flex:1"></span>${settings.chatResume ? '<span class="faint" style="font-size:11.5px" title="Each AI keeps one session for this room in its own CLI, so you can resume it there (Chat history → Resume).">Saved in each AI’s own CLI</span>' : ''}${state.chat.length ? '<button class="btn small ghost" data-clearchat>Clear</button>' : ''}</div>
     <div class="chat-log" id="chat-log">
       ${state.chat.map(chatMessage).join('') || `<div class="empty">Say hi, or try: <i>"Here's the plan for Hearth's Settings › Storage page — split it into tasks between you."</i><br><br>
@@ -1107,7 +1436,18 @@ async function sendChat() {
   const live = liveAgents();
   const plan = chatPlan(text, live, ui.target, state.lead);
   const who = plan.queue;
-  post({ who: 'owner', text: text.slice(0, 8000), attachments: ui.attach.length ? ui.attach : undefined });
+  const ownerMsg = post({ who: 'owner', text: text.slice(0, 8000), attachments: ui.attach.length ? ui.attach : undefined });
+  // "yes" / "no" typed by the owner answers Claude's request in this chat (nothing else counts).
+  const typed = typedDecision({ ...ownerMsg, text: raw }, actPending().filter((r) => (r.chatId || null) === (chatsState.open || null)));
+  if (typed) {
+    ui.draft = ''; ui.attach = [];
+    if (typed.error) { post({ who: 'system', text: typed.error }); save(); return render(); }
+    ownerMsg.actAnswer = typed.id;
+    return decideAct(typed.id, typed.decision, 'typed');
+  }
+  // A new chat is named after its first message (the owner can rename it any time).
+  const oc = openChatEntry();
+  if (oc && !oc.team && oc.titleAuto && state.chat.filter((m) => m.who === 'owner').length === 1 && autoTitle(raw)) updateChat(oc.id, { title: autoTitle(raw), auto: true }).then(() => render());
   ops.mentionNotes(text);
   wf.captureChat('owner', text); // a message that names T-<id> goes into that task's instruction log
   ui.draft = '';
@@ -1178,11 +1518,19 @@ async function roomPass(queue, { trigger = '', allow = [], hops = 0, parallel = 
   const answered = [];
   const canEdit = chatCanEdit() && !parallel; // parallel answers are read-only so they can't clash
   if (canEdit && queue.length) {
-    try {
-      state.chatWs = state.chatWs?.id === chatId() ? state.chatWs : { ...(await api.ensureWorkspace(chatId(), 'team chat')), id: chatId() };
-    } catch (e) {
-      post({ who: 'system', text: `Chat can't edit files right now: ${cleanErr(e.message)} — answering read-only.` });
+    // Asked of the main process every round: it picks this project's chat workspace and
+    // checks that it belongs to this project's repository (a saved id is never trusted).
+    const r = await Promise.resolve(api.ensureChatWorkspace?.(state.projectId)).catch((e) => ({ ok: false, message: cleanErr(e.message) }));
+    if (r?.ok && r.projectId === state.projectId) {
+      if (r.notice && r.notice !== chatWs?.notice) post({ who: 'system', text: r.notice });
+      chatWs = r;
+    } else {
+      chatWs = null;
+      post({ who: 'system', text: `Chat can't edit files right now: ${r?.message || 'no workspace for this project'} — answering read-only.` });
     }
+  } else if (chatRule().unlinked && queue.length && !ui.unlinkedNoted) {
+    ui.unlinkedNoted = true;
+    post({ who: 'system', text: chatRule().reason });
   }
   const eligible = (agent) => {
     if (!canRun(agent)) return false;
@@ -1227,10 +1575,10 @@ async function chatTurn(agent, { trigger = '', canEdit = false, snapshot = null,
   render();
   const startedAt = now();
   const chat = snapshot || state.chat;
-  const edit = canEdit && state.chatWs && EDITORS.includes(agent) && method(agent) !== 'api';
+  const edit = canEdit && chatWs && EDITORS.includes(agent) && method(agent) !== 'api';
   const full = buildPrompt(agent, chat, { ...chatCtx(), chatEdits: Boolean(edit) });
   if (agent === state.lead && state.leadRefusals?.length && settings.leadActions === true) state.leadRefusals = []; // shown in this prompt
-  const skey = `${chatId()}:${agent}`;
+  const skey = `${chatId()}:${agent}`; // each chat has its own sessions (state.chatSessions is the open chat's)
   const sess = settings.chatResume && method(agent) !== 'api' ? state.chatSessions?.[skey] : null;
   let prompt = full;
   if (sess?.sessionId) {
@@ -1246,13 +1594,13 @@ async function chatTurn(agent, { trigger = '', canEdit = false, snapshot = null,
   round.runs[agent] = runId;
   prompt += habitatPrompt(agent, Boolean(sess?.sessionId));
   const res = await callAgent(agent, prompt, {
-    ...(edit ? { mode: 'edit', taskId: chatId() } : { mode: 'read', taskId: state.chatWs ? chatId() : undefined }),
+    ...(chatRule().unlinked ? { mode: 'read', unlinked: true } : edit ? { mode: 'edit', taskId: wsId() } : { mode: 'read', taskId: chatWs ? wsId() : undefined }),
     runId,
     images: media.images,
     resumeId: sess?.sessionId || undefined,
     fallbackPrompt: sess?.sessionId ? full : undefined,
-    thread: `chat-${chatId()}-${agent}`,
-    title: `Team chat — ${settings.project ? settings.project.split('/').pop() : 'Hearth AI'}`,
+    thread: isTeam(chatsState.open || 'team-') ? `chat-${chatId()}-${agent}` : `chat-${chatsState.open}-${agent}`,
+    title: openChatEntry() && !openChatEntry().team ? `Chat — ${openChatEntry().title}`.slice(0, 120) : `Team chat — ${settings.project ? settings.project.split('/').pop() : 'Hearth AI'}`,
     historyText: lastOwner?.text || trigger,
   });
   delete round.runs[agent];
@@ -1277,7 +1625,7 @@ async function chatTurn(agent, { trigger = '', canEdit = false, snapshot = null,
       else post({ who: 'system', text: `${NAMES[agent]} tried to retract #${id}: ${r.reason}.` });
       ops.actionResult(agent, `RETRACT #${id}`, r.ok, r.ok ? 'message retracted' : r.reason);
     }
-    const posted = await agentAttachments(parseAttachLines(d.text), chatId(), agent);
+    const posted = await agentAttachments(parseAttachLines(d.text), chatRule().unlinked ? null : wsId(), agent);
     if (!d.pass && (d.text || d.asks.length || d.handoffs.length || posted.atts.length)) {
       const handoffNote = d.handoffs.map((h) => `→ handing off to ${NAMES[h.to]}${h.note ? `: ${h.note}` : ''}`).join('\n');
       for (const h of d.handoffs) ops.actionResult(agent, `HANDOFF: @${h.to}`, canRun(h.to), canRun(h.to) ? `${NAMES[h.to]} answers next` : `${NAMES[h.to]} can't run right now`);
@@ -1294,12 +1642,13 @@ async function chatTurn(agent, { trigger = '', canEdit = false, snapshot = null,
     ops.auditRoutine(agent, d.routine, null);
     await handleVerdicts(agent, d.text);
     handleLeadLines(agent, d.text);
+    actLines(agent, d.text); // ACT FOR OWNER: requests that wait for the owner's yes
     await ops.handleLines(agent, d.text, null, Boolean(edit)); // IMAGE REQUEST / BACKGROUND (jobs edit only if this turn could)
     await wf.lines(agent, d.text); // TASK NOTE / VERIFY / MERGE MAIN / REVERT
     wf.ensureResults(agent, d.text); // no action line without a ✓/✗
     // Images and recordings it made in the chat workspace become attachments too.
-    if (state.chatWs && m) {
-      const extra = await wf.assets(chatId(), agent, d.text, Date.parse(startedAt), posted.atts.map((a) => a.from));
+    if (chatWs && m) {
+      const extra = await wf.assets(wsId(), agent, d.text, Date.parse(startedAt), posted.atts.map((a) => a.from));
       if (extra.length) m.attachments = [...(m.attachments || []), ...extra];
     }
     } finally { ops.turnEnd(agent, m); }
@@ -1310,10 +1659,10 @@ async function chatTurn(agent, { trigger = '', canEdit = false, snapshot = null,
     if (res.resumeReset) post({ who: 'system', text: `${NAMES[agent]}'s saved CLI session couldn't continue, so it started a new one (also saved in its CLI).` });
     habitatLines(agent, d, m);
     if (edit) {
-      const cp = await api.checkpoint(chatId(), NAMES[agent], `Team chat: ${(lastOwner?.text || trigger || 'update').slice(0, 80)}`).catch(() => null);
+      const cp = await api.checkpoint(wsId(), NAMES[agent], `Team chat: ${(lastOwner?.text || trigger || 'update').slice(0, 80)}`).catch(() => null);
       if (cp) {
-        const pushed = await autoPush(chatId());
-        ops.checkpointLine(agent, cp, null, ` On ${state.chatWs.branch}${pushed?.ok ? ', pushed to GitHub' : pushed ? `; push failed: ${pushed.message}` : ''}.`);
+        const pushed = await autoPush(wsId());
+        ops.checkpointLine(agent, cp, null, ` On ${chatWs.branch}${pushed?.ok ? ', pushed to GitHub' : pushed ? `; push failed: ${pushed.message}` : ''}.`);
       }
     }
     // Mentions and handoffs bring teammates in after this reply.
@@ -1957,6 +2306,7 @@ function lightbox() {
 
 function modal() {
   if (ui.lightbox) return lightbox();
+  if (ui.modal === 'act') return actModal();
   if (ui.modal !== 'new') return '';
   const opt = (sel, ids) => ids.map((k) => `<option value="${k}" ${k === sel ? 'selected' : ''}>${esc(AGENTS[k].name)}${k !== 'none' && !connected(k) ? ' (not linked)' : ''}</option>`).join('');
   const sug = ops.suggestHint(); // assign by strength and headroom (the owner can change both)
@@ -1994,7 +2344,7 @@ const NAV = [
 const TITLES = {
   overview: ['Command Center', 'Your AI team, working on the Hearth OS project under your approval'],
   habitat: ['Habitat', 'Each AI has its own room; when they work, they sit at their desk in the shared workroom'],
-  chat: ['Team chat', 'You and the whole AI team in one room — everyone sees everything'],
+  chat: ['Chat', 'You and the whole AI team in one room — everyone sees everything'],
   board: ['Task board', 'Owner → policy → agent → checkpoint → tests → review → approval'],
   approvals: ['Approvals', 'Nothing high-impact happens without your explicit sign-off'],
   agents: ['Agents', 'Sign in on each provider’s own page, see who is available and what they are doing'],
@@ -2008,6 +2358,17 @@ const TITLES = {
 
 const MORE = ['agents', 'history', 'github', 'audit', 'ops', 'actions', 'summary', 'project', 'release'];
 const NAV_ICON = { agents: 'users', history: 'history', github: 'branch', audit: 'list', ops: 'stats', actions: 'list', summary: 'moon', project: 'folder', release: 'flag', overview: 'home', settings: 'gear' };
+// The Chats list (newest first). The narrowed sidebar opens it from the Chats icon.
+function chatItems(max) {
+  const list = chatsState.list;
+  const shown = list.slice(0, max);
+  return `${shown.map((c) => `<button class="item chat-item ${c.id === chatsState.open && ui.view === 'chat' ? 'on' : ''}" data-openchat="${esc(c.id)}" title="${esc(chatTitle(c))} · ${esc(chatProjName(c))}">${icon('chat', 'sm')}<span class="t">${esc(chatTitle(c))}</span><span class="meta ${c.projectId === state.projectId ? '' : 'other'}">${esc(c.projectId === state.projectId ? '' : chatProjName(c))}</span></button>`).join('')}
+    ${list.length > max ? `<button class="item more-chats" data-allchats>${icon('more', 'sm')}<span class="t">All chats (${list.length})</span></button>` : ui.allChats && list.length > 6 ? `<button class="item more-chats" data-allchats>${icon('chev', 'sm')}<span class="t">Fewer</span></button>` : ''}`;
+}
+function chatsMenu() {
+  return `<div class="menu chats-menu" role="menu"><div class="mh">Chats</div><button class="chip" data-newchat>${icon('plus', 'sm')}<span class="t">New chat</span></button>
+    ${chatsState.list.slice(0, 30).map((c) => `<button class="chip ${c.id === chatsState.open ? 'on' : ''}" data-openchat="${esc(c.id)}">${icon('chat', 'sm')}<span class="t">${esc(chatTitle(c))}</span><small>${esc(chatProjName(c))}</small></button>`).join('')}</div>`;
+}
 function sidebar(waiting) {
   const label = Object.fromEntries(NAV.map(([id, , l]) => [id, l]));
   const nav = (id, ic, text, extra = '') => `<button class="nav ${ui.view === id ? 'on' : ''}" data-nav="${id}" title="${esc(text)}">${icon(ic)}<span class="lbl-txt">${esc(text)}</span>${extra}</button>`;
@@ -2022,13 +2383,15 @@ function sidebar(waiting) {
   return `<aside class="side">
     <div class="brand"><button class="home-link" data-nav="overview" title="Home"><img src="./icon.png" alt=""><div><b>Hearth AI</b><span>Command Center</span></div></button><button class="collapse" data-ui="side" title="${ui.sideCollapsed ? 'Widen' : 'Narrow'} the sidebar">${icon('side', 'sm')}</button></div>
     <button class="newtask" data-new title="New task"><span class="plus">${icon('plus')}</span><span class="lbl-txt">New task</span></button>
-    ${nav('chat', 'chat', 'Team chat', typingNow() ? '<span class="meta">replying…</span>' : '')}
+    <div class="chats-wrap"><button class="nav chats-nav ${ui.view === 'chat' ? 'on' : ''}" data-ui="menu-chats" aria-expanded="${ui.menu === 'chats'}" title="Chats: open one or start a new chat">${icon('chat')}<span class="lbl-txt">Chats</span>${typingNow() ? '<span class="meta">replying…</span>' : ''}</button>${ui.menu === 'chats' && ui.sideCollapsed ? chatsMenu() : ''}</div>
     ${nav('board', 'board', 'Board', openTasks().length ? `<span class="meta">${openTasks().length} open</span>` : '')}
     ${nav('approvals', 'shield', 'Approvals', waiting ? `<span class="n">${waiting}</span>` : '')}
     ${nav('jobs', 'clock', 'Jobs', running ? `<span class="meta">${running} running</span>` : '')}
     ${nav('habitat', 'home', 'Habitat')}
     <div class="more-wrap"><button class="nav ${ui.more || MORE.includes(ui.view) ? 'on' : ''}" data-ui="more" aria-expanded="${ui.more}" title="More pages">${icon('more')}<span class="lbl-txt">More</span><span class="chev">${icon(ui.more ? 'chev' : 'chevr', 'sm')}</span></button>
     ${ui.more ? `<div class="more-menu" role="menu">${nav('overview', 'home', 'Home')}${MORE.map((id) => nav(id, NAV_ICON[id] || 'more', label[id] || id)).join('')}${nav('settings', 'gear', 'Settings')}</div>` : ''}</div>
+    <div class="sec">Chats<span class="grow"></span><button data-newchat title="New chat">${icon('plus', 'sm')}</button></div>
+    ${chatItems(ui.allChats ? 50 : 6)}
     <div class="sec">Projects<span class="grow"></span><button data-ops="addfolder" title="Add a project folder">${icon('plus', 'sm')}</button></div>
     ${p.list.length ? p.list.map((x) => x.id === p.active
       ? `<button class="item on" data-nav="project" title="${esc(x.dir || '')}">${icon('folder', 'sm')}<span class="t">${esc(x.name)}</span>${repo.branch ? `<span class="meta mono">${esc(repo.branch)}</span>` : ''}</button>`
@@ -2061,6 +2424,7 @@ function topbar(waiting, title) {
   const tb = (id, ic, label, n = '') => `<button class="tb" data-panel="${id}" title="Open ${label} beside the conversation">${icon(ic, 'sm')}${label}${n}</button>`;
   const updOn = ['available', 'ready'].includes(upd.status?.state);
   return `<div class="topbar">${projBtn}<div class="crumb">${crumb}</div><div class="grow"></div>
+    <button class="tb newchat-tb" data-newchat title="New chat" aria-label="New chat">${icon('plus', 'sm')}${ui.panel ? '' : 'New chat'}</button>
     ${updOn ? '<button class="pill acc" data-goupdates title="Open Settings › App updates">Update available</button>' : ''}<span class="pill" title="This app is in beta">Beta</span>
     ${round ? '<button class="tb b" data-stopround title="End this chat round: nobody else starts, and the AIs typing now are cancelled" style="color:var(--bad)">Stop</button>' : ''}
     ${ui.view === 'chat' ? `<button class="tb b" data-checkin ${live.length && !round ? '' : 'disabled'}>${icon('users', 'sm')}${ui.panel ? 'Check-in' : 'Team check-in'}</button>` : ''}
@@ -2569,7 +2933,7 @@ async function syncHistory(quiet = false) {
   if (ui.view === 'history') render();
 }
 
-const CLICK = '[data-sendreview],[data-owneract],[data-updatemain],[data-releasebranch],[data-leadundo],[data-opendup],[data-adddup],[data-stopround],[data-toggleleadgh],[data-attach],[data-unattach],[data-lightbox],[data-closelightbox],[data-testkey],[data-nav],[data-new],[data-open],[data-close],[data-cancel],[data-create],[data-advance],[data-approve],[data-reject],[data-changes],[data-note],[data-delete],[data-savekey],[data-rmkey],[data-ask],[data-export],[data-reset],[data-upd],[data-opinion],[data-modalbg],[data-sendchat],[data-target],[data-addprop],[data-addall],[data-clearchat],[data-method],[data-login],[data-recheck],[data-locate],[data-available],[data-run],[data-stop],[data-freebuff],[data-fbdone],[data-openws],[data-pickproject],[data-autohandoff],[data-restore],[data-install],[data-installall],[data-installollama],[data-startprop],[data-showchanges],[data-dismisssetup],[data-signin],[data-disconnect],[data-toggleagent],[data-ghlogin],[data-gitrefresh],[data-useproject],[data-clone],[data-gitpull],[data-pushbranch],[data-openpr],[data-approvemerge],[data-approvepr],[data-access],[data-togglesetting],[data-adddir],[data-removedir],[data-expand],[data-opensignin],[data-openweb],[data-openexport],[data-makelead],[data-decide],[data-editmsg],[data-delmsg],[data-saveedit],[data-canceledit],[data-togglehist],[data-checkin],[data-histscan],[data-histimport],[data-histopen],[data-histresume],[data-histweb],[data-histwebin],[data-histremove],[data-prlist],[data-prrefresh],[data-release],[data-theme]';
+const CLICK = '[data-actallow],[data-actdeny],[data-actview],[data-actundo],[data-openchat],[data-newchat],[data-allchats],[data-chatlink],[data-chatrename],[data-chatrenamesave],[data-chatrenamecancel],[data-sendreview],[data-owneract],[data-updatemain],[data-releasebranch],[data-leadundo],[data-opendup],[data-adddup],[data-stopround],[data-toggleleadgh],[data-attach],[data-unattach],[data-lightbox],[data-closelightbox],[data-testkey],[data-nav],[data-new],[data-open],[data-close],[data-cancel],[data-create],[data-advance],[data-approve],[data-reject],[data-changes],[data-note],[data-delete],[data-savekey],[data-rmkey],[data-ask],[data-export],[data-reset],[data-upd],[data-opinion],[data-modalbg],[data-sendchat],[data-target],[data-addprop],[data-addall],[data-clearchat],[data-method],[data-login],[data-recheck],[data-locate],[data-available],[data-run],[data-stop],[data-freebuff],[data-fbdone],[data-openws],[data-pickproject],[data-autohandoff],[data-restore],[data-install],[data-installall],[data-installollama],[data-startprop],[data-showchanges],[data-dismisssetup],[data-signin],[data-disconnect],[data-toggleagent],[data-ghlogin],[data-gitrefresh],[data-useproject],[data-clone],[data-gitpull],[data-pushbranch],[data-openpr],[data-approvemerge],[data-approvepr],[data-access],[data-togglesetting],[data-adddir],[data-removedir],[data-expand],[data-opensignin],[data-openweb],[data-openexport],[data-makelead],[data-decide],[data-editmsg],[data-delmsg],[data-saveedit],[data-canceledit],[data-togglehist],[data-checkin],[data-histscan],[data-histimport],[data-histopen],[data-histresume],[data-histweb],[data-histwebin],[data-histremove],[data-prlist],[data-prrefresh],[data-release],[data-theme]';
 
 document.addEventListener('click', async (e) => {
   const el = e.target.closest(CLICK);
@@ -2578,6 +2942,23 @@ document.addEventListener('click', async (e) => {
   const task = (id) => state.tasks.find((t) => t.id === id);
 
   if (d.modalbg !== undefined && e.target === el) { ui.modal = null; return render(); }
+  if (d.actallow) return decideAct(d.actallow, 'allow', ui.modal === 'act' ? 'popup' : 'card');
+  if (d.actdeny) return decideAct(d.actdeny, 'deny', ui.modal === 'act' ? 'popup' : 'card');
+  if (d.actview) { ui.modal = 'act'; ui.actReq = d.actview; return render(); }
+  if (d.actundo) return undoAct(d.actundo);
+  if (d.openchat) return openChat(d.openchat);
+  if (d.newchat !== undefined) return newChat();
+  if (d.allchats !== undefined) { ui.allChats = !ui.allChats; return render(); }
+  if (d.chatlink !== undefined) return linkChat(d.chatlink || null);
+  if (d.chatrename !== undefined) { ui.renaming = true; render(); return document.getElementById('chat-rename')?.select(); }
+  if (d.chatrenamecancel !== undefined) { ui.renaming = false; return render(); }
+  if (d.chatrenamesave !== undefined) {
+    const c = openChatEntry();
+    const t = document.getElementById('chat-rename')?.value.trim();
+    if (c && !c.team && t) { const e = await updateChat(c.id, { title: t }); if (e) audit('Chat renamed', null, t); save(); }
+    ui.renaming = false;
+    return render();
+  }
   if (d.nav) {
     ui.view = d.nav; ui.selected = null;
     if (d.nav === 'settings') backups = await api.backups().catch(() => backups);
@@ -2674,7 +3055,7 @@ document.addEventListener('click', async (e) => {
     return render();
   }
   // A folder is a project with its own board: switching reloads the window (saved first, never after).
-  if (d.useproject) { await save(); settings = await api.useProject(d.useproject); if (settings.projectSwitched) return location.reload(); state.chatWs = null; await refreshGit(); return render(); }
+  if (d.useproject) { await save(); settings = await api.useProject(d.useproject); if (settings.projectSwitched) return location.reload(); chatWs = null; await refreshGit(); return render(); }
   if (d.clone !== undefined) {
     const input = document.getElementById('clone-input').value.trim();
     if (!input) return;
@@ -2683,7 +3064,7 @@ document.addEventListener('click', async (e) => {
     await save();
     const r = await api.gitClone(input).catch((err) => ({ ok: false, message: cleanErr(err.message) }));
     if (r.ok && r.settings?.projectSwitched) return location.reload();
-    if (r.ok) { settings = await api.settings(); state.chatWs = null; await refreshGit(); audit('Cloned project', null, r.dir); save(); }
+    if (r.ok) { settings = await api.settings(); chatWs = null; await refreshGit(); audit('Cloned project', null, r.dir); save(); }
     toast(r.ok ? `Cloned to ${r.dir} — it's now the active project.` : `Clone failed: ${r.message}`);
     return render();
   }
@@ -2869,7 +3250,7 @@ document.addEventListener('click', async (e) => {
   if (d.fbdone) return freebuffDone(task(d.fbdone));
   if (d.openws !== undefined) return api.openWorkspace(d.openws || null);
   if (d.pickproject !== undefined) {
-    try { await save(); settings = await api.pickProject(); if (settings.projectSwitched) return location.reload(); state.chatWs = null; await refreshGit(); } catch (err) { toast(cleanErr(err.message)); }
+    try { await save(); settings = await api.pickProject(); if (settings.projectSwitched) return location.reload(); chatWs = null; await refreshGit(); } catch (err) { toast(cleanErr(err.message)); }
     return render();
   }
   if (d.autohandoff !== undefined) { state.autoHandoff = !state.autoHandoff; save(); return render(); }
@@ -3053,9 +3434,11 @@ document.addEventListener('click', async (e) => {
     if (!confirm('Restore this earlier save? Your current state becomes a backup too, so you can switch back.')) return;
     try {
       const s = await api.restoreBackup(Number(d.restore));
-      state = { models: {}, chat: [], agentStatus: {}, autoHandoff: true, permissions: [], chatSessions: {}, ...s };
-      backups = await api.backups();
-      toast('Earlier save restored.');
+      if (s?.refused) return toast(s.message);
+      // The main process restored it into the open project's file; reload to show it.
+      ui.switching = true;
+      toast('Earlier save restored. Reloading…');
+      return setTimeout(() => location.reload(), 600);
     } catch (err) { toast(cleanErr(err.message)); }
     return render();
   }
@@ -3081,6 +3464,7 @@ document.addEventListener('click', async (e) => {
   const wasMore = ui.more, wasMenu = ui.menu;
   const el = t.closest?.('[data-ui],[data-panel],[data-pickmode],[data-prefill],[data-setsec],[data-goupdates],[data-teammember],[data-showchanges][data-inline]');
   const closing = (ui.more && !t.closest?.('.more-menu,[data-ui="more"]')) || (ui.menu && !t.closest?.('.menu,[data-ui^="menu-"]'));
+  if (ui.renaming && t.id !== 'chat-rename' && !t.closest?.('[data-chatrenamesave],[data-chatrename]') && t.closest?.('[data-openchat],[data-newchat],[data-nav]')) ui.renaming = false;
   if (closing) { ui.more = false; ui.menu = null; }
   if (!el) { if (closing && !t.closest?.(CLICK)) render(); return; }
   const d = el.dataset;
@@ -3094,7 +3478,12 @@ document.addEventListener('click', async (e) => {
     savePref('panel', ui.panel === 'task' ? null : ui.panel);
     return render();
   }
-  if (d.ui === 'menu-target' || d.ui === 'menu-mode' || d.ui === 'menu-project') { const m = d.ui.slice(5); ui.menu = wasMenu === m ? null : m; return render(); }
+  if (d.ui === 'menu-target' || d.ui === 'menu-mode' || d.ui === 'menu-project' || d.ui === 'menu-chatproj') { const m = d.ui.slice(5); ui.menu = wasMenu === m ? null : m; return render(); }
+  // Chats: the wide sidebar lists them, so the button opens the open chat; narrowed, it opens the list.
+  if (d.ui === 'menu-chats') {
+    if (ui.sideCollapsed) { ui.menu = wasMenu === 'chats' ? null : 'chats'; return render(); }
+    ui.view = 'chat'; ui.selected = null; ui.menu = null; return render();
+  }
   if (d.panel) { ui.panel = d.panel; savePref('panel', d.panel === 'task' ? null : d.panel); if (d.panel === 'approvals') recheckApprovals(); return render(); }
   if (d.pickmode) { ui.mode = d.pickmode === 'major' ? 'major' : 'routine'; ui.menu = null; render(); return document.getElementById('chat-text')?.focus(); }
   if (d.prefill) { ui.draft = PREFILL[d.prefill] || ''; render(); return document.getElementById('chat-text')?.focus(); }
@@ -3205,6 +3594,7 @@ document.addEventListener('keydown', (e) => {
     changeTextSize(e.key === '0' ? 100 : e.key === '-' ? 'down' : 'up');
     return;
   }
+  if (e.target.id === 'chat-rename' && e.key === 'Enter') { e.preventDefault(); document.querySelector('[data-chatrenamesave]')?.click(); return; }
   if (e.target.id === 'chat-text' && e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
     return sendChat();
@@ -3233,6 +3623,8 @@ async function boot() {
     window.matchMedia?.('(prefers-color-scheme: dark)').addEventListener?.('change', applyTheme);
     const saved = await api.loadState();
     if (saved && Array.isArray(saved.tasks) && Array.isArray(saved.audit)) state = { models: {}, ...saved };
+    // The project this window is bound to (the main process refuses saves stamped otherwise).
+    state.projectId = saved?.projectId || (await Promise.resolve(api.opsProjects?.()).catch(() => null))?.active || null;
     if (!Array.isArray(state.chat)) state.chat = [];
     if (!Array.isArray(state.permissions)) state.permissions = [];
     if (!state.chatSessions) state.chatSessions = {};
@@ -3275,9 +3667,11 @@ async function boot() {
   } catch (e) {
     toast(`Startup problem: ${e.message}`);
   }
+  await loadChats();
   render();
   ops.boot();
   wf.boot();
+  checkHealth();
   ops.syncLocal();
   // Update only the status panel, so a usage pause can expire without touching the draft.
   setInterval(updatePanel, 15000);

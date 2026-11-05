@@ -82,6 +82,7 @@ function stub() {
     updaterInfo: () => ok({ enabled: false, reason: '', status: { state: 'idle' } }),
     attachPick: () => ok([]),
     // team ops
+    ensureChatWorkspace: () => ok({ ok: true, id: 'CHATB9YUUL', branch: 'hearth/chatb9yuul-team-chat', projectId: projects.active }),
     opsProjects: () => ok(projects),
     opsProjectSettings: (patch) => { Object.assign(projects.list[0].settings, patch); return ok(projects); },
     opsMemoryGet: () => ok({ ok: true, file: '/home/owner/Projects/hearth-os/.hearth-ai/PROJECT.md', text: memoryText, seeded: true }),
@@ -129,7 +130,7 @@ const shot = async (label, { full = false } = {}) => {
   console.log('saved', f);
 };
 // Pages used less often sit under More in the sidebar: open it first when needed.
-const nav = async (v) => { const sel = `.side [data-nav="${v}"]`; if (!(await page.locator(sel).count())) { await page.click('.side [data-ui="more"]'); await page.waitForTimeout(150); } await page.click(sel); await page.waitForTimeout(300); };
+const nav = async (v) => { if (v === 'chat') { await page.click('.side [data-ui="menu-chats"]'); await page.waitForTimeout(300); return; } const sel = `.side [data-nav="${v}"]`; if (!(await page.locator(sel).count())) { await page.click('.side [data-ui="more"]'); await page.waitForTimeout(150); } await page.click(sel); await page.waitForTimeout(300); };
 const text = () => page.textContent('.main');
 
 // First run after the upgrade: the owner confirms the identity (suggested, never auto-saved).
