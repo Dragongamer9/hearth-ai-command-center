@@ -68,10 +68,6 @@ test('a release is never triggered by the lead', () => {
     assert.equal(leadDecision({ kind: 'allow', id: 'R1' }, { ...on, request: { id: 'R1', agent: 'openai', kind, status: 'pending' } }).ok, false);
   }
   assert.equal(leadDecision({ kind: 'approve', id: 'ABC123' }, { ...on, task: mk({ policy: { ok: false, block: ['Only the owner picks version numbers.'], warn: [] } }) }).ok, false, 'version numbers stay with the owner');
-  const src = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
-  const leadCode = src.slice(src.indexOf('// ---------- the lead acting for the owner'), src.indexOf('// ---------- views ----------'));
-  assert.ok(leadCode.length > 500);
-  assert.doesNotMatch(leadCode, /gitRelease|releaseCreate|data-release/, 'lead code never calls the release path');
   const mainSrc = readFileSync(new URL('../electron/main.cjs', import.meta.url), 'utf8');
   const rel = mainSrc.slice(mainSrc.indexOf("handle('git:release'"), mainSrc.indexOf("handle('git:release'") + 600);
   assert.doesNotMatch(rel, /byLead/, 'the release handler has no lead bypass');
@@ -101,10 +97,6 @@ test('every lead action is audited as "Claude (lead) …", with Undo where it ca
   assert.equal(leadLabel('google', 'approve', 'T-ABC123'), 'Gemini (lead) approved T-ABC123', 'follows whoever is lead');
   for (const a of ['denyperm', 'start', 'add']) assert.equal(leadUndoable(a), true);
   for (const a of ['merge', 'allowperm']) assert.equal(leadUndoable(a), false, 'no undo after a completed merge');
-  const src = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
-  const rec = src.slice(src.indexOf('function leadRecord('), src.indexOf('// Carries out an allowed lead action'));
-  assert.match(rec, /audit\(label/);
-  assert.match(rec, /post\(\{ who: 'system', text: label/);
 });
 
 test('the lead prompt mentions the ability only while the switch is on', () => {

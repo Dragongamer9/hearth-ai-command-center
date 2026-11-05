@@ -1,3816 +1,1127 @@
+// Hearth AI Command Center 2.x: chats only. Each chat can connect to one of the owner's
+// GitHub repos; Claude, ChatGPT, Gemini and the others work together in it, Claude leading.
+// Work happens in a small temporary copy of the repo on this PC (electron/copies.cjs);
+// builds and tests run in GitHub Actions after a push to the chat's own branch.
 import './styles.css';
-import { policyCheck } from './policy.mjs';
-import { recipients, buildPrompt, buildDelta, parseProposals, parseDirectives, applyEdit, applyRetract, makeRequest, decideRequest, blockedAgents, mentions, NAMES, PERMISSION_KINDS, HOLD_BADGES, authProblem, makeHold, holdLifted } from './chat.mjs';
-import { buildTaskBrief, nextAgent, parseStatus, taskRunState, recoverInterrupted, RUN_STATES, roleKinds, taskNeed, inQueue, queueOf, nextQueued, placeNext, placeLast, startLabel, redistribute } from './team.mjs';
-import { short, parseVerdicts, applyVerdict, ownerAction, REVIEWABLE, requestChanges, reviewBaseline, checkDoneAfterReview, testResult, TEST_LABEL, clearStaleApproval, doneLine } from './owner.mjs';
-import { panelState, holdStatus, keyTestLine } from './presence.mjs';
-import { findDuplicate } from './dupes.mjs';
-import { parseAttachLines, mediaFor } from './media.mjs';
-import { chatPlan, canOwnerSend, newRound, ownerInterrupt, stopRound, cameAfterOwner, beginPass } from './room.mjs';
-import { leadOn, parseLeadLines, leadDecision, leadLabel, leadUndoable, pickReviewer } from './lead.mjs';
-import { AGENTS, AGENT_IDS, WEB_ONLY, HEADLESS, EDITORS, API_CAPABLE, DEFAULT_ROLES, BILLING, ACCESS_NOTE, OLLAMA_NOTE, COLORS } from './registry.mjs';
-import { viewHabitat, mountHabitat, stopHabitat } from './habitat.mjs';
-import { mountHabitat3d, stopHabitat3d } from './habitat3d/view.mjs';
-import { applyHabitatLines, habitatSection, stripHabitatLines } from './habitat/actions.mjs';
-import { HEARTH_OS, RED_FLAGS } from './hearth.mjs';
-import { tokensToCss, pickMode } from './theme.mjs';
-import { createOps } from './ops/ui.mjs';
-import { setLevels as setApprovalLevels } from './ops/approval.mjs';
-import { createLeadWaker, waitingForLead } from './ops/leadwake.mjs';
-import { createWorkflow } from './ops/workflow-ui.mjs';
-import { instructionsBlock, recordReview, holdApproval, useHeldApproval, recordTest, shouldPing, lastReview } from './ops/workflow.mjs';
-import { teamHabitat, teamHabitatLine } from './habitat/status.mjs';
+import { AGENTS, COLORS, AGENT_IDS } from './registry.mjs';
 import { icon } from './icons.mjs';
-import { ACT_AGENT, parseActLines, makeActRequest, describe as describeAct, typedDecision, stillValid, settle, undoEntry } from './ops/actforme.mjs';
-import { isTeam, teamChatId, sortChats, autoTitle, pickOpenChat, openPlan, savePlan, chatEditRule, moveInGroup, dropInGroup } from './chats.mjs';
+import { tokensToCss, pickMode } from './theme.mjs';
+import { autoTitle, moveInGroup, dropInGroup } from './chats.mjs';
+import { groupChats, repoHint, greeting, fmtBytes, ago } from './app/groups.mjs';
+import { groupSteps, outcomeSteps } from './app/steps.mjs';
+import { extractPreviews, previewDoc, frameHtml, kindOf } from './app/previews.mjs';
+import { md, esc } from './app/text.mjs';
+import { parseDiff } from './app/diff.mjs';
+import { teamOf, planTurn, handoffs, pickReviewer, brief, turnPrompt, name as aiName } from './app/brief.mjs';
+import { parseActs, makeAct, expired, typedAnswer, ACT_KINDS } from './app/act.mjs';
 
-const api = window.hearth;
-
-// ---------- constants ----------
-const STAGES = {
-  intake: 'Intake & policy',
-  implementing: 'Implementing',
-  checkpoint: 'Checkpoint saved',
-  testing: 'Tests & evidence',
-  review: 'Independent review',
-  approval: 'Owner approval',
-  approved: 'Approved',
-  rejected: 'Rejected',
-};
-
-const COLUMNS = [
-  { title: 'Intake', stages: ['intake'] },
-  { title: 'In progress', stages: ['implementing', 'checkpoint'] },
-  { title: 'Verify', stages: ['testing', 'review'] },
-  { title: 'Owner approval', stages: ['approval'] },
-  { title: 'Closed', stages: ['approved', 'rejected'] },
+const api = window.hearth || null;
+const TEAM_IDS = ['anthropic', 'openai', 'google', 'xai', 'mistral', 'qwen', 'perplexity', 'deepseek', 'ollama'];
+const MONO = { anthropic: ['C', '#c96b3c'], openai: ['G', '#3f8f6f'], google: ['Ge', '#4b6fd0'], xai: ['X', '#5d636b'], mistral: ['M', '#6b5bd2'], qwen: ['Q', '#7a5cc9'], perplexity: ['P', '#1f8a99'], deepseek: ['D', '#3d56c9'], ollama: ['L', '#6d746e'], freebuff: ['F', '#8a7bc6'] };
+const QUICK = [
+  ['gh', 'Fix a bug in a repo', 'There\'s a bug I want fixed: '],
+  ['dl', 'Look at a sent log', 'Look at the log I attached (or the newest one in Dragongamer9/hearth-logs) and find the cause: '],
+  ['globe', 'Research something', 'Research this and give me a short answer with sources: '],
+  ['eye', 'Make a mockup', 'Make a live preview mockup of '],
+  ['branch', 'Review open pull requests', 'Review the open pull requests in this repo and tell me which are ready.'],
+  ['flag', 'Prepare a release', 'Prepare a release: list what changed since the last release and draft the release notes. Don\'t pick a version number; ask me for it.'],
 ];
+const SECTIONS = [['team', 'AI team'], ['accounts', 'Accounts'], ['github', 'GitHub'], ['tools', 'Tools'], ['perms', 'Permissions'], ['look', 'Appearance'], ['updates', 'App updates'], ['data', 'Saved data']];
+const IDLE = [[1, '1 hour'], [6, '6 hours'], [24, '1 day'], [72, '3 days'], [168, '1 week'], [0, 'Never']];
 
-const NEXT = {
-  intake: ['implementing', 'Start work'],
-  implementing: ['checkpoint', 'Mark checkpoint saved'],
-  checkpoint: ['testing', 'Tests & evidence collected'],
-  testing: ['review', 'Send to independent review'],
-  review: ['approval', 'Request owner approval'],
+const S = {
+  view: 'home', tab: 'team',
+  chats: [], trash: [], notices: [], broken: false,
+  open: null, msgs: [], sessions: {}, readOnly: false, copy: null,
+  draft: '', attach: [], conn: null, mode: 'team', web: true, build: true,
+  busy: null, stop: false,
+  pane: null, pop: null, modal: null, toast: null, undo: null,
+  search: '', hits: null, showTrash: false, showHidden: false, renaming: null,
+  repos: null, reposMsg: '', repoQuery: '', branches: {}, pick: null,
+  settings: { tools: { web: true, build: true, quickChecks: [] }, team: null, copyIdleHours: 24, theme: 'hearth', textSize: 100, connection: {}, bins: {}, extraDirs: [] },
+  info: {}, upd: { enabled: false, status: { state: 'idle' } }, gh: {}, cli: {}, prov: { keys: {} }, theme: { found: false, tokens: {} },
+  copies: null, boards: null, phone: null, idle: [], rec: null, voice: null,
 };
 
-const ACTIONS = { code: 'Code change', docs: 'Docs', merge: 'Merge', release: 'Release', deploy: 'Deploy' };
-const API_ONLY = AGENT_IDS.filter((a) => AGENTS[a].kind === 'api');
-const MAX_HOPS = 6;
-
-// ---------- state ----------
-let state = { version: 1, tasks: [], audit: [], models: {}, chat: [], agentStatus: {}, autoHandoff: true, roles: {}, lead: 'anthropic', disabled: {}, permissions: [], chatSessions: {} };
-let ui = { view: 'overview', selected: null, modal: null, busy: {}, draft: '', target: 'all', typing: null, running: {}, saving: {}, changes: {}, expanded: null, side: 'anthropic', signin: {}, installOllama: false, editing: null, showHist: {}, typingSet: new Set(), attach: [], lightbox: null, hist: { q: '', provider: 'all', source: 'all', list: [], sel: null, stats: null, kind: 'auto', scanning: false }, prs: { list: [], loaded: false, msg: '', byTask: {} }, release: { version: '', confirm: '', target: '', notes: '', draft: true } };
-// Look-only preferences of the redesigned shell (side panel, Team list, sidebar width).
-// Kept in this window's local storage, written only when the owner changes one; app settings are untouched.
-const PREFS_KEY = 'hearth-aicc-ui';
-const PANEL_TABS = [['board', 'Board'], ['task', 'Task'], ['habitat', 'Habitat'], ['jobs', 'Jobs'], ['approvals', 'Approvals'], ['release', 'Release']];
-function loadPrefs() { try { const p = JSON.parse(localStorage.getItem(PREFS_KEY) || '{}'); return p && typeof p === 'object' ? p : {}; } catch { return {}; } }
-function savePref(k, v) { try { const p = loadPrefs(); p[k] = v; localStorage.setItem(PREFS_KEY, JSON.stringify(p)); } catch {} }
-{
-  const p = loadPrefs();
-  ui.panel = PANEL_TABS.some(([id]) => id === p.panel && id !== 'task') ? p.panel : null;
-  ui.teamOpen = p.teamOpen !== false;
-  ui.sideCollapsed = p.sideCollapsed === true;
-  ui.more = false; ui.menu = null; ui.mode = 'routine'; ui.setSec = 'general';
-}
-let backups = { recoveredFrom: null, backups: [] };
-let settings = { project: null, projects: [], connection: { anthropic: 'cli', openai: 'cli', xai: 'cli', mistral: 'cli', perplexity: 'api', deepseek: 'api' }, bins: {}, access: 'standard', extraDirs: [], autoPush: true, chatEdits: true, chatResume: true, theme: 'hearth', reduceMotion: false, textSize: 100 };
-let gh = { git: null, gh: null, ghUser: null };
-let repo = { repo: false };
-let cli = Object.fromEntries(AGENT_IDS.map((a) => [a, {}]));
-let info = { appVersion: '?', hearthOs: null, dataPath: '', electron: '?', packaged: false };
-let prov = { encryption: false, weakEncryption: false, defaults: {}, keys: {} };
-let upd = { enabled: false, reason: '', status: { state: 'idle' } };
-let hearthTheme = { found: false, tokens: {}, css: '', dir: '~/.config/hearth' };
-let consoleOut = {};
-const keyTests = {};
-// Team ops (src/ops/): summary, budget, strengths, stats, tests, CI, logs, projects, phone, voice.
-const ops = createOps({
-  api, esc: (s) => esc(s), NAMES, AGENTS, AGENT_IDS, EDITORS, HEADLESS, roleKinds, taskNeed, requestChanges,
-  state: () => state, ui: () => ui, settings: () => settings, setSettings: (s) => { settings = s; setApprovalLevels(s.approvalLevels); ops.syncPowers(); },
-  save: () => save(), render: () => render(), audit: (...a) => audit(...a), post: (m) => post(m), toast: (m) => toast(m),
-  now: () => now(), uid: () => uid(), time: (x) => time(x), ago: (x) => ago(x), agentChip: (a) => agentChip(a), connected: (a) => connected(a),
-  canRun: (a) => canRun(a), isFree: (a) => isFree(a), roleMap: () => roleMap(), moveWaiting: (a, id) => moveWaiting(a, id), assignTask: (t, a, why) => assignTask(t, a, why),
-  runTask: (...a) => runTask(...a), startOrQueue: (t, a) => startOrQueue(t, a), decide: (...a) => decide(...a), sendChat: () => sendChat(),
-  makeTask: (o, src) => makeTask(o, src), actionFor: (t) => actionFor(t),
-  cli: () => cli, method: (a) => method(a), refreshAgents: async () => { await refreshAgents(); render(); },
-  team: () => teamList().map((a) => ({ id: a, dot: dotOf(a), lead: a === state.lead })),
-  beforeSwitch: () => (round ? 'The team is still replying in this chat. Press Stop (top right) or wait for them, then switch projects.' : null),
-  switching: (on) => { ui.switching = Boolean(on); },
-});
-
-// Team workflow (src/ops/workflow*.mjs): truth card, run gates and modes, instruction log,
-// review packet, blockers, assets, Jobs panel and the release gate.
-const wf = createWorkflow({
-  api, esc: (s) => esc(s), NAMES, EDITORS, state: () => state, ui: () => ui, settings: () => settings, save: () => save(), render: () => render(),
-  audit: (...a) => audit(...a), post: (m) => post(m), toast: (m) => toast(m), now: () => now(), time: (x) => time(x), ago: (x) => ago(x), agentChip: (a) => agentChip(a),
-  canRun: (a) => canRun(a), isFree: (a) => isFree(a), runTask: (...a) => runTask(...a), actionResult: (...a) => ops.actionResult(...a), turnResults: (a) => ops.turnResults(a),
-  leadRecord: (...a) => leadRecord(...a), nextVersion: () => ops.syncPowers()?.nextVersion || '', docsPaths: () => ops.docsPaths(),
-});
-
-const uid = () => Math.random().toString(36).slice(2, 8).toUpperCase();
+const uid = () => Math.random().toString(36).slice(2, 10);
 const now = () => new Date().toISOString();
-const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
-const time = (iso) => (iso ? new Date(iso).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '');
-const ago = (iso) => {
-  if (!iso) return '';
-  const m = Math.round((Date.now() - Date.parse(iso)) / 60000);
-  if (m < 1) return 'just now';
-  if (m < 60) return `${m} min ago`;
-  if (m < 1440) return `${Math.round(m / 60)} h ago`;
-  return time(iso);
-};
-const cleanErr = (m) => String(m).replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
+const cleanErr = (e) => String(e?.message || e || '').replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
+const call = async (fn, ...a) => { if (!api || typeof api[fn] !== 'function') return null; try { return await api[fn](...a); } catch (e) { return { ok: false, message: cleanErr(e), error: { message: cleanErr(e) } }; } };
+const entry = (id = S.open) => S.chats.find((c) => c.id === id) || null;
+const ownerName = () => S.settings.ownerIdentity?.name || S.gh.ghUser || 'Dragongamer9';
+const team = () => teamOf(S.settings.team);
 
+// ---------- AIs ----------
+function method(a) { return AGENTS[a]?.kind === 'api' ? 'api' : S.settings.connection?.[a] === 'api' ? 'api' : 'cli'; }
+function ready(a) {
+  if (!AGENTS[a]?.headless) return false;
+  if (method(a) === 'api') return Boolean(S.prov.keys?.[a]);
+  const c = S.cli[a];
+  return Boolean(c && c.installed && c.signedIn !== false);
+}
+const live = () => team().members.filter(ready);
+const mono = (a, cls = '') => { const m = MONO[a] || [(AGENTS[a]?.name || '?')[0], '#7a7166']; return `<span class="ava ${cls}" style="background:${m[1]}">${esc(m[0])}</span>`; };
+
+// ---------- saving ----------
 let saveChain = Promise.resolve();
-// The team chat's workspace for this session: chosen and verified by the main process
-// (it belongs to the open project's repository). Never taken from saved state.
-let chatWs = null;
-// Chats: the list, which one is open, and the project's own team chat while another is open.
-let chatsState = { list: [], open: null, team: null, teamSessions: null, notices: [], readOnly: false, lastSaved: '' };
-const openChatEntry = () => chatsState.list.find((c) => c.id === chatsState.open) || null;
-// Serialized, atomic saves (the main process writes temp -> fsync -> rename). The project
-// file only ever gets this project's state (stamped with its id; the main process refuses
-// anything else), and a separate chat's messages only go to that chat's own file.
 function save() {
-  if (ui.switching) return saveChain; // switching projects: nothing more is saved from this window
+  const id = S.open;
+  if (!id || S.readOnly) return saveChain;
+  const data = { messages: S.msgs.filter((m) => !m.local), sessions: S.sessions };
   saveChain = saveChain.then(async () => {
-    const plan = savePlan({ state, openChatId: chatsState.open, teamChat: chatsState.team, teamSessions: chatsState.teamSessions });
-    const r = await api.saveState(plan.project);
-    if (r && r.refused) return refusedSave(r.message);
-    if (plan.chat && !chatsState.readOnly) {
-      const sig = `${plan.chat.id}:${plan.chat.messages.length}:${JSON.stringify(plan.chat.messages.slice(-1))}:${JSON.stringify(plan.chat.sessions)}`.slice(0, 20000);
-      if (sig !== chatsState.lastSaved) { await api.chatsSave(plan.chat.id, plan.chat); chatsState.lastSaved = sig; }
-    }
-  }).catch((e) => toast(`Could not save: ${cleanErr(e.message)}`));
+    const r = await call('chatsSave', id, data);
+    if (r && r.ok === false) toast(r.message || 'Not saved.');
+    const c = entry(id);
+    if (c) c.updatedAt = now();
+  });
   return saveChain;
 }
-// The main process refused a save: this window shows a project that is no longer open.
-// Nothing was written; reload to show the open project.
-// Reload the window through the main process (a page reload can be blocked by the window's
-// navigation guard); the page's own reload is only the fallback.
-function reloadApp() {
-  const r = window.hearth?.reloadWindow;
-  if (typeof r === 'function') return r().catch(() => location.reload());
-  return location.reload();
-}
-let refusedOnce = false;
-function refusedSave(message) {
-  if (ui.switching || refusedOnce) return;
-  refusedOnce = true;
-  ui.switching = true;
-  toast(`${message || 'Not saved.'} Reloading to show the open project…`);
-  setTimeout(() => reloadApp(), 1200);
+
+function toast(text, undo = null) {
+  S.toast = { text, undo, at: Date.now() };
+  renderOverlay();
+  clearTimeout(toast.t);
+  toast.t = setTimeout(() => { S.toast = null; renderOverlay(); }, undo ? 9000 : 5000);
 }
 
 // ---------- chats ----------
-// The list comes from the main process. A project's own team chat stays in its state;
-// other chats have their own files. Opening a chat linked to another project switches
-// projects through the normal (guarded) switch, so the board, approvals and Next version
-// on screen always belong to the chat's project.
 async function loadChats() {
-  const r = await api.chatsList?.().catch(() => null);
-  const fallback = [{ id: teamChatId(state.projectId), team: true, title: `${projectName() || 'Project'} team chat`, projectId: state.projectId }];
-  chatsState.list = sortChats(r?.list?.length ? r.list : fallback);
-  chatsState.notices = r?.notices || [];
-  chatsState.broken = Boolean(r?.broken);
-  chatsState.trash = await api.chatsTrash?.().catch(() => []) || [];
-  const id = pickOpenChat(chatsState.list, loadPrefs().openChat, state.projectId);
-  if (!chatsState.list.some((c) => c.id === id)) chatsState.list.unshift({ ...fallback[0], id });
-  await openChatHere(id, { quiet: true });
+  const r = await call('chatsList2');
+  if (r && Array.isArray(r.list)) { S.chats = r.list; S.broken = r.broken; for (const n of r.notices || []) if (!S.notices.includes(n)) S.notices.push(n); }
+  const t = await call('chatsTrash');
+  S.trash = Array.isArray(t) ? t : [];
 }
-function chatBusy() {
-  return round ? 'The team is still replying in this chat. Press Stop (top right) or wait for them, then switch chats.' : null;
-}
-async function openChatHere(id, { quiet = false } = {}) {
-  if (id === chatsState.open) return true;
-  const busy = chatBusy();
-  if (busy) { toast(busy); return false; }
-  const entry = chatsState.list.find((c) => c.id === id);
-  if (!entry) return false;
-  let next = null;
-  if (!entry.team) {
-    const r = await api.chatsGet(id).catch((e) => ({ ok: false, message: cleanErr(e.message) }));
-    if (!r?.ok) { toast(r?.message || 'This chat could not be opened.'); return false; }
-    next = r;
-  }
-  await saveChain; // anything pending for the chat being left is written first
-  // Keep the project's team chat aside while another chat is open (it is saved unchanged).
-  if (!chatsState.open || isTeam(chatsState.open)) { chatsState.team = state.chat; chatsState.teamSessions = state.chatSessions; }
-  if (entry.team) {
-    state.chat = chatsState.team || state.chat;
-    state.chatSessions = chatsState.teamSessions || state.chatSessions || {};
-    chatsState.readOnly = false;
-  } else {
-    state.chat = next.messages;
-    state.chatSessions = next.sessions || {};
-    chatsState.readOnly = Boolean(next.readOnly);
-    if (next.recovered && !quiet) toast('This chat was damaged; an earlier copy is shown and nothing is written to it.');
-  }
-  for (const m of state.chat) if (!m.id) m.id = uid();
-  chatsState.open = id;
-  chatsState.lastSaved = '';
-  ui.unlinkedNoted = false;
-  ui.renaming = false;
-  savePref('openChat', id);
-  return true;
-}
-// Open a chat from the list: here, or after switching to its project (the guarded switch).
+
 async function openChat(id) {
-  const entry = chatsState.list.find((c) => c.id === id);
-  const plan = openPlan(entry, state.projectId);
-  if (plan.kind === 'missing') return toast('That chat is gone from the list.');
-  if (plan.kind === 'switch') {
-    const busy = chatBusy();
-    if (busy) return toast(busy);
-    savePref('openChat', id);
-    return requestSwitch(plan.projectId);
-  }
-  if (await openChatHere(id)) { ui.view = 'chat'; ui.selected = null; ui.menu = null; }
-  render();
-  document.getElementById('chat-text')?.focus();
+  if (S.busy && S.open !== id) { toast('An AI is still working in this chat. Stop it or wait, then switch.'); return; }
+  const c = entry(id);
+  if (!c) return;
+  const r = await call('chatsGet2', id);
+  S.open = id;
+  S.view = 'chat';
+  S.pane = null;
+  S.pop = null;
+  S.msgs = r?.ok ? (r.messages || []) : [];
+  S.sessions = r?.ok ? (r.sessions || {}) : {};
+  S.readOnly = Boolean(r?.readOnly) || (r && r.ok === false);
+  S.copy = null;
+  if (r && r.ok === false) S.msgs = [{ id: 'x', who: 'system', local: true, text: r.message || 'This chat could not be read. It was left exactly as it is.', at: now() }];
+  if (c.importError) S.msgs.unshift({ id: 'ie', who: 'system', local: true, text: c.importError, at: now() });
+  try { localStorage.setItem('hearth.v2.open', id); } catch {}
+  render(true);
+  if (c.hasCopy) { const st = await call('copiesStatus', id); if (st?.exists) { S.copy = st; render(); } }
+  for (const m of S.msgs) if (m.actions && ['pending', 'queued'].includes(m.actions.state)) pollRuns(m.id);
+  pushPhone();
 }
-// The same switch the project switcher uses (src/ops/ui.mjs, op 'switch').
-function requestSwitch(projectId) {
-  const b = document.createElement('button');
-  b.dataset.ops = 'switch';
-  b.dataset.arg = projectId;
-  b.hidden = true;
-  document.body.appendChild(b);
-  b.click();
-  b.remove();
+
+function goHome() {
+  if (S.busy) { toast('An AI is still working. Stop it or wait first.'); return; }
+  S.view = 'home'; S.open = null; S.msgs = []; S.sessions = {}; S.pane = null; S.pop = null; S.copy = null;
+  try { localStorage.removeItem('hearth.v2.open'); } catch {}
+  render(true);
 }
-async function newChat() {
-  const busy = chatBusy();
-  if (busy) return toast(busy);
-  const e = await api.chatsCreate(state.projectId || null).catch((err) => ({ message: cleanErr(err.message) }));
-  if (!e?.id) return toast(`Couldn't start a new chat: ${e?.message || 'no answer from the app'}`);
-  chatsState.list = sortChats([e, ...chatsState.list.filter((c) => c.id !== e.id)]);
-  if (await openChatHere(e.id)) { ui.view = 'chat'; ui.selected = null; ui.menu = null; }
-  render();
-  document.getElementById('chat-text')?.focus();
+
+async function ensureChat(firstText) {
+  if (S.open) return entry();
+  const title = autoTitle(firstText) || 'New chat';
+  const e = await call('chatsCreate2', { repo: S.conn?.repo || null, branch: S.conn?.branch || null, title });
+  if (!e || !e.id) { toast(e?.message || 'Could not start a chat.'); return null; }
+  await loadChats();
+  S.open = e.id; S.view = 'chat'; S.msgs = []; S.sessions = {}; S.readOnly = false; S.copy = null;
+  try { localStorage.setItem('hearth.v2.open', e.id); } catch {}
+  return entry(e.id) || e;
 }
-async function updateChat(id, patch) {
-  const e = await api.chatsUpdate(id, patch).catch((err) => ({ message: cleanErr(err.message) }));
-  if (!e?.id) { toast(e?.message || 'Not changed.'); return null; }
-  chatsState.list = chatsState.list.map((c) => (c.id === id ? { ...c, ...e, updatedAt: c.updatedAt } : c));
-  return e;
-}
-// Link the open chat to a project (switching there), or unlink it (talk only, no edits).
-async function linkChat(projectId) {
-  const entry = openChatEntry();
-  if (!entry || entry.team) return toast("A project's team chat stays with its project. Start a new chat to link another project.");
-  const busy = chatBusy();
-  if (busy) return toast(busy);
-  const pid = projectId || null;
-  const e = await updateChat(entry.id, { projectId: pid });
-  if (!e) return render();
-  const pname = (ops.projectsList?.().list || []).find((x) => x.id === pid)?.name;
-  audit(pid ? 'Chat linked to a project' : 'Chat unlinked from its project', null, `${entry.title}${pid ? ` → ${pname || pid}` : ''}`);
-  post({ who: 'system', text: pid ? `This chat is now linked to ${pname || 'that project'}. The team works in that project's repository.` : chatEditRule({ projectId: null }, state.projectId).reason });
-  await save();
-  ui.menu = null;
-  if (pid && pid !== state.projectId) { savePref('openChat', entry.id); return requestSwitch(pid); }
-  render();
-}
-// Look only: the owner is told about data that looks copied between projects; nothing is repaired.
-async function checkHealth() {
-  const h = await api.stateHealth?.().catch(() => null);
-  ui.health = [...(h?.notices || []).map((n) => n.text), ...(chatsState.notices || [])];
-  if (ui.health.length) render();
-}
-function chatTitle(c) { return c.team && !c.renamed ? `${(ops.projectsList?.().list || []).find((x) => x.id === c.projectId)?.name || 'Project'} team chat` : c.title || 'New chat'; }
-// Chat list management: rename, pin, order, hide (team chats), delete to the bin and restore.
-async function refreshChatList() {
-  const r = await api.chatsList?.().catch(() => null);
-  if (r?.list?.length) chatsState.list = sortChats(r.list);
-  chatsState.trash = await api.chatsTrash?.().catch(() => chatsState.trash) || [];
-}
+
 async function chatAction(kind, id) {
-  const c = chatsState.list.find((x) => x.id === id);
-  ui.chatMenu = null;
+  const c = entry(id);
+  S.pop = null;
   if (!c) return render();
-  if (kind === 'rename') { ui.sideRename = id; render(); const el = document.getElementById('side-rename'); el?.focus(); el?.select(); return; }
-  if (kind === 'pin' || kind === 'unpin') {
-    const e = await updateChat(id, { pinned: kind === 'pin' });
-    if (e) audit(kind === 'pin' ? 'Chat pinned' : 'Chat unpinned', null, chatTitle(c));
-  }
-  if (kind === 'up' || kind === 'down') {
-    const ids = moveInGroup(chatsState.list, id, kind === 'up' ? -1 : 1);
-    if (ids) { const r = await api.chatsReorder(ids).catch((err) => ({ message: cleanErr(err.message) })); if (r?.message) toast(r.message); }
-  }
-  if (kind === 'hide' || kind === 'unhide') {
-    const e = await updateChat(id, { hidden: kind === 'hide' });
-    if (e) { audit(kind === 'hide' ? 'Team chat hidden from the list' : 'Team chat shown in the list', null, chatTitle(c)); if (kind === 'hide') toast(`“${chatTitle(c)}” is hidden. Show it again from “Hidden chats” under the list.`); }
-  }
-  if (kind === 'delete') {
-    if (c.team) return toast("A project's team chat can't be deleted (its messages belong to the project). Hide it instead.");
-    if (id === chatsState.open && chatBusy()) return toast(chatBusy());
-    if (!confirm(`Delete the chat “${chatTitle(c)}”? It goes to Recently deleted, where you can restore it.`)) return render();
-    if (id === chatsState.open) { await saveChain; if (!(await openChatHere(teamChatId(state.projectId)))) return render(); }
-    const r = await api.chatsDelete(id).catch((err) => ({ message: cleanErr(err.message) }));
-    if (!r?.ok) { toast(`Not deleted: ${r?.message || 'no answer from the app'}`); return render(); }
-    audit('Chat deleted (kept in Recently deleted)', null, chatTitle(c));
-    ui.lastDeleted = { trashId: r.trashId, title: chatTitle(c) };
-  }
-  await refreshChatList();
-  render();
-}
-let renamingNow = false;
-async function finishSideRename(keep) {
-  if (renamingNow) return;
-  const el = document.getElementById('side-rename');
-  const id = ui.sideRename;
-  ui.sideRename = null;
-  const c = chatsState.list.find((x) => x.id === id);
-  const t = el?.value.replace(/\s+/g, ' ').trim();
-  if (keep && c && t && t !== chatTitle(c)) {
-    renamingNow = true;
-    try { const e = await updateChat(id, { title: t }); if (e) audit('Chat renamed', null, t); } finally { renamingNow = false; }
-  }
-  render();
-}
-// Drag a chat onto another one of the same group (Pinned or Chats) to put it there.
-let dragChat = null;
-document.addEventListener('dragstart', (e) => {
-  const row = e.target.closest?.('[data-chatdrag]');
-  if (!row) return;
-  dragChat = row.dataset.chatdrag;
-  row.classList.add('dragging');
-  try { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', dragChat); } catch {}
-});
-document.addEventListener('dragover', (e) => {
-  const row = e.target.closest?.('[data-chatdrag]');
-  if (!row || !dragChat || row.dataset.chatdrag === dragChat) return;
-  if (!dropInGroup(chatsState.list, dragChat, row.dataset.chatdrag)) return;
-  e.preventDefault();
-  document.querySelectorAll('.chat-row.drop-before').forEach((x) => x !== row && x.classList.remove('drop-before'));
-  row.classList.add('drop-before');
-});
-document.addEventListener('dragend', () => { dragChat = null; document.querySelectorAll('.chat-row.dragging,.chat-row.drop-before').forEach((x) => x.classList.remove('dragging', 'drop-before')); });
-document.addEventListener('drop', async (e) => {
-  const row = e.target.closest?.('[data-chatdrag]');
-  if (!row || !dragChat) return;
-  e.preventDefault();
-  const ids = dropInGroup(chatsState.list, dragChat, row.dataset.chatdrag);
-  dragChat = null;
-  if (!ids) return;
-  const r = await api.chatsReorder(ids).catch((err) => ({ message: cleanErr(err.message) }));
-  if (r?.message) toast(r.message);
-  await refreshChatList();
-  render();
-});
-async function restoreChat(trashId) {
-  const r = await api.chatsRestore(trashId).catch((err) => ({ message: cleanErr(err.message) }));
-  if (!r?.id) { toast(`Not restored: ${r?.message || 'no answer from the app'}`); return render(); }
-  audit('Chat restored', null, r.title || '');
-  if (ui.lastDeleted?.trashId === trashId) ui.lastDeleted = null;
-  await refreshChatList();
-  toast(`“${r.title}” is back in your chats.`);
-  render();
-}
-function chatProjName(c) { return c.projectId ? (ops.projectsList?.().list || []).find((x) => x.id === c.projectId)?.name || 'missing project' : 'No project'; }
-
-// ---------- "Claude can do everything I can (asks me first every time)" ----------
-// Claude asks with ACT FOR OWNER lines; each request waits for the owner's yes (popup or
-// typed in that chat), is bound to its project, chat, target and commit, expires after
-// 30 minutes and is used once. The action itself runs through the owner's own buttons.
-const actPending = () => (state.actRequests || []).filter((r) => r.status === 'pending');
-function actLines(agent, text) {
-  const cmds = parseActLines(text);
-  if (!cmds.length) return;
-  state.actRequests = state.actRequests || [];
-  const projName = projectName();
-  for (const cmd of cmds) {
-    const r = cmd.kind === 'unknown' ? { ok: false, reason: 'unknown action' } : makeActRequest(cmd, {
-      agent, on: settings.actForMe === true, projectId: state.projectId, chatId: chatsState.open, nextVersion: ops.syncPowers()?.nextVersion || '',
-      tasks: state.tasks, permissions: state.permissions, settings, projectSettings: ((ops.projectsList?.().list || []).find((x) => x.id === state.projectId) || {}).settings || {},
-      agents: AGENT_IDS, shaOf: (t) => (t.ws ? approvedSha(t) || t.runs?.slice(-1)[0]?.head || null : null), now: Date.now(),
-    });
-    ops.actionResult(agent, cmd.raw, r.ok, r.ok ? `waiting for your yes (${r.request.id})` : r.reason);
-    if (!r.ok) {
-      if (settings.actForMe === true) audit(`${NAMES[agent]} asked to act for you: refused`, null, `${cmd.raw}: ${r.reason}`, agent);
-      continue;
-    }
-    const req = r.request;
-    state.actRequests.push(req);
-    state.actRequests = state.actRequests.slice(-100);
-    const d = describeAct(req, { projectName: projName });
-    audit(`${NAMES[agent]} asked to act for you`, req.taskId || null, `${req.id}: ${d.what} (waiting for your yes)`, agent);
-    post({ who: 'system', actReq: req.id, text: `${NAMES[agent]} asks to act for you: ${d.what}. Allow or deny below, or type yes or no.` });
-    if (!ui.modal && !ui.lightbox) { ui.modal = 'act'; ui.actReq = req.id; }
-  }
-}
-function actCard(req) {
-  const d = describeAct(req, { projectName: projectName() });
-  const st = req.status;
-  const expired = st === 'pending' && Date.now() > Date.parse(req.expiresAt);
-  return `<div class="ask act ${st}">
-    <div class="hd"><span class="ic">${icon(st === 'pending' ? 'shield' : st === 'allowed' ? 'check' : 'x')}</span><div style="flex:1;min-width:0"><div class="w">${esc(d.what)}</div><div class="k">${st === 'pending' ? 'Claude asks to act for you' : st === 'allowed' ? 'Allowed by you' : st === 'denied' ? 'Denied by you' : `Not done: ${esc(req.reason || '')}`} · ${esc(req.id)}${req.how ? ` · ${req.how === 'typed' ? 'you typed it' : 'popup'}` : ''}</div></div></div>
-    <div class="facts">${d.facts.map(([k, v]) => `<span class="pill" title="${esc(k)}">${esc(k)}: ${esc(v)}</span>`).join('')}</div>
-    ${st === 'pending' && !expired ? `<div class="ft"><button class="btn small primary" data-actallow="${esc(req.id)}">Allow</button><button class="btn small" data-actdeny="${esc(req.id)}">Deny</button><button class="btn small ghost" data-actview="${esc(req.id)}">Details</button><span class="grow"></span><span class="faint">or type <b>yes</b> / <b>no</b> here · expires ${esc(time(req.expiresAt))}</span></div>`
-      : st === 'pending' ? '<div class="ft"><span class="faint">Expired: nothing was done. Claude can ask again.</span></div>' : ''}
-  </div>`;
-}
-function actModal() {
-  const req = (state.actRequests || []).find((r) => r.id === ui.actReq);
-  if (!req) { ui.modal = null; return ''; }
-  const d = describeAct(req, { projectName: projectName() });
-  return `<div class="modal-bg" data-modalbg><div class="modal act-modal" role="dialog" aria-label="Claude asks to act for you">
-    <h2>Claude asks to act for you</h2>
-    <div class="act-what">${esc(d.what)}</div>
-    <table class="act-facts"><tbody>${d.facts.map(([k, v]) => `<tr><td class="faint">${esc(k)}</td><td class="${/Commit|Branch|value/.test(k) ? 'mono' : ''}">${esc(v)}</td></tr>`).join('')}<tr><td class="faint">Expires</td><td>${esc(time(req.expiresAt))} (or when the project or chat changes)</td></tr></tbody></table>
-    <p class="muted" style="font-size:12.5px">This allows only this one action, for exactly this ${req.sha ? 'commit' : req.key ? 'value' : 'target'}. Recorded in the Audit log.${req.key ? ' You can undo it in one click afterwards.' : ''}</p>
-    ${req.status === 'pending' ? `<div class="row" style="margin-top:14px;justify-content:flex-end"><button class="btn" data-actdeny="${esc(req.id)}">Deny</button><button class="btn primary" data-actallow="${esc(req.id)}">Allow</button></div>` : `<div class="row" style="justify-content:flex-end"><span class="faint">${esc(req.status)}</span><button class="btn" data-cancel>Close</button></div>`}
-  </div></div>`;
-}
-// The owner's answer. Allow runs the action only if it is still exactly what was asked.
-async function decideAct(id, decision, how) {
-  const req = (state.actRequests || []).find((r) => r.id === id);
-  if (!req) return toast('That request is gone.');
-  if (ui.modal === 'act') ui.modal = null;
-  if (req.status !== 'pending') { render(); return toast(`Already ${req.status}.`); }
-  const d = describeAct(req, { projectName: projectName() });
-  if (decision !== 'allow') {
-    settle(req, 'deny', { how });
-    audit('Owner denied a Claude request', req.taskId || null, `${req.id}: ${d.what} (${how})`);
-    post({ who: 'system', text: `You denied ${req.id}: ${d.what}. Nothing was done.` });
-    save();
-    return render();
-  }
-  const t = req.taskId ? state.tasks.find((x) => x.id === req.taskId) : null;
-  const cur = { now: Date.now(), projectId: state.projectId, chatId: chatsState.open, nextVersion: ops.syncPowers()?.nextVersion || '' };
-  if (req.sha && t?.ws) cur.sha = await api.workspaceHead(t.id).catch(() => null);
-  if (req.key) cur.settingNow = req.kind === 'setting' ? settings[req.key] : (((ops.projectsList?.().list || []).find((x) => x.id === state.projectId) || {}).settings || {})[req.key];
-  if (req.taskId && !t) { settle(req, 'refused', { how, reason: `T-${req.taskId} is gone` }); save(); return render(); }
-  const v = stillValid(req, cur);
-  if (!v.ok) {
-    settle(req, 'refused', { how, reason: v.reason });
-    audit('Claude request not done', req.taskId || null, `${req.id}: ${d.what}: ${v.reason}`);
-    post({ who: 'system', text: `${req.id} was not done: ${v.reason}. Nothing changed.` });
-    save();
-    return render();
-  }
-  settle(req, 'allow', { how });
-  audit('Owner allowed a Claude request', req.taskId || null, `${req.id}: ${d.what} (${how}${req.sha ? ` at ${String(req.sha).slice(0, 7)}` : ''})`);
-  post({ who: 'system', text: `You allowed ${req.id}: ${d.what}. Doing it now.` });
-  save();
-  render();
-  const r = await runAct(req, t).catch((e) => ({ ok: false, message: cleanErr(e.message) }));
-  if (r && r.ok === false) {
-    req.result = r.message;
-    audit('Claude request failed', req.taskId || null, `${req.id}: ${r.message}`);
-    post({ who: 'system', text: `${req.id} stopped: ${r.message}` });
-  }
-  save();
-  render();
-}
-// Each action through the owner's own button or call (the same checks as when he clicks).
-function ownerClick(attr, value) {
-  const b = document.createElement('button');
-  b.dataset[attr] = value;
-  b.hidden = true;
-  document.body.appendChild(b);
-  b.click();
-  b.remove();
-}
-async function runAct(req, t) {
-  switch (req.kind) {
-    case 'approve': return ownerClick('approve', t.id);
-    case 'merge': return t.ws ? ownerClick('approvemerge', t.id) : ownerClick('approve', t.id);
-    case 'reject': return ownerClick('reject', t.id);
-    case 'changes': requestChanges(t, { by: 'owner', reason: req.note || 'Claude asked; you allowed it', at: now() }); return setStage(t, 'implementing', 'Changes requested', `Sent back to implementer (Claude asked; you allowed ${req.id})`);
-    case 'push': { const r = await api.gitPushTask(t.id).catch((e) => ({ ok: false, message: cleanErr(e.message) })); audit(r.ok ? 'Pushed to GitHub' : 'Push failed', t.id, r.message || ''); return r.ok ? null : r; }
-    case 'pr': return ownerClick('openpr', t.id);
-    case 'start': return startOrQueue(t, t.assignee);
-    case 'stop': return ownerClick('stop', t.id);
-    case 'assign': assignTask(t, req.agent, `Claude asked; you allowed ${req.id}`); return null;
-    case 'allow': return decide(req.permId, 'approved', 'Owner');
-    case 'deny': return decide(req.permId, 'denied', 'Owner');
-    case 'release': case 'tag': {
-      const r = await api.opsActRelease(req.kind, req.version, req).catch((e) => ({ ok: false, message: cleanErr(e.message) }));
-      if (!r?.ok) return { ok: false, message: r?.message || 'not available' };
-      audit(`${req.kind === 'tag' ? 'Tagged' : 'Released'} v${req.version} (Claude asked; you allowed it)`, null, r.message);
-      post({ who: 'system', text: r.message });
-      if (r.dispatched) ops.watchRelease(req.version);
-      wf.madeTag?.(req.version);
-      return null;
-    }
-    case 'setting': case 'projectsetting': {
-      const r = req.kind === 'setting' ? await api.setSettings({ [req.key]: req.after }).catch((e) => ({ message: cleanErr(e.message) })) : await api.opsProjectSettings({ [req.key]: req.after }).catch((e) => ({ ok: false, message: cleanErr(e.message) }));
-      if (!r || r.message || r.ok === false) return { ok: false, message: r?.message || 'not changed' };
-      if (req.kind === 'setting') { settings = r; setApprovalLevels(r.approvalLevels); ops.syncPowers(); } else await ops.refreshProjects?.();
-      state.actLog = [undoEntry(req), ...(state.actLog || [])].slice(0, 50);
-      audit(`Setting changed by Claude with your yes: ${req.key}`, null, `${JSON.stringify(req.before)} → ${JSON.stringify(req.after)} (${req.id}; Undo in Settings › Team)`);
-      post({ who: 'system', text: `${req.key} is now ${JSON.stringify(req.after)} (was ${JSON.stringify(req.before)}). Changed by Claude with your yes; Undo in Settings › Team.`, actUndo: req.id });
-      return null;
-    }
-    default: return { ok: false, message: 'unknown action' };
-  }
-}
-// One-click undo of a setting Claude changed with the owner's yes.
-async function undoAct(id) {
-  const e = (state.actLog || []).find((x) => x.id === id);
-  if (!e || e.undone) return;
-  if (e.scope === 'project' && e.projectId !== state.projectId) return toast('That setting belongs to another project; switch to it to undo.');
-  const r = e.scope === 'app' ? await api.setSettings({ [e.key]: e.before }).catch((err) => ({ message: cleanErr(err.message) })) : await api.opsProjectSettings({ [e.key]: e.before }).catch((err) => ({ ok: false, message: cleanErr(err.message) }));
-  if (!r || r.message || r.ok === false) return toast(`Not undone: ${r?.message || 'no answer'}`);
-  if (e.scope === 'app') { settings = r; setApprovalLevels(r.approvalLevels); ops.syncPowers(); } else await ops.refreshProjects?.();
-  e.undone = true;
-  e.undoneAt = now();
-  audit(`Owner undid a setting Claude changed: ${e.key}`, null, `${JSON.stringify(e.after)} → ${JSON.stringify(e.before)}`);
-  save();
-  render();
-}
-
-function audit(event, taskId, detail = '', actor = 'owner') {
-  state.audit.unshift({ id: uid(), at: now(), actor, event, taskId, detail });
-}
-
-let toastTimer;
-function toast(msg) {
-  document.querySelector('.toast')?.remove();
-  const el = document.createElement('div');
-  el.className = 'toast';
-  el.textContent = msg;
-  document.body.appendChild(el);
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => el.remove(), 4500);
-}
-
-// ---------- theme ----------
-function applyTheme() {
-  const systemDark = window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? true;
-  const follow = settings.theme === 'hearth' && hearthTheme.found;
-  document.documentElement.dataset.mode = pickMode(settings.theme, { ...hearthTheme, systemDark });
-  const set = (id, css) => {
-    let el = document.getElementById(id);
-    if (!el) { el = document.createElement('style'); el.id = id; document.head.appendChild(el); }
-    el.textContent = css;
-  };
-  set('hearth-tokens', follow ? tokensToCss(hearthTheme.tokens) : '');
-  set('hearth-css', follow ? hearthTheme.css || '' : '');
-}
-
-// ---------- agent helpers ----------
-const agentChip = (id) => {
-  const a = AGENTS[id] || AGENTS.none;
-  return `<span class="agent ${a.cls}"><i></i>${esc(a.name)}</span>`;
-};
-const avatar = (id) => `<span class="avatar ${AGENTS[id]?.cls || ''}" style="background:${COLORS[id] || '#67707b'}">${esc((AGENTS[id]?.name || '?')[0])}</span>`;
-
-// Coloured monograms for teammates (never provider logos).
-const MONO = { anthropic: ['C', '#b9772e'], openai: ['G', '#3f8a6b'], google: ['Ge', '#4a73b5'], xai: ['X', '#5d5a57'], mistral: ['M', '#b8613a'], qwen: ['Q', '#6a5fb5'], perplexity: ['P', '#2f7f8f'], deepseek: ['D', '#4a5fb0'], ollama: ['L', '#2f8a8a'], freebuff: ['F', '#8a5aa8'], copilot: ['Co', '#3d8a63'], meta: ['Me', '#3b6fc0'] };
-const mono = (id, small = false) => { const m = MONO[id] || [(AGENTS[id]?.name || '?')[0], '#7a7166']; return `<span class="av-ai ${small ? 's' : ''}" style="background:${m[1]}" aria-hidden="true">${esc(m[0])}</span>`; };
-// Sidebar dots: working (ember ring) · free (green) · waiting (amber) · problem (red) · not linked (hollow).
-function dotOf(a) { const st = panelState(statusOf(a), outInfo(a)); return st.live ? 'work' : ({ good: 'ok', warn: 'wait', bad: 'bad', accent: 'work' }[st.cls] || 'off'); }
-const teamList = () => AGENT_IDS.filter((a) => connected(a) || authHold(a) || outInfo(a) || a === state.lead);
-
-function method(a) {
-  if (API_ONLY.includes(a)) return 'api';
-  return API_CAPABLE.includes(a) ? settings.connection[a] || 'cli' : 'cli';
-}
-
-function connected(a) {
-  if (state.disabled?.[a]) return false;
-  const c = cli[a] || {};
-  if (a === 'freebuff') return Boolean(c.installed);
-  if (a === 'ollama') return Boolean(c.installed && c.models?.length);
-  if (method(a) === 'api') return Boolean(prov.keys[a]);
-  if (a === 'mistral') return Boolean(c.installed && c.signedIn !== false);
-  return Boolean(c.installed && c.signedIn);
-}
-function outInfo(a) {
-  const st = state.agentStatus[a];
-  if (!st?.outUntil) return null;
-  if (Date.now() > Date.parse(st.outUntil)) return null;
-  return st;
-}
-const blocked = () => blockedAgents(state.permissions);
-// A saved sign-in hold (a refused login or key) keeps the AI out until it changes.
-const authHold = (a) => state.agentStatus?.[a]?.hold || null;
-const canRun = (a) => Boolean(AGENTS[a]?.headless) && connected(a) && !outInfo(a) && !authHold(a);
-const liveAgents = () => HEADLESS.filter(canRun);
-const liveEditors = () => EDITORS.filter((a) => canRun(a) && method(a) !== 'api');
-const busyOn = (a) => Object.entries(ui.running).find(([, r]) => r.agent === a);
-
-// Short, clear status: linked / signed out / out of usage / working on …
-function statusOf(a) {
-  const c = cli[a] || {};
-  if (state.disabled?.[a]) return { text: 'turned off', cls: '' };
-  if (outInfo(a)) return { text: 'out of usage', cls: 'bad' };
-  const b = busyOn(a);
-  if (b) return { text: b[0].startsWith('CHAT') ? 'working in team chat' : `working on T-${b[0]}`, cls: 'accent', live: true };
-  if (isTyping(a)) return { text: 'replying in team chat', cls: 'accent', live: true };
-  if (blocked().includes(a)) return { text: 'waiting for your answer', cls: 'warn' };
-  const held = holdStatus(authHold(a), Boolean(prov.keys[a]));
-  if (held) return held;
-  if (method(a) === 'api') return prov.keys[a] ? { text: 'linked (API key)', cls: 'good' } : { text: 'needs API key', cls: 'warn' };
-  if (a === 'ollama') return c.installed ? (c.models?.length ? { text: 'running', cls: 'good' } : { text: 'no models yet', cls: 'warn' }) : { text: 'not running', cls: 'warn' };
-  if (!c.installed) return { text: 'not installed', cls: 'warn' };
-  if (a === 'freebuff') return { text: 'installed · hands-on', cls: 'good' };
-  if (a === 'mistral' && c.signedIn === null) return { text: 'installed · sign-in not checkable', cls: '' };
-  return c.signedIn ? { text: 'linked', cls: 'good' } : { text: 'signed out', cls: 'warn' };
-}
-const statusText = (a) => statusOf(a).text;
-const statusBadge = (a) => { const s = statusOf(a); return `<span class="badge ${s.cls}">${s.live ? '<span class="dot pulse"></span>' : ''}${esc(s.text)}</span>`; };
-
-function runBadge(t) {
-  const st = taskRunState(t, { running: Boolean(ui.running[t.id]), saving: Boolean(ui.saving?.[t.id]) });
-  if (!st) return '';
-  const cls = { running: 'accent', saving: 'accent', limit: 'warn', outage: 'warn', timeout: 'warn', auth: 'bad', not_installed: 'bad', resume: '' }[st];
-  return `<span class="badge ${cls}">${st === 'running' ? '<span class="dot pulse"></span>' : ''}${esc(RUN_STATES[st])}</span>`;
-}
-
-function stageBadge(t) {
-  if (t.stage === 'approved') return '<span class="badge good"><span class="dot"></span>Approved</span>';
-  if (t.stage === 'rejected') return '<span class="badge bad"><span class="dot"></span>Rejected</span>';
-  if (!t.policy.ok) return '<span class="badge bad">Blocked by policy</span>';
-  if (t.stage === 'approval') return '<span class="badge warn">Awaiting you</span>';
-  return `<span class="badge">${esc(STAGES[t.stage])}</span>`;
-}
-
-const pendingAsks = () => state.permissions.filter((p) => p.status === 'pending');
-const openTasks = () => state.tasks.filter((t) => !['approved', 'rejected'].includes(t.stage));
-
-// ---------- queue: one task at a time per AI ----------
-function queueText(t) {
-  if (!inQueue(t)) return '';
-  const q = queueOf(state.tasks, t.assignee);
-  const i = q.findIndex((x) => x.id === t.id);
-  if (t.startNext) return 'next up';
-  return q.length > 1 && i >= 0 ? `queue ${i + 1} of ${q.length}` : '';
-}
-function queueBadge(t) {
-  const q = queueText(t);
-  return q ? `<span class="badge ${t.startNext ? 'accent' : ''}" title="${esc(NAMES[t.assignee])} works one task at a time">${esc(q === 'next up' ? 'Next up' : q[0].toUpperCase() + q.slice(1))}</span>` : '';
-}
-function assignTask(t, agent, why) {
-  if (!t || t.assignee === agent) return;
-  const prev = t.assignee;
-  t.assignee = agent;
-  if (t.reviewer === agent) t.reviewer = pickReviewer(agent, { candidates: [...HEADLESS.filter(canRun), ...HEADLESS.filter((a) => !canRun(a))], lead: state.lead });
-  audit(`Handed off to ${NAMES[agent]}`, t.id, why || `from ${NAMES[prev] || 'unassigned'}`);
-}
-const roleMap = () => Object.fromEntries(AGENT_IDS.map((a) => [a, state.roles[a] || DEFAULT_ROLES[a]]));
-const isFree = (a) => canRun(a) && !busyOn(a) && !isTyping(a) && !blocked().includes(a);
-
-// Start now, or, if that AI is busy, queue it as Start next (several run oldest-first).
-function startOrQueue(t, a) {
-  if (!t) return null;
-  ops.beforeStart(t, a);
-  const b = busyOn(a);
-  if ((b && b[0] !== t.id) || isTyping(a)) {
-    if (t.startNext && t.assignee === a) { toast(`T-${t.id} is already next for ${NAMES[a]}.`); return 'queued'; }
-    assignTask(t, a, `queued behind ${b ? `T-${b[0]}` : 'team chat'}`);
-    t.queuedAt = placeNext(state.tasks.filter((x) => x.id !== t.id), a, now());
-    t.startNext = true;
-    save();
-    render();
-    toast(`${NAMES[a]} is busy. T-${t.id} starts as soon as they finish.`);
-    return 'queued';
-  }
-  return runTask(t, a);
-}
-
-// Each free AI starts its next Start-next task.
-async function pumpQueues() {
-  if (!settings.project) return;
-  ops.routeQueued();
-  const starts = [];
-  for (const a of EDITORS) {
-    if (!isFree(a)) continue;
-    const next = nextQueued(state.tasks, a);
-    if (next?.startNext) starts.push(runTask(next, a));
-  }
-  // Done tasks waiting for a reviewer who couldn't run: send them now if they can.
-  for (const t of state.tasks) {
-    if (t.stage === 'review' && t.reviewWaiting && HEADLESS.includes(t.reviewer) && isFree(t.reviewer) && !ui.busy[t.id]) starts.push(askForTask(t, 'opinion'));
-  }
-  await Promise.all(starts);
-}
-
-// An AI ran out of usage: its waiting tasks go to free AIs with the same kind of role.
-function moveWaiting(agent, currentId) {
-  if (!state.autoHandoff) return '';
-  const moves = redistribute({ tasks: state.tasks, agent, currentId, available: EDITORS.filter((a) => canRun(a)), roles: roleMap(), lead: state.lead });
-  for (const m of moves) {
-    const t = state.tasks.find((x) => x.id === m.id);
-    assignTask(t, m.to, `${NAMES[agent]} ran out of usage`);
-    t.queuedAt = placeLast(state.tasks.filter((x) => x.id !== t.id), m.to, now());
-  }
-  return moves.length ? ` Waiting tasks moved: ${moves.map((m) => `T-${m.id} → ${NAMES[m.to]}`).join(', ')}.` : '';
-}
-
-// ---------- owner actions ----------
-const actionFor = (t) => ownerAction(t, { permissions: state.permissions, running: Boolean(ui.running[t.id]), saving: Boolean(ui.saving?.[t.id]), canRun, free: liveEditors() });
-function ownerButton(t) {
-  const a = actionFor(t);
-  if (!a) return '';
-  // Passive states (queued with Start next) read as a label, not a button.
-  if (a.passive) return `<div class="owner-act"><span class="badge accent">${esc(a.label)}</span><span class="why">${esc(a.reason)}</span></div>`;
-  return `<div class="owner-act"><button class="btn primary small" data-owneract="${t.id}">${esc(a.label)}</button><span class="why">${esc(a.reason)}</span></div>`;
-}
-
-// Reviewer lines (APPROVE:/CHANGES: T-…) in a reply. Only the assigned reviewer
-// counts; with the lead switch on, the lead's lines act for the owner (lead.mjs).
-// Every verdict is recorded against the sha it names (or the branch head) and gets a
-// ✓/✗ with the exact reason; an APPROVE on a stopped task is held for that sha, never lost.
-async function handleVerdicts(agent, text) {
-  const restart = [];
-  const leading = leadOn({ enabled: settings.leadActions === true, agent, lead: state.lead });
-  for (const v of parseVerdicts(text)) {
-    const t = state.tasks.find((x) => x.id === v.taskId);
-    const vline = `${v.verdict === 'approve' ? 'APPROVE' : 'CHANGES'}: T-${v.taskId}`;
-    if (!t) { ops.actionResult(agent, vline, false, `unknown task id T-${v.taskId}`); continue; }
-    const head = t.ws ? await api.workspaceHead(t.id).catch(() => null) : null;
-    // An APPROVE on a task with a workspace must name the commit it reviewed.
-    if (v.verdict === 'approve' && t.ws && !v.sha) {
-      const why = `name the commit you reviewed: APPROVE: T-${t.id} @${short(head) || '<sha>'}`;
-      recordReview(t, { by: agent, verdict: 'approve', sha: null, reason: v.reason, at: now(), accepted: false, why });
-      ops.actionResult(agent, vline, false, why, t.id);
-      save();
-      continue;
-    }
-    // The sha it names must be the branch head; otherwise it reviewed something else.
-    if (v.sha && head && !head.startsWith(v.sha)) {
-      const why = `head moved since your review (${short(v.sha)}→${short(head)})`;
-      recordReview(t, { by: agent, verdict: v.verdict, sha: v.sha, reason: v.reason, at: now(), accepted: false, why });
-      ops.actionResult(agent, vline, false, why, t.id);
-      save();
-      continue;
-    }
-    const sha = head || v.sha || null;
-    const refuse = (why) => { recordReview(t, { by: agent, verdict: v.verdict, sha, reason: v.reason, at: now(), accepted: false, why }); };
-    if (agent === 'ollama') { const lr = ops.localMayReview(t); if (!lr.ok) { refuse(lr.reason); ops.actionResult(agent, vline, false, lr.reason, t.id); continue; } }
-    if (leading) {
-      const dec = leadDecision({ kind: v.verdict, id: v.taskId, reason: v.reason }, { ...leadCtx(), task: t, resumable: actionFor(t)?.kind === 'resume' });
-      if (!dec.skip) {
-        if (!dec.ok) refuse(dec.reason);
-        else if (v.verdict === 'changes') recordReview(t, { by: agent, verdict: 'changes', sha, reason: v.reason, at: now(), accepted: true });
-        await leadAct({ kind: v.verdict, id: v.taskId, reason: v.reason }, dec, t);
-        continue;
-      }
-    }
-    const r = applyVerdict(t, { by: agent, verdict: v.verdict, reason: v.reason, at: now(), sha });
-    if (!r.ok) {
-      refuse(r.reason);
-      // A reviewer's APPROVE on a stopped (or not yet handed over) task is held against its sha.
-      const held = v.verdict === 'approve' && agent === t.reviewer && /isn't ready for review yet/.test(r.reason) && holdApproval(t, { by: agent, sha, reason: v.reason, at: now() });
-      const why = held ? `${r.reason}; your APPROVE is held for ${short(sha)} and applies when the task reaches review at that commit` : r.reason;
-      post({ who: 'system', text: `${NAMES[agent]} wrote ${v.verdict === 'approve' ? 'APPROVE' : 'CHANGES'} for T-${v.taskId}, but ${why}.` });
-      ops.actionResult(agent, vline, held, why, t.id);
-      if (held) audit('Reviewer approval held', t.id, `${NAMES[agent]} at ${sha}`, agent);
-      continue;
-    }
-    recordReview(t, { by: agent, verdict: v.verdict, sha, reason: v.reason, at: now(), accepted: true });
-    ops.actionResult(agent, vline, true, v.verdict === 'approve' ? `moved to approval at ${short(sha) || 'its head'}` : `sent back to ${NAMES[t.assignee] || 'its implementer'}`, t.id);
-    ops.recordVerdict(t, v.verdict, agent);
-    wakeLead(v.verdict === 'approve' ? 'task reached approval' : 'reviewer verdict', agent);
-    if (v.verdict === 'approve') {
-      audit('Reviewer approved', t.id, `${NAMES[agent]}${sha ? ` at ${sha}` : ''}${v.reason ? `: ${v.reason}` : ''}`, agent);
-      post({ who: 'system', text: `${NAMES[agent]} approved T-${t.id} “${t.title}”${sha ? ` at ${short(sha)}` : ''}. It's in Approvals, waiting for you. The approval is locked to that commit.` });
-    } else {
-      audit('Reviewer requested changes', t.id, `${NAMES[agent]}: ${v.reason}`, agent);
-      wf.instruct(t, `${NAMES[agent]} (review)`, 'changes', v.reason);
-      post({ who: 'system', text: `${NAMES[agent]} sent T-${t.id} “${t.title}” back to ${NAMES[t.assignee] || 'its implementer'}: ${v.reason}` });
-      if (EDITORS.includes(t.assignee) && canRun(t.assignee)) restart.push(t);
-    }
-  }
-  save();
-  render();
-  for (const t of restart) startOrQueue(t, t.assignee);
-}
-
-// An approval covers the exact commit it was given for ("Merge this SHA only"). If the
-// task branch moved since, the later commits go to a new follow-up branch and the task
-// branch goes back to the approved commit, so the review stays valid. Only if that isn't
-// possible is the approval cleared (back to review). Returns true when it was cleared.
-async function recheckApprovals(list = state.tasks.filter((t) => t.stage === 'approval' && t.ws && t.reviewVerdict?.sha)) {
-  let changed = false;
-  let cleared = false;
-  for (const t of list) {
-    const was = t.reviewVerdict;
-    // Never while anything runs on it (task, verify, review or lead runs): checked again after it ends.
-    if (ui.running[t.id] || ui.busy[t.id] || ui.saving?.[t.id]) continue;
-    const head = await api.workspaceHead(t.id).catch(() => null);
-    if (!was?.sha || !head || head === was.sha) continue;
-    const r = await api.opsSplitFollowup?.(t.id, was.sha).catch(() => null);
-    if (r?.busy) continue;
-    if (r?.ok && r.moved) {
-      changed = true;
-      const text = `Commits after ${NAMES[was.by]}'s approval of ${short(was.sha)} were moved to ${r.followup} (${r.commits.join('; ')}); T-${t.id} stays approved at exactly ${short(was.sha)}. Make a follow-up task from that branch if the work is needed.`;
-      t.notes.push({ at: now(), who: 'System', text });
-      t.followups = [...(t.followups || []), { branch: r.followup, from: r.from, commits: r.commits, at: now() }].slice(-5);
-      audit('Stray commits moved to a follow-up branch', t.id, `${r.followup}: ${r.commits.join('; ')}`);
-      post({ who: 'system', text: `T-${t.id} “${t.title}”: ${text}` });
-      continue;
-    }
-    if (clearStaleApproval(t, head, now())) {
-      changed = true;
-      cleared = true;
-      audit('Approval cleared: branch changed', t.id, `${was.sha} → ${head}${r?.reason ? ` (${r.reason})` : ''}`);
-      post({ who: 'system', text: `T-${t.id} “${t.title}” changed after ${NAMES[was.by]} approved ${short(was.sha)} (now ${short(head)})${r?.reason ? ` and the later commits couldn't be split off (${r.reason})` : ''}. The approval was cleared and it's back in review.` });
-      t.notes.push({ at: now(), who: 'System', text: `Approval of ${short(was.sha)} cleared: ${r?.pushed ? r.reason : `the branch is now at ${short(head)}`}. It needs a new review of ${short(head)}.` });
-    }
-  }
-  if (changed) { save(); render(); }
-  return cleared;
-}
-
-// The commit that was approved (or reported done): what a merge must use.
-const approvedSha = (t) => (t.reviewVerdict?.verdict === 'approve' && t.reviewVerdict.sha) || t.done?.sha || null;
-
-// Short commit + test result for a reported-done task (board and Approvals).
-function doneBadge(t) {
-  if (!t.done) return '';
-  const cls = { passed: 'good', failed: 'bad' }[t.done.tests] || '';
-  return `${t.done.sha ? `<span class="badge mono" title="Reported done at this commit">${esc(short(t.done.sha))}</span>` : ''}<span class="badge ${cls}">${esc(TEST_LABEL[t.done.tests] || 'tests not run')}</span>${t.done.testsChanged ? '<span class="badge warn">tests changed by this task</span>' : ''}`;
-}
-
-// ---------- the lead acting for the owner ----------
-const leadCtx = () => ({ lead: state.lead, enabled: settings.leadActions === true, tasks: state.tasks, powers: ops.syncPowers() });
-
-// START / APPROVE R- / DENY R- / ADD TASK lines from the lead (switch on only).
-function handleLeadLines(agent, text) {
-  ops.leadLines(agent, text); // MEMORY: proposals become owner-approved cards
-  if (!leadOn({ enabled: settings.leadActions === true, agent, lead: state.lead })) {
-    // No silent no-ops: say why each board line was ignored.
-    for (const cmd of parseLeadLines(text)) ops.actionResult(agent, cmd.kind === 'add' ? `ADD TASK: ${cmd.title}` : cmd.version ? `${cmd.kind.toUpperCase()}: ${cmd.version}` : `${{ start: 'START', allow: 'APPROVE', deny: 'DENY' }[cmd.kind] || cmd.kind.toUpperCase()}: ${['allow', 'deny'].includes(cmd.kind) ? 'R' : 'T'}-${cmd.id}`, false, agent !== state.lead ? `only the lead (${NAMES[state.lead]}) can do that` : 'ignored because the lead switch is off');
-    return;
-  }
-  if (!leadOn({ enabled: settings.leadActions === true, agent, lead: state.lead })) return;
-  for (const cmd of parseLeadLines(text)) {
-    const t = cmd.id ? state.tasks.find((x) => x.id === cmd.id) : null;
-    const request = cmd.id ? state.permissions.find((p) => p.id === cmd.id) : null;
-    leadAct(cmd, leadDecision(cmd, { ...leadCtx(), task: t, request }), t, request);
-  }
-}
-
-function leadRecord(action, ref, detail, undo = null) {
-  const lead = state.lead;
-  const label = leadLabel(lead, action, ref, detail);
-  state.leadLog = state.leadLog || [];
-  const entry = { id: uid(), at: now(), lead, action, ref, undo: leadUndoable(action) ? undo : null };
-  state.leadLog.unshift(entry);
-  state.leadLog = state.leadLog.slice(0, 200);
-  audit(label, ref.startsWith('T-') ? ref.slice(2) : null, '', lead);
-  post({ who: 'system', text: label, leadUndo: entry.undo ? entry.id : undefined });
-  return entry;
-}
-
-// Carries out an allowed lead action with the same steps as the owner's buttons.
-async function leadAct(cmd, dec, t = null, request = null) {
-  const lead = state.lead;
-  if (dec.ignored) return;
-  const ref = cmd.version ? `v${String(cmd.version).replace(/^v/, '')}` : cmd.id ? `${cmd.kind === 'allow' || cmd.kind === 'deny' ? 'R' : 'T'}-${cmd.id}` : `“${cmd.title}”`;
-  if (!dec.ok) {
-    audit(`${NAMES[lead]} (lead) was refused`, t?.id || null, `${ref}: ${dec.reason}`, lead);
-    state.leadRefusals = [...(state.leadRefusals || []), { ref, reason: dec.reason, at: now() }].slice(-8);
-    ops.actionResult(lead, `${({ allow: 'APPROVE', deny: 'DENY', add: 'ADD TASK' })[cmd.kind] || cmd.kind.toUpperCase()}: ${ref}`, false, dec.reason, t?.id || null);
-    post({ who: 'system', text: `${NAMES[lead]} (lead) can't act on ${ref}: ${dec.reason}.${dec.duplicate ? ` Open T-${dec.duplicate} instead.` : ''}` });
-    save();
-    render();
-    return;
-  }
-  const title = t ? ` “${t.title}”` : '';
-  ops.actionResult(lead, `${({ allow: 'APPROVE', deny: 'DENY', add: 'ADD TASK' })[cmd.kind] || cmd.kind.toUpperCase()}: ${ref}`, true, `done (${dec.action})`, t?.id || null);
-  if (dec.action === 'release' || dec.action === 'tag' || dec.action === 'rewrite') {
-    // The main process re-checks the switch, the owner's Next version, the version file and the guard.
-    const r = dec.action === 'rewrite'
-      ? await api.opsRewriteTask(t.id, true).catch((err) => ({ ok: false, message: cleanErr(err.message) }))
-      : await api.opsLeadRelease(dec.action, dec.version).catch((err) => ({ ok: false, message: cleanErr(err.message) }));
-    if (!r?.ok) return leadAct(cmd, { ok: false, reason: r?.message || 'not available' }, t);
-    leadRecord(dec.action, ref, `— ${r.message}${dec.action === 'rewrite' ? '' : ' This can\'t be undone.'}`);
-    if (dec.action !== 'rewrite') wf.madeTag(dec.version);
-    if (r.dispatched) ops.watchRelease(dec.version);
-    save();
-    render();
-    return;
-  }
-  if (dec.action === 'merge') {
-    if (await recheckApprovals([t])) return leadAct(cmd, { ok: false, reason: `T-${t.id} changed after its review, so it went back to review` }, t);
-    const pr = ui.prs.byTask[t.id];
-    let r;
-    if (pr && pr.state === 'OPEN') {
-      if (pr.checks?.failed) return leadAct(cmd, { ok: false, reason: `PR #${pr.number} has failing checks` }, t);
-      r = await api.gitPrMerge(pr.number, { byLead: true, sha: approvedSha(t) }).catch((err) => ({ ok: false, message: cleanErr(err.message) }));
-    } else {
-      r = await api.gitMergeApproved(t.id, { byLead: true, sha: approvedSha(t) }).catch((err) => ({ ok: false, message: cleanErr(err.message) }));
-    }
-    if (!r.ok) return leadAct(cmd, { ok: false, reason: `the merge stopped: ${r.message}` }, t);
-    t.decision = 'approved';
-    t.notes.push({ at: now(), who: `${NAMES[lead]} (lead)`, text: r.message });
-    t.stage = 'approved';
-    t.updatedAt = now();
-    leadRecord('merge', `T-${t.id}`, `${title} — ${r.message} This can't be undone.`);
-    await refreshGit().catch(() => {});
-  } else if (dec.action === 'approve') {
-    t.decision = 'approved';
-    t.stage = 'approved';
-    t.updatedAt = now();
-    const entry = leadRecord('approve', `T-${t.id}`, `${title} (nothing merged into main or released)`, { kind: 'stage', id: t.id, stage: 'approval' });
-    save();
-    await leadIntegrate(t);
-    // Once it is on the release branch, Undo would not take it back off: don't offer it.
-    if (t.integratedInto) { entry.undo = null; post({ who: 'system', text: `T-${t.id} is now on ${t.integratedInto}, so this approval can't be undone here; it stays on the release branch.` }); }
-  } else if (dec.action === 'changes') {
-    const prev = t.stage;
-    t.stage = 'implementing';
-    t.updatedAt = now();
-    t.notes.push({ at: now(), who: `${NAMES[lead]} (lead)`, text: `CHANGES REQUESTED: ${cmd.reason}` });
-    requestChanges(t, { by: lead, reason: cmd.reason, at: now() });
-    wf.instruct(t, `${NAMES[lead]} (lead)`, 'changes', cmd.reason);
-    leadRecord('changes', `T-${t.id}`, `${title}: ${cmd.reason}`, { kind: 'stage', id: t.id, stage: prev });
-  } else if (dec.action === 'start' || dec.action === 'resume') {
-    leadRecord(dec.action, `T-${t.id}`, title, { kind: 'start', id: t.id });
-    save();
-    render();
-    await startOrQueue(t, dec.action === 'resume' ? (actionFor(t)?.agent || t.assignee) : t.assignee);
-    return;
-  } else if (dec.action === 'allowperm' || dec.action === 'denyperm') {
-    leadRecord(dec.action, `R-${request.id}`, `(${NAMES[request.agent]}: ${request.what})${cmd.reason ? ` — ${cmd.reason}` : ''}`, { kind: 'perm', id: request.id });
-    return decide(request.id, dec.action === 'allowperm' ? 'approved' : 'denied', `${NAMES[lead]} (lead)`);
-  } else if (dec.action === 'add') {
-    const assignee = aliasOrNone(cmd.implementer, EDITORS) || (liveEditors().find((a) => a !== lead) || lead);
-    const reviewer = pickReviewer(assignee, { requested: aliasOrNone(cmd.reviewer, HEADLESS), candidates: HEADLESS.filter(canRun), lead });
-    const nt = makeTask({ title: cmd.title, description: cmd.details, assignee, reviewer, action: ['code', 'docs'].includes(cmd.action) ? cmd.action : 'code' }, `${NAMES[lead]} (lead)`);
-    if (!nt) return;
-    leadRecord('add', `T-${nt.id}`, `“${nt.title}”`, { kind: 'add', id: nt.id });
-  }
-  save();
-  render();
-}
-
-function aliasOrNone(word, allowed) {
-  const a = AGENT_IDS.find((id) => AGENTS[id].mention.includes(String(word || '').toLowerCase()));
-  return a && allowed.includes(a) ? a : null;
-}
-
-// Files an AI named with ATTACH lines: copied into the attachments folder (only from
-// inside the workspace), then posted with its message.
-async function agentAttachments(parsed, base, agent) {
-  const atts = [];
-  for (const f of parsed.files) {
-    // A chat with no project has no files to post from.
-    if (base === null && chatRule().unlinked) { ops.actionResult(agent, `ATTACH: ${f.path}`, false, 'this chat is not linked to a project'); continue; }
-    const r = await api.attachFromAgent(f.path, base).catch((e) => ({ ok: false, message: cleanErr(e.message) }));
-    if (r?.ok) { atts.push({ ...r.att, from: f.path }); audit('Routine: posted an attachment', null, `${NAMES[agent]}: ${f.path} (no approval needed)`, agent); }
-    ops.actionResult(agent, `ATTACH: ${f.path}`, Boolean(r?.ok), r?.ok ? 'posted' : r?.message || 'failed');
-  }
-  return { atts, text: parsed.text };
-}
-
-// Owner presses Undo on a lead action.
-async function undoLead(id) {
-  const e = (state.leadLog || []).find((x) => x.id === id);
-  if (!e || !e.undo || e.undone) return toast('That can no longer be undone.');
-  const u = e.undo;
-  const t = u.id ? state.tasks.find((x) => x.id === u.id) : null;
-  if (u.kind === 'perm') {
-    const p = state.permissions.find((x) => x.id === u.id);
-    if (!p || p.status !== 'denied') return toast('That request has changed since; nothing to undo.');
-    p.status = 'pending';
-    delete p.decidedAt;
-  } else if (u.kind === 'add') {
-    if (!t || (t.runs || []).length) return toast('Work on that task has started; remove it from the board instead.');
-    state.tasks = state.tasks.filter((x) => x.id !== t.id);
-  } else if (u.kind === 'start') {
-    if (!t) return;
-    const r = ui.running[t.id];
-    if (r) await api.cancelRun(r.runId).catch(() => {});
-    delete t.startNext;
-  } else if (u.kind === 'revert' || u.kind === 'undomerge') {
-    const r = await wf.undoRevert(u);
-    if (!r.ok) return toast(`Couldn't undo: ${r.message}`);
-    if (t) t.notes.push({ at: now(), who: 'Owner', text: `Undid the lead's change: ${r.message}` });
-  } else if (u.kind === 'stage') {
-    if (!t || (t.stage === 'approved' && t.decision === 'approved' && u.stage !== 'approval')) return;
-    if (t.integratedInto) return toast(`T-${t.id} is already on ${t.integratedInto}; it stays on the release branch.`);
-    t.stage = u.stage;
-    if (u.stage === 'approval') delete t.decision;
-    delete t.changesSince;
-  }
-  e.undone = true;
-  audit(`Owner undid: ${leadLabel(e.lead, e.action, e.ref)}`, t?.id || null);
-  post({ who: 'system', text: `You undid: ${leadLabel(e.lead, e.action, e.ref)}.` });
-  save();
-  render();
-}
-
-// ---------- views ----------
-function projectName() {
-  const p = ops.projectsList?.();
-  const cur = p?.list?.find((x) => x.id === p.active);
-  return cur?.name || (settings.project ? String(settings.project).split(/[\\/]/).filter(Boolean).pop() : '');
-}
-function viewOverview() {
-  const h = new Date().getHours();
-  const part = h < 5 ? 'evening' : h < 12 ? 'morning' : h < 18 ? 'afternoon' : 'evening';
-  const name = settings.ownerIdentity?.name || '';
-  const proj = projectName();
-  const live = liveAgents();
-  const s = ops.summaryData();
-  const running = wf.jobsRunning();
-  const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
-  const away = `<div class="away"><div class="away-h">${icon('moon', 'sm')}<b>While you were away</b><span class="faint" style="font-size:12.5px">since ${esc(time(s.since))}</span><span class="grow"></span><button class="btn small ghost" data-ops="seen">Mark all as seen</button><button class="btn small link" data-nav="summary">Open →</button></div>
-    ${s.quiet && !s.waitingCount ? '<div class="empty">Nothing happened since you last looked.</div>' : `<div class="away-grid">
-      <div><div class="k">Needs you</div><div class="v">${s.waitingCount ? `${plural(s.waiting.approvals.length, 'approval')} · ${plural(s.waiting.permissions.length + s.waiting.cards.length, 'question')}` : 'Nothing'}</div></div>
-      <div><div class="k">Moved</div><div class="v">${plural(s.totals.done, 'task')} finished · ${plural(s.totals.reviews, 'review')} · ${plural(s.totals.merges, 'merge')}</div></div>
-      <div><div class="k">Jobs</div><div class="v">${running} running · ${plural(s.totals.failures, 'failure')}</div></div></div>`}</div>`;
-  const chip = (attrs, ic, label, dis = false) => `<button class="qchip" ${attrs} ${dis ? 'disabled' : ''}>${icon(ic, 'sm')}${label}</button>`;
-  return `<div class="home">
-    <div class="greet"><img src="./icon.png" alt=""><h1>Good ${part}${name ? `, ${esc(name)}` : ''}</h1></div>
-    <div class="greet-sub">${proj ? `Your team is ready on ${esc(proj)}. ${esc(AGENTS[state.lead].name)} ★ leads; nothing reaches main without you.` : 'Pick a shared project folder to get the team started.'}</div>
-    ${composer('What should the team work on?', false)}
-    <div class="chips">
-      ${chip('data-prefill="plan"', 'board', 'Plan a feature')}
-      ${chip('data-nav="project"', 'dl', 'Fix a bug from sent logs')}
-      ${chip('data-nav="github"', 'branch', 'Review open pull requests')}
-      ${chip('data-checkin', 'users', 'Team check-in', !live.length || Boolean(round))}
-      ${chip('data-nav="release"', 'flag', 'Prepare a release')}
-    </div>
-    ${away}
-    <div class="home-block">${ops.banner ? '' : ''}${setupChecklist()}${wf.overviewCard()}</div>
-    <details class="home-more"><summary>Team at a glance ▾</summary>${viewOverviewMain()}</details>
-  </div>`;
-}
-function viewOverviewMain() {
-  const open = openTasks();
-  const waiting = state.tasks.filter((t) => t.stage === 'approval');
-  const asks = pendingAsks();
-  const ready = AGENT_IDS.filter((a) => canRun(a) || (a === 'freebuff' && connected(a))).length;
-  const counts = Object.fromEntries(Object.keys(STAGES).map((s) => [s, state.tasks.filter((t) => t.stage === s).length]));
-  const flow = ['intake', 'implementing', 'checkpoint', 'testing', 'review', 'approval'];
-  const openPrs = ui.prs.list.filter((p) => p.state === 'OPEN').length;
-  const active = open.filter((t) => ui.running[t.id] || ['implementing', 'checkpoint', 'testing', 'review'].includes(t.stage)).slice(0, 6);
-  const roster = AGENT_IDS.filter((a) => connected(a) || ui.running[a] || state.tasks.some((t) => t.assignee === a && !['approved', 'rejected'].includes(t.stage)));
-  const recentChat = state.chat.filter((m) => !m.deleted && m.who !== 'system').slice(-5).reverse();
-  return `
-    <div class="grid stats">
-      <div class="card stat"><div class="n">${open.length}</div><div class="l">Open tasks</div></div>
-      <div class="card stat"><div class="n" style="color:${waiting.length + asks.length ? 'var(--warn)' : 'var(--strong)'}">${waiting.length + asks.length}</div><div class="l">Waiting for you<br><span class="faint">${waiting.length} approval${waiting.length === 1 ? '' : 's'} · ${asks.length} permission${asks.length === 1 ? '' : 's'}</span></div></div>
-      <div class="card stat"><div class="n">${ready}<span class="muted" style="font-size:15px"> / ${AGENT_IDS.length}</span></div><div class="l">AIs ready</div></div>
-      <div class="card stat"><div class="n">${ui.prs.loaded ? openPrs : '—'}</div><div class="l">Open pull requests</div></div>
-    </div>
-    <div class="grid three mb">
-      <div class="card"><h3>What each AI is doing<span class="grow"></span><button class="btn small link" data-nav="agents">Agents →</button></h3>
-        <div class="who-list">${(roster.length ? roster : ['anthropic', 'openai', 'google']).map((a) => {
-          const b = busyOn(a);
-          const t = b ? state.tasks.find((x) => x.id === b[0]) : null;
-          const assigned = state.tasks.filter((x) => x.assignee === a && !['approved', 'rejected'].includes(x.stage)).length;
-          const last = [...state.chat].reverse().find((m) => m.who === a);
-          const what = t ? `T-${t.id} ${t.title}` : isTyping(a) ? 'replying in team chat' : last ? `said: ${last.text.replace(/\s+/g, ' ').slice(0, 80)}` : assigned ? `${assigned} task${assigned > 1 ? 's' : ''} assigned` : 'idle';
-          return `<div class="w">${avatar(a)}<div style="min-width:90px"><b style="color:var(--strong)">${esc(AGENTS[a].name)}</b>${a === state.lead ? ' <span class="faint">★</span>' : ''}<div>${statusBadge(a)}</div></div><span class="what" title="${esc(what)}">${esc(what)}</span><div class="load" title="${assigned} assigned"><div style="width:${Math.min(100, assigned * 25)}%"></div></div></div>`;
-        }).join('')}</div>
-      </div>
-      <div class="card"><h3>Active work<span class="grow"></span><button class="btn small link" data-nav="board">Board →</button></h3>
-        ${active.map((t) => `<div class="task" data-open="${t.id}"><div class="t">${esc(t.title)}</div><div class="meta">${stageBadge(t)}${runBadge(t)}${agentChip(t.assignee)}${t.pr ? `<span class="badge accent">PR #${esc(t.pr.number || '')}</span>` : ''}</div></div>`).join('') || '<div class="empty">Nothing in progress. Start a task, or ask the team in Team chat.</div>'}
-      </div>
-      <div class="card"><h3>Quick actions</h3>
-        <div class="quick">
-          <button class="btn" data-new>＋ New task</button>
-          <button class="btn" data-nav="chat">✎ Message the team</button>
-          <button class="btn" data-checkin ${liveAgents().length ? '' : 'disabled'}>◎ Team check-in</button>
-          <button class="btn" data-nav="approvals">✓ Review approvals</button>
-          <button class="btn" data-histscan>⟳ Sync CLI chats</button>
-          <button class="btn" data-nav="history">⌕ Search chat history</button>
-          <button class="btn" data-gitpull ${repo.repo && repo.remote ? '' : 'disabled'}>⇣ Pull latest</button>
-          <button class="btn" data-openweb="${esc(state.lead)}">⧉ Open ${esc(AGENTS[state.lead].name)} site</button>
-        </div>
-      </div>
-    </div>
-    <div class="grid two mb">
-      <div class="card"><h3>Recent team chat<span class="grow"></span><button class="btn small link" data-nav="chat">Open chat →</button></h3>
-        <div class="mini-chat">${recentChat.map((m) => `<div class="m"><div>${m.who === 'owner' ? '<b>You</b>' : agentChip(m.who)} <span class="faint">${esc(ago(m.at))}${m.edited ? ' · edited' : ''}</span></div><div class="t">${esc(m.retracted ? '(retracted)' : m.text)}</div></div>`).join('') || '<div class="empty">No messages yet.</div>'}</div>
-      </div>
-      <div class="card"><h3>Needs you</h3>
-        ${asks.map((p) => `<div class="task" data-nav="chat"><div class="t">${esc(PERMISSION_KINDS[p.kind])}: ${esc(p.what)}</div><div class="meta">${agentChip(p.agent)}<span class="badge warn">Permission request R-${esc(p.id)}</span></div></div>`).join('')}
-        ${waiting.map(taskRow).join('')}
-        ${!asks.length && !waiting.length ? '<div class="empty">Nothing is waiting for you.</div>' : ''}
-      </div>
-    </div>
-    <div class="grid two">
-      <div class="card">
-        <h3>Governance flow</h3>
-        <div class="pipe">
-          ${flow.map((s, i) => `<span class="step ${s === 'approval' ? 'gate' : ''}">${esc(STAGES[s])}<b>${counts[s]}</b></span>${i < flow.length - 1 ? '<span class="arrow">›</span>' : ''}`).join('')}
-          <span class="arrow">›</span><span class="step">Approved<b>${counts.approved}</b></span>
-          <span class="step">Rejected<b>${counts.rejected}</b></span>
-        </div>
-      </div>
-      <div class="card">
-        <h3>Recent activity<span class="grow"></span><button class="btn small link" data-nav="audit">Audit log →</button></h3>
-        ${state.audit.slice(0, 5).map((a) => `<div class="row" style="font-size:12.5px;padding:3px 0"><span class="faint" style="width:110px">${esc(ago(a.at))}</span><span style="flex:1">${esc(a.event)}${a.detail ? ` <span class="muted">— ${esc(String(a.detail).slice(0, 70))}</span>` : ''}</span></div>`).join('') || '<div class="empty">No activity yet.</div>'}
-      </div>
-    </div>`;
-}
-
-// First-run checklist: link your AIs (no API keys needed) and pick a project.
-function setupChecklist() {
-  const linked = EDITORS.filter(connected);
-  const done = linked.length > 0 && settings.project;
-  if (done && state.setupDismissed) return '';
-  const step = (ok, text, btn) => `<div class="setup-step ${ok ? 'ok' : ''}"><span class="tick">${ok ? '✓' : ''}</span><span style="flex:1">${text}</span>${ok ? '' : btn}</div>`;
-  return `<div class="card mb">
-    <h3>Set up your AI team<span class="grow"></span>${done ? '<button class="btn small ghost" data-dismisssetup>Hide</button>' : ''}</h3>
-    <p class="muted" style="font-size:12.5px;margin:0 0 6px">Sign in with your own accounts on each provider's own page — no passwords pass through this app.</p>
-    ${['anthropic', 'openai', 'google'].map((a) => step(connected(a), `<b>${AGENTS[a].name}</b> <span class="muted">· ${esc(AGENTS[a].plan)}</span>`,
-      `<button class="btn small primary" data-signin="${a}">Sign in</button>`)).join('')}
-    ${step(connected('ollama'), '<b>Local AI</b> <span class="muted">· optional, free, works offline (Ollama)</span>', cli.ollama.installed ? '' : ui.signin.ollama?.state === 'installing' ? '<button class="btn small" disabled><span class="dot pulse"></span> Installing…</button>' : '<button class="btn small" data-install="ollama" title="Runs Ollama’s official installer in a terminal. It asks for your computer password there; this app never sees it.">Install Ollama</button>')}
-    ${step(Boolean(gh.ghUser), `<b>GitHub</b> <span class="muted">· ${gh.ghUser ? `signed in as ${esc(gh.ghUser)}` : 'sign in on github.com to pull, push and track pull requests'}</span>`, gh.gh ? '<button class="btn small primary" data-ghlogin>Connect GitHub</button>' : '<button class="btn small" data-nav="github">How to install</button>')}
-    ${step(Boolean(settings.project), '<b>Shared project folder</b> <span class="muted">· the git repo the AIs work on</span>', '<button class="btn small primary" data-pickproject>Choose folder</button>')}
-    <div class="row" style="margin-top:6px"><button class="btn small ghost" data-recheck>Re-check</button><span class="faint" style="font-size:12px">More AIs (Grok, Mistral, Qwen, Perplexity, DeepSeek, Copilot, Meta AI) are on the Agents page.</span></div>
-  </div>`;
-}
-
-function taskRow(t) {
-  return `<div class="task" data-open="${t.id}"><div class="t">${esc(t.title)}</div><div class="meta">${stageBadge(t)}${agentChip(t.assignee)}<span class="badge">${esc(ACTIONS[t.action])}</span></div></div>`;
-}
-
-// The team chat's own workspace id, one per project (so switching projects never mixes them up).
-function chatId() {
-  let h = 0;
-  for (const c of String(settings.project || '')) h = (h * 31 + c.charCodeAt(0)) >>> 0;
-  return `CHAT${h.toString(36).toUpperCase().padStart(6, '0').slice(-6)}`;
-}
-// The workspace this session's chat edits happen in (verified by the main process).
-const wsId = () => chatWs?.id || chatId();
-const chatRule = () => chatEditRule(openChatEntry() || { id: teamChatId(state.projectId), projectId: state.projectId, team: true }, state.projectId);
-const chatCanEdit = () => Boolean(settings.chatEdits && settings.project && gh.git && chatRule().edit);
-
-// After a checkpoint, back the branch up to GitHub (never main).
-// Lead handles GitHub: on by default only when GitHub is already set up.
-// Lead handles GitHub: only when the owner turned it on (settings never change by themselves).
-const leadGitHubOn = () => settings.leadGitHub === true;
-
-async function autoPush(taskId) {
-  if (settings.autoPush === false) return null; // the owner turned automatic pushes off
-  if (leadGitHubOn() && repo.remote) {
-    const r = await api.gitLeadSync('push', taskId).catch((e) => ({ ok: false, message: cleanErr(e.message) }));
-    leadGitNote(r.ok ? `pushed ${r.branch} (${short(r.sha)})` : `couldn't push ${r.branch || `T-${taskId}`}: ${r.message}`, taskId);
-    return r;
-  }
-  if (!settings.autoPush || !gh.ghUser || !repo.remote) return null;
-  return api.gitPushTask(taskId).catch((e) => ({ ok: false, message: cleanErr(e.message) }));
-}
-
-// Every push and pull the lead does shows in Team chat and the Audit log.
-function leadGitNote(what, taskId = null) {
-  const text = `${NAMES[state.lead]} (lead) ${what}`;
-  audit(text, taskId && /^[A-Z0-9]{4,12}$/.test(taskId) ? taskId : null, '', state.lead);
-  post({ who: 'system', text });
-}
-
-async function leadFetch() {
-  if (!leadGitHubOn() || !repo.remote) return null;
-  const r = await api.gitLeadSync('fetch').catch((e) => ({ ok: false, message: cleanErr(e.message) }));
-  if (r.ok && state.lastFetch !== `${r.branch}@${r.sha}`) { state.lastFetch = `${r.branch}@${r.sha}`; leadGitNote(`pulled from GitHub: ${r.branch} is at ${r.sha}`); save(); }
-  else if (!r.ok) leadGitNote(`couldn't pull from GitHub: ${r.message}`);
-  return r;
-}
-
-// An approved task goes to the lead, who merges it onto release/next and pushes it.
-async function leadIntegrate(t) {
-  if (!leadGitHubOn() || !t?.ws) return;
-  await leadFetch();
-  const r = await api.gitLeadSync('integrate', t.id).catch((e) => ({ ok: false, message: cleanErr(e.message) }));
-  t.notes.push({ at: now(), who: `${NAMES[state.lead]} (lead)`, text: r.message });
-  if (r.ok) t.integratedInto = r.release;
-  if (r.ok) leadGitNote(`merged T-${t.id} onto ${r.release} (${short(r.sha)})${r.pushed ? ` and pushed ${r.release}` : ''}`, t.id);
-  else {
-    leadGitNote(`couldn't merge T-${t.id} onto release/next: ${r.message}`, t.id);
-    if (r.conflicts?.length) {
-      const fix = makeTask({ title: `Resolve release/next conflicts with T-${t.id}`, description: `T-${t.id} “${t.title}” conflicts with release/next in: ${r.conflicts.join(', ')}.\nIn this workspace: git fetch origin, git merge origin/release/next and ${t.ws.branch}, resolve the conflicts keeping both sides' behaviour, run the tests, report TESTS: and STATUS: DONE.`, assignee: EDITORS.includes(state.lead) ? state.lead : t.assignee, reviewer: t.assignee, action: 'code' }, `${NAMES[state.lead]} (lead)`);
-      if (fix) post({ who: 'system', text: `Added T-${fix.id} for ${NAMES[fix.assignee]} to resolve it.` });
-    }
-  }
-  save();
-  render();
-}
-
-async function refreshGit() {
-  try { gh = await api.gitTools(); } catch {}
-  try { repo = await api.gitStatus(); } catch { repo = { repo: false }; }
-}
-async function refreshPrs() {
-  if (!gh.ghUser || !repo.remote) { ui.prs = { ...ui.prs, list: [], loaded: false, msg: gh.ghUser ? 'The active project has no GitHub remote.' : 'Connect GitHub to see pull requests.' }; return; }
-  const r = await api.gitPrList().catch((e) => ({ ok: false, prs: [], message: cleanErr(e.message) }));
-  ui.prs.list = r.prs || [];
-  ui.prs.loaded = r.ok;
-  ui.prs.msg = r.ok ? '' : r.message;
-}
-
-// What every AI is told about the app, the team and the board.
-function chatCtx() {
-  return {
-    lead: state.lead,
-    project: settings.project,
-    chatEdits: chatCanEdit(),
-    extraDirs: settings.extraDirs,
-    pending: pendingAsks(),
-    roster: AGENT_IDS.map((id) => ({ id, role: state.roles[id] || DEFAULT_ROLES[id], status: statusText(id) })),
-    board: openTasks().map((t) => ({ id: t.id, title: t.title, stage: STAGES[t.stage], assignee: t.assignee, reviewer: t.reviewer, state: RUN_STATES[taskRunState(t, { running: Boolean(ui.running[t.id]) })], queue: queueText(t), truth: t.ws ? wf.truthLine(t) : '' })),
-    leadActions: settings.leadActions === true,
-    actForMe: settings.actForMe === true,
-    // With the lead switch on, the lead sees what waits for it and its refused actions.
-    ...(settings.leadActions === true ? { waiting: waitingForLead({ tasks: state.tasks, permissions: state.permissions, lead: state.lead, running: ui.running, editors: EDITORS }), refusals: state.leadRefusals || [] } : {}),
-  };
-}
-
-// The lead gets a short turn when something needs it (switch on only; debounced).
-const leadWaker = createLeadWaker({
-  isOn: () => settings.leadActions === true,
-  lead: () => state.lead,
-  canRun: () => canRun(state.lead) && !blocked().includes(state.lead) && !isTyping(state.lead),
-  run: (why) => runRoom([state.lead], { trigger: `lead check: ${why.join(', ')}` }),
-});
-const wakeLead = (reason, from = null) => leadWaker.nudge(reason, from);
-
-function markOut(a, err) {
-  // Unknown reset time: assume an hour; you can mark it available any time.
-  state.agentStatus[a] = { ...(state.agentStatus[a] || {}), outUntil: new Date(Date.now() + 60 * 60 * 1000).toISOString(), reason: err?.reset || 'usage limit reached' };
-  audit(`${NAMES[a]} ran out of usage`, null, err?.reset || '');
-}
-
-// One way to talk to any agent, whatever it's linked by. Marks agents that run out.
-async function callAgent(agent, prompt, opts = {}) {
-  let res;
-  try {
-    res = await api.run({ agent, prompt, model: state.models[agent] || undefined, ...(state.projectId ? { projectId: state.projectId } : {}), ...opts });
-  } catch (e) {
-    res = { ok: false, error: { kind: 'error', message: cleanErr(e.message) } };
-  }
-  // A failed run always carries an error object, so nothing below can throw and leave the task stuck as running.
-  if (!res || typeof res !== 'object') res = { ok: false };
-  if (!res.ok && !res.error) res.error = { kind: 'error', message: String(res.message || 'The run failed without saying why.') };
-  if (!res.ok && res.error.kind === 'limit') markOut(agent, res.error);
-  // A refused sign-in or key becomes a saved hold and a badge, shown once.
-  if (!res.ok) {
-    const problem = authProblem(res.error, { method: method(agent) });
-    if (problem) { setHold(agent, problem); res.quiet = true; save(); }
-  }
-  updatePanel();
-  return res;
-}
-
-function setHold(agent, problem) {
-  state.agentStatus = state.agentStatus || {};
-  const prev = authHold(agent);
-  const hold = makeHold(problem, { signedIn: cli[agent]?.signedIn, hasKey: prov.keys?.[agent], at: now() }, prev);
-  state.agentStatus[agent] = { ...(state.agentStatus[agent] || {}), hold };
-  if (hold !== prev) audit(`${NAMES[agent]}: ${holdStatus(hold, Boolean(prov.keys?.[agent])).text}`, null, hold.message, agent);
-}
-function clearHold(a) {
-  const st = state.agentStatus?.[a];
-  if (!st?.hold) return false;
-  delete st.hold;
-  if (!Object.keys(st).length) delete state.agentStatus[a];
-  return true;
-}
-// After a status check: lift a hold only when sign-in or the key really changed.
-function liftHolds() {
-  let changed = false;
-  for (const a of AGENT_IDS) {
-    const h = authHold(a);
-    if (!h) continue;
-    const c = cli[a] || {};
-    if (method(a) !== 'api' && typeof c.signedIn !== 'boolean') continue; // a failed check proves nothing
-    if (holdLifted(h, { method: method(a), signedIn: Boolean(c.signedIn), hasKey: Boolean(prov.keys?.[a]) })) changed = clearHold(a) || changed;
-  }
-  return changed;
-}
-
-async function refreshAgents() {
-  try { settings = await api.settings(); } catch {}
-  const list = await Promise.all(AGENT_IDS.map((a) => api.agentStatus(a).catch(() => ({}))));
-  cli = Object.fromEntries(AGENT_IDS.map((a, i) => [a, list[i] || {}]));
-  if (liftHolds()) save();
-}
-
-function attachmentsHtml(m) {
-  if (!m.attachments?.length) return '';
-  return `<div class="atts">${m.attachments.map((a, i) => a.kind === 'audio'
-    ? `<figure><audio controls preload="none" src="${esc(a.url || '')}"></audio><figcaption>${esc(a.name)}</figcaption></figure>`
-    : a.kind === 'video'
-    ? `<figure><video controls preload="metadata" src="${esc(a.url || '')}"></video><figcaption>${esc(a.name)}${a.duration ? ` · ${Math.round(a.duration)}s` : ''}${a.note ? ` · ${esc(a.note)}` : ''}</figcaption></figure>`
-    : `<figure><img src="${esc(a.url || '')}" alt="${esc(a.name)}" data-lightbox="${esc(m.id)}:${i}" title="Click to enlarge"><figcaption>${esc(a.name)}${ops.attMeta(m, a, i)}</figcaption></figure>`).join('')}</div>`;
-}
-
-// ---------- team status panel ----------
-function renderPanel() {
-  // Passive Habitat status: where each AI is and what it's doing, plus the latest hall board notes.
-  const snap = habitatSnapshot();
-  const hab = teamHabitat(state.habitat, snap.agents, NAMES);
-  const where = Object.fromEntries(hab.rows.map((r) => [r.id, r]));
-  const rows = teamList().map((a) => {
-    const st = panelState(statusOf(a), outInfo(a));
-    const hold = authHold(a);
-    const h = where[a];
-    const ag = AGENTS[a];
-    const can = { web: 'opens its own site in a window', api: 'chats, plans and reviews through its official API', local: 'runs on this computer', manual: 'works hands-on in a terminal' }[ag.kind] || 'chats, plans, reviews and edits code in task workspaces';
-    const tip = [`${ag.name}${a === state.lead ? ' (lead)' : ''}: ${st.text}`, st.detail, hold?.message, h ? `Habitat: ${h.place} · ${h.activity}` : '', `${ag.vendor} · ${ag.tool}: ${can}`, 'Click to open on the Agents page.'].filter(Boolean).join('\n');
-    return `<button class="team-member" data-teammember="${a}" title="${esc(tip)}">${mono(a, true)}<span class="nm">${esc(ag.name)}${a === state.lead ? ' <span class="star">★</span>' : ''}</span><span class="st ${st.cls}">${a === state.lead ? 'lead · ' : ''}${esc(st.text)}</span><span class="dot ${dotOf(a)}${st.live ? ' pulse' : ''}"></span>${st.detail ? `<small>${esc(st.detail)}</small>` : ''}</button>`;
-  }).join('');
-  const board = hab.board.length ? `<div class="wf-hallboard"><b>Hall board</b>${hab.board.map((b) => `<span>${esc(b.who)}: “${esc(b.text)}”</span>`).join('')}</div>` : '';
-  return rows ? rows + board : '<span class="empty">No AIs linked yet.</span>';
-}
-// ---------- Habitat (src/habitat.mjs) ----------
-// The same state the status panel reads, one entry per enabled AI.
-function habitatSnapshot() {
-  const open = (t) => !['approved', 'rejected'].includes(t.stage);
-  const ids = AGENT_IDS.filter((a) => !state.disabled?.[a] && (connected(a) || authHold(a) || outInfo(a) || a === state.lead || cli[a]?.installed || prov.keys?.[a] || busyOn(a) || state.tasks.some((t) => open(t) && t.assignee === a)));
-  const reviewOf = (a) => {
-    const id = Object.keys(ui.busy).find((k) => ui.busy[k] === 'opinion' && state.tasks.find((t) => t.id === k)?.reviewer === a);
-    return id ? state.tasks.find((t) => t.id === id) : null;
-  };
-  const brief = (t) => (t ? { id: t.id, title: t.title, branch: t.ws?.branch || '' } : null);
-  const reducedOs = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
-  // Real task facts for the Habitat's garden, desk lights, moods and visits.
-  const lastTests = (t) => [...(t.runs || [])].reverse().find((r) => r.tests)?.tests || t.done?.tests || '';
-  const ciOf = (t) => { const c = ui.prs.byTask?.[t.id]?.checks; return !c ? '' : c.failed ? 'failed' : c.pending ? 'pending' : c.total && c.passed === c.total ? 'passed' : ''; };
-  const fact = (t) => ({ id: t.id, title: t.title, stage: t.stage, assignee: t.assignee, reviewer: t.reviewer, updatedAt: t.updatedAt, tests: lastTests(t), ci: ciOf(t), running: Boolean(ui.running[t.id]), merged: (t.notes || []).some((n) => /^Merged into /.test(n.text || '')), runs: (t.runs || []).slice(-6).map((r) => ({ a: r.agent, s: r.status })) });
-  return {
-    tasks: state.tasks.slice(-300).map(fact),
-    chat: state.chat.slice(-12).map((m) => ({ id: m.id, who: m.who, text: String(m.text || '').slice(0, 200) })),
-    store: state.habitat || null,
-    ops: ops.snapshot(), // finished tasks, failures, per-AI budget, CI per task
-    reduced: settings.reduceMotion === true || reducedOs,
-    agents: ids.slice(0, 12).map((a) => {
-      const b = busyOn(a);
-      const task = b && !b[0].startsWith('CHAT') ? state.tasks.find((t) => t.id === b[0]) : null;
-      const st = statusOf(a);
-      const status = outInfo(a) ? 'out' : authHold(a) ? 'hold' : connected(a) ? 'idle' : 'signedout';
-      return { id: a, name: AGENTS[a].name, color: COLORS[a] || '#888888', lead: a === state.lead, status, task: brief(task), reviewing: brief(reviewOf(a)), typing: isTyping(a) || Boolean(b && b[0].startsWith('CHAT')), waiting: blocked().includes(a), note: authHold(a)?.message || st.text };
-    }),
-  };
-}
-const habitatHooks = {
-  snapshot: habitatSnapshot,
-  openTask: (id) => { if (state.tasks.some((t) => t.id === id)) { ui.selected = id; render(); } },
-  openAgent: (a) => { ui.view = 'agents'; ui.side = a; ui.expanded = a; ui.selected = null; render(); },
-  openChat: () => { ui.view = 'chat'; ui.selected = null; render(); },
-  // Habitat progress lives in the app state and is saved with it.
-  saveStore: (h) => { state.habitat = h; save(); },
-  // 2D/3D switch, Lighter 3D, walk view, avatar and the owner's study: saved, never change by themselves.
-  // The 3D view's owner settings are app-wide (Settings), not per project.
-  view3d: () => settings.view3d || null, saveView3d: (v) => { api.setSettings({ view3d: v }).then((s2) => { if (s2 && !s2.message) settings = s2; }).catch(() => {}); },
-  audit: (event, detail = '') => { audit(event, null, detail); save(); },
-};
-
-// AIs acting in their Habitat with HABITAT: lines (logic in src/habitat/actions.mjs).
-// Cosmetic and Routine: no approval card; every line is audited and gets a ✓/✗ result.
-// d: the parsed reply; its HABITAT: lines are removed so @names in them don't call teammates in.
-function habitatLines(agent, d, m) {
-  const text = d.text;
-  d.text = stripHabitatLines(text);
-  const snap = habitatSnapshot();
-  const r = applyHabitatLines(state.habitat, { agent, text, ids: snap.agents.map((a) => a.id), agents: snap.agents, names: NAMES, reduced: snap.reduced, local: agent === 'ollama' });
-  if (!r.results.length) return;
-  if (r.changed) state.habitat = r.store;
-  for (const a of r.audits) audit(a.event, null, a.detail, agent);
-  if (m) { m.text = stripHabitatLines(m.text); m.results = [...(m.results || []), ...r.results]; } else post({ who: 'system', text: r.results.map((x) => `${NAMES[agent]} · ${x.line}: ${x.ok ? '✓' : '✗'} ${x.reason}`).join('\n') });
-}
-// Every chat prompt gets the AI's one-line Habitat memory; full prompts also the rules.
-function habitatPrompt(agent, resumed) {
-  const snap = habitatSnapshot();
-  const r = habitatSection(state.habitat, { agent, ids: snap.agents.map((a) => a.id), names: NAMES, local: agent === 'ollama', full: !resumed });
-  if (r.changed) state.habitat = r.store;
-  // Passive status of the whole team next to its own memory line: no HABITAT: look round trip needed.
-  const team = r.text ? teamHabitatLine(state.habitat, snap.agents, NAMES, Date.now(), 360, agent) : '';
-  return team ? `${r.text}\n${team}` : r.text;
-}
-
-// Redraw only the panel (keeps the chat draft and scroll).
-function updatePanel() {
-  const el = document.getElementById('team-panel');
-  if (el && ui.teamOpen) el.innerHTML = renderPanel();
-}
-
-// ---------- team chat ----------
-function askCard(p) {
-  const st = p.status;
-  const label = st === 'pending' ? 'Permission request' : st === 'approved' ? 'Approved' : 'Denied';
-  return `<div class="ask ${st}">
-    <div class="hd"><span class="ic">${icon(st === 'pending' ? 'shield' : st === 'approved' ? 'check' : 'x')}</span><div style="flex:1;min-width:0"><div class="w">${esc(p.what)}</div><div class="k">${label} from ${esc(NAMES[p.agent] || p.agent)} · R-${esc(p.id)} · ${esc(PERMISSION_KINDS[p.kind])}${p.context !== 'chat' ? ` · T-${esc(p.context)}` : ''}</div></div></div>
-    ${p.why ? `<div class="y">Why: ${esc(p.why)}</div>` : ''}
-    <div class="facts"><span class="pill">${esc(PERMISSION_KINDS[p.kind])}</span><span class="pill mono">R-${esc(p.id)}</span>${p.context !== 'chat' ? `<span class="pill mono">T-${esc(p.context)}</span>` : ''}</div>
-    ${st === 'pending' ? `<div class="ft"><button class="btn small primary" data-decide="${p.id}:approved">Approve</button><button class="btn small" data-decide="${p.id}:denied">Deny</button><button class="btn small ghost" data-decide="${p.id}:why">Ask why</button><span class="grow"></span><span class="faint">${esc(NAMES[p.agent])} is blocked until you answer · logged in the audit log</span></div>`
-      : `<div class="ft"><span class="faint">${esc(st)} by you ${esc(ago(p.decidedAt))} · recorded in the audit log</span></div>`}
-  </div>`;
-}
-
-// Tasks waiting for the owner, as cards at the end of the conversation (also in Approvals).
-function inlineApprovals() {
-  const list = state.tasks.filter((t) => t.stage === 'approval');
-  if (!list.length) return '';
-  return `<div class="inline-approvals">${list.map((t) => {
-    const v = t.reviewVerdict;
-    const tests = t.done?.tests || '';
-    const pr = ui.prs.byTask[t.id];
-    return `<div class="appr"><div class="hd"><span class="ic">${icon('merge')}</span><div style="flex:1;min-width:0"><div class="w">${t.ws ? 'Approve & merge' : 'Approve'} T-${esc(t.id)}?</div><div class="k">${esc(t.title)} · built by ${esc(NAMES[t.assignee] || 'nobody')}, reviewed by ${esc(NAMES[t.reviewer] || 'nobody')}</div></div></div>
-      <div class="facts">${v?.sha ? `<span class="pill mono">@${esc(short(v.sha))}</span>` : ''}${tests ? `<span class="pill ${tests === 'passed' ? 'good' : 'bad'}">tests ${esc(tests)}</span>` : ''}${v?.verdict === 'approve' ? `<span class="pill good">APPROVE · ${esc(NAMES[v.by] || v.by)}</span>` : ''}${t.pr ? `<span class="pill">PR #${esc(t.pr.number || '')}${pr?.checks ? ` · ${pr.checks.passed}/${pr.checks.total} checks` : ''}</span>` : ''}${t.policy.warn.length ? `<span class="pill warn" title="${esc(t.policy.warn.join(' '))}">${t.policy.warn.length} policy note${t.policy.warn.length > 1 ? 's' : ''}</span>` : ''}</div>
-      <div class="ft">${approveButtons(t)}<button class="btn small danger" data-reject="${t.id}">Reject</button>${t.ws ? `<button class="btn small ghost" data-showchanges="${t.id}" data-inline>Show changes</button>` : `<button class="btn small ghost" data-open="${t.id}">Details</button>`}</div></div>`;
-  }).join('')}</div>`;
-}
-
-function chatMessage(m) {
-  if (m.deleted) return '';
-  const kind = { owner: 'me', system: 'sys' }[m.who] || 'ai';
-  const props = (m.proposals || []).map((p, i) => `<div class="prop">
-      <div style="flex:1;min-width:0"><div>${esc(p.title)}</div><div class="meta row" style="margin-top:4px">${agentChip(p.assignee)}<span class="faint" style="font-size:11.5px">review</span>${agentChip(p.reviewer)}<span class="badge">${esc(ACTIONS[p.action])}</span></div></div>
-      ${!p.taskId && p.dupOf && state.tasks.some((x) => x.id === p.dupOf) ? `<span class="badge warn" title="Similar to an open task">Looks like T-${esc(p.dupOf)}</span><button class="btn small primary" data-opendup="${esc(p.dupOf)}">Open T-${esc(p.dupOf)}</button><button class="btn small" data-adddup="${m.id}:${i}">Add anyway</button>` : ''}
-      ${p.taskId ? `<button class="badge good" data-open="${p.taskId}" style="cursor:pointer">✓ T-${esc(p.taskId)} on board</button>` : p.dupOf && state.tasks.some((x) => x.id === p.dupOf) ? '' : `<button class="btn small" data-addprop="${m.id}:${i}">Add to board</button>${EDITORS.includes(p.assignee) ? `<button class="btn small primary" data-startprop="${m.id}:${i}" ${canRun(p.assignee) && settings.project ? '' : 'disabled'}>Add & start</button>` : ''}`}
-    </div>`).join('');
-  const pending = (m.proposals || []).filter((p) => !p.taskId).length;
-  const asks = (m.asks || []).map((id) => state.permissions.find((p) => p.id === id)).filter(Boolean).map(askCard).join('')
-    + (m.actReq ? (() => { const r = (state.actRequests || []).find((x) => x.id === m.actReq); return r ? actCard(r) : ''; })() : '')
-    + (m.actUndo ? (() => { const e = (state.actLog || []).find((x) => x.id === m.actUndo); return e ? `<div class="row" style="margin-top:6px">${e.undone ? '<span class="badge">Undone</span>' : `<button class="btn small" data-actundo="${esc(e.id)}">Undo</button>`}</div>` : ''; })() : '');
-  const edited = m.edited ? `<span class="edited" data-togglehist="${m.id}" title="Edited ${esc(time(m.editedAt))}${m.editedBy && m.editedBy !== m.who ? ` by ${esc(NAMES[m.editedBy])}` : ''} — click to see earlier versions">(edited)</span>` : '';
-  const editing = ui.editing === m.id;
-  const body = editing
-    ? `<textarea id="edit-text" style="min-height:70px">${esc(m.text)}</textarea><div class="row" style="margin-top:6px"><button class="btn small primary" data-saveedit="${m.id}">Save</button><button class="btn small ghost" data-canceledit>Cancel</button></div>`
-    : `<div class="body">${m.retracted ? `Message retracted by ${esc(NAMES[m.who])}.` : ops.bodyHtml(m)}${edited}</div>`;
-  const hist = ui.showHist[m.id] && m.history?.length ? `<div class="hist">${m.history.map((h) => `${esc(time(h.at))} · ${esc(NAMES[h.by] || h.by)}${h.retracted ? ' retracted' : ' edited'} — earlier text:\n${esc(h.text)}`).join('\n\n')}</div>` : '';
-  const tools = m.who !== 'system' && !editing ? `<div class="tools"><button data-editmsg="${m.id}" title="Edit (you can edit any message)">Edit</button><button data-delmsg="${m.id}" title="Delete">Delete</button></div>` : '';
-  const meta = `${esc(time(m.at))}${m.model ? ` · ${esc(m.model)}` : ''}${m.auto ? ' · posted on its own' : ''}${m.parallel ? ' · answered in parallel, independently' : ''}${m.beforeOwner ? ' · written before your newest message' : ''}`;
-  const undo = m.leadUndo ? (() => { const e = (state.leadLog || []).find((x) => x.id === m.leadUndo); return e ? `<div class="row" style="margin-top:6px">${e.undone ? '<span class="badge">Undone</span>' : `<button class="btn small" data-leadundo="${esc(e.id)}">Undo</button>`}</div>` : ''; })() : '';
-  const propsHtml = props ? `<div class="props">${props}${pending > 1 ? `<button class="btn small primary" data-addall="${m.id}" style="margin-top:4px;align-self:flex-start">Add all ${pending}</button>` : ''}</div>` : '';
-  const extra = `${ops.resultsHtml(m)}${hist}${asks}${undo}${propsHtml}`;
-  const cls = `msg ${kind} ${m.err ? 'err' : ''} ${m.retracted ? 'retracted' : ''}`;
-  if (kind === 'me') return `<div class="${cls}">${tools}<div class="bubble">${attachmentsHtml(m)}${body}<div class="t">${meta} <span class="mid">#${esc(m.id)}</span></div></div>${extra}</div>`;
-  if (kind === 'sys') return `<div class="${cls}"><div class="sysin">${body}${attachmentsHtml(m)}${extra}</div></div>`;
-  return `<div class="${cls}">
-    ${tools}
-    <div class="who">${mono(m.who)}<b>${esc(NAMES[m.who] || AGENTS[m.who]?.name || m.who)}</b>${m.who === state.lead ? '<span class="star">★ lead</span>' : ''}${m.relayed ? '<span>relayed by you</span>' : ''}<span class="t">${meta}</span><span class="mid">#${esc(m.id)}</span></div>
-    ${body}${attachmentsHtml(m)}${extra}
-  </div>`;
-}
-
-function composer(placeholder, note) {
-  const live = liveAgents();
-  if (ui.target !== 'all' && ui.target !== 'relay' && !live.includes(ui.target)) ui.target = 'all';
-  const lead = esc(AGENTS[state.lead].name);
-  const target = (id, label) => `<button class="chip ${ui.target === id ? 'on' : ''}" data-target="${id}" ${id !== 'all' && !live.includes(id) ? 'disabled' : ''}>${label}</button>`;
-  const tLabel = ui.target === 'all' ? `Team <span class="faint">(${lead} ★ first)</span>` : ui.target === 'relay' ? 'Post as FreeBuff' : `${mono(ui.target, true)} ${esc(AGENTS[ui.target].name)}`;
-  const tMenu = ui.menu === 'target' ? `<div class="menu" style="left:58px"><div class="mh">Send to</div>${target('all', `${icon('users', 'sm')} Team <small>${lead} ★ answers first</small>`)}${HEADLESS.filter((a) => connected(a)).map((a) => target(a, `${mono(a, true)} ${esc(AGENTS[a].name)}${live.includes(a) ? '' : ' <small>not available</small>'}`)).join('')}<button class="chip ${ui.target === 'relay' ? 'on' : ''}" data-target="relay" title="Paste what FreeBuff said so everyone can see it">${mono('freebuff', true)} Post as FreeBuff <small>paste what it said</small></button><div class="mh">Or write @name in your message to talk to one AI.</div></div>` : '';
-  const mMenu = ui.menu === 'mode' ? `<div class="menu" style="left:58px"><div class="mh">How careful should the team be with this message?</div><button class="chip ${ui.mode === 'routine' ? 'on' : ''}" data-pickmode="routine">${icon('flag', 'sm')} Routine <small>your approval levels apply</small></button><button class="chip ${ui.mode === 'major' ? 'on' : ''}" data-pickmode="major">${icon('shield', 'sm')} Major <small>ask me before acting</small></button><div class="mh">Major adds a short note to your message asking the team to check with you first.</div></div>` : '';
-  return `<div class="composer-wrap"><div class="composer">
-      ${ui.attach.length ? `<div class="row att-pending">${ui.attach.map((a, i) => `<span class="badge">${a.kind === 'video' ? '🎬' : '🖼'} ${esc(a.name)}<button class="btn small link" data-unattach="${i}" title="Remove">✕</button></span>`).join('')}</div>` : ''}
-      <textarea id="chat-text" rows="1" placeholder="${esc(placeholder)}" aria-label="Message the team (Enter to send, Shift+Enter for a new line, @name to address one AI)">${esc(ui.draft)}</textarea>
-      <div class="crow">
-        <button class="ib" data-attach title="Attach images or videos (or paste / drag them in)">${icon('clip', 'sm')}</button>
-        <button class="to" data-ui="menu-target" title="Who this message goes to">${icon('at', 'sm')}${tLabel}${icon('chev', 'sm')}</button>
-        ${ui.target === 'relay' ? '' : `<button class="to" data-ui="menu-mode" title="Routine or major">${icon(ui.mode === 'major' ? 'shield' : 'flag', 'sm')}${ui.mode === 'major' ? 'Major' : 'Routine'}${icon('chev', 'sm')}</button>`}
-        <span class="grow"></span>
-        ${ops.voiceButton()}
-        <button class="send" data-sendchat title="Send (Enter)" aria-label="Send">${icon('up')}</button>
-      </div>
-      ${tMenu}${mMenu}
-    </div>${note ? '<div class="composer-note">Everyone sees every message · @name talks to one AI · main only changes when you approve</div>' : ''}</div>`;
-}
-
-// The top of a chat: its title (rename), the linked project chip with its menu, and why
-// the team can't edit files when it can't.
-function chatHeader() {
-  const c = openChatEntry() || { id: teamChatId(state.projectId), team: true, projectId: state.projectId };
-  const projs = ops.projectsList?.() || { list: [] };
-  const rule = chatEditRule(c, state.projectId);
-  const title = ui.renaming
-    ? `<input type="text" id="chat-rename" value="${esc(chatTitle(c))}" maxlength="120" aria-label="Chat name"><button class="btn small primary" data-chatrenamesave>Save</button><button class="btn small ghost" data-chatrenamecancel>Cancel</button>`
-    : `<h2 class="chat-title" title="${esc(chatTitle(c))}">${esc(chatTitle(c))}</h2><button class="btn small link" data-chatrename title="Rename this chat">Rename</button>`;
-  const menu = ui.menu === 'chatproj' ? `<div class="menu chatproj-menu" role="menu">${c.team
-    ? `<div class="mh">This is ${esc(chatProjName(c))}'s own team chat; its messages live with that project, so it stays linked to it. Start a new chat to link another project.</div><button class="chip" data-newchat>${icon('plus', 'sm')}<span class="t">New chat</span></button>`
-    : `<div class="mh">Link this chat to a project. The team works only in that project's repository.</div>${projs.list.map((x) => `<button class="chip ${x.id === c.projectId ? 'on' : ''}" data-chatlink="${esc(x.id)}">${icon(x.id === c.projectId ? 'check' : 'folder', 'sm')}<span class="t">${esc(x.name)}</span>${x.id === c.projectId ? '<small>linked</small>' : x.id === state.projectId ? '<small>open now</small>' : '<small>switches project</small>'}</button>`).join('')}
-      ${c.projectId ? `<button class="chip" data-chatlink="">${icon('x', 'sm')}<span class="t">Unlink (talk only, no file edits)</span></button>` : ''}`}</div>` : '';
-  return `<div class="chat-head">${title}<span class="grow"></span>
-    <div class="chip-wrap"><button class="proj-chip ${c.projectId ? '' : 'none'}" data-ui="menu-chatproj" aria-expanded="${ui.menu === 'chatproj'}" title="The project this chat is linked to">${icon('folder', 'sm')}<span>${esc(chatProjName(c))}</span>${icon('chev', 'sm')}</button>${menu}</div></div>
-    ${rule.unlinked ? `<div class="chat-note">${esc(rule.reason)}</div>` : ''}
-    ${chatsState.readOnly ? '<div class="chat-note warn">This chat was damaged; an earlier copy is shown and nothing new is saved to it.</div>' : ''}
-    ${(ui.health || []).length ? `<div class="chat-note warn"><b>Please check your saved data.</b> ${ui.health.map(esc).join(' ')} Nothing was changed or repaired; your data is kept exactly as it is until you decide.</div>` : ''}`;
-}
-function viewChat() {
-  const live = liveAgents();
-  const asks = pendingAsks().length;
-  const typing = typingNow() ? `<div class="msg typing">${[...ui.typingSet].map((a) => `${mono(a, true)}<b style="color:var(--strong)">${esc(NAMES[a] || a)}</b>`).join(' ')} <span>${ui.typingSet.size > 1 ? 'are replying (in parallel)…' : 'is replying…'}</span><span class="dots"><i></i><i></i><i></i></span></div>` : '';
-  return `<div class="chat">
-    ${chatHeader()}
-    <div class="chat-top">${asks ? `<span class="badge warn">${asks} waiting for your answer</span>` : ''}<span style="flex:1"></span>${settings.chatResume ? '<span class="faint" style="font-size:11.5px" title="Each AI keeps one session for this room in its own CLI, so you can resume it there (Chat history → Resume).">Saved in each AI’s own CLI</span>' : ''}${state.chat.length ? '<button class="btn small ghost" data-clearchat>Clear</button>' : ''}</div>
-    <div class="chat-log" id="chat-log">
-      ${state.chat.map(chatMessage).join('') || `<div class="empty">Say hi, or try: <i>"Here's the plan for Hearth's Settings › Storage page — split it into tasks between you."</i><br><br>
-        Everyone sees every message. ${esc(AGENTS[state.lead].name)} ★ leads and answers first. AIs can mention and hand off to each other, post updates on their own, fix or retract their own messages, and must ask you before risky actions (pushes, merges, releases, deleting files, boot-critical changes, commands outside the workspace). You can edit or delete any message.
-        ${live.length ? '' : '<br><br><span style="color:var(--warn)">No agents are linked yet — sign in on the Agents page.</span>'}</div>`}
-      ${inlineApprovals()}
-      ${typing}
-    </div>
-    ${composer('Message the team…', true)}
-  </div>`;
-}
-
-function post(msg) {
-  const m = { id: uid(), at: now(), ...msg };
-  state.chat.push(m);
-  trimChat();
-  return m;
-}
-
-async function sendChat() {
-  const raw = ui.draft.trim();
-  // Major (composer mode picker): a visible note on the message asks the team to check first.
-  const text = raw && ui.mode === 'major' && ui.target !== 'relay' ? `${raw}\n\n(Major: please check with me before acting on this.)` : raw;
-  // Never blocked by AI activity: only an empty box stops it.
-  if (!canOwnerSend(text) && !ui.attach.length) return;
-  ui.mode = 'routine';
-  ui.menu = null;
-  if (ui.view === 'overview') ui.view = 'chat'; // the Home composer posts to Team chat
-  if (ui.target === 'relay') {
-    post({ who: 'freebuff', text: text.slice(0, 8000), relayed: true, proposals: parseProposals(text) });
-    ui.draft = '';
-    save();
-    return render();
-  }
-  const live = liveAgents();
-  const plan = chatPlan(text, live, ui.target, state.lead);
-  const who = plan.queue;
-  const ownerMsg = post({ who: 'owner', text: text.slice(0, 8000), attachments: ui.attach.length ? ui.attach : undefined });
-  // "yes" / "no" typed by the owner answers Claude's request in this chat (nothing else counts).
-  const typed = typedDecision({ ...ownerMsg, text: raw }, actPending().filter((r) => (r.chatId || null) === (chatsState.open || null)));
-  if (typed) {
-    ui.draft = ''; ui.attach = [];
-    if (typed.error) { post({ who: 'system', text: typed.error }); save(); return render(); }
-    ownerMsg.actAnswer = typed.id;
-    return decideAct(typed.id, typed.decision, 'typed');
-  }
-  // A new chat is named after its first message (the owner can rename it any time).
-  const oc = openChatEntry();
-  if (oc && !oc.team && oc.titleAuto && state.chat.filter((m) => m.who === 'owner').length === 1 && autoTitle(raw)) updateChat(oc.id, { title: autoTitle(raw), auto: true }).then(() => render());
-  ops.mentionNotes(text);
-  wf.captureChat('owner', text); // a message that names T-<id> goes into that task's instruction log
-  ui.draft = '';
-  ui.attach = [];
-  if (/@freebuff/i.test(text)) post({ who: 'system', text: 'FreeBuff only runs interactively, so it can’t answer in chat by itself. Open it from a task, then use “Post as FreeBuff” to share what it says.' });
-  if (!who.length) {
-    const mentioned = mentions(text);
-    const asked = mentioned.length ? mentioned : (ui.target !== 'all' && ui.target !== 'relay' ? [ui.target] : []);
-    // The status panel already shows their sign-in hold; don't add another line.
-    const covered = asked.length > 0 && asked.every((a) => authHold(a));
-    if (!covered) post({ who: 'system', text: live.length ? 'That AI isn’t available right now (not linked or out of usage).' : 'No AIs are available yet. Sign in on the Agents page.' });
-  }
-  const job = { queue: who, opts: { trigger: text, parallel: plan.parallel } };
-  if (round) {
-    // A round is running: cancel the AIs that haven't started, let the typing ones
-    // finish, then restart with this message as the newest.
-    const { cancelled } = ownerInterrupt(round, job);
-    if (cancelled.length) post({ who: 'system', text: `${cancelled.map((a) => NAMES[a]).join(' and ')} won't answer the earlier message; the round restarts with yours.` });
-    save();
-    render();
-    return;
-  }
-  save();
-  render();
-  if (who.length) await runRoom(job.queue, job.opts);
-}
-
-// The room. By default AIs answer one after another (lead first; teammates join when
-// mentioned or handed off), each seeing every reply posted before its turn. When the
-// owner asks several AIs at once they answer in parallel, independently. The owner can
-// always write: his message cancels the AIs that haven't started yet in this round,
-// lets the ones already typing finish, and restarts the round with his message.
-let round = null;
-const isTyping = (a) => ui.typingSet.has(a);
-const typingNow = () => ui.typingSet.size > 0;
-
-async function runRoom(queue, opts = {}) {
-  if (round) { round.next.push({ queue, opts }); return; }
-  round = newRound(uid());
-  try {
-    let job = { queue, opts };
-    while (job) {
-      beginPass(round);
-      await roomPass(job.queue, job.opts);
-      job = round.next.shift() || null;
-    }
-  } finally {
-    round = null;
-    ui.typingSet.clear();
-    ui.typing = null;
-    render();
-    await pumpQueues();
-  }
-}
-
-// Owner pressed Stop: nothing else starts, and the AIs typing now are cancelled.
-async function stopChatRound() {
-  if (!round) return;
-  const { cancelled } = stopRound(round);
-  for (const runId of Object.values(round.runs)) api.cancelRun(runId).catch(() => {});
-  post({ who: 'system', text: `You stopped this round.${cancelled.length ? ` ${cancelled.map((a) => NAMES[a]).join(' and ')} won't answer.` : ''}` });
-  save();
-  render();
-}
-
-async function roomPass(queue, { trigger = '', allow = [], hops = 0, parallel = false } = {}) {
-  queue = [...queue];
-  const answered = [];
-  const canEdit = chatCanEdit() && !parallel; // parallel answers are read-only so they can't clash
-  if (canEdit && queue.length) {
-    // Asked of the main process every round: it picks this project's chat workspace and
-    // checks that it belongs to this project's repository (a saved id is never trusted).
-    const r = await Promise.resolve(api.ensureChatWorkspace?.(state.projectId)).catch((e) => ({ ok: false, message: cleanErr(e.message) }));
-    if (r?.ok && r.projectId === state.projectId) {
-      if (r.notice && r.notice !== chatWs?.notice) post({ who: 'system', text: r.notice });
-      chatWs = r;
-    } else {
-      chatWs = null;
-      post({ who: 'system', text: `Chat can't edit files right now: ${r?.message || 'no workspace for this project'} — answering read-only.` });
-    }
-  } else if (chatRule().unlinked && queue.length && !ui.unlinkedNoted) {
-    ui.unlinkedNoted = true;
-    post({ who: 'system', text: chatRule().reason });
-  }
-  const eligible = (agent) => {
-    if (!canRun(agent)) return false;
-    if (blocked().includes(agent) && !allow.includes(agent)) {
-      const p = pendingAsks().find((x) => x.agent === agent);
-      post({ who: 'system', text: `${NAMES[agent]} is waiting for your answer on R-${p.id} before it continues.` });
-      return false;
-    }
-    return true;
-  };
-  if (parallel) {
-    const group = queue.filter(eligible);
-    round.waiting = [...group];
-    const snapshot = state.chat.slice();
-    const results = await Promise.all(group.map((agent) => chatTurn(agent, { trigger, canEdit: false, snapshot, parallel: true, answered })));
-    queue = [];
-    if (!round.stop && hops < MAX_HOPS) {
-      for (const r of results) for (const next of r.followups) if (!group.includes(next) && !queue.includes(next) && canRun(next)) { queue.push(next); hops++; }
-    }
-  }
-  round.waiting = [...queue];
-  while (queue.length && !round.stop) {
-    const agent = queue.shift();
-    if (!eligible(agent)) continue;
-    const r = await chatTurn(agent, { trigger, canEdit, answered, queue });
-    if (r.sub) queue.push(r.sub);
-    if (hops < MAX_HOPS) {
-      for (const next of r.followups) {
-        if (next !== agent && !queue.includes(next) && canRun(next)) { queue.push(next); hops++; }
-      }
-    }
-    round.waiting = [...queue];
-  }
-}
-
-// One AI's turn in the room. Returns teammates it brought in and any substitute.
-async function chatTurn(agent, { trigger = '', canEdit = false, snapshot = null, parallel = false, answered = [], queue = [] } = {}) {
-  const out = { followups: [], sub: null };
-  round.started.push(agent);
-  ui.typingSet.add(agent);
-  ui.typing = agent;
-  render();
-  const startedAt = now();
-  const chat = snapshot || state.chat;
-  const edit = canEdit && chatWs && EDITORS.includes(agent) && method(agent) !== 'api';
-  const full = buildPrompt(agent, chat, { ...chatCtx(), chatEdits: Boolean(edit) });
-  if (agent === state.lead && state.leadRefusals?.length && settings.leadActions === true) state.leadRefusals = []; // shown in this prompt
-  const skey = `${chatId()}:${agent}`; // each chat has its own sessions (state.chatSessions is the open chat's)
-  const sess = settings.chatResume && method(agent) !== 'api' ? state.chatSessions?.[skey] : null;
-  let prompt = full;
-  if (sess?.sessionId) {
-    const idx = chat.findIndex((m) => m.id === sess.lastMsgId);
-    prompt = buildDelta(agent, idx >= 0 ? chat.slice(idx + 1).filter((m) => m.who !== agent) : chat.slice(-10), chatCtx());
-  }
-  // Images (and video frames) posted by the owner or other AIs since this AI's last turn.
-  const media = mediaFor(agent, chat, NAMES);
-  if (media.note) prompt += media.note;
-  ops.imageNotice(agent, media); // never claim an AI saw an image it didn't get
-  const lastOwner = [...chat].reverse().find((m) => m.who === 'owner');
-  const runId = uid() + uid();
-  round.runs[agent] = runId;
-  prompt += habitatPrompt(agent, Boolean(sess?.sessionId));
-  const res = await callAgent(agent, prompt, {
-    ...(chatRule().unlinked ? { mode: 'read', unlinked: true } : edit ? { mode: 'edit', taskId: wsId() } : { mode: 'read', taskId: chatWs ? wsId() : undefined }),
-    runId,
-    images: media.images,
-    resumeId: sess?.sessionId || undefined,
-    fallbackPrompt: sess?.sessionId ? full : undefined,
-    thread: isTeam(chatsState.open || 'team-') ? `chat-${chatId()}-${agent}` : `chat-${chatsState.open}-${agent}`,
-    title: openChatEntry() && !openChatEntry().team ? `Chat — ${openChatEntry().title}`.slice(0, 120) : `Team chat — ${settings.project ? settings.project.split('/').pop() : 'Hearth AI'}`,
-    historyText: lastOwner?.text || trigger,
-  });
-  delete round.runs[agent];
-  ui.typingSet.delete(agent);
-  ui.typing = [...ui.typingSet][0] || null;
-  const late = cameAfterOwner(state.chat, startedAt);
-  if (res.ok) {
-    answered.push(agent);
-    const d = parseDirectives(res.text);
-    let m = null;
-    ops.turnBegin(agent);
-    try { // results always attach, even if something below throws
-    for (const e of d.edits) {
-      const r = applyEdit(state.chat, { id: e.id, by: agent, text: e.text });
-      if (r.ok) audit(`${NAMES[agent]} edited its message #${e.id}`, null, '', agent);
-      else post({ who: 'system', text: `${NAMES[agent]} tried to edit #${e.id}: ${r.reason}.` });
-      ops.actionResult(agent, `EDIT #${e.id}`, r.ok, r.ok ? 'message updated' : r.reason);
-    }
-    for (const id of d.retracts) {
-      const r = applyRetract(state.chat, { id, by: agent });
-      if (r.ok) audit(`${NAMES[agent]} retracted its message #${id}`, null, '', agent);
-      else post({ who: 'system', text: `${NAMES[agent]} tried to retract #${id}: ${r.reason}.` });
-      ops.actionResult(agent, `RETRACT #${id}`, r.ok, r.ok ? 'message retracted' : r.reason);
-    }
-    const posted = await agentAttachments(parseAttachLines(d.text), chatRule().unlinked ? null : wsId(), agent);
-    if (!d.pass && (d.text || d.asks.length || d.handoffs.length || posted.atts.length)) {
-      const handoffNote = d.handoffs.map((h) => `→ handing off to ${NAMES[h.to]}${h.note ? `: ${h.note}` : ''}`).join('\n');
-      for (const h of d.handoffs) ops.actionResult(agent, `HANDOFF: @${h.to}`, canRun(h.to), canRun(h.to) ? `${NAMES[h.to]} answers next` : `${NAMES[h.to]} can't run right now`);
-      for (const p of parseProposals(d.text)) ops.actionResult(agent, `TASK: ${p.title}`, true, 'proposal card added (Add / Add & start)');
-      m = post({ who: agent, attachments: posted.atts.length ? posted.atts : undefined, text: [posted.text, handoffNote].filter(Boolean).join('\n\n') || (posted.atts.length ? '' : `${NAMES[agent]} needs your permission:`), model: res.via, proposals: parseProposals(d.text), parallel: parallel || undefined, beforeOwner: late || undefined });
-      m.asks = d.asks.map((a) => {
-        const req = makeRequest({ id: uid(), agent, kind: a.kind, what: a.what, why: a.why, context: 'chat', msgId: m.id });
-        state.permissions.push(req);
-        audit('Permission requested', null, `${NAMES[agent]} · ${PERMISSION_KINDS[req.kind]}: ${req.what}`, agent);
-        return req.id;
-      });
-      if (m.asks.length) wakeLead('permission card', agent);
-    }
-    ops.auditRoutine(agent, d.routine, null);
-    await handleVerdicts(agent, d.text);
-    handleLeadLines(agent, d.text);
-    actLines(agent, d.text); // ACT FOR OWNER: requests that wait for the owner's yes
-    await ops.handleLines(agent, d.text, null, Boolean(edit)); // IMAGE REQUEST / BACKGROUND (jobs edit only if this turn could)
-    await wf.lines(agent, d.text); // TASK NOTE / VERIFY / MERGE MAIN / REVERT
-    wf.ensureResults(agent, d.text); // no action line without a ✓/✗
-    // Images and recordings it made in the chat workspace become attachments too.
-    if (chatWs && m) {
-      const extra = await wf.assets(wsId(), agent, d.text, Date.parse(startedAt), posted.atts.map((a) => a.from));
-      if (extra.length) m.attachments = [...(m.attachments || []), ...extra];
-    }
-    } finally { ops.turnEnd(agent, m); }
-    if (res.sessionId && settings.chatResume) {
-      state.chatSessions = state.chatSessions || {};
-      state.chatSessions[skey] = { sessionId: res.sessionId, lastMsgId: (m || state.chat[state.chat.length - 1])?.id, at: now() };
-    }
-    if (res.resumeReset) post({ who: 'system', text: `${NAMES[agent]}'s saved CLI session couldn't continue, so it started a new one (also saved in its CLI).` });
-    habitatLines(agent, d, m);
-    if (edit) {
-      const cp = await api.checkpoint(wsId(), NAMES[agent], `Team chat: ${(lastOwner?.text || trigger || 'update').slice(0, 80)}`).catch(() => null);
-      if (cp) {
-        const pushed = await autoPush(wsId());
-        ops.checkpointLine(agent, cp, null, ` On ${chatWs.branch}${pushed?.ok ? ', pushed to GitHub' : pushed ? `; push failed: ${pushed.message}` : ''}.`);
-      }
-    }
-    // Mentions and handoffs bring teammates in after this reply.
-    if (m) out.followups = [...d.handoffs.map((h) => h.to), ...mentions(d.text)];
-  } else if (round.stoppedByOwner && ['cancelled', 'error', 'failed'].includes(res.error.kind)) {
-    // Stopped by the owner: nothing to report.
-  } else if (res.error.kind === 'limit') {
-    const sub = parallel ? null : liveAgents().find((x) => ![...answered, ...queue, agent].includes(x)) || null;
-    const still = queue.filter(canRun);
-    const after = sub ? ` ${NAMES[sub]} is picking up its turn.` : still.length ? ` ${still.map((x) => NAMES[x]).join(' and ')} will carry on.` : ' No other agent is free right now.';
-    const moved = moveWaiting(agent, null);
-    post({ who: 'system', text: `${NAMES[agent]} is out of usage${res.error.reset ? ` (${res.error.reset})` : ''}.${after}${moved}` });
-    out.sub = sub;
-  } else if (!res.quiet) {
-    // Sign-in and key problems are quiet: the status panel shows the hold instead.
-    post({ who: agent, text: `${res.error.kind}: ${res.error.message}`, err: true });
-  }
-  save();
-  render();
-  return out;
-}
-
-function trimChat() {
-  if (state.chat.length > 400) state.chat = state.chat.slice(-400);
-}
-
-// Owner answers a permission request. Approve/Deny unblock the AI; Ask why lets it explain.
-async function decide(id, decision, by = 'Owner') {
-  const r = decideRequest(state.permissions, id, decision);
-  if (!r.ok) return toast(r.reason);
-  const p = r.request;
-  const label = PERMISSION_KINDS[p.kind];
-  if (decision === 'why') {
-    audit('Owner asked why', p.context === 'chat' ? null : p.context, `R-${p.id} ${label}: ${p.what}`);
-    post({ who: 'owner', auto: true, text: `@${AGENTS[p.agent].mention[0]} Why do you need R-${p.id} (${label}: ${p.what})? Explain briefly; don't do it until I approve.` });
-    save();
-    render();
-    return runRoom([p.agent], { allow: [p.agent] });
-  }
-  audit(decision === 'approved' ? 'Permission approved' : 'Permission denied', p.context === 'chat' ? null : p.context, `R-${p.id} · ${NAMES[p.agent]} · ${label}: ${p.what}${by !== 'Owner' ? ` · by ${by}` : ''}`, by === 'Owner' ? 'owner' : state.lead);
-  if (p.context !== 'chat') {
-    const t = state.tasks.find((x) => x.id === p.context);
-    if (t) {
-      t.notes.push({ at: now(), who: by, text: `${decision === 'approved' ? 'APPROVED' : 'DENIED'} permission R-${p.id} (${label}): ${p.what}${decision === 'approved' ? ' — go ahead with exactly that.' : ' — do not do it; find another way or stop.'}` });
-      wf.instruct(t, by, 'permission', `${decision === 'approved' ? 'Approved' : 'Denied'} R-${p.id} (${label}): ${p.what}${decision === 'approved' ? ' — go ahead with exactly that.' : ' — do not do it.'}`);
-      post({ who: 'system', text: `${by === 'Owner' ? 'You' : by} ${decision} R-${p.id} for T-${t.id}.` });
-      save();
-      render();
-      if (decision === 'approved' && canRun(p.agent) && !blocked().includes(p.agent)) return runTask(t, p.agent);
-      return;
-    }
-  }
-  post({ who: by === 'Owner' ? 'owner' : 'system', auto: true, text: (by === 'Owner' ? '' : `${by}: `) + (decision === 'approved'
-    ? `@${AGENTS[p.agent].mention[0]} Approved R-${p.id} (${label}): ${p.what}. Go ahead with exactly that, then report back.`
-    : `@${AGENTS[p.agent].mention[0]} Denied R-${p.id} (${label}): ${p.what}. Don't do it; suggest another way if there is one.`) });
-  save();
-  render();
-  if (!blocked().includes(p.agent)) return runRoom([p.agent], { trigger: 'permission answer' });
-}
-
-function addProposal(msgId, i, force = false) {
-  const m = state.chat.find((x) => x.id === msgId);
-  const p = m?.proposals?.[i];
-  if (!p || p.taskId) return null;
-  if (!force) {
-    const dup = findDuplicate(p, state.tasks);
-    if (dup) { p.dupOf = dup.task.id; toast(`That looks like T-${dup.task.id}. Open it, or press Add anyway.`); return null; }
-  }
-  // Carry the chat that produced it, so whoever works on it has the context.
-  const context = state.chat.slice(-8).filter((x) => x.who !== 'system' && !x.deleted).map((x) => `${NAMES[x.who]}: ${x.text}`).join('\n\n').slice(-3000);
-  const t = makeTask({ ...p, description: `Proposed by ${NAMES[m.who]} in Team chat.\n\nChat context:\n${context}` }, m.who === 'owner' ? 'Owner' : NAMES[m.who]);
-  if (t) p.taskId = t.id;
-  return t;
-}
-
-function viewBoard() {
-  const recentRuns = state.tasks.flatMap((t) => (t.runs || []).filter((r) => r.status !== 'running').map((r) => ({ ...r, task: t }))).sort((a, b) => String(b.at).localeCompare(String(a.at))).slice(0, 6);
-  const load = AGENT_IDS.map((a) => [a, state.tasks.filter((t) => t.assignee === a && !['approved', 'rejected'].includes(t.stage)).length]).filter(([a, n]) => n || connected(a));
-  return `<div class="board mb">${COLUMNS.map((c) => {
-    const items = state.tasks.filter((t) => c.stages.includes(t.stage));
-    return `<div class="col"><div class="col-h">${esc(c.title)}<span class="n">${items.length}</span></div>
-      ${items.map((t) => `<div class="task ${ui.selected === t.id ? 'sel' : ''}" data-open="${t.id}">
-        <div class="t">${esc(t.title)}</div>
-        <div class="meta">${ops.ciBadge(t)}${actionFor(t) && !actionFor(t).passive ? '<span class="badge warn">Waiting for you</span>' : ''}${t.stage === 'review' && t.reviewWaiting ? `<span class="badge">Waiting for ${esc(NAMES[t.reviewer] || 'a reviewer')}</span>` : ''}${stageBadge(t)}${runBadge(t)}${queueBadge(t)}${agentChip(t.assignee)}${t.pr ? `<span class="badge accent">PR #${esc(t.pr.number || '')}</span>` : ''}${doneBadge(t)}${wf.blockerBadge(t)}</div>
-        ${wf.truthBadges(t)}
-        ${ownerButton(t)}
-      </div>`).join('') || `<div class="empty">${{ Intake: 'New tasks land here after the policy check.', 'In progress': 'Nothing being built.', Verify: 'Nothing waiting for tests or review.', 'Owner approval': 'Nothing waiting for you.', Closed: 'No decisions yet.' }[c.title]}</div>`}
-    </div>`;
-  }).join('')}</div>
-  <div class="grid three">
-    <div class="card"><h3>Team load</h3>
-      ${load.map(([a, n]) => `<div class="row" style="padding:4px 0">${agentChip(a)}<span style="flex:1"></span><span class="faint" style="font-size:12px">${n} open</span><div class="load"><div style="width:${Math.min(100, n * 25)}%"></div></div></div>`).join('') || '<div class="empty">No AIs linked yet.</div>'}
-    </div>
-    <div class="card"><h3>Recent runs</h3>
-      ${recentRuns.map((r) => `<div class="row" style="padding:4px 0;font-size:12.5px;cursor:pointer" data-open="${r.task.id}">${agentChip(r.agent)}<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.task.title)}</span><span class="badge ${['done', 'ok'].includes(r.status) ? 'good' : ['limit', 'outage'].includes(r.status) ? 'warn' : ''}">${esc(r.status)}</span></div>`).join('') || '<div class="empty">No runs yet.</div>'}
-    </div>
-    <div class="card"><h3>Quick actions</h3>
-      <div class="quick"><button class="btn" data-new>＋ New task</button><button class="btn" data-nav="chat">✎ Plan in Team chat</button><button class="btn" data-nav="approvals">✓ Approvals</button><button class="btn" data-nav="github">⑂ Pull requests</button></div>
-    </div>
-  </div>`;
-}
-
-function approveButtons(t) {
-  const pr = ui.prs.byTask[t.id];
-  if (pr && pr.state === 'OPEN') return `<button class="btn primary small" data-approvepr="${t.id}" ${pr.checks.failed ? 'disabled title="Checks are failing"' : ''}>Approve & merge PR #${pr.number}</button><button class="btn small" data-approve="${t.id}">Approve only</button>`;
-  if (t.ws) return `<button class="btn primary small" data-approvemerge="${t.id}">Approve & merge into main</button><button class="btn small" data-approve="${t.id}">Approve only</button>`;
-  return `<button class="btn primary small" data-approve="${t.id}">Approve</button>`;
-}
-
-function viewApprovals() {
-  const waiting = state.tasks.filter((t) => t.stage === 'approval');
-  const decided = state.tasks.filter((t) => ['approved', 'rejected'].includes(t.stage));
-  const asks = state.permissions.slice().reverse();
-  return `${ops.approvalCards()}
-    <div class="card mb"><h3>Permission requests from the AIs</h3>
-      ${asks.filter((p) => p.status === 'pending').map((p) => `<div style="margin-bottom:6px">${agentChip(p.agent)} ${askCard(p)}</div>`).join('') || '<div class="empty">No AI is waiting for permission.</div>'}
-    </div>
-    <div class="card mb">
-      <h3>Awaiting owner approval</h3>
-      ${waiting.filter((t) => t.ws).length >= 2 ? `<div class="row" style="margin-bottom:10px"><button class="btn small" data-releasebranch ${ui.busy.release ? 'disabled' : ''}>${ui.busy.release ? 'Combining…' : `Combine ${waiting.filter((t) => t.ws).length} tasks into a release branch`}</button><span class="faint" style="font-size:12px">Merges them together on a new release/… branch (not main) and lists any conflicts.</span></div>` : ''}
-      ${ui.releaseResult ? `<div class="policy ${ui.releaseResult.conflicts?.length || !ui.releaseResult.ok ? 'warn' : 'ok'}" style="margin-bottom:10px">${esc(ui.releaseResult.message)}</div>` : ''}
-      ${waiting.map((t) => `<div class="task" style="cursor:default">
-        <div class="t">${esc(t.title)}</div>
-        <div class="meta" style="margin-bottom:8px">${agentChip(t.assignee)}<span class="faint" style="font-size:12px">reviewed by</span>${agentChip(t.reviewer)}<span class="badge">${esc(ACTIONS[t.action])}</span>${t.pr ? `<a class="badge accent" href="${esc(t.pr.url)}" target="_blank">PR #${esc(t.pr.number)}</a>` : ''}${doneBadge(t)}</div>
-        ${t.reviewVerdict?.verdict === 'approve' ? `<div class="policy ok">${esc(NAMES[t.reviewVerdict.by])} approved ${t.reviewVerdict.sha ? `commit <span class="mono">${esc(short(t.reviewVerdict.sha))}</span>` : 'the review'}${t.reviewVerdict.reason ? `: ${esc(t.reviewVerdict.reason)}` : '.'}</div>` : ''}
-        ${t.policy.warn.length ? `<div class="policy warn">${t.policy.warn.map(esc).join('<br>')}</div>` : ''}
-        <div class="row">${approveButtons(t)}
-          <button class="btn small" data-changes="${t.id}">Request changes</button>
-          ${t.ws ? `<button class="btn small ghost" data-updatemain="${t.id}" ${ui.busy[t.id] ? 'disabled' : ''} title="Merge the latest main into this task's branch first, so Approve & merge won't stop on a conflict">${ui.busy[t.id] === 'update' ? 'Updating…' : 'Update from main'}</button>` : ''}
-          <button class="btn danger small" data-reject="${t.id}">Reject</button>
-          <button class="btn ghost small" data-open="${t.id}">Details</button>
-        </div></div>`).join('') || '<div class="empty">Nothing to approve.</div>'}
-    </div>
-    <div class="grid two">
-      <div class="card"><h3>Decisions</h3>${decided.map(taskRow).join('') || '<div class="empty">No decisions recorded yet.</div>'}</div>
-      <div class="card"><h3>Answered permission requests</h3>${asks.filter((p) => p.status !== 'pending').slice(0, 10).map((p) => `<div class="row" style="font-size:12.5px;padding:3px 0">${agentChip(p.agent)}<span style="flex:1">${esc(PERMISSION_KINDS[p.kind])}: ${esc(p.what)}</span><span class="badge ${p.status === 'approved' ? 'good' : 'bad'}">${esc(p.status)}</span></div>`).join('') || '<div class="empty">None yet.</div>'}</div>
-    </div>`;
-}
-
-// ---------- Agents ----------
-function kindPill(a) {
-  const k = AGENTS[a].kind;
-  if (k === 'web') return '<span class="kind web" title="Web window only">Web window</span>';
-  if (k === 'api') return '<span class="kind api" title="Team member through an official API key">Team · API</span>';
-  return '<span class="kind member" title="Full team member">Team member</span>';
-}
-
-function signinSteps(a) {
-  const c = cli[a] || {};
-  const s = ui.signin[a];
-  if (method(a) === 'api') {
-    const has = prov.keys[a];
-    return `<div class="signin-steps"><span class="${has ? 'done' : 'now'}">1 · Get a key on ${esc(AGENTS[a].vendor)}'s site</span><span class="${has ? 'done' : ''}">2 · Paste it here (encrypted)</span><span class="${has ? 'done' : ''}">3 · Linked</span></div>`;
-  }
-  const installed = Boolean(c.installed);
-  const linked = connected(a);
-  const waiting = s?.state === 'waiting';
-  const fail = s?.state === 'timeout' || s?.state === 'error';
-  return `<div class="signin-steps">
-    <span class="${installed ? 'done' : installFailed(a) ? 'fail' : 'now'}">1 · ${installed ? 'Installed' : s?.state === 'installing' ? (c.install === 'queued' ? 'Waiting in line to install…' : 'Installing…') : installFailed(a) ? 'Install failed: see the terminal' : 'Install official tool'}</span>
-    <span class="${linked ? 'done' : waiting ? 'now' : fail ? 'fail' : ''}">2 · ${waiting ? 'Waiting for sign-in in your browser…' : fail ? 'Sign-in not finished' : 'Sign in on the official page'}</span>
-    <span class="${linked ? 'done' : ''}">3 · ${linked ? 'Linked ✓' : 'Linked'}</span></div>`;
-}
-
-// Install / Installing… / Installed for every agent with a one-click installer.
-const INSTALLABLE = AGENT_IDS.filter((a) => ['cli', 'manual'].includes(AGENTS[a].kind));
-const installFailed = (a) => !cli[a]?.installed && (ui.signin[a]?.state === 'error' ? Boolean(ui.signin[a].install) : cli[a]?.install === 'failed' && ui.signin[a]?.state !== 'installing');
-const installingBtn = (a) => `<button class="btn small" disabled><span class="dot pulse"></span> ${cli[a]?.install === 'queued' ? 'Queued…' : 'Installing…'}</button>`;
-
-function installAllBar() {
-  const missing = INSTALLABLE.filter((a) => !cli[a]?.installed && !state.disabled?.[a]);
-  const busy = [...missing, 'ollama'].some((a) => ui.signin[a]?.state === 'installing' && !cli[a]?.installed);
-  const ollamaMissing = !cli.ollama?.installed;
-  const count = missing.length + (ollamaMissing && ui.installOllama ? 1 : 0);
-  const names = missing.map((a) => AGENTS[a].name).join(', ');
-  return `<div class="card mb install-all">
-    <div class="install-all-main">
-      <div class="install-all-text"><b>Install all</b> <span class="muted">· ${missing.length ? `not installed yet: ${esc(names)}` : 'every AI tool is installed'}</span>
-        <div class="faint">Runs each official installer one after another in a terminal you can see. Node.js and uv are set up for you in your own folder if needed, so no password is asked.</div></div>
-      <button class="btn primary small" data-installall ${!count || busy ? 'disabled' : ''}>${busy ? '<span class="dot pulse"></span> Installing…' : count ? `Install all (${count})` : 'All installed ✓'}</button>
-    </div>
-    ${ollamaMissing ? `<label class="install-all-opt"><input type="checkbox" data-installollama ${ui.installOllama ? 'checked' : ''}> Also install Local AI (Ollama). It asks for your computer password in the terminal; this app never sees it.</label>` : ''}
-  </div>`;
-}
-
-function agentActions(a) {
-  const c = cli[a] || {};
-  const m = method(a);
-  const out = [];
-  if (AGENTS[a].kind === 'web') return `<button class="btn small primary" data-openweb="${a}">Open</button>`;
-  if (a === 'ollama') {
-    if (c.installed) return '';
-    if (ui.signin.ollama?.state === 'installing') return installingBtn(a);
-    return `<button class="btn small" data-install="ollama" title="${esc(OLLAMA_NOTE)}">${installFailed(a) ? 'Try install again' : 'Install'}</button>`;
-  }
-  if (m === 'api') out.push(prov.keys[a] ? '' : `<button class="btn small primary" data-opensignin="${a}">Get API key</button>`);
-  else if (!c.installed && ui.signin[a]?.state === 'installing') out.push(installingBtn(a));
-  else if (a === 'freebuff') out.push(c.installed ? `<button class="btn small" data-login="${a}">Open</button>` : `<button class="btn small primary" data-install="${a}" title="Installs FreeBuff for you in a terminal you can see. No password needed.">${installFailed(a) ? 'Try install again' : 'Install'}</button>`);
-  else if (ui.signin[a]?.state === 'waiting' && !connected(a)) out.push('<button class="btn small" disabled><span class="dot pulse"></span> Waiting for browser…</button>');
-  else if (!c.installed && !state.disabled?.[a]) out.push(`<button class="btn small primary" data-signin="${a}" title="Installs ${esc(AGENTS[a].tool)} for you in a terminal you can see (no password), then opens its own sign-in">${installFailed(a) ? 'Try install again' : 'Install'}</button>`);
-  else if (!connected(a) && !state.disabled?.[a]) out.push(`<button class="btn small primary" data-signin="${a}">${ui.signin[a]?.state === 'timeout' ? 'Try again' : 'Sign in'}</button>`);
-  return out.join('');
-}
-
-function agentDetail(a) {
-  const ag = AGENTS[a];
-  const c = cli[a] || {};
-  const m = method(a);
-  const res = consoleOut[a];
-  const out = outInfo(a);
-  const left = `
-    <p><b style="color:var(--strong)">${esc(ACCESS_NOTE[a])}</b></p>
-    <div class="billing">${esc(m === 'api' && !API_ONLY.includes(a) ? BILLING.api : BILLING[a])}</div>
-    ${ag.kind !== 'local' && ag.kind !== 'web' ? signinSteps(a) : ''}
-    ${m === 'api' ? `<div class="row"><input type="password" id="key-${a}" placeholder="${prov.keys[a] ? '•••••••• saved — paste to replace' : `Paste your ${esc(ag.vendor)} API key`}" autocomplete="off" style="flex:1">
-        <button class="btn small" data-savekey="${a}">Save</button><button class="btn small" id="testkey-${a}" data-testkey="${a}" ${prov.keys[a] && !keyTests[a]?.busy ? '' : 'disabled'} title="Sends a one-word prompt with the saved key (may use a little API credit)">${keyTests[a]?.busy ? 'Testing…' : 'Test'}</button>${prov.keys[a] ? `<button class="btn danger small" data-rmkey="${a}">Remove</button>` : ''}</div>
-        <p style="margin-top:6px">The key is encrypted with your OS keyring and never shown again. Test checks the saved key. ${ag.edits ? 'API-linked AIs can chat, plan and review but not edit files.' : 'Chat, plan, research and review — no file edits.'}</p>
-        <div id="keytest-${a}" role="status">${keyTestLine(keyTests[a], esc)}</div>`
-    : a === 'ollama' ? `<p>Runs models on your own computer — free, private, offline. ${c.installed ? (c.models?.length ? `Models: ${esc(c.models.join(', '))}` : 'Download a model: <span class="mono">ollama pull llama3.2</span>') : `Install runs ${esc(ag.install)} in a terminal you can see. ${esc(ag.installNote)} Then download a model: <span class="mono">ollama pull llama3.2</span>.`}</p>`
-    : `<p>Signs in through ${esc(ag.tool)}’s own official sign-in (it opens ${esc(ag.vendor)}’s page in your browser) with ${esc(ag.plan)}. This app never sees your password; ${esc(ag.tool)} keeps its own login token where it always does.</p>
-      ${c.installed ? `<div class="kv" style="margin:4px 0"><span class="k">Program</span><span class="mono" style="font-size:11px;word-break:break-all">${esc(c.path)}</span></div>` : `<p class="faint">Install runs <span class="mono">${esc(ag.install)}</span> in a terminal you can see. ${esc(ag.installNote || '')}${ag.kind === 'cli' ? ' Sign-in starts by itself when it finishes.' : ''}</p>`}
-      ${a === 'xai' ? '<p class="faint">Grok’s headless mode has no “safe auto” level: working mode auto-approves its tools; read mode leaves approvals on.</p>' : ''}
-      ${a === 'qwen' ? '<p class="faint">Qwen Code needs its Qwen OAuth sign-in cached before it can run from the app; if runs report “not signed in”, open it once in a terminal (Sign in) or give it an API key in ~/.qwen/.env.</p>' : ''}
-      ${a === 'freebuff' ? '<p class="faint">FreeBuff has no hands-free mode: from any task, “Continue in FreeBuff” opens it in that task’s workspace with the handoff brief on your clipboard.</p>' : ''}`}
-    <div class="row" style="margin-top:8px">
-      ${ag.kind === 'cli' && m !== 'api' && c.installed && !connected(a) && ui.signin[a]?.state !== 'waiting' ? `<button class="btn small primary" data-signin="${a}">${ui.signin[a]?.state === 'timeout' ? 'Try again' : 'Sign in'}</button>` : ''}
-      ${ag.kind === 'cli' && m !== 'api' && c.signedIn ? `<button class="btn small danger" data-disconnect="${a}">Sign out</button>` : ''}
-      ${ag.signin ? `<button class="btn small ghost" data-opensignin="${a}">${m === 'api' ? 'API key page' : 'Account page'} ↗</button>` : ''}
-      ${ag.web ? `<button class="btn small ghost" data-openweb="${a}">Open ${esc(ag.name)} web chat</button>` : ''}
-      <button class="btn small ghost" data-recheck>Re-check</button>
-      ${ag.kind === 'cli' || a === 'freebuff' ? `<button class="btn small ghost" data-locate="${a}">Locate program…</button>` : ''}
-      ${out || authHold(a) ? `<button class="btn small" data-available="${a}">Mark available</button>` : ''}
-    </div>`;
-  const right = ag.headless ? `
-      <div class="sect" style="margin-top:0">Quick test</div>
-      <textarea id="prompt-${a}" placeholder="Ask ${esc(ag.name)} something…" style="min-height:60px"></textarea>
-      <div class="row" style="margin-top:6px"><button class="btn primary small" data-ask="${a}" ${ui.busy[a] || !canRun(a) ? 'disabled' : ''}>${ui.busy[a] ? 'Waiting…' : 'Send'}</button></div>
-      ${res ? `<div class="note ${res.ok ? '' : 'err'}" style="margin-top:8px;max-height:200px;overflow:auto">${res.ok ? esc(res.text) : `${esc(res.error.kind)}: ${esc(res.error.message)}`}</div>` : ''}` : '';
-  return `<div class="detail"><div>${left}</div><div>${right}</div></div>`;
-}
-
-function sidePanel() {
-  const a = ui.side;
-  const ag = AGENTS[a];
-  if (!ag) return '';
-  const c = cli[a] || {};
-  const m = method(a);
-  const modelField = ag.kind === 'web' || a === 'freebuff' ? '' : a === 'ollama'
-    ? ops.localModels()
-    : `<label>Model <span class="faint">(blank = ${m === 'api' ? esc(prov.defaults[a] || 'default') : 'the tool’s default'})</span></label>
-      <input type="text" value="${esc(state.models[a] || '')}" placeholder="${m === 'api' ? esc(prov.defaults[a] || '') : 'default'}" data-model="${a}">`;
-  return `<div class="card side-panel">
-    <h3>${avatar(a)}<span style="color:var(--strong);text-transform:none;letter-spacing:0;font-size:14px">${esc(ag.name)}</span><span class="grow"></span>${kindPill(a)}</h3>
-    <div class="row" style="margin-bottom:6px">${ag.kind === 'web' ? '' : statusBadge(a)}<span style="flex:1"></span>
-      ${ag.kind === 'web' ? '' : `<label style="display:flex;gap:6px;align-items:center;margin:0;cursor:pointer"><input type="checkbox" data-toggleagent="${a}" ${state.disabled?.[a] ? '' : 'checked'}> Use on the team</label>`}</div>
-    ${ag.kind === 'web' ? `<p class="muted" style="font-size:12.5px;line-height:1.5">${esc(ACCESS_NOTE[a])} The window shows ${esc(ag.vendor)}’s own site with its own sign-in; this app never reads, scrapes or stores anything from it.</p>
-      <div class="row"><button class="btn small primary" data-openweb="${a}">Open ${esc(ag.name)}</button></div>
-      <div class="sect">Your chats</div><p class="muted" style="font-size:12.5px">${esc(ag.export || 'No official chat export.')}</p>${ag.export ? `<button class="btn small ghost" data-openexport="${a}">Export page ↗</button>` : ''}`
-    : `${API_CAPABLE.includes(a) && !API_ONLY.includes(a) ? `<label>Connect with</label><div class="row"><button class="chip ${m === 'cli' ? 'on' : ''}" data-method="${a}:cli">My account (${esc(ag.tool)})</button><button class="chip ${m === 'api' ? 'on' : ''}" data-method="${a}:api">API key</button></div>` : ''}
-      <label>Role on the team</label>
-      <input type="text" data-role="${a}" value="${esc(state.roles[a] || DEFAULT_ROLES[a])}">
-      ${modelField}
-      <div class="kv"><span class="k">Can</span><span>${ag.edits && ag.headless && m !== 'api' ? 'chat · plan · review · edit code' : ag.headless ? 'chat · plan · review' : 'edit code (hands-on)'}</span>
-        <span class="k">Lead</span><span>${a === state.lead ? 'Yes ★' : EDITORS.includes(a) ? `<button class="btn small link" data-makelead="${a}">Make lead</button>` : '—'}</span>
-        ${ag.resume ? `<span class="k">Resume</span><span class="mono" style="font-size:11.5px">${esc(ag.resume)}</span>` : ''}
-        ${ag.export ? `<span class="k">Web chats</span><span style="font-size:12px">${esc(ag.export)}</span>` : ''}</div>`}
-  </div>`;
-}
-
-function viewAgents() {
-  const warn = API_CAPABLE.some((a) => method(a) === 'api') && !prov.encryption ? '<div class="policy block">No OS keyring available (GNOME Keyring / KWallet), so API keys can’t be stored securely. Signing in with your account doesn’t need one.</div>' : '';
-  const proj = settings.project ? '' : '<div class="policy warn">Pick a shared project folder in Settings so the AIs can work on tasks together.</div>';
-  const row = (a) => {
-    const ag = AGENTS[a];
-    const b = busyOn(a);
-    const assigned = state.tasks.filter((t) => t.assignee === a && !['approved', 'rejected'].includes(t.stage)).length;
-    const open = ui.expanded === a;
-    return `<tr class="click ${open ? 'open' : ''}" data-expand="${a}">
-      <td><div class="nm">${avatar(a)}<div><b>${esc(ag.name)}</b>${a === state.lead ? ' <span class="faint">★ lead</span>' : ''}<small>${esc(ag.vendor)} · ${esc(ag.tool)}</small></div></div></td>
-      <td>${kindPill(a)}</td>
-      <td>${ag.kind === 'web' ? '<span class="faint">you sign in on their site</span>' : statusBadge(a)}</td>
-      <td class="muted">${b ? `<a href="#" data-open="${b[0].startsWith('CHAT') ? '' : b[0]}">${b[0].startsWith('CHAT') ? 'team chat' : `T-${esc(b[0])}`}</a>` : ag.kind === 'web' ? '—' : assigned ? `${assigned} assigned` : 'idle'}</td>
-      <td class="muted" style="font-size:12px">${ag.kind === 'web' ? 'web window' : method(a) === 'api' ? 'API key' : ag.kind === 'local' ? 'local' : ag.kind === 'manual' ? 'terminal' : 'your account'}</td>
-      <td style="text-align:right;white-space:nowrap">${agentActions(a)} <span class="faint">${open ? '▴' : '▾'}</span></td>
-    </tr>${open ? `<tr class="detail-row"><td colspan="6">${ag.kind === 'web' ? `<p class="muted" style="margin:0">${esc(ACCESS_NOTE[a])} Use the Open button: it shows ${esc(ag.vendor)}’s own site in a sandboxed window with its own sign-in. ${ag.export ? `Your chats: ${esc(ag.export)}.` : ''}</p>` : agentDetail(a)}</td></tr>` : ''}`;
-  };
-  return `${warn}${proj}
-  <div class="roster-wrap">
-    <div>
-      ${installAllBar()}
-      <div class="card mb" style="padding:4px 6px">
-        <table class="roster"><thead><tr><th>AI</th><th>Access</th><th>Status</th><th>Working on</th><th>Signed in with</th><th style="text-align:right"><button class="btn small ghost" data-recheck>Re-check all</button></th></tr></thead>
-        <tbody>${AGENT_IDS.map(row).join('')}</tbody></table>
-      </div>
-      <div class="card" style="padding:4px 6px">
-        <table class="roster"><thead><tr><th>Web window only</th><th>Access</th><th></th><th></th><th></th><th></th></tr></thead>
-        <tbody>${WEB_ONLY.map(row).join('')}</tbody></table>
-      </div>
-      <p class="faint" style="font-size:12px;line-height:1.5;margin-top:10px"><b>Team member</b>: official CLI signed in with your own account — chats, plans, reviews and edits code in task workspaces. <b>Team · API</b>: no official CLI exists, so it joins through the provider's official API with a key you create in your account (chat, research, review; no file edits). <b>Web window</b>: only a web chat exists for personal accounts, so the app opens their own site in a sandboxed window — it never reads or scrapes it. Every provider's web chat can be opened from its row.</p>
-    </div>
-    <div>${sidePanel()}</div>
-  </div>`;
-}
-
-// ---------- Chat history (bridge) ----------
-const SOURCE_LABEL = (s) => (s === 'app' ? 'This app' : s === 'cli' ? 'CLI session' : String(s).startsWith('import') ? `Imported (${String(s).split(':')[1] || 'export'})` : s);
-function viewHistory() {
-  const h = ui.hist;
-  const st = h.stats;
-  const providers = [...AGENT_IDS.filter((a) => a !== 'freebuff'), 'other'];
-  const sel = h.sel;
-  const resumeTool = sel ? AGENTS[sel.provider]?.tool : '';
-  return `<div class="hist-wrap">
-    <div class="card hist-list">
-      <div style="padding:10px 12px;border-bottom:1px solid var(--line)">
-        <input type="search" id="hist-q" placeholder="Search every saved conversation…" value="${esc(h.q)}">
-        <div class="row" style="margin-top:6px">
-          <select data-histfilter="provider" style="width:auto;flex:1"><option value="all">All AIs</option>${providers.map((p) => `<option value="${p}" ${h.provider === p ? 'selected' : ''}>${esc(AGENTS[p]?.name || 'Other')}</option>`).join('')}</select>
-          <select data-histfilter="source" style="width:auto;flex:1">${[['all', 'All sources'], ['app', 'This app'], ['cli', 'CLI sessions'], ['import', 'Imported']].map(([v, l]) => `<option value="${v}" ${h.source === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
-        </div>
-        <div class="row" style="margin-top:6px">
-          <button class="btn small" data-histscan ${h.scanning ? 'disabled' : ''}>${h.scanning ? 'Syncing…' : '⟳ Sync CLI sessions'}</button>
-          <select data-histkind style="width:auto">${[['auto', 'Detect'], ['chatgpt', 'ChatGPT'], ['claude', 'Claude'], ['gemini', 'Gemini (Takeout)'], ['deepseek', 'DeepSeek'], ['generic', 'Other JSON']].map(([v, l]) => `<option value="${v}" ${h.kind === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
-          <button class="btn small primary" data-histimport>Import export…</button>
-        </div>
-        ${st ? `<div class="faint" style="font-size:11.5px;margin-top:6px">${st.total} conversations saved</div>` : ''}
-      </div>
-      ${h.list.map((c) => `<div class="hist-item ${sel?.key === c.key ? 'on' : ''}" data-histopen="${esc(c.key)}">
-        <div class="row" style="gap:6px">${agentChip(AGENTS[c.provider] ? c.provider : 'none')}<span class="badge ${c.source === 'app' ? 'accent' : c.source === 'cli' ? 'good' : ''}">${esc(SOURCE_LABEL(c.source))}</span><span class="faint" style="font-size:11px;margin-left:auto">${esc(ago(c.updatedAt))}</span></div>
-        <div class="t" style="margin-top:4px">${esc(c.title)}</div>
-        <div class="s">${esc(c.snippet)}</div>
-      </div>`).join('') || `<div class="empty" style="padding:14px">${h.q ? 'No matches.' : 'Nothing saved yet. Sync CLI sessions or import an export.'}</div>`}
-    </div>
-    <div class="card hist-view">
-      ${sel ? `<div class="row">${agentChip(AGENTS[sel.provider] ? sel.provider : 'none')}<span class="badge">${esc(SOURCE_LABEL(sel.source))}</span>${sel.taskId ? `<a href="#" data-open="${esc(sel.taskId)}" class="badge accent">T-${esc(sel.taskId)}</a>` : ''}<span style="flex:1"></span>
-          ${sel.resumable ? `<button class="btn small primary" data-histresume="${esc(sel.key)}">Resume in ${esc(resumeTool)}</button>` : ''}
-          ${AGENTS[sel.provider]?.web ? `<button class="btn small" data-histweb="${esc(sel.key)}">Open in ${esc(AGENTS[sel.provider].name)} ↗</button><button class="btn small ghost" data-histwebin="${esc(sel.key)}">In app window</button>` : ''}
-          <button class="btn small ghost" data-histremove="${esc(sel.key)}" title="Remove from this app's history (doesn't touch the CLI's own files)">Remove</button></div>
-        <h2 style="font-size:16px;color:var(--strong);margin:10px 0 2px">${esc(sel.title)}</h2>
-        <div class="faint" style="font-size:12px">${sel.messages.length} messages · ${esc(time(sel.startedAt))} → ${esc(time(sel.updatedAt))}${sel.cwd ? ` · <span class="mono">${esc(sel.cwd)}</span>` : ''}${sel.sessionId && sel.source !== 'import' ? ` · session <span class="mono">${esc(String(sel.sessionId).slice(0, 40))}</span>` : ''}</div>
-        ${sel.bestEffort ? '<div class="policy warn">Read with the best-effort parser: this CLI doesn’t document its session format, so some turns may be missing.</div>' : ''}
-        ${!sel.resumable && String(sel.source).startsWith('import') ? `<div class="policy info">Imported from ${esc(AGENTS[sel.provider]?.name || 'a')} data export. Read-only here — web-app chats can’t be continued from another app; “Open in ${esc(AGENTS[sel.provider]?.name || 'provider')}” takes you to it.</div>` : ''}
-        ${sel.messages.map((m) => `<div class="turn"><div class="r">${m.role === 'user' ? 'You' : esc(AGENTS[sel.provider]?.name || 'AI')}${m.at ? ` · ${esc(time(m.at))}` : ''}</div><div class="x">${esc(m.text)}</div></div>`).join('')}`
-      : `<h3>How chat history works</h3>
-        <div style="font-size:13px;line-height:1.6" class="muted">
-          <p><b style="color:var(--strong)">Two-way with the official CLIs.</b> Every conversation this app has with Claude Code, Codex, Gemini CLI, Grok Build, Qwen Code or Mistral Vibe runs as a real session of that CLI, so it is saved here <i>and</i> in the CLI’s own session list — press <b>Resume</b> to continue it in a terminal (<span class="mono">claude --resume</span>, <span class="mono">codex resume</span>, <span class="mono">gemini --resume</span>, <span class="mono">grok --resume</span>…). Sessions you start in those CLIs yourself appear here after <b>Sync CLI sessions</b> (also done at startup). Team chat keeps one session per AI per project.</p>
-          <p><b style="color:var(--strong)">Web and desktop chat apps</b> (claude.ai, chatgpt.com, gemini.google.com, grok.com, Le Chat, Perplexity…) have no official API to read or write your chat history, and this app never scrapes them. Instead, download your official data export and import it: ChatGPT and Claude (zip with conversations.json), Gemini (Google Takeout → My Activity → Gemini Apps, JSON), DeepSeek (Settings → Data → Export). Imported chats are searchable here and link back with “Open in …”, but can’t be continued from another app.</p>
-          <p><b style="color:var(--strong)">API-key chats</b> (Perplexity, DeepSeek, or any AI switched to an API key) have no CLI session; this app’s history is their copy.</p>
-        </div>`}
-    </div>
-  </div>`;
-}
-
-async function refreshHistory() {
-  const h = ui.hist;
-  h.list = await api.historySearch(h.q, { provider: h.provider, source: h.source }).catch(() => []);
-  h.stats = await api.historyStats().catch(() => null);
-}
-
-// ---------- GitHub ----------
-function prBadge(pr) {
-  const cls = { merged: 'accent', closed: '', draft: '', 'checks failing': 'bad', 'changes requested': 'warn', 'checks running': 'warn', approved: 'good', 'review required': 'warn', open: 'good' }[pr.label] || '';
-  return `<span class="badge ${cls}">${esc(pr.label)}</span>`;
-}
-function prCard(pr, t = null) {
-  return `<div class="pr">
-    <div class="h"><b>#${pr.number}</b><span style="flex:1;color:var(--strong)">${esc(pr.title)}</span>${prBadge(pr)}</div>
-    <div class="faint" style="font-size:12px;margin-top:3px"><span class="mono">${esc(pr.head)}</span> → <span class="mono">${esc(pr.base)}</span> · ${esc(ago(pr.updatedAt))}</div>
-    <div class="checks"><span style="color:var(--good)">✓ ${pr.checks.passed} passed</span><span style="color:var(--bad)">✕ ${pr.checks.failed} failed</span><span style="color:var(--warn)">● ${pr.checks.pending} running</span><span class="muted">Reviews: ${pr.reviews.length ? pr.reviews.map((r) => `${esc(r.who)} ${esc(r.state.toLowerCase().replace('_', ' '))}`).join(', ') : 'none yet'}</span></div>
-    ${pr.checks.items.length ? `<ul class="check-list">${pr.checks.items.slice(0, 8).map((c) => `<li><span class="dot" style="color:${c.state === 'passed' ? 'var(--good)' : c.state === 'failed' ? 'var(--bad)' : 'var(--warn)'}"></span>${esc(c.name)}</li>`).join('')}</ul>` : ''}
-    <div class="row" style="margin-top:6px"><a class="btn small ghost" href="${esc(pr.url)}" target="_blank">Open on GitHub ↗</a>${t ? `<button class="btn small ghost" data-prrefresh="${t.id}">Refresh</button>` : ''}</div>
-  </div>`;
-}
-
-function viewGithub() {
-  const tool = (ok, name, how) => `<div class="setup-step ${ok ? 'ok' : ''}"><span class="tick">${ok ? '✓' : ''}</span><span style="flex:1">${name}</span>${ok ? '' : how}</div>`;
-  const st = repo;
-  const rel = ui.release;
-  const relOk = /^\d{1,4}\.\d{1,4}(\.\d{1,4})?$/.test(rel.version) && rel.version === rel.confirm;
-  return `<div class="grid two mb">
-    <div class="card"><h3>Connection</h3>
-      ${tool(Boolean(gh.git), '<b>git</b>', '<span class="faint mono" style="font-size:12px">sudo apt install git</span>')}
-      ${tool(Boolean(gh.gh), '<b>GitHub CLI</b> <span class="muted">· official GitHub tool used for sign-in and pull requests</span>', '<span class="faint mono" style="font-size:12px">sudo apt install gh</span>')}
-      ${tool(Boolean(gh.ghUser), `<b>GitHub account</b> ${gh.ghUser ? `<span class="muted">· ${esc(gh.ghUser)}</span>` : ''}`, gh.gh ? '<button class="btn small primary" data-ghlogin>Connect GitHub</button>' : '')}
-      <p class="muted" style="font-size:12.5px;line-height:1.5;margin:8px 0">Connect GitHub opens GitHub's own sign-in in your browser (<span class="mono">gh auth login --web</span>). git and gh then use that same sign-in — this app never sees your password or token.</p>
-      <div class="row"><button class="btn small ghost" data-gitrefresh>Re-check</button></div>
-    </div>
-    <div class="card"><h3>Projects</h3>
-      ${settings.projects.map((p) => `<div class="row" style="margin:3px 0;font-size:12.5px"><span class="mono" style="flex:1;word-break:break-all">${esc(p)}</span>${p === settings.project ? '<span class="badge accent">Active</span>' : `<button class="btn small ghost" data-useproject="${esc(p)}">Use</button>`}</div>`).join('') || '<div class="empty">No projects yet.</div>'}
-      <div class="row" style="margin-top:8px"><button class="btn small" data-pickproject>Open folder…</button></div>
-      <label>Clone from GitHub</label>
-      <div class="row"><input type="text" id="clone-input" placeholder="owner/repo or https://github.com/owner/repo" style="flex:1"><button class="btn small primary" data-clone ${gh.git ? '' : 'disabled'}>Clone</button></div>
-    </div>
-  </div>
-  <div class="card mb">
-    <h3>Pull requests<span class="grow"></span><button class="btn small ghost" data-prlist>Refresh</button></h3>
-    ${ui.prs.list.length ? `<table><thead><tr><th>#</th><th>Title</th><th>Status</th><th>Checks</th><th>Reviews</th><th>Branch</th><th></th></tr></thead><tbody>
-      ${ui.prs.list.map((p) => { const t = state.tasks.find((x) => x.pr?.number === p.number); return `<tr><td class="mono">#${p.number}</td><td>${esc(p.title)}${t ? ` <a href="#" data-open="${t.id}" class="faint">T-${esc(t.id)}</a>` : ''}</td><td>${prBadge(p)}</td>
-        <td style="white-space:nowrap"><span style="color:var(--good)">✓${p.checks.passed}</span> <span style="color:var(--bad)">✕${p.checks.failed}</span> <span style="color:var(--warn)">●${p.checks.pending}</span></td>
-        <td class="muted" style="font-size:12px">${p.reviews.map((r) => `${esc(r.who)}: ${esc(r.state.toLowerCase().replace('_', ' '))}`).join('<br>') || '—'}</td>
-        <td class="mono" style="font-size:11.5px">${esc(p.head)}</td><td><a href="${esc(p.url)}" target="_blank">Open ↗</a></td></tr>`; }).join('')}</tbody></table>`
-      : `<div class="empty">${esc(ui.prs.msg || 'No pull requests yet. Open one from a task (“Open pull request”).')}</div>`}
-    <p class="faint" style="font-size:12px;margin:8px 0 0">Merging a pull request only happens when you press <b>Approve & merge PR</b> on a task in Owner approval (then a confirmation). main stays locked otherwise. Uses <span class="mono">gh pr merge --merge</span> with your own GitHub login; never bypasses branch protection.</p>
-  </div>
-  <div class="grid two">
-    <div class="card">
-      <h3>Active project<span class="grow"></span><button class="btn small" data-gitpull ${st.repo && st.remote ? '' : 'disabled'}>Pull latest</button><button class="btn small ghost" data-gitrefresh>Refresh</button></h3>
-      ${st.repo ? `<div class="kv">
-        <span class="k">Folder</span><span class="mono" style="word-break:break-all">${esc(settings.project)}</span>
-        <span class="k">GitHub</span><span class="mono">${esc(st.remote || 'not connected to a GitHub repo')}</span>
-        <span class="k">Checked out</span><span class="mono">${esc(st.branch)}${st.ahead ? ` · ${st.ahead} to push` : ''}${st.behind ? ` · ${st.behind} to pull` : ''}${st.dirty ? ` · ${st.dirty} uncommitted` : ''}</span>
-        <span class="k">Main branch</span><span class="mono">${esc(st.defaultBranch)} <span class="faint">(locked — changes only when you approve)</span></span>
-      </div>
-      <table><thead><tr><th>Branch</th><th>Status</th><th>Updated</th><th></th></tr></thead><tbody>
-        ${st.branches.map((b) => `<tr><td class="mono">${esc(b.name)}${b.protected ? ' <span class="badge">locked</span>' : ''}</td><td class="muted">${esc(b.track || (b.protected ? '' : 'not on GitHub yet'))}</td><td class="muted">${esc(b.when)}</td><td>${b.protected || !st.remote ? '' : `<button class="btn small ghost" data-pushbranch="${esc(b.name)}">Push</button>`}</td></tr>`).join('')}
-      </tbody></table>` : `<div class="empty">${settings.project ? 'The active project is not a git repository.' : 'Open a folder or clone a repo to get started.'}</div>`}
-    </div>
-    <div class="card">
-      <h3>Release (separate approval)</h3>
-      <p class="muted" style="font-size:12.5px;line-height:1.5;margin:0 0 6px">Only you pick version numbers. Type the exact version (MAJOR.MINOR, e.g. 1.1) twice, then press Approve. Nothing is pre-filled and no AI can start this.</p>
-      <div class="two-in">
-        <div><label>Version (typed by you)</label><input type="text" id="rel-version" value="${esc(rel.version)}" placeholder="e.g. 1.1" autocomplete="off"></div>
-        <div><label>Type it again</label><input type="text" id="rel-confirm" value="${esc(rel.confirm)}" autocomplete="off"></div>
-      </div>
-      <label>From branch</label><input type="text" id="rel-target" value="${esc(rel.target || st.defaultBranch || 'main')}">
-      <label>Release notes</label><textarea id="rel-notes" style="min-height:60px">${esc(rel.notes)}</textarea>
-      <label style="display:flex;gap:8px;align-items:center;cursor:pointer"><input type="checkbox" id="rel-draft" ${rel.draft ? 'checked' : ''}> Create as a draft (publish later on GitHub)</label>
-      <div class="row" style="margin-top:8px"><button class="btn primary" data-release ${relOk && gh.ghUser && st.remote ? '' : 'disabled'}>Approve release ${relOk ? `v${esc(rel.version)}` : ''}</button>${rel.version && !relOk ? '<span class="faint" style="font-size:12px">Both fields must match (MAJOR.MINOR).</span>' : ''}</div>
-    </div>
-  </div>`;
-}
-
-function viewAudit() {
-  return `<div class="card">
-    <h3>Append-only audit record<span class="grow"></span><button class="btn small" data-export>Export everything</button></h3>
-    <table><thead><tr><th>When</th><th>Who</th><th>Task</th><th>Event</th><th>Detail</th></tr></thead><tbody>
-    ${state.audit.map((a) => `<tr><td class="mono">${esc(time(a.at))}</td><td>${a.actor === 'owner' ? '<span class="muted">you</span>' : agentChip(a.actor)}</td><td class="mono">${esc(a.taskId || '—')}</td><td>${esc(a.event)}</td><td class="muted">${esc(a.detail)}</td></tr>`).join('') || '<tr><td colspan="5" class="empty">No records yet.</td></tr>'}
-    </tbody></table></div>`;
-}
-
-function updateBlock() {
-  const s = upd.status || {};
-  if (!upd.enabled) return `<p class="muted">${esc(upd.reason || 'Updates unavailable.')}${upd.link?.startsWith('https://github.com/') ? ` <a href="${esc(upd.link)}" target="_blank">Open the release page</a>` : ''}</p>`;
-  const msg = {
-    idle: 'Not checked yet.',
-    checking: 'Checking GitHub Releases…',
-    none: s.message || 'You are on the latest version.',
-    available: `Version ${s.version} is available.`,
-    downloading: `Downloading… ${s.percent || 0}%`,
-    ready: s.deb ? `Version ${s.version} downloaded and its checksum checked. Installing asks for your computer password.` : `Version ${s.version} downloaded. Restart when you're ready.`,
-    installing: s.message || 'Installing…',
-    installed: s.message || 'Installed. Restart to use the new version.',
-    error: s.message || 'Update failed.',
-  }[s.state] || '';
-  return `
-    <p class="${s.state === 'error' ? '' : 'muted'}" style="${s.state === 'error' ? 'color:var(--bad)' : ''}">${esc(msg)}</p>
-    ${s.state === 'downloading' ? `<div class="progress"><div style="width:${s.percent || 0}%"></div></div>` : ''}
-    <div class="row">
-      <button class="btn small" data-upd="check" ${['checking', 'downloading'].includes(s.state) ? 'disabled' : ''}>Check for updates</button>
-      ${s.state === 'available' ? `<button class="btn primary small" data-upd="download">${upd.install === 'deb' ? 'Download and install' : 'Download update'}</button>` : ''}
-      ${s.state === 'ready' ? `<button class="btn primary small" data-upd="install">${s.deb ? 'Install (asks for your password)' : 'Restart & install'}</button>` : ''}
-      ${s.state === 'installed' ? '<button class="btn primary small" data-upd="restart">Restart now</button>' : ''}
-    </div>`;
-}
-
-const SET_SECS = [
-  ['general', 'sun', 'General', 'How the app looks.'],
-  ['identity', 'user', 'Owner identity', 'Every commit the team makes is authored as you. No AI author lines.'],
-  ['team', 'users', 'Team & lead powers', 'Who leads, and what the lead may do without asking you. Only you change these; they are never changed by the app.'],
-  ['accounts', 'key', 'AI accounts', 'Sign-in, API keys and what each AI can do here.'],
-  ['local', 'cpu', 'Local AI', 'Models that run on this computer, and image tools.'],
-  ['projects', 'folder', 'Projects & workspace', 'The shared folder the AIs work in, and the folders they may use.'],
-  ['github', 'branch', 'GitHub', 'Pull, push and pull requests with your own GitHub sign-in.'],
-  ['facts', 'flag', 'Hearth OS facts & red flags', 'What every AI is told about Hearth OS.'],
-  ['safety', 'shield', 'Approvals & safety', 'What the AIs may do, and which actions ask you first.'],
-  ['phone', 'phone', 'Phone view', 'Your board, chat and approvals on your phone, on your local network only.'],
-  ['updates', 'dl', 'App updates', 'Check for, download and install new versions, for the AppImage and the .deb.'],
-  ['data', 'db', 'Saved work & data', 'Backups, export and the local data folder.'],
-  ['about', 'doc', 'About this build', ''],
-];
-function viewSettings() {
-  const themeChip = (v, l) => `<button class="chip ${settings.theme === v ? 'on' : ''}" data-theme="${v}">${l}</button>`;
-  const check = (key, label) => `<label style="display:flex;gap:10px;align-items:center;margin:4px 0;cursor:pointer;color:var(--text)"><input type="checkbox" data-togglesetting="${key}" ${settings[key] ? 'checked' : ''}> ${label}</label>`;
-  const p = ops.projectsList?.() || { list: [] };
-  const sec = (id, html) => { const [, , label, lead] = SET_SECS.find((x) => x[0] === id); return `<section class="set-sec" id="set-${id}"><h2>${esc(label)}</h2>${lead ? `<p class="lead">${esc(lead)}</p>` : ''}${html}</section>`; };
-  const body = {
-    general: `<div class="card"><h3>Appearance</h3>
-      <div class="row">${themeChip('hearth', 'Follow Hearth OS desktop')}${themeChip('dark', 'Dark')}${themeChip('light', 'Light')}${themeChip('system', 'System')}</div>
-      ${check('reduceMotion', 'Reduce motion (Habitat characters stay in place instead of walking around)')}
-      <p class="muted" style="font-size:12.5px;line-height:1.5;margin:8px 0 0">${hearthTheme.found
-        ? `Using the Hearth desktop theme${hearthTheme.tokens.name ? ` “${esc(hearthTheme.tokens.name)}”` : ''} from <span class="mono">${esc(hearthTheme.dir)}</span> — changes there apply here live.`
-        : `No Hearth desktop theme found at <span class="mono">${esc(hearthTheme.dir)}</span> (theme.json / theme.css), so the app's own warm look is used. On Hearth OS it follows Mantel's theme automatically.`}</p>
-      <div class="sep"></div>
-      <label for="text-size">Text size</label>
-      <select id="text-size" aria-describedby="text-size-help">${[100, 115, 130, 150].map((size) => `<option value="${size}" ${size === (settings.textSize || 100) ? 'selected' : ''}>${size}%${size === 100 ? ' (default)' : ''}</option>`).join('')}</select>
-      <p id="text-size-help" class="muted">Scales the whole interface. Ctrl+= increases, Ctrl+- decreases, Ctrl+0 resets to 100%. Your choice is remembered.</p></div>`,
-    identity: ops.identityCard(),
-    team: `<div class="card"><h3>Lead coordinator</h3><div class="row">${mono(state.lead)}<b style="color:var(--strong)">${esc(AGENTS[state.lead].name)} ★</b><span class="muted" style="font-size:12.8px">answers first in team chat and splits work into tasks</span><span style="flex:1"></span><button class="btn small" data-nav="agents">Change on the Agents page</button></div>
-      <div class="sep"></div>      <label style="display:flex;gap:10px;align-items:center;margin:4px 0;cursor:pointer;color:var(--text)"><input type="checkbox" data-toggleleadgh ${leadGitHubOn() ? 'checked' : ''}> Lead handles GitHub (pull, combine, push branches)</label>
-      <p class="faint" style="margin:0 0 6px 26px;font-size:12px">${esc(NAMES[state.lead])} pulls from GitHub, pushes task branches and merges approved tasks onto release/next with your own git/gh sign-in. Main, tags and releases stay yours.${gh.ghUser && repo.remote ? '' : ' Needs GitHub set up first.'} Off until you turn it on.</p>
-      ${check('leadActions', `Let the lead AI (${esc(NAMES[state.lead])}) approve, deny, start and add tasks`)}
-      <p class="faint" style="margin:0 0 6px 26px;font-size:12px">Off by default. ${esc(NAMES[state.lead])} can't approve its own work; releases, version numbers and tags stay yours. Every action shows in Team chat and the Audit log, with Undo where possible.</p>
-      
-      <label style="display:flex;gap:10px;align-items:center;margin:0;cursor:pointer;color:var(--text)"><input type="checkbox" data-autohandoff ${state.autoHandoff ? 'checked' : ''}> Hand a task to the next free agent when one runs out of usage</label>
-</div>${ops.leadPowersCard()}`,
-    accounts: `<div class="card"><h3>Your AI accounts<span class="grow"></span><button class="btn small" data-recheck>Re-check</button><button class="btn small primary" data-nav="agents">Sign in and manage</button></h3>
-      ${AGENT_IDS.map((a) => `<div class="row" style="padding:5px 0;border-top:1px solid var(--line)">${mono(a, true)}<span style="flex:1;color:var(--strong)">${esc(AGENTS[a].name)}${a === state.lead ? ' <span class="star">★</span>' : ''}</span>${statusBadge(a)}</div>`).join('')}
-      <p class="faint" style="font-size:12px;margin:8px 0 0">Signing in happens on each provider's own page; API keys are kept in your system keyring. Both are on the Agents page.</p></div>${ops.capsCard()}`,
-    local: `<div class="card"><h3>Local AI (Ollama)</h3>${ops.localModels()}</div>${ops.toolsCard()}`,
-    projects: `<div class="card"><h3>Shared workspace</h3>
-      <div class="kv"><span class="k">Project folder</span><span class="mono" style="word-break:break-all">${esc(settings.project || 'Not set')}</span></div>
-      <p class="muted" style="font-size:12.5px;line-height:1.5">A git repository all agents share. Each task gets its own branch and working copy; every run is committed as a checkpoint (as you, with no AI attribution) so nothing is lost.</p>
-      <div class="row"><button class="btn small primary" data-pickproject>${settings.project ? 'Change folder' : 'Choose folder'}</button></div></div>
-      <div class="card"><h3>Projects<span class="grow"></span><button class="btn small" data-ops="addfolder">Add a project folder</button><button class="btn small ghost" data-nav="project">Project page</button></h3>
-      ${p.list.map((x) => `<div class="row ops-prow"><b style="flex:1">${esc(x.name)}</b><span class="mono faint">${esc(x.dir || 'no folder yet')}</span>${x.id === p.active ? '<span class="badge accent">Open</span>' : `<button class="btn small" data-ops="switch" data-arg="${esc(x.id)}">Switch</button>`}</div>`).join('') || '<div class="empty">Loading…</div>'}
-      <p class="faint" style="font-size:12px;margin:8px 0 0">Clone, test command, version file and project memory are on the Project page.</p></div>
-      <div class="card"><h3>Folder access</h3>      <div class="faint" style="font-size:12px;margin-bottom:6px">Other folders on this computer the AIs may use</div>
-      ${settings.extraDirs.map((d) => `<div class="row" style="font-size:12.5px;margin:3px 0"><span class="mono" style="flex:1;word-break:break-all">${esc(d)}</span><button class="btn small ghost" data-removedir="${esc(d)}">Remove</button></div>`).join('') || '<div class="empty" style="padding:4px 0">None yet.</div>'}
-      <button class="btn small" data-adddir style="margin-top:6px">Add folder…</button>
-</div>`,
-    github: `<div class="card"><h3>GitHub</h3><div class="kv"><span class="k">git</span><span class="mono">${esc(gh.git || 'not found')}</span><span class="k">gh</span><span class="mono">${esc(gh.gh || 'not installed')}</span><span class="k">Signed in</span><span>${gh.ghUser ? esc(gh.ghUser) : '<span class="faint">not signed in</span>'}</span><span class="k">Remote</span><span class="mono" style="word-break:break-all">${esc(repo.remote || 'none')}</span></div>
-      <div class="row">${gh.gh && !gh.ghUser ? '<button class="btn small primary" data-ghlogin>Connect GitHub</button>' : ''}<button class="btn small" data-nav="github">Pull requests, pull and push</button></div><div class="sep"></div>      ${check('autoPush', 'Back up every checkpoint to its own branch on GitHub')}
-      <p class="faint" style="font-size:12px;margin:6px 0">Whatever the setting, AIs must ask you (a permission card) before pushes, merges, releases, deleting files, boot-critical changes and commands outside the workspace.</p>
-</div>`,
-    facts: `<div class="card"><h3>Hearth OS project facts the AIs follow</h3>
-      <div class="kv"><span class="k">Line</span><span>Hearth OS ${esc(HEARTH_OS.line)} — ${esc(HEARTH_OS.base)}-only</span>
-        <span class="k">Desktop</span><span>${esc(HEARTH_OS.desktop)}</span>
-        <span class="k">Game Mode</span><span>${esc(HEARTH_OS.gameMode)}</span>
-        <span class="k">Plugins</span><span>${esc(HEARTH_OS.plugins)}</span>
-        <span class="k">Versions</span><span>${esc(HEARTH_OS.versioning)}</span>
-        <span class="k">This computer</span><span>${info.hearthOs ? `${esc(info.hearthOs.name)}${info.hearthOs.version ? ` ${esc(info.hearthOs.version)}` : ''}` : '<span class="faint">not running Hearth OS</span>'}</span></div>
-      <div class="sect">Red-flag rules</div>
-      ${RED_FLAGS.map((r) => `<div class="policy warn" style="margin:4px 0">${esc(r)}</div>`).join('')}
-      <p class="faint" style="font-size:12px;margin:8px 0 0">${esc(HEARTH_OS.scope)}</p>
-    </div>`,
-    safety: `<div class="card"><h3>What the AIs may do</h3>
-      <label style="display:flex;gap:10px;align-items:flex-start;margin:6px 0;cursor:pointer;font-size:13px;color:var(--text)"><input type="radio" name="access" data-access="standard" ${settings.access !== 'full' ? 'checked' : ''}><span><b>Like their own apps (recommended)</b><br><span class="muted">Edit files, run commands, use git and the web — each with its own built-in safety checks.</span></span></label>
-      <label style="display:flex;gap:10px;align-items:flex-start;margin:6px 0;cursor:pointer;font-size:13px;color:var(--text)"><input type="radio" name="access" data-access="full" ${settings.access === 'full' ? 'checked' : ''}><span><b>Full access, no safety checks</b><br><span class="muted">Anything, without asking. Only if you accept that one bad command can break a device.</span></span></label><div class="sep"></div>      ${check('chatEdits', 'AIs can work (edit, run, use git) right from Team chat')}
-      ${check('chatResume', 'Keep one CLI session per AI for Team chat (resumable in each AI’s own CLI)')}
-</div>${ops.levelsCard()}`,
-    phone: `<div class="card"><h3>Your phone</h3>${ops.phoneBlock()}</div>`,
-    updates: `<div class="card"><h3>App updates</h3>
-      <div class="kv"><span class="k">Installed</span><span class="mono">${esc(info.appVersion)}</span>
-      <span class="k">Channel</span><span>GitHub Releases (published releases only)</span></div>
-      ${updateBlock()}
-    </div>`,
-    data: `<div class="card"><h3>Saved work & backups</h3>
-      <p class="muted" style="font-size:12.5px;line-height:1.5">Everything is saved automatically and atomically, with the last ${backups.backups.length || 10} versions kept. Chat history is saved separately.</p>
-      ${backups.recoveredFrom ? `<div class="policy warn">The latest save was damaged, so it was set aside and your work was restored from ${esc(backups.recoveredFrom)}.</div>` : ''}
-      ${backups.backups.slice(0, 6).map((b) => `<div class="row" style="font-size:12.5px;margin:3px 0"><span class="mono faint" style="width:20px">${b.n}</span><span style="flex:1">${b.ok ? `${esc(time(b.savedAt))} · ${b.tasks} task${b.tasks === 1 ? '' : 's'}` : '<span style="color:var(--bad)">unreadable</span>'}</span>${b.ok ? `<button class="btn small ghost" data-restore="${b.n}">Restore</button>` : ''}</div>`).join('') || '<div class="empty">No earlier versions yet.</div>'}
-      <div class="row" style="margin-top:8px"><button class="btn small" data-export>Export everything</button></div>
-    </div><div class="card"><h3>Local data</h3>
-      <div class="kv"><span class="k">Folder</span><span class="mono" style="word-break:break-all">${esc(info.dataPath)}</span>
-      <span class="k">Electron</span><span class="mono">${esc(info.electron)}</span></div>
-      <button class="btn danger small" data-reset>Clear tasks & audit log</button>
-    </div>`,
-    about: `<div class="card"><h3>About this build</h3><div class="kv"><span class="k">App version</span><span class="mono">${esc(info.appVersion)}</span><span class="k">Electron</span><span class="mono">${esc(info.electron)}</span><span class="k">This computer</span><span>${info.hearthOs ? esc(info.hearthOs.name) : 'not running Hearth OS'}</span></div>
-      <p class="muted" style="line-height:1.55;font-size:12.5px;margin:0">A standalone personal tool for working on the Hearth OS project (not part of Hearth OS). Claude, ChatGPT, Gemini, Grok, Mistral and Qwen signed in with your own accounts through their official CLIs; Perplexity and DeepSeek through official API keys; Copilot and Meta AI as sandboxed windows of their own sites. Shared git workspace with checkpoints, out-of-usage handoff, team chat with edits, handoffs and permission requests, two-way chat history with the CLIs and official-export import, pull-request tracking, owner-approved merges and releases, audit log, in-app updates.</p>
-    </div>`,
-  };
-  return `<div class="settings"><h1>Settings</h1>
-    <nav class="set-nav" aria-label="Settings sections">${SET_SECS.map(([id, ic, label]) => `<button class="nav ${ui.setSec === id ? 'on' : ''}" data-setsec="${id}">${icon(ic, 'sm')}${esc(label)}</button>`).join('')}</nav>
-    <div class="set-body" id="set-body">${SET_SECS.map(([id]) => sec(id, body[id])).join('')}</div>
-  </div>`;
-}
-
-function workControls(t) {
-  const running = ui.running[t.id];
-  if (running) {
-    return `<div class="policy info" style="display:flex;align-items:center;gap:10px">${agentChip(running.agent)} is working in the shared workspace…<span style="flex:1"></span><button class="btn small danger" data-stop="${t.id}">Stop</button></div>`;
-  }
-  const others = EDITORS.filter((a) => a !== t.assignee && connected(a));
-  const ws = t.ws ? `<div class="kv"><span class="k">Workspace</span><span><span class="mono" style="font-size:11.5px">${esc(t.ws.branch)}</span> <button class="btn small link" data-openws="${t.id}">Open folder</button></span></div>` : '';
-  return `${ws}<div class="row" style="margin:8px 0">
-      ${EDITORS.includes(t.assignee) ? (() => { const b = busyOn(t.assignee); const busy = Boolean((b && b[0] !== t.id) || isTyping(t.assignee)); return `<button class="btn primary small" data-run="${t.id}:${t.assignee}" ${canRun(t.assignee) ? '' : 'disabled'}${busy ? ` title="${esc(AGENTS[t.assignee].name)} is busy: this starts T-${esc(t.id)} as soon as they finish"` : ''}>${esc(startLabel(t, busy, AGENTS[t.assignee].name))}</button>`; })() : ''}
-      ${others.map((a) => `<button class="btn small" data-run="${t.id}:${a}" ${canRun(a) ? '' : 'disabled'}>Hand off to ${esc(AGENTS[a].name)}</button>`).join('')}
-      <button class="btn small" data-freebuff="${t.id}">Continue in FreeBuff</button>
-      ${t.freebuffOpen ? `<button class="btn small primary" data-fbdone="${t.id}">FreeBuff finished — checkpoint</button>` : ''}
-    </div>
-    <div class="row">
-      ${t.ws && gh.ghUser && repo.remote && !t.pr ? `<button class="btn small ghost" data-openpr="${t.id}">Open pull request</button>` : ''}
-      ${t.ws ? `<button class="btn small ghost" data-updatemain="${t.id}" ${ui.busy[t.id] || ui.running[t.id] ? 'disabled' : ''}>${ui.busy[t.id] === 'update' ? 'Updating…' : 'Update from main'}</button>` : ''}
-      ${t.ws ? `<button class="btn small ghost" data-showchanges="${t.id}">${ui.changes[t.id] ? 'Refresh changes' : 'Show changes'}</button>` : ''}
-      ${HEADLESS.includes(t.reviewer) ? `<button class="btn small ghost" data-opinion="${t.id}" ${canRun(t.reviewer) && !ui.busy[t.id] ? '' : 'disabled'}>${ui.busy[t.id] === 'opinion' ? 'Reviewing…' : `Independent review by ${esc(AGENTS[t.reviewer].name)}`}</button>` : ''}
-      ${!settings.project ? '<span class="faint" style="font-size:12px">Set a project folder in Settings to start work.</span>' : ''}
-    </div>`;
-}
-
-function drawer() {
-  const t = state.tasks.find((x) => x.id === ui.selected);
-  if (!t) return '';
-  const next = NEXT[t.stage];
-  const closed = ['approved', 'rejected'].includes(t.stage);
-  const pol = !t.policy.ok
-    ? `<div class="policy block">${t.policy.block.map(esc).join('<br>')}</div>`
-    : t.policy.warn.length ? `<div class="policy warn">${t.policy.warn.map(esc).join('<br>')}</div>` : '<div class="policy ok">Policy & scope check passed.</div>';
-  const pr = ui.prs.byTask[t.id];
-  const asks = state.permissions.filter((p) => p.context === t.id && p.status === 'pending');
-  const flow = ['intake', 'implementing', 'checkpoint', 'testing', 'review', 'approval'];
-  const at = closed ? flow.length : flow.indexOf(t.stage);
-  const stageBar = `<div class="stages">${['Intake', 'Build', 'Checkpoint', 'Tests', 'Review', 'You'].map((l, i) => `<div class="${i < at ? 'd' : i === at ? 'c' : ''}"><i></i><span>${l}</span></div>`).join('')}</div>`;
-  return `<div class="drawer">
-    <div class="row"><span class="mono faint">T-${esc(t.id)}</span><span class="faint">·</span><span class="muted" style="font-size:12.8px">${esc(ACTIONS[t.action])}</span><span style="flex:1"></span><button class="btn ghost small" data-close>Close ✕</button></div>
-    <h2>${esc(t.title)}</h2>
-    <div class="row" style="font-size:13px">${mono(t.assignee, true)}<span>${esc(NAMES[t.assignee] || 'Nobody')} implements</span><span class="faint">·</span>${mono(t.reviewer, true)}<span>${esc(NAMES[t.reviewer] || 'nobody')} reviews</span></div>
-    ${stageBar}
-    <div class="row">${stageBadge(t)}${runBadge(t)}${queueBadge(t)}${doneBadge(t)}<span class="badge">${esc(ACTIONS[t.action])}</span></div>
-    ${pol}
-    ${wf.drawerExtras(t)}
-    ${ops.drawerPanel(t)}
-    ${asks.map(askCard).join('')}
-    ${['resume', 'start', 'signin'].includes(actionFor(t)?.kind) ? ownerButton(t) : ''}
-    <div class="kv">
-      <span class="k">Stage</span><span>${esc(STAGES[t.stage])}</span>
-      <span class="k">Implementer</span><span>${agentChip(t.assignee)}</span>
-      <span class="k">Reviewer</span><span>${t.stage === 'review' && t.reviewWaiting ? `<select id="pickrev-${t.id}">${HEADLESS.filter((a) => a !== t.assignee).map((a) => `<option value="${a}" ${a === t.reviewer ? 'selected' : ''}>${esc(AGENTS[a].name)}${canRun(a) ? '' : ' (not available)'}</option>`).join('')}</select> <button class="btn small primary" data-sendreview="${t.id}">Send for review</button>` : agentChip(t.reviewer)}</span>
-      <span class="k">Created</span><span>${esc(time(t.createdAt))}</span>
-    </div>
-    ${t.description ? `<div class="note">${esc(t.description)}</div>` : ''}
-    ${t.pr ? `<div class="sect">Pull request</div>${pr ? prCard(pr, t) : `<div class="pr"><a href="${esc(t.pr.url)}" target="_blank">PR #${esc(t.pr.number || '')} ↗</a> <button class="btn small ghost" data-prrefresh="${t.id}">Load status</button></div>`}` : ''}
-    ${!closed && t.policy.ok ? `<div class="row" style="margin:10px 0">
-      ${next && !(t.stage === 'intake' && EDITORS.includes(t.assignee)) ? `<button class="btn primary small" data-advance="${t.id}">${esc(next[1])}</button>` : ''}
-      ${t.stage === 'approval' ? `${approveButtons(t)}<button class="btn small" data-changes="${t.id}">Request changes</button><button class="btn danger small" data-reject="${t.id}">Reject</button>` : ''}
-    </div>` : ''}
-    ${t.policy.ok && !closed ? workControls(t) : ''}
-    ${ui.changes[t.id] ? `<div class="note mono" style="font-size:11.5px;white-space:pre-wrap">${esc(ui.changes[t.id])}</div>` : ''}
-    ${t.runs?.length ? `<div class="sect">Shared progress</div>
-      ${t.runs.slice().reverse().map((r) => `<div class="note ${['limit', 'failed', 'error', 'timeout', 'not_installed', 'auth', 'no_workspace'].includes(r.status) ? 'err' : ''}"><div class="who">${esc(NAMES[r.agent])} · ${esc(r.status)}${r.via ? ` · ${esc(r.via)}` : ''} · ${esc(time(r.at))}${r.checkpoint ? ` · checkpoint <span class="mono">${esc(r.checkpoint)}</span>` : ''}${r.pushed ? ` · ${esc(r.pushed)}` : ''}${r.sessionId ? ` · session <span class="mono">${esc(String(r.sessionId).slice(0, 13))}</span>` : ''}</div>${esc(r.output ? (r.output.length > 1500 ? `${r.output.slice(0, 1500)}…` : r.output) : r.status === 'running' ? 'Working…' : '')}</div>`).join('')}` : ''}
-    <div class="sect">Notes</div>
-    ${t.notes.map((n) => `<div class="note ${n.err ? 'err' : ''}"><div class="who">${esc(n.who)} · ${esc(time(n.at))}</div>${esc(n.text)}</div>`).join('') || '<div class="empty">No notes yet.</div>'}
-    <textarea id="note-text" placeholder="Add a note…" style="min-height:56px"></textarea>
-    <div class="row" style="margin-top:6px"><button class="btn small" data-note="${t.id}">Add note</button>
-      ${!closed ? `<span style="flex:1"></span><button class="btn danger small" data-delete="${t.id}">Delete task</button>` : ''}</div>
-  </div>`;
-}
-
-function lightbox() {
-  if (!ui.lightbox) return '';
-  return `<div class="modal-bg lightbox" data-closelightbox><img src="${esc(ui.lightbox.url)}" alt="${esc(ui.lightbox.name)}"></div>`;
-}
-
-function modal() {
-  if (ui.lightbox) return lightbox();
-  if (ui.modal === 'act') return actModal();
-  if (ui.modal !== 'new') return '';
-  const opt = (sel, ids) => ids.map((k) => `<option value="${k}" ${k === sel ? 'selected' : ''}>${esc(AGENTS[k].name)}${k !== 'none' && !connected(k) ? ' (not linked)' : ''}</option>`).join('');
-  const sug = ops.suggestHint(); // assign by strength and headroom (the owner can change both)
-  const firstEditor = sug.builder || liveEditors()[0] || state.lead;
-  const firstReviewer = sug.reviewer && sug.reviewer !== firstEditor ? sug.reviewer : pickReviewer(firstEditor, { candidates: [...liveAgents(), ...HEADLESS.filter((a) => !liveAgents().includes(a))], lead: state.lead });
-  return `<div class="modal-bg" data-modalbg><div class="modal">
-    <h2>New task</h2><div class="muted" style="font-size:12.5px">Runs a policy & scope check when created. If it needs a version number, write the exact one — only you pick versions.</div>
-    <label>Title</label><input type="text" id="f-title" placeholder="e.g. Add Settings › Storage page to Mantel">
-    <label>Description</label><textarea id="f-desc" placeholder="What should be done, constraints, acceptance criteria"></textarea>
-    <div class="two-in">
-      <div><label>Implementer</label><select id="f-assignee">${opt(firstEditor, [...EDITORS, 'freebuff', 'none'])}</select></div>
-      <div><label>Independent reviewer</label><select id="f-reviewer">${opt(firstReviewer, [...HEADLESS, 'none'])}</select></div>
-    </div>
-    ${sug.html}
-    <label>Action type</label><select id="f-action">${Object.entries(ACTIONS).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join('')}</select>
-    <div id="f-dup"></div>
-    <div class="row" style="margin-top:16px;justify-content:flex-end"><button class="btn ghost" data-cancel>Cancel</button><button class="btn primary" data-create>Create task</button></div>
-  </div></div>`;
-}
-
-const NAV = [
-  ['overview', '◈', 'Overview'],
-  ['habitat', '⌂', 'Habitat'],
-  ['chat', '✎', 'Team chat'],
-  ['board', '▦', 'Task board'],
-  ['approvals', '✓', 'Approvals'],
-  ['agents', '✦', 'Agents'],
-  ['history', '⌕', 'Chat history'],
-  ['github', '⑂', 'GitHub'],
-  ['audit', '☰', 'Audit log'],
-  ...ops.nav,
-  ...wf.nav,
-  ['settings', '⚙', 'Settings'],
-];
-const TITLES = {
-  overview: ['Command Center', 'Your AI team, working on the Hearth OS project under your approval'],
-  habitat: ['Habitat', 'Each AI has its own room; when they work, they sit at their desk in the shared workroom'],
-  chat: ['Chat', 'You and the whole AI team in one room — everyone sees everything'],
-  board: ['Task board', 'Owner → policy → agent → checkpoint → tests → review → approval'],
-  approvals: ['Approvals', 'Nothing high-impact happens without your explicit sign-off'],
-  agents: ['Agents', 'Sign in on each provider’s own page, see who is available and what they are doing'],
-  history: ['Chat history', 'Every conversation, saved and searchable — and resumable in each AI’s own CLI'],
-  audit: ['Audit log', 'Every decision, recorded'],
-  github: ['GitHub', 'Pull requests, pushes and releases — main only changes when you approve'],
-  settings: ['Settings', 'Appearance, permissions, Hearth OS facts, updates and data'],
-  ...ops.titles,
-  ...wf.titles,
-};
-
-const MORE = ['agents', 'history', 'github', 'audit', 'ops', 'actions', 'summary', 'project', 'release'];
-const NAV_ICON = { agents: 'users', history: 'history', github: 'branch', audit: 'list', ops: 'stats', actions: 'list', summary: 'moon', project: 'folder', release: 'flag', overview: 'home', settings: 'gear' };
-// The Chats list (newest first). The narrowed sidebar opens it from the Chats icon.
-function chatItems(max) {
-  const all = chatsState.list;
-  const hidden = all.filter((c) => c.hidden);
-  const list = all.filter((c) => !c.hidden || ui.showHidden);
-  const shown = list.slice(0, max);
-  const groupOf = (c) => (c.pinned ? 'pinned' : 'rest');
-  const row = (c, i) => {
-    const head = c.pinned && i === 0 ? '<div class="chat-group">Pinned</div>' : !c.pinned && i > 0 && shown[i - 1].pinned ? '<div class="chat-group">Chats</div>' : '';
-    const meta = `<span class="meta ${c.projectId === state.projectId ? '' : 'other'}">${esc(c.projectId === state.projectId ? '' : chatProjName(c))}</span>`;
-    const body = ui.sideRename === c.id
-      ? `<div class="item chat-item renaming"><input type="text" id="side-rename" data-renameid="${esc(c.id)}" value="${esc(chatTitle(c))}" maxlength="120" aria-label="Chat name"></div>`
-      : `<button class="item chat-item ${c.id === chatsState.open && ui.view === 'chat' ? 'on' : ''} ${c.hidden ? 'hidden-chat' : ''}" data-openchat="${esc(c.id)}" title="${esc(chatTitle(c))} · ${esc(chatProjName(c))}">${icon(c.pinned ? 'pin' : 'chat', 'sm')}<span class="t">${esc(chatTitle(c))}</span>${meta}</button>`;
-    const g = groupOf(c);
-    const sameGroup = list.filter((x) => groupOf(x) === g);
-    const first = sameGroup[0]?.id === c.id, last = sameGroup[sameGroup.length - 1]?.id === c.id;
-    const menu = ui.chatMenu === c.id ? `<div class="menu chat-row-menu" role="menu">
-      <button class="chip" data-chatact="rename" data-id="${esc(c.id)}">${icon('pencil', 'sm')}Rename</button>
-      <button class="chip" data-chatact="${c.pinned ? 'unpin' : 'pin'}" data-id="${esc(c.id)}">${icon('pin', 'sm')}${c.pinned ? 'Unpin' : 'Pin to the top'}</button>
-      <button class="chip" data-chatact="up" data-id="${esc(c.id)}" ${first ? 'disabled' : ''}>${icon('up', 'sm')}Move up</button>
-      <button class="chip" data-chatact="down" data-id="${esc(c.id)}" ${last ? 'disabled' : ''}><span class="flip">${icon('up', 'sm')}</span>Move down</button>
-      ${c.team ? `<button class="chip" data-chatact="${c.hidden ? 'unhide' : 'hide'}" data-id="${esc(c.id)}">${icon('eyeoff', 'sm')}${c.hidden ? 'Show in the list' : 'Hide from the list'}</button>`
-        : `<button class="chip danger" data-chatact="delete" data-id="${esc(c.id)}">${icon('trash', 'sm')}Delete</button>`}
-    </div>` : '';
-    return `${head}<div class="chat-row ${ui.chatMenu === c.id ? 'menu-open' : ''}" draggable="${ui.sideRename === c.id ? 'false' : 'true'}" data-chatdrag="${esc(c.id)}">${body}<button class="row-more" data-chatmenu="${esc(c.id)}" title="Rename, pin, move or delete" aria-label="Chat options" aria-expanded="${ui.chatMenu === c.id}">${icon('dots', 'sm')}</button>${menu}</div>`;
-  };
-  const trash = chatsState.trash || [];
-  return `${shown.map(row).join('')}
-    ${list.length > max ? `<button class="item more-chats" data-allchats>${icon('more', 'sm')}<span class="t">All chats (${list.length})</span></button>` : ui.allChats && list.length > 6 ? `<button class="item more-chats" data-allchats>${icon('chev', 'sm')}<span class="t">Fewer</span></button>` : ''}
-    ${ui.lastDeleted ? `<div class="chat-undo">Deleted “${esc(ui.lastDeleted.title)}”<button class="btn small link" data-chatrestore="${esc(ui.lastDeleted.trashId)}">Undo</button></div>` : ''}
-    ${hidden.length ? `<button class="item more-chats" data-chatshowhidden>${icon('eyeoff', 'sm')}<span class="t">${ui.showHidden ? 'Hide hidden chats' : `Hidden chats (${hidden.length})`}</span></button>` : ''}
-    ${trash.length ? `<button class="item more-chats" data-chattrash>${icon('trash', 'sm')}<span class="t">Recently deleted (${trash.length})</span></button>` : ''}
-    ${ui.showTrash && trash.length ? `<div class="chat-trash">${trash.map((t) => `<div class="row"><span class="t">${esc(t.title)}</span><span class="faint">${esc(ago(t.deletedAt))}</span><button class="btn small" data-chatrestore="${esc(t.trashId)}">Restore</button></div>`).join('')}</div>` : ''}`;
-}
-function chatsMenu() {
-  return `<div class="menu chats-menu" role="menu"><div class="mh">Chats</div><button class="chip" data-newchat>${icon('plus', 'sm')}<span class="t">New chat</span></button>
-    ${chatsState.list.filter((c) => !c.hidden).slice(0, 30).map((c) => `<button class="chip ${c.id === chatsState.open ? 'on' : ''}" data-openchat="${esc(c.id)}">${icon('chat', 'sm')}<span class="t">${esc(chatTitle(c))}</span><small>${esc(chatProjName(c))}</small></button>`).join('')}</div>`;
-}
-function sidebar(waiting) {
-  const label = Object.fromEntries(NAV.map(([id, , l]) => [id, l]));
-  const nav = (id, ic, text, extra = '') => `<button class="nav ${ui.view === id ? 'on' : ''}" data-nav="${id}" title="${esc(text)}">${icon(ic)}<span class="lbl-txt">${esc(text)}</span>${extra}</button>`;
-  const running = wf.jobsRunning();
-  const p = ops.projectsList?.() || { list: [] };
-  const recent = [...state.tasks].filter((t) => !['approved', 'rejected'].includes(t.stage)).sort((a, b) => String(b.updatedAt || b.createdAt).localeCompare(String(a.updatedAt || a.createdAt))).slice(0, 5);
-  const tdot = (t) => (ui.running[t.id] ? '<span class="dot work pulse"></span>' : actionFor(t) && !actionFor(t).passive ? '<span class="dot wait"></span>' : '');
-  const members = teamList();
-  const online = members.filter((a) => !['off'].includes(dotOf(a))).length;
-  const updOn = ['available', 'ready'].includes(upd.status?.state);
-  const owner = settings.ownerIdentity?.name || 'You';
-  return `<aside class="side">
-    <div class="brand"><button class="home-link" data-nav="overview" title="Home"><img src="./icon.png" alt=""><div><b>Hearth AI</b><span>Command Center</span></div></button><button class="collapse" data-ui="side" title="${ui.sideCollapsed ? 'Widen' : 'Narrow'} the sidebar">${icon('side', 'sm')}</button></div>
-    <button class="newtask" data-new title="New task"><span class="plus">${icon('plus')}</span><span class="lbl-txt">New task</span></button>
-    <div class="chats-wrap"><button class="nav chats-nav ${ui.view === 'chat' ? 'on' : ''}" data-ui="menu-chats" aria-expanded="${ui.menu === 'chats'}" title="Chats: open one or start a new chat">${icon('chat')}<span class="lbl-txt">Chats</span>${typingNow() ? '<span class="meta">replying…</span>' : ''}</button>${ui.menu === 'chats' && ui.sideCollapsed ? chatsMenu() : ''}</div>
-    ${nav('board', 'board', 'Board', openTasks().length ? `<span class="meta">${openTasks().length} open</span>` : '')}
-    ${nav('approvals', 'shield', 'Approvals', waiting ? `<span class="n">${waiting}</span>` : '')}
-    ${nav('jobs', 'clock', 'Jobs', running ? `<span class="meta">${running} running</span>` : '')}
-    ${nav('habitat', 'home', 'Habitat')}
-    <div class="more-wrap"><button class="nav ${ui.more || MORE.includes(ui.view) ? 'on' : ''}" data-ui="more" aria-expanded="${ui.more}" title="More pages">${icon('more')}<span class="lbl-txt">More</span><span class="chev">${icon(ui.more ? 'chev' : 'chevr', 'sm')}</span></button>
-    ${ui.more ? `<div class="more-menu" role="menu">${nav('overview', 'home', 'Home')}${MORE.map((id) => nav(id, NAV_ICON[id] || 'more', label[id] || id)).join('')}${nav('settings', 'gear', 'Settings')}</div>` : ''}</div>
-    <div class="sec">Chats<span class="grow"></span><button data-newchat title="New chat">${icon('plus', 'sm')}</button></div>
-    ${chatItems(ui.allChats ? 50 : 6)}
-    <div class="sec">Projects<span class="grow"></span><button data-ops="addfolder" title="Add a project folder">${icon('plus', 'sm')}</button></div>
-    ${p.list.length ? p.list.map((x) => x.id === p.active
-      ? `<button class="item on" data-nav="project" title="${esc(x.dir || '')}">${icon('folder', 'sm')}<span class="t">${esc(x.name)}</span>${repo.branch ? `<span class="meta mono">${esc(repo.branch)}</span>` : ''}</button>`
-      : `<button class="item" data-ops="switch" data-arg="${esc(x.id)}" title="Switch to ${esc(x.name)}">${icon('folder', 'sm')}<span class="t">${esc(x.name)}</span></button>`).join('')
-      : `<button class="item" data-pickproject>${icon('folder', 'sm')}<span class="t">${settings.project ? esc(projectName()) : 'Choose a project folder'}</span></button>`}
-    ${recent.length ? `<div class="sec">Recent</div>${recent.map((t) => `<button class="item rtask ${ui.selected === t.id ? 'on' : ''}" data-open="${t.id}" title="${esc(t.title)}"><span class="tid">T-${esc(t.id)}</span><span class="t">${esc(t.title)}</span><span class="meta">${tdot(t)}</span></button>`).join('')}` : ''}
-    <div class="team-status side-team" aria-label="Team status">
-      <div class="sec">Team<span class="faint" style="font-weight:500">· ${online} online</span><span class="grow"></span><button data-recheck title="Re-check every AI">${icon('refresh', 'sm')}</button><button data-ui="team" title="${ui.teamOpen ? 'Collapse' : 'Expand'} the Team list">${icon(ui.teamOpen ? 'chev' : 'chevr', 'sm')}</button></div>
-      <div class="team-panel" id="team-panel">${ui.teamOpen ? renderPanel() : ''}</div>
-    </div>
-    <div class="spacer"></div>
-    <div class="owner"><span class="av">${esc(owner[0].toUpperCase())}</span><div><b>${esc(owner)}</b><span class="role">Owner</span></div><span class="tools">${updOn ? '<button class="updpill" data-goupdates title="An update is ready: open Settings › App updates">Update</button>' : ''}<button class="gear ${ui.view === 'settings' ? 'on' : ''}" data-nav="settings" title="Settings">${icon('gear')}</button></span></div>
-  </aside>`;
-}
-
-function topbar(waiting, title) {
-  const live = liveAgents();
-  const proj = projectName();
-  const sel = ui.view === 'board' && ui.selected ? state.tasks.find((t) => t.id === ui.selected) : null;
-  // The project name is the project switcher (it works with the sidebar narrowed too).
-  const plist = ops.projectsList?.() || { list: [] };
-  const pMenu = ui.menu === 'project' ? `<div class="menu proj-menu" role="menu"><div class="mh">Switch project</div>${plist.list.map((x) => x.id === plist.active
-    ? `<button class="chip on" data-nav="project" title="${esc(x.dir || '')}">${icon('check', 'sm')}<span class="t">${esc(x.name)}</span><small>open</small></button>`
-    : `<button class="chip" data-ops="switch" data-arg="${esc(x.id)}" title="${esc(x.dir || '')}">${icon('folder', 'sm')}<span class="t">${esc(x.name)}</span></button>`).join('')}
-    <button class="chip" data-ops="addfolder">${icon('plus', 'sm')}Add a project folder</button></div>` : '';
-  const projBtn = `<div class="proj-wrap"><button class="proj-btn" data-ui="menu-project" aria-expanded="${ui.menu === 'project'}" title="Switch project">${icon('folder', 'sm')}<span>${esc(proj || 'Choose a project')}</span>${icon('chev', 'sm')}</button>${pMenu}</div>`;
-  const crumb = ui.view === 'overview'
-    ? `${repo.branch ? `<span class="faint">${esc(repo.branch)}</span>` : ''}`
-    : `<b>${esc(title)}</b>${sel ? `<span class="sub">· T-${esc(sel.id)}</span>` : ''}`;
-  const tb = (id, ic, label, n = '') => `<button class="tb" data-panel="${id}" title="Open ${label} beside the conversation">${icon(ic, 'sm')}${label}${n}</button>`;
-  const updOn = ['available', 'ready'].includes(upd.status?.state);
-  return `<div class="topbar">${projBtn}<div class="crumb">${crumb}</div><div class="grow"></div>
-    <button class="tb newchat-tb" data-newchat title="New chat" aria-label="New chat">${icon('plus', 'sm')}${ui.panel ? '' : 'New chat'}</button>
-    ${updOn ? '<button class="pill acc" data-goupdates title="Open Settings › App updates">Update available</button>' : ''}<span class="pill" title="This app is in beta">Beta</span>
-    ${round ? '<button class="tb b" data-stopround title="End this chat round: nobody else starts, and the AIs typing now are cancelled" style="color:var(--bad)">Stop</button>' : ''}
-    ${ui.view === 'chat' ? `<button class="tb b" data-checkin ${live.length && !round ? '' : 'disabled'}>${icon('users', 'sm')}${ui.panel ? 'Check-in' : 'Team check-in'}</button>` : ''}
-    ${ui.panel ? '' : `${tb('board', 'board', 'Board')}${tb('approvals', 'shield', 'Approvals', waiting ? `<span class="n">${waiting}</span>` : '')}${tb('jobs', 'clock', 'Jobs')}${tb('habitat', 'home', 'Habitat')}`}
-    <button class="tb ${ui.panel ? 'on' : ''}" data-ui="panel" title="${ui.panel ? 'Hide' : 'Show'} the side panel" aria-label="Side panel">${icon('panel', 'sm')}</button></div>`;
-}
-
-function boardList() {
-  const open = openTasks();
-  return `<div class="lbl" style="margin-top:0">Board<span style="flex:1"></span><span>${open.length} open</span></div>
-    ${open.map((t) => `<button class="brow ${ui.selected === t.id ? 'on' : ''}" data-open="${t.id}"><span class="tid">T-${esc(t.id)}</span><span class="tt">${esc(t.title)}</span>${actionFor(t) && !actionFor(t).passive ? '<span class="badge warn">Needs you</span>' : stageBadge(t)}</button>`).join('') || '<div class="empty">No open tasks.</div>'}
-    <div class="row" style="margin-top:12px"><button class="btn small" data-nav="board">Open the full board</button><button class="btn small ghost" data-new>New task</button></div>`;
-}
-function panelBody() {
-  const full = (v) => (ui.view === v ? `<div class="panel-note">${esc(TITLES[v][0])} is open full width on the left.</div>` : '');
-  if (ui.panel === 'task') return drawer() || `<div class="panel-note">Pick a task on the board or under Recent to see its truth card, actions and history here.</div>${boardList()}`;
-  if (ui.panel === 'habitat') return full('habitat') || viewHabitat();
-  if (ui.panel === 'jobs') return full('jobs') || wf.views.jobs();
-  if (ui.panel === 'approvals') return full('approvals') || viewApprovals();
-  if (ui.panel === 'release') return full('release') || wf.views.release();
-  return boardList();
-}
-function rightPanel(waiting) {
-  if (!ui.panel) return '';
-  return `<aside class="rpanel" aria-label="Side panel"><div class="ph" role="tablist">${PANEL_TABS.map(([id, l]) => `<button class="tab ${ui.panel === id ? 'on' : ''}" role="tab" data-panel="${id}">${l}${id === 'approvals' && waiting ? `<span class="n">${waiting}</span>` : ''}</button>`).join('')}<span class="grow"></span><button class="tab" data-ui="panelclose" title="Close the panel" aria-label="Close the panel">${icon('x', 'sm')}</button></div>
-    <div class="pb">${panelBody()}</div></aside>`;
-}
-
-let lastSelected = null;
-function render() {
-  const waiting = state.tasks.filter((t) => t.stage === 'approval').length + pendingAsks().length;
-  const views = { habitat: viewHabitat, github: viewGithub, chat: viewChat, overview: viewOverview, board: viewBoard, approvals: viewApprovals, agents: viewAgents, history: viewHistory, audit: viewAudit, settings: viewSettings, ...ops.views, ...wf.views };
-  // Opening a task shows it in the side panel's Task tab; closing it puts the panel back as it was.
-  if (ui.selected !== lastSelected) {
-    if (ui.selected) { if (!lastSelected) ui.panelBefore = ui.panel === 'task' ? null : ui.panel; ui.panel = 'task'; }
-    else if (ui.panel === 'task') ui.panel = ui.panelBefore || null;
-    lastSelected = ui.selected;
-  }
-  const [title, sub] = TITLES[ui.view];
-  const scroll = document.querySelector('.content')?.scrollTop || 0;
-  const flush = ui.view === 'chat';
-  const content = ui.view === 'overview' || ui.view === 'settings' || flush ? views[ui.view]()
-    : `<div class="page"><div class="page-h"><h1>${esc(title)}</h1><span class="sub">${esc(sub)}</span></div>${views[ui.view]()}</div>`;
-  document.getElementById('app').innerHTML = `
-  <div class="shell ${ui.sideCollapsed ? 'side-collapsed' : ''}">
-    ${sidebar(waiting)}
-    <main class="main">
-      ${topbar(waiting, title)}
-      <div class="banners">${ops.banner()}</div>
-      <div class="content ${flush ? 'flush' : ''} view-${esc(ui.view)}">${content}</div>
-    </main>
-    ${rightPanel(waiting)}
-  </div>${modal()}${ops.overlay()}`;
-  const main = document.querySelector('.content');
-  if (main && ui.keepScroll) main.scrollTop = scroll;
-  ui.keepScroll = false;
-  const log = document.getElementById('chat-log');
-  if (log) log.scrollTop = log.scrollHeight;
-  const box = document.getElementById('chat-text');
-  if (box) fitComposer(box);
-  if (box && !ui.modal && !ui.selected && !ui.editing && !ui.menu) {
-    box.focus();
-    box.setSelectionRange(box.value.length, box.value.length);
-  }
-  document.getElementById('edit-text')?.focus();
-  if (ui.view === 'settings' && ui.scrollSec) { document.getElementById(`set-${ui.scrollSec}`)?.scrollIntoView({ block: 'start' }); ui.scrollSec = null; }
-  const hab = document.getElementById('habitat');
-  if (hab && (ui.view === 'habitat' || ui.panel === 'habitat')) { mountHabitat(hab, habitatHooks); mountHabitat3d(hab, habitatHooks); }
-  else { stopHabitat(); stopHabitat3d(); }
-}
-// The composer grows with what you type (up to 40% of the window).
-function fitComposer(box) { box.style.height = 'auto'; box.style.height = `${Math.min(box.scrollHeight + 2, window.innerHeight * 0.4)}px`; }
-
-// ---------- actions ----------
-function setStage(t, stage, event, detail) {
-  t.stage = stage;
-  t.updatedAt = now();
-  audit(event, t.id, detail);
-  save();
-  render();
-}
-
-function makeTask({ title, description = '', assignee, reviewer, action }, source = 'Owner') {
-  const t = {
-    id: uid(),
-    title: String(title).trim().slice(0, 200),
-    description: String(description).trim().slice(0, 5000),
-    assignee: AGENTS[assignee] && AGENT_IDS.includes(assignee) ? assignee : 'none',
-    reviewer: AGENTS[reviewer] && AGENT_IDS.includes(reviewer) ? reviewer : 'none',
-    action: ACTIONS[action] ? action : 'code',
-    stage: 'intake',
-    notes: [],
-    createdAt: now(),
-    updatedAt: now(),
-  };
-  t.policy = policyCheck(t, { source });
-  if (!t.policy.ok && t.policy.block.some((b) => b.startsWith('Looks like it contains'))) {
-    toast('That task text contains something that looks like a secret. Remove it first.');
-    return null;
-  }
-  state.tasks.unshift(t);
-  audit('Task created', t.id, source === 'Owner' ? t.title : `${t.title} (proposed by ${source} in Team chat)`);
-  audit(t.policy.ok ? 'Policy check passed' : 'Policy check blocked', t.id, [...t.policy.block, ...t.policy.warn].join(' '));
-  if (t.policy.ok) wakeLead('task waiting to start', source === NAMES[state.lead] ? state.lead : null);
-  return t;
-}
-
-function dupWarning(t, addBtn) {
-  return `<div class="policy warn" style="margin-top:10px">This looks like T-${esc(t.id)} “${esc(t.title)}” (${esc(STAGES[t.stage] || t.stage)}). <div class="row" style="margin-top:6px"><button class="btn small primary" data-opendup="${esc(t.id)}">Open T-${esc(t.id)}</button>${addBtn}</div></div>`;
-}
-
-function createTask(force = false) {
-  const v = (id) => document.getElementById(id).value;
-  const title = v('f-title').trim();
-  if (!title) return toast('Give the task a title.');
-  // Looks like an open task? Say so (without redrawing the form) and offer it.
-  const dup = force ? null : findDuplicate({ title, description: v('f-desc') }, state.tasks);
-  if (dup) {
-    const box = document.getElementById('f-dup');
-    if (box) box.innerHTML = dupWarning(dup.task, '<button class="btn small" data-adddup="form">Add anyway</button>');
-    return;
-  }
-  const t = makeTask({ title, description: v('f-desc'), assignee: v('f-assignee'), reviewer: v('f-reviewer'), action: v('f-action') });
-  if (!t) return;
-  ui.modal = null;
-  ui.selected = t.id;
-  save();
-  render();
-}
-
-async function askForTask(t, kind, force = false) {
-  const who = t.reviewer;
-  delete t.reviewWaiting;
-  // One review ping per commit, with the review packet: the sha, the diff since this
-  // reviewer's last sign-off (or vs main), the tests at that sha, and its earlier CHANGES.
-  const head = t.ws ? await api.workspaceHead(t.id).catch(() => null) : null;
-  if (!force && !shouldPing(t, head)) {
-    audit('Review ping skipped', t.id, `${NAMES[who]} already has the packet for ${short(head)}`);
-    return;
-  }
-  const pk = await wf.packet(t, who);
-  let summary = '';
-  if (t.ws) summary = await api.workspaceSummary(t.id, t.ws.baseSha).catch(() => '');
-  const prompt = `You are an independent reviewer (${NAMES[who]}) in the Hearth AI Command Center. Look at the task's workspace (your current directory), the review packet and the shared progress below. List concerns, missing tests, and whether the owner should approve. Be concise. Do not modify files. End with exactly one line: "APPROVE: T-${t.id} @${short(pk.head)}" if it is ready for the owner, or "CHANGES: T-${t.id} <what must be fixed>" to send it back. To have the checks run again without anyone editing, write "VERIFY: T-${t.id}".\n\n${pk.text}\n\n${instructionsBlock(t)}\n\n${buildTaskBrief({ task: t, agent: who, summary })}`;
-  post({ who: 'system', text: `T-${t.id} “${t.title}” is in review: the review packet for ${short(pk.head) || 'its latest work'} went to ${NAMES[who]}.` });
-  ui.busy[t.id] = kind;
-  render();
-  const res = await callAgent(who, prompt, { mode: 'read', taskId: t.ws ? t.id : undefined, title: `Review: ${t.title}`, thread: `review-${t.id}`, historyText: `Independent review of T-${t.id}: ${t.title}` });
-  delete ui.busy[t.id];
-  const name = AGENTS[who].name;
-  t.notes.push(res.ok ? { at: now(), who: `${name} (review)`, text: res.text } : { at: now(), who: name, text: `${res.error.kind}: ${res.error.message}`, err: true });
-  audit(res.ok ? `${name} reviewed` : `${name} review failed`, t.id, '', who);
-  save();
-  render();
-  if (res.ok) await handleVerdicts(who, res.text);
-}
-
-// After a verify-only run: nothing was kept (enforced), the app runs the tests at the
-// head, and the report is posted with any verdict lines it contains. No stage changes.
-async function finishVerify(t, agent, run, res, violation) {
-  run.status = res.ok ? 'verified' : res.error.kind;
-  run.output = res.ok ? res.text : res.error.message;
-  run.head = await api.workspaceHead(t.id).catch(() => null);
-  const tr = res.ok ? await wf.verifyTests(t, run) : null;
-  if (res.ok) wf.acks(t, res.text, agent, run);
-  wf.closeVerify(t); // the "verify only" instruction is done when the verify run ends
-  audit(res.ok ? 'Verify-only run finished' : `Verify-only run stopped (${res.error.kind})`, t.id, `${NAMES[agent]} at ${short(run.head)}${tr ? ` · tests ${tr.status}` : ''}${violation ? ' · violation' : ''}`, agent);
-  delete ui.saving[t.id];
-  if (res.ok) {
-    let m = null;
-    ops.turnBegin(agent);
-    try {
-      const d = parseDirectives(res.text);
-      m = post({ who: agent, auto: true, model: res.via, text: `Verify-only run of T-${t.id} at ${short(run.head)}: ${(d.text || res.text).replace(/STATUS:.*$/is, '').trim().slice(0, 500)}${tr ? `\n(The app ran ${tr.command || 'the tests'}: ${tr.status}.)` : ''}${violation ? `\n(${violation})` : ''}` });
-      await handleVerdicts(agent, d.text || res.text);
-      handleLeadLines(agent, d.text || res.text);
-      await wf.lines(agent, d.text || res.text);
-      wf.ensureResults(agent, d.text || res.text, t.id);
-    } finally { ops.turnEnd(agent, m); }
-  }
-  await save();
-  wf.refreshTruth([t.id]).then(() => render());
-  render();
-  await pumpQueues();
-}
-
-// Run (or continue) a task with an agent in the shared workspace. Progress is
-// checkpointed after every run; if the agent runs out of usage the next free
-// agent picks up from the checkpoint automatically.
-async function runTask(t, agent, handoff = null, depth = 0, mode = null) {
-  if (!t || ui.running[t.id] || !canRun(agent)) return;
-  const other = busyOn(agent);
-  if (other && other[0] !== t.id) return startOrQueue(t, agent);
-  // Run modes: normal, Verify only (read-only, nothing kept), Docs and research (docs files only).
-  mode = mode || wf.defaultMode(t, agent);
-  // While a review is pending, or after APPROVE (sha lock), only verify runs may start.
-  if (!wf.gate(t, mode, agent).ok) { delete t.startNext; save(); return render(); }
-  delete t.startNext;
-  const waitingOn = pendingAsks().find((p) => p.agent === agent);
-  if (waitingOn) return toast(`${NAMES[agent]} is waiting for your answer on R-${waitingOn.id} first.`);
-  try {
-    t.ws = t.ws || (await api.ensureWorkspace(t.id, t.title));
-  } catch (e) {
-    return toast(cleanErr(e.message));
-  }
-  if (mode !== 'verify') assignTask(t, agent, handoff ? `${NAMES[handoff.from]}: ${handoff.reason}` : undefined);
-  if (t.stage === 'intake' && mode !== 'verify') { t.stage = 'implementing'; audit('Work started', t.id, NAMES[agent]); }
-  const runId = uid() + uid();
-  // Checkpoint BEFORE the call: commit anything already in the workspace and
-  // persist the task (with the exact brief) so a crash mid-call loses nothing saved.
-  ui.saving[t.id] = true;
-  render();
-  if (mode !== 'verify') { try { await api.checkpoint(t.id, 'owner', `Snapshot before next run: ${t.title}`); } catch {} }
-  // A verified starting workspace: fetch, fast-forward main, merge main into the task
-  // branch (or stop with a conflict report), and check the runtime the project needs.
-  const prep = await wf.prepare(t, agent, mode);
-  if (!prep.ok) { delete ui.saving[t.id]; save(); return render(); }
-  if (t.changesSince && !t.changesSince.sha) reviewBaseline(t, await api.workspaceHead(t.id).catch(() => null));
-  const summary = await api.workspaceSummary(t.id, t.ws.baseSha).catch(() => '');
-  // The task's instruction log comes first in every run; the runner acknowledges each new one.
-  const prompt = [instructionsBlock(t), wf.modeBrief(t, mode), buildTaskBrief({ task: t, agent, summary, handoffFrom: handoff?.from, reason: handoff?.reason })].filter(Boolean).join('\n\n');
-  const before = mode === 'normal' ? null : await wf.snapshot(t);
-  const sinceMs = Date.now();
-  const run = { id: runId, agent, at: now(), status: 'running', mode, brief: prompt.slice(0, 20000) };
-  t.runs = t.runs || [];
-  t.runs.push(run);
-  await save();
-  delete ui.saving[t.id];
-  ui.running[t.id] = { agent, runId };
-  render();
-
-  const res = await callAgent(agent, prompt, { mode: mode === 'verify' ? 'read' : 'edit', taskId: t.id, runId, title: `T-${t.id}: ${t.title}`, thread: `task-${t.id}-${agent}`, historyText: `Task T-${t.id}: ${t.title}${t.description ? `\n\n${t.description}` : ''}` });
-  delete ui.running[t.id];
-  ui.saving[t.id] = true;
-  render();
-  // Verify only / Docs and research: enforced before anything is saved (violations discarded and reported).
-  const violation = await wf.enforce(t, agent, mode, before, run);
-  // Generated images, diagrams and recordings become attachments (moved into its assets folder).
-  const explicit = res.ok ? parseAttachLines(res.text).files.map((f) => f.path) : [];
-  const found = res.ok && mode !== 'verify' ? await wf.assets(t.id, agent, res.text, sinceMs, explicit) : [];
-  if (mode === 'verify') return finishVerify(t, agent, run, res, violation);
-  let cp = null;
-  try {
-    cp = await api.checkpoint(t.id, agent, `${t.title} — ${res.ok ? 'progress' : `checkpoint (${res.error.kind})`}`);
-  } catch (e) {
-    t.notes.push({ at: now(), who: 'System', text: cleanErr(e.message), err: true });
-  }
-  const d = res.ok ? parseDirectives(res.text) : null;
-  run.status = res.ok ? (parseStatus(res.text) || 'ok') : res.error.kind;
-  run.via = res.via || '';
-  run.sessionId = res.sessionId || null;
-  run.output = res.ok ? res.text : `${res.error.message}${res.partial ? `\n\nLast output:\n${res.partial}` : ''}`;
-  run.checkpoint = cp?.sha || null;
-  ops.afterRun(run, res);
-  // A "done" after a review only counts with a new commit since that review.
-  let refused = null;
-  if (res.ok) {
-    run.head = await api.workspaceHead(t.id).catch(() => null);
-    run.tests = testResult(res.text);
-  }
-  if (res.ok) {
-    // Every new instruction in the task's log must be acknowledged in the report.
-    const ack = wf.acks(t, res.text, agent, run);
-    const verdict = run.status === 'done' && ack.missing.length
-      ? { ok: false, note: `Not accepted: acknowledge ${ack.missing.join(', ')} from the task's instruction log first (one "ACK: N<k> <what you did>" line each).` }
-      : checkDoneAfterReview(t, { head: run.head, status: run.status, text: res.text });
-    if (!verdict.ok) {
-      refused = verdict.note;
-      run.status = 'continue';
-      run.refused = true;
-      t.notes.push({ at: now(), who: 'System', text: refused });
-      audit('Done report refused', t.id, verdict.note, agent);
-    } else if (run.status === 'done') {
-      t.done = { sha: run.head, tests: run.tests, at: now(), by: agent };
-    }
-  }
-  // The app runs the project's tests itself; its result replaces the AI's claim, and a failure refuses the report.
-  if (res.ok && run.status === 'done' && !refused) refused = await ops.checkDone(t, run, agent);
-  if (res.ok && run.head && run.appTests) recordTest(t, run.head, { status: run.appTests, command: run.testCommand, blocker: run.blocker?.kind && run.blocker.kind !== 'code' ? run.blocker.title : null });
-  if (cp) {
-    const pushed = await autoPush(t.id);
-    if (pushed) run.pushed = pushed.ok ? 'pushed to GitHub' : `push failed: ${pushed.message}`;
-  }
-  t.updatedAt = now();
-  audit(res.ok ? `${NAMES[agent]} finished a run` : `${NAMES[agent]} stopped (${res.error.kind})`, t.id, cp ? `checkpoint ${cp.sha} · ${cp.stat}` : 'no file changes', agent);
-  if (res.ok && run.status === 'done' && t.stage === 'implementing') {
-    t.stage = 'checkpoint';
-    audit('Checkpoint saved', t.id, 'agent reported done');
-  }
-  // The AI posts its own update to Team chat, with any permission it needs.
-  if (cp) ops.checkpointLine(agent, cp, t.id);
-  if (res.ok) {
-    let m = null;
-    ops.turnBegin(agent);
-    try {
-    const media = await agentAttachments(parseAttachLines(d.text || res.text), t.id, agent);
-    const allAtts = [...media.atts, ...found];
-    m = post({ who: agent, auto: true, model: res.via, attachments: allAtts.length ? allAtts : undefined, text: `T-${t.id} “${t.title}”: ${(media.text || d.text || res.text).replace(/STATUS:.*$/is, '').trim().slice(0, 400) || 'finished a run.'}${run.status === 'done' ? `\n(${doneLine(run)})` : ''}${violation ? `\n(${violation})` : ''}${run.acked?.length ? `\n(Acknowledged ${run.acked.join(', ')}.)` : ''}` });
-    if (refused) post({ who: 'system', text: `T-${t.id}: ${NAMES[agent]} reported done, but it wasn't accepted. The task stays with ${NAMES[agent]} (Ready to Resume): ${refused}` });
-    m.asks = d.asks.map((a) => {
-      const req = makeRequest({ id: uid(), agent, kind: a.kind, what: a.what, why: a.why, context: t.id, msgId: m.id });
-      state.permissions.push(req);
-      audit('Permission requested', t.id, `${NAMES[agent]} · ${PERMISSION_KINDS[req.kind]}: ${req.what}`, agent);
-      return req.id;
-    });
-    ops.auditRoutine(agent, d.routine, t.id);
-    if (m.asks.length) wakeLead('permission card', agent);
-    await ops.handleLines(agent, d.text || res.text, t.id, true);
-    // Board and workflow lines in a run report count too (every one gets a ✓/✗).
-    await handleVerdicts(agent, d.text || res.text);
-    handleLeadLines(agent, d.text || res.text);
-    await wf.lines(agent, d.text || res.text);
-    wf.ensureResults(agent, d.text || res.text, t.id);
-    } finally { ops.turnEnd(agent, m); }
-  }
-  await save();
-  delete ui.saving[t.id];
-  render();
-
-  if (!res.ok && res.error.kind !== 'cancelled') wakeLead('task waiting to resume', null);
-  // Crash, stall or limit: resume on another AI with the same role (at most 2 hand-offs, then ask).
-  if (!res.ok && (await ops.handoff(t, agent, res, cp, depth))) { await pumpQueues(); return; }
-  if (!res.ok && ['outage', 'auth', 'not_installed'].includes(res.error.kind)) {
-    const next = nextAgent(liveEditors(), [agent], state.lead);
-    t.notes.push({ at: now(), who: 'System', text: `${NAMES[agent]}: ${res.error.message} Progress is saved${cp ? ` (checkpoint ${cp.sha})` : ''}. Resume with ${NAMES[agent]} later${next ? `, or hand it to ${NAMES[next]} now` : ''}.` });
-    await save();
-    render();
-  }
-  if (!res.ok && res.error.kind === 'limit') {
-    // Its waiting tasks go to free AIs with the same kind of role; this one continues
-    // with such an AI now, or is next in line if that AI is busy.
-    const moved = moveWaiting(agent, t.id);
-    const need = taskNeed(t) || 'code';
-    const fit = EDITORS.filter((a) => a !== agent && a !== t.reviewer && canRun(a) && roleKinds(roleMap()[a]).includes(need));
-    const next = fit.find(isFree) || fit[0] || null;
-    if (next && state.autoHandoff && depth < 3) {
-      post({ who: 'system', text: `${NAMES[agent]} ran out of usage on T-${t.id}. ${NAMES[next]} ${isFree(next) ? 'is continuing it' : 'continues it when free'}.${moved}` });
-      await save();
-      if (isFree(next)) await runTask(t, next, { from: agent, reason: 'ran out of usage' }, depth + 1);
-      else startOrQueue(t, next);
-    } else {
-      t.notes.push({ at: now(), who: 'System', text: `${NAMES[agent]} ran out of usage. Progress is saved${cp ? ` (checkpoint ${cp.sha})` : ''}. ${next ? `Hand it to ${NAMES[next]}` : 'No AI with the same role is free'} — or continue in FreeBuff.${moved}` });
-      if (moved) post({ who: 'system', text: `${NAMES[agent]} ran out of usage.${moved}` });
-      save();
-      render();
-    }
-  }
-  // The sha lock: an approval that came in during this run keeps its commit; later commits move to a follow-up branch.
-  if (t.stage === 'approval') await recheckApprovals([t]);
-  wf.refreshTruth([t.id]).then(() => render());
-  // Nothing waits at Checkpoint: a done report always moves to review. It goes to the
-  // reviewer now, or waits for them ("Waiting for …", with Pick reviewer for the owner).
-  if (res.ok && t.stage === 'checkpoint') {
-    t.stage = 'review';
-    // A reviewer's approval held for exactly this commit applies now (no second review ping).
-    const held = useHeldApproval(t, run.head, now());
-    if (held?.applied) {
-      recordReview(t, { by: held.by, verdict: 'approve', sha: held.sha, reason: 'held approval applied', at: now(), accepted: true });
-      audit('Held approval applied', t.id, `${NAMES[held.by]} at ${held.sha}`);
-      post({ who: 'system', text: `T-${t.id} “${t.title}” reached review at ${short(held.sha)}, which ${NAMES[held.by]} had already approved. It's in Approvals.` });
-      save();
-      render();
-      await pumpQueues();
-      return;
-    }
-    if (held?.dropped) t.notes.push({ at: now(), who: 'System', text: `${NAMES[t.reviewer]}'s held approval no longer applies: ${held.why}.` });
-    const canReview = HEADLESS.includes(t.reviewer) && isFree(t.reviewer) && !ui.busy[t.id];
-    t.reviewWaiting = !canReview;
-    audit(canReview ? 'Sent for review' : 'Waiting for reviewer', t.id, NAMES[t.reviewer] || 'no reviewer set');
-    save();
-    render();
-    if (canReview) askForTask(t, 'opinion');
-  }
-  await pumpQueues();
-}
-
-async function openInFreebuff(t) {
-  try {
-    t.ws = t.ws || (await api.ensureWorkspace(t.id, t.title));
-    const prev = (t.runs || []).filter((r) => r.status !== 'running').slice(-1)[0];
-    const summary = await api.workspaceSummary(t.id, t.ws.baseSha).catch(() => '');
-    const brief = buildTaskBrief({ task: t, agent: 'freebuff', summary, handoffFrom: prev?.agent, reason: prev ? `last status: ${prev.status}` : '' });
-    const r = await api.openFreebuff(t.id, brief);
-    if (!r.ok) return toast(r.message);
-    t.freebuffOpen = true;
-    if (t.stage === 'intake') t.stage = 'implementing';
-    audit('Opened in FreeBuff', t.id, `brief copied to clipboard and saved to ${r.briefFile}`);
-    save();
-    render();
-    toast('FreeBuff opened in this task’s workspace. The handoff brief is on your clipboard — paste it in.');
-  } catch (e) {
-    toast(cleanErr(e.message));
-  }
-}
-
-async function freebuffDone(t) {
-  let cp = null;
-  try { cp = await api.checkpoint(t.id, 'freebuff', `${t.title} — progress`); } catch (e) { return toast(cleanErr(e.message)); }
-  t.freebuffOpen = false;
-  t.runs = t.runs || [];
-  t.runs.push({ id: uid(), agent: 'freebuff', at: now(), status: 'ok', via: 'FreeBuff (interactive)', output: 'Worked interactively in FreeBuff.', checkpoint: cp?.sha || null });
-  audit('FreeBuff work checkpointed', t.id, cp ? `checkpoint ${cp.sha} · ${cp.stat}` : 'no file changes', 'freebuff');
-  save();
-  render();
-}
-
-async function refreshProviders() {
-  try { prov = await api.providerStatus(); } catch {}
-}
-
-// One-click sign-in: install the official tool if missing, otherwise open its
-// own sign-in (it opens the provider's page in your browser), then watch for it
-// to finish. Passwords and tokens never pass through this app.
-const signinTimers = {};
-const INSTALL_WAIT_MS = 20 * 60 * 1000;
-async function startSignin(a) {
-  await refreshAgents();
-  if (!cli[a]?.installed) return startInstall([a], { signin: true });
-  const r = await api.agentLogin(a);
-  if (!r.ok) { ui.signin[a] = { state: 'error', msg: r.message }; render(); return toast(r.message); }
-  ui.signin[a] = { state: 'waiting', at: Date.now() };
-  audit(`${AGENTS[a].name} sign-in started`, null, `official sign-in in ${r.terminal}`);
-  toast(`${AGENTS[a].tool}'s own sign-in opened in ${r.terminal}. Finish on ${AGENTS[a].vendor}'s page in your browser — this updates by itself.`);
-  render();
-  watchSignin(a);
-}
-
-// One-click install of one or more official tools, one after another in a
-// terminal you can see. signin: open the tool's own sign-in when it's done.
-async function startInstall(list, { signin = false } = {}) {
-  await refreshAgents();
-  const todo = list.filter((a) => !cli[a]?.installed);
-  if (!todo.length) { render(); return toast('Already installed.'); }
-  const r = await api.agentInstall(todo).catch((e) => ({ ok: false, message: cleanErr(e.message) }));
-  if (!r.ok) {
-    for (const a of todo) ui.signin[a] = { state: 'error', msg: r.message, install: true };
-    render();
-    return toast(r.message);
-  }
-  for (const a of todo) {
-    ui.signin[a] = { state: 'installing', at: Date.now(), signin: signin && AGENTS[a].kind === 'cli' };
-    cli[a] = { ...cli[a], install: 'queued' };
-  }
-  const names = todo.map((a) => AGENTS[a].tool).join(', ');
-  audit(todo.length > 1 ? 'Install all started' : `${AGENTS[todo[0]].tool} install started`, null, `official installer${todo.length > 1 ? 's' : ''} in ${r.terminal}: ${names}`);
-  toast(`Installing ${names} in ${r.terminal}.${todo.includes('ollama') ? ' Ollama asks for your computer password there; this app never sees it.' : ''}${signin ? ' Sign-in starts when it’s done.' : ''}`);
-  render();
-  for (const a of todo) watchSignin(a);
-}
-
-function watchSignin(a) {
-  clearInterval(signinTimers[a]);
-  signinTimers[a] = setInterval(async () => {
-    const s = ui.signin[a];
-    if (!s) return clearInterval(signinTimers[a]);
-    const st = await api.agentStatus(a).catch(() => ({}));
-    cli[a] = st;
-    if (s.state === 'installing' && st.installed) {
-      if (s.signin) {
-        const lr = await api.agentLogin(a);
-        ui.signin[a] = lr.ok ? { state: 'waiting', at: Date.now() } : { state: 'error', msg: lr.message };
-        if (lr.ok) toast(`${AGENTS[a].tool} is installed. Its own sign-in opened in ${lr.terminal}.`);
-      } else {
-        clearInterval(signinTimers[a]);
-        ui.signin[a] = { state: 'installed', at: Date.now() };
-        audit(`${AGENTS[a].tool} installed`);
-        save();
-        toast(`${AGENTS[a].tool} is installed.${AGENTS[a].kind === 'cli' ? ' Press Sign in on its card.' : ''}`);
-      }
-    } else if (s.state === 'installing' && st.install === 'failed') {
-      clearInterval(signinTimers[a]);
-      ui.signin[a] = { state: 'error', msg: `${AGENTS[a].tool} could not be installed. The terminal says why.`, install: true };
-      toast(ui.signin[a].msg);
-    } else if (s.state === 'waiting' && (st.signedIn || (a === 'mistral' && st.signedIn !== false))) {
-      clearInterval(signinTimers[a]);
-      clearHold(a);
-      ui.signin[a] = { state: 'linked', at: Date.now() };
-      audit(`${AGENTS[a].name} linked`, null, `signed in with your own account via ${AGENTS[a].tool}`);
-      save();
-      toast(`${AGENTS[a].name} is linked.`);
-    } else if (Date.now() - s.at > (s.state === 'installing' ? INSTALL_WAIT_MS : 5 * 60 * 1000)) {
-      clearInterval(signinTimers[a]);
-      ui.signin[a] = s.state === 'installing' ? { state: 'error', msg: 'The install did not finish. Check the terminal, then press Re-check.', install: true } : { state: 'timeout', at: Date.now() };
-    }
-    ui.keepScroll = true;
-    if (['agents', 'overview'].includes(ui.view)) render();
-  }, 3000);
-}
-
-async function teamCheckin() {
-  const live = liveAgents();
-  if (!live.length || round) return;
-  post({ who: 'owner', auto: true, text: 'Team check-in: anything to report, propose or ask? Reply PASS if not.' });
-  save();
-  render();
-  await runRoom([state.lead, ...live.filter((a) => a !== state.lead)].filter((a) => live.includes(a)), { trigger: 'check-in' });
-}
-
-async function syncHistory(quiet = false) {
-  ui.hist.scanning = true;
-  if (ui.view === 'history') render();
-  const r = await api.historyScan().catch((e) => ({ ok: false, message: cleanErr(e.message) }));
-  ui.hist.scanning = false;
-  await refreshHistory();
-  if (!quiet) toast(r.ok ? `Synced ${r.found} CLI sessions.` : `Couldn't sync: ${r.message}`);
-  if (ui.view === 'history') render();
-}
-
-const CLICK = '[data-chatmenu],[data-chatact],[data-chatrestore],[data-chatshowhidden],[data-chattrash],[data-actallow],[data-actdeny],[data-actview],[data-actundo],[data-openchat],[data-newchat],[data-allchats],[data-chatlink],[data-chatrename],[data-chatrenamesave],[data-chatrenamecancel],[data-sendreview],[data-owneract],[data-updatemain],[data-releasebranch],[data-leadundo],[data-opendup],[data-adddup],[data-stopround],[data-toggleleadgh],[data-attach],[data-unattach],[data-lightbox],[data-closelightbox],[data-testkey],[data-nav],[data-new],[data-open],[data-close],[data-cancel],[data-create],[data-advance],[data-approve],[data-reject],[data-changes],[data-note],[data-delete],[data-savekey],[data-rmkey],[data-ask],[data-export],[data-reset],[data-upd],[data-opinion],[data-modalbg],[data-sendchat],[data-target],[data-addprop],[data-addall],[data-clearchat],[data-method],[data-login],[data-recheck],[data-locate],[data-available],[data-run],[data-stop],[data-freebuff],[data-fbdone],[data-openws],[data-pickproject],[data-autohandoff],[data-restore],[data-install],[data-installall],[data-installollama],[data-startprop],[data-showchanges],[data-dismisssetup],[data-signin],[data-disconnect],[data-toggleagent],[data-ghlogin],[data-gitrefresh],[data-useproject],[data-clone],[data-gitpull],[data-pushbranch],[data-openpr],[data-approvemerge],[data-approvepr],[data-access],[data-togglesetting],[data-adddir],[data-removedir],[data-expand],[data-opensignin],[data-openweb],[data-openexport],[data-makelead],[data-decide],[data-editmsg],[data-delmsg],[data-saveedit],[data-canceledit],[data-togglehist],[data-checkin],[data-histscan],[data-histimport],[data-histopen],[data-histresume],[data-histweb],[data-histwebin],[data-histremove],[data-prlist],[data-prrefresh],[data-release],[data-theme]';
-
-document.addEventListener('click', async (e) => {
-  const el = e.target.closest(CLICK);
-  if (!el) return;
-  const d = el.dataset;
-  const task = (id) => state.tasks.find((t) => t.id === id);
-
-  if (d.modalbg !== undefined && e.target === el) { ui.modal = null; return render(); }
-  if (d.actallow) return decideAct(d.actallow, 'allow', ui.modal === 'act' ? 'popup' : 'card');
-  if (d.actdeny) return decideAct(d.actdeny, 'deny', ui.modal === 'act' ? 'popup' : 'card');
-  if (d.actview) { ui.modal = 'act'; ui.actReq = d.actview; return render(); }
-  if (d.actundo) return undoAct(d.actundo);
-  if (d.chatmenu) { ui.chatMenu = ui.chatMenu === d.chatmenu ? null : d.chatmenu; return render(); }
-  if (d.chatact) return chatAction(d.chatact, d.id);
-  if (d.chatrestore) return restoreChat(d.chatrestore);
-  if (d.chatshowhidden !== undefined) { ui.showHidden = !ui.showHidden; return render(); }
-  if (d.chattrash !== undefined) { ui.showTrash = !ui.showTrash; return render(); }
-  if (d.openchat) { ui.chatMenu = null; ui.lastDeleted = null; return openChat(d.openchat); }
-  if (d.newchat !== undefined) return newChat();
-  if (d.allchats !== undefined) { ui.allChats = !ui.allChats; return render(); }
-  if (d.chatlink !== undefined) return linkChat(d.chatlink || null);
-  if (d.chatrename !== undefined) { ui.renaming = true; render(); return document.getElementById('chat-rename')?.select(); }
-  if (d.chatrenamecancel !== undefined) { ui.renaming = false; return render(); }
-  if (d.chatrenamesave !== undefined) {
-    const c = openChatEntry();
-    const t = document.getElementById('chat-rename')?.value.trim();
-    if (c && t) { const e = await updateChat(c.id, { title: t }); if (e) audit('Chat renamed', null, t); save(); }
-    ui.renaming = false;
-    return render();
-  }
-  if (d.nav) {
-    ui.view = d.nav; ui.selected = null;
-    if (d.nav === 'settings') backups = await api.backups().catch(() => backups);
-    if (d.nav === 'github') { await refreshGit(); await refreshPrs(); }
-    if (d.nav === 'approvals' || d.nav === 'board') recheckApprovals();
-    if (d.nav === 'approvals' && Date.now() - (ui.lastFetchAt || 0) > 10 * 60000) { ui.lastFetchAt = Date.now(); leadFetch().then(() => { if (ui.view === 'approvals') render(); }); }
-    if (d.nav === 'history') await refreshHistory();
-    return render();
-  }
-  if (d.expand) {
-    if (e.target.closest('button,a,input,select,textarea')) return;
-    ui.expanded = ui.expanded === d.expand ? null : d.expand;
-    ui.side = d.expand;
-    ui.keepScroll = true;
-    return render();
-  }
-  if (d.sendchat !== undefined) return sendChat();
-  if (d.stopround !== undefined) return stopChatRound();
-  if (d.leadundo) return undoLead(d.leadundo);
-  if (d.toggleleadgh !== undefined) { settings = await api.setSettings({ leadGitHub: !leadGitHubOn() }); audit(`Lead handles GitHub turned ${leadGitHubOn() ? 'on' : 'off'}`); save(); return render(); }
-  if (d.attach !== undefined) {
-    const list = await api.attachPick().catch((err) => [{ ok: false, message: cleanErr(err.message) }]);
-    for (const r of list || []) { if (r.ok) ui.attach.push(r.att); else toast(r.message); }
-    return render();
-  }
-  if (d.unattach !== undefined) { ui.attach.splice(Number(d.unattach), 1); return render(); }
-  if (d.lightbox) {
-    const [mid, i] = d.lightbox.split(':');
-    const a = state.chat.find((x) => x.id === mid)?.attachments?.[Number(i)];
-    if (a) { ui.lightbox = a; render(); }
-    return;
-  }
-  if (d.closelightbox !== undefined) { ui.lightbox = null; return render(); }
-  if (d.opendup) { ui.modal = null; ui.view = 'board'; ui.selected = d.opendup; return render(); }
-  if (d.adddup) {
-    if (d.adddup === 'form') return createTask(true);
-    const [id, i] = d.adddup.split(':');
-    const t = addProposal(id, Number(i), true);
-    save();
-    render();
-    if (t) toast('Added to the board anyway.');
-    return;
-  }
-  if (d.sendreview) {
-    const t = task(d.sendreview);
-    const who = document.getElementById(`pickrev-${t.id}`)?.value;
-    if (!t || !who || who === t.assignee) return;
-    if (who !== t.reviewer) { audit('Reviewer changed', t.id, `${NAMES[t.reviewer] || 'none'} → ${NAMES[who]}`); t.reviewer = who; }
-    if (!canRun(who) || !isFree(who)) { t.reviewWaiting = true; save(); render(); return toast(`${NAMES[who]} isn't free; T-${t.id} goes to them when they are.`); }
-    save();
-    return askForTask(t, 'opinion', true);
-  }
-  if (d.owneract) {
-    const t = task(d.owneract);
-    const a = t && actionFor(t);
-    if (!a) return render();
-    if (a.kind === 'resume' || a.kind === 'start') {
-      audit(a.kind === 'resume' ? 'Owner approved resume' : 'Owner started task', t.id, NAMES[a.agent]);
-      return startOrQueue(t, a.agent);
-    }
-    if (a.kind === 'signin') { ui.view = 'agents'; ui.side = a.agent; ui.selected = null; return render(); }
-    if (a.kind === 'pickreviewer') { ui.selected = t.id; render(); return document.getElementById(`pickrev-${t.id}`)?.focus(); }
-    ui.selected = t.id; // approve / permission / policy: decide in the task panel
-    return render();
-  }
-  if (d.checkin !== undefined) return teamCheckin();
-  if (d.decide) { const [id, dec] = d.decide.split(':'); return decide(id, dec); }
-  if (d.editmsg) { ui.editing = d.editmsg; return render(); }
-  if (d.canceledit !== undefined) { ui.editing = null; return render(); }
-  if (d.saveedit) {
-    const r = applyEdit(state.chat, { id: d.saveedit, by: 'owner', text: document.getElementById('edit-text').value });
-    ui.editing = null;
-    if (r.ok) { audit('Owner edited a message', null, `#${d.saveedit} (${NAMES[r.message.who]})`); save(); } else if (r.reason !== 'no change') toast(r.reason);
-    return render();
-  }
-  if (d.delmsg) {
-    const m = state.chat.find((x) => x.id === d.delmsg);
-    if (!m || !confirm('Delete this message? The audit log keeps a short record.')) return;
-    state.chat = state.chat.filter((x) => x.id !== d.delmsg);
-    audit('Owner deleted a message', null, `#${m.id} by ${NAMES[m.who]}: ${String(m.text).slice(0, 80)}`);
-    save();
-    return render();
-  }
-  if (d.togglehist) { ui.showHist[d.togglehist] = !ui.showHist[d.togglehist]; return render(); }
-  if (d.ghlogin !== undefined) {
-    const r = await api.gitLogin();
-    return toast(r.ok ? `GitHub sign-in opened in ${r.terminal} — choose "Login with a web browser", finish on github.com, then press Re-check.` : r.message);
-  }
-  if (d.gitrefresh !== undefined) { await refreshGit(); await refreshPrs(); return render(); }
-  if (d.prlist !== undefined) { await refreshPrs(); return render(); }
-  if (d.prrefresh) {
-    const r = await api.gitPrView(d.prrefresh).catch((err) => ({ ok: false, message: cleanErr(err.message) }));
-    if (r.ok) ui.prs.byTask[d.prrefresh] = r.pr; else toast(r.message);
-    return render();
-  }
-  // A folder is a project with its own board: switching reloads the window (saved first, never after).
-  if (d.useproject) { await save(); settings = await api.useProject(d.useproject); if (settings.projectSwitched) return reloadApp(); chatWs = null; await refreshGit(); return render(); }
-  if (d.clone !== undefined) {
-    const input = document.getElementById('clone-input').value.trim();
-    if (!input) return;
-    toast('Cloning…');
-    audit('Cloning a project', null, input);
-    await save();
-    const r = await api.gitClone(input).catch((err) => ({ ok: false, message: cleanErr(err.message) }));
-    if (r.ok && r.settings?.projectSwitched) return reloadApp();
-    if (r.ok) { settings = await api.settings(); chatWs = null; await refreshGit(); audit('Cloned project', null, r.dir); save(); }
-    toast(r.ok ? `Cloned to ${r.dir} — it's now the active project.` : `Clone failed: ${r.message}`);
-    return render();
-  }
-  if (d.gitpull !== undefined) {
-    const r = await api.gitPull().catch((err) => ({ ok: false, message: cleanErr(err.message) }));
-    audit(r.ok ? 'Pulled from GitHub' : 'Pull failed', null, r.message);
-    await refreshGit();
-    save();
-    toast(r.message);
-    return render();
-  }
-  if (d.pushbranch) {
-    const r = await api.gitPushBranch(d.pushbranch).catch((err) => ({ ok: false, message: cleanErr(err.message) }));
-    audit(r.ok ? 'Pushed to GitHub' : 'Push failed', null, `${d.pushbranch}: ${r.message}`);
-    await refreshGit();
-    save();
-    toast(r.message);
-    return render();
-  }
-  if (d.openpr) {
-    const t = task(d.openpr);
-    const body = `${t.description}\n\n---\nTask T-${t.id} from Hearth AI Command Center.`;
-    const r = await api.gitOpenPr(t.id, t.title, body).catch((err) => ({ ok: false, message: cleanErr(err.message) }));
-    if (r.ok) {
-      t.pr = { url: r.url, number: r.number };
-      t.notes.push({ at: now(), who: 'System', text: `Pull request: ${r.url}` });
-      audit('Pull request opened', t.id, r.url);
-      const v = await api.gitPrView(t.id).catch(() => null);
-      if (v?.ok) ui.prs.byTask[t.id] = v.pr;
-      save();
-    }
-    toast(r.ok ? 'Pull request opened on GitHub.' : `Couldn't open a pull request: ${r.message}`);
-    return render();
-  }
-  if (d.approvepr) {
-    const t = task(d.approvepr);
-    const pr = ui.prs.byTask[t.id];
-    if (!pr) return;
-    if (await recheckApprovals([t])) return toast(`T-${t.id} changed after its review, so it went back to review.`);
-    const r = await api.gitPrMerge(pr.number, { sha: approvedSha(t) }).catch((err) => ({ ok: false, message: cleanErr(err.message) }));
-    if (!r.ok) { if (r.message !== 'Cancelled.') toast(r.message); return; }
-    t.decision = 'approved';
-    t.notes.push({ at: now(), who: 'System', text: r.message });
-    const v = await api.gitPrView(t.id).catch(() => null);
-    if (v?.ok) ui.prs.byTask[t.id] = v.pr;
-    await refreshGit();
-    return setStage(t, 'approved', 'Owner approved and merged PR', r.message);
-  }
-  if (d.updatemain) {
-    const t = task(d.updatemain);
-    if (!t?.ws || ui.busy[t.id]) return;
-    if (ui.running[t.id]) return toast(`${NAMES[ui.running[t.id].agent]} is working on T-${t.id}. Update from main when the run has finished.`);
-    ui.busy[t.id] = 'update';
-    render();
-    const r = await api.gitUpdateFromMain(t.id).catch((err) => ({ ok: false, message: cleanErr(err.message) }));
-    delete ui.busy[t.id];
-    t.notes.push({ at: now(), who: 'System', text: r.message });
-    audit(r.ok ? 'Task branch updated from main' : 'Update from main stopped', t.id, r.message);
-    if (!r.ok && r.conflicts?.length) post({ who: 'system', text: `T-${t.id} “${t.title}” conflicts with main in ${r.conflicts.join(', ')}. Nothing was changed. ${NAMES[t.assignee] || 'The implementer'} needs to resolve it before it can be merged.` });
-    save();
-    toast(r.message);
-    return render();
-  }
-  if (d.releasebranch !== undefined) {
-    if (ui.busy.release) return;
-    await recheckApprovals();
-    const list = state.tasks.filter((t) => t.stage === 'approval' && t.ws);
-    if (list.length < 2) return render();
-    ui.busy.release = true;
-    render();
-    // The approved commits are merged; a workspace with unsaved changes is refused.
-    const r = await api.gitReleaseBranch(list.map((t) => ({ id: t.id, sha: approvedSha(t) }))).catch((err) => ({ ok: false, message: cleanErr(err.message) }));
-    delete ui.busy.release;
-    ui.releaseResult = r;
-    audit(r.ok ? 'Release branch created' : 'Release branch failed', null, r.message);
-    post({ who: 'system', text: `Release branch: ${r.message}` });
-    save();
-    toast(r.ok ? `Created ${r.branch}.` : r.message);
-    return render();
-  }
-  if (d.approvemerge) {
-    const t = task(d.approvemerge);
-    if (await recheckApprovals([t])) return toast(`T-${t.id} changed after its review, so it went back to review.`);
-    const r = await api.gitMergeApproved(t.id, { sha: approvedSha(t) }).catch((err) => ({ ok: false, message: cleanErr(err.message) }));
-    if (!r.ok) { if (r.message !== 'Cancelled.') toast(r.message); return; }
-    t.decision = 'approved';
-    t.notes.push({ at: now(), who: 'System', text: r.message });
-    await refreshGit();
-    return setStage(t, 'approved', 'Owner approved and merged', r.message);
-  }
-  if (d.release !== undefined) {
-    const rel = ui.release;
-    const allowed = wf.releaseAllowed(rel.version);
-    if (!allowed.ok) { ui.view = 'release'; toast(`Not released: ${allowed.reason}.`); return render(); }
-    const r = await api.gitRelease({ version: rel.version, confirmVersion: rel.confirm, target: rel.target || repo.defaultBranch || 'main', notes: rel.notes, draft: rel.draft }).catch((err) => ({ ok: false, message: cleanErr(err.message) }));
-    if (r.ok) { wf.madeTag(rel.version); audit('Owner approved a release', null, `${r.tag}${r.draft ? ' (draft)' : ''} · version typed by you`); ui.release = { version: '', confirm: '', target: '', notes: '', draft: true }; save(); }
-    toast(r.message);
-    return render();
-  }
-  if (d.theme) { settings = await api.setSettings({ theme: d.theme }); applyTheme(); return render(); }
-  if (d.access) {
-    if (d.access === 'full' && !confirm('Give the AIs full access with no safety checks? They could run any command on this computer without asking. One bad command could break a device.')) return render();
-    settings = await api.setSettings({ access: d.access });
-    audit(`AI permissions set to ${d.access === 'full' ? 'full access' : 'like their own apps'}`);
-    save();
-    return render();
-  }
-  if (d.togglesetting) { settings = await api.setSettings({ [d.togglesetting]: !settings[d.togglesetting] }); return render(); }
-  if (d.adddir !== undefined) {
-    try { settings = await api.addDir(); audit('Folder access granted', null, settings.extraDirs.slice(-1)[0] || ''); save(); } catch (err) { toast(cleanErr(err.message)); }
-    return render();
-  }
-  if (d.removedir) { settings = await api.removeDir(d.removedir); audit('Folder access removed', null, d.removedir); save(); return render(); }
-  if (d.signin) return startSignin(d.signin);
-  if (d.opensignin) { await api.agentOpenSignin(d.opensignin).catch((err) => toast(cleanErr(err.message))); return; }
-  if (d.openweb) { await api.openWeb(d.openweb).catch((err) => toast(cleanErr(err.message))); audit(`Opened ${AGENTS[d.openweb]?.name || d.openweb} web window`); return; }
-  if (d.openexport) { const r = await api.openExport(d.openexport); if (!r.ok) toast(r.message); return; }
-  if (d.makelead) { state.lead = d.makelead; audit('Lead coordinator changed', null, NAMES[state.lead]); save(); return render(); }
-  if (d.disconnect) {
-    const a = d.disconnect;
-    if (!confirm(`Sign ${AGENTS[a].name} out on this computer? This signs out ${AGENTS[a].tool} everywhere you use it on this computer, not just here.`)) return;
-    const r = await api.agentLogout(a).catch((err) => ({ ok: false, message: cleanErr(err.message) }));
-    audit(r.ok ? `${AGENTS[a].name} signed out` : `${AGENTS[a].name} sign-out failed`, null, r.message || '');
-    delete ui.signin[a];
-    await refreshAgents();
-    save();
-    toast(r.ok ? (r.message || `${AGENTS[a].name} is signed out.`) : `Couldn't sign out: ${r.message}`);
-    return render();
-  }
-  if (d.toggleagent) {
-    state.disabled = state.disabled || {};
-    state.disabled[d.toggleagent] = !state.disabled[d.toggleagent];
-    if (!state.disabled[d.toggleagent]) delete state.disabled[d.toggleagent];
-    audit(`${AGENTS[d.toggleagent].name} turned ${state.disabled[d.toggleagent] ? 'off' : 'on'}`);
-    save();
-    return render();
-  }
-  if (d.install) return startInstall([d.install]);
-  if (d.installollama !== undefined) { ui.installOllama = !ui.installOllama; ui.keepScroll = true; return render(); }
-  if (d.installall !== undefined) {
-    const list = INSTALLABLE.filter((a) => !cli[a]?.installed && !state.disabled?.[a]);
-    if (ui.installOllama && !cli.ollama?.installed) list.push('ollama');
-    return startInstall(list);
-  }
-  if (d.startprop) {
-    const [id, i] = d.startprop.split(':');
-    const t = addProposal(id, Number(i));
-    await save();
-    render();
-    if (t && t.policy.ok) return startOrQueue(t, t.assignee);
-    if (t) toast('Added, but the policy check blocked it — open it to see why.');
-    return;
-  }
-  if (d.showchanges) {
-    const t = task(d.showchanges);
-    ui.changes[t.id] = await api.workspaceSummary(t.id, t.ws.baseSha).catch((err) => cleanErr(err.message));
-    return render();
-  }
-  if (d.dismisssetup !== undefined) { state.setupDismissed = true; save(); return render(); }
-  if (d.method) {
-    const [a, m] = d.method.split(':');
-    settings = await api.setConnection(a, m);
-    if (clearHold(a)) save();
-    return render();
-  }
-  if (d.login) {
-    const r = await api.agentLogin(d.login);
-    toast(r.ok ? `Opened in ${r.terminal}. Finish there, then press Re-check.` : r.message);
-    return;
-  }
-  if (d.recheck !== undefined) { await refreshAgents(); await refreshProviders(); toast('Agent status refreshed.'); ui.keepScroll = true; return render(); }
-  if (d.locate) { settings = await api.pickBinary(d.locate); await refreshAgents(); return render(); }
-  if (d.available) { delete state.agentStatus[d.available]; audit(`${NAMES[d.available]} marked available`); save(); render(); return pumpQueues(); }
-  if (d.run) { const [id, a] = d.run.split(':'); return startOrQueue(task(id), a); }
-  if (d.stop) {
-    const r = ui.running[d.stop];
-    const t = task(d.stop);
-    if (t && r) wf.instruct(t, 'Owner', 'stop', `The Owner stopped ${NAMES[r.agent]}'s run. Check the state of the workspace before continuing, and don't redo what is already committed.`);
-    if (r) await api.cancelRun(r.runId);
-    return;
-  }
-  if (d.freebuff) return openInFreebuff(task(d.freebuff));
-  if (d.fbdone) return freebuffDone(task(d.fbdone));
-  if (d.openws !== undefined) return api.openWorkspace(d.openws || null);
-  if (d.pickproject !== undefined) {
-    try { await save(); settings = await api.pickProject(); if (settings.projectSwitched) return reloadApp(); chatWs = null; await refreshGit(); } catch (err) { toast(cleanErr(err.message)); }
-    return render();
-  }
-  if (d.autohandoff !== undefined) { state.autoHandoff = !state.autoHandoff; save(); return render(); }
-  if (d.target) { ui.target = d.target; render(); return document.getElementById('chat-text')?.focus(); }
-  if (d.addprop) {
-    const [id, i] = d.addprop.split(':');
-    const added = addProposal(id, Number(i));
-    save();
-    render();
-    if (added) toast('Added to the board — it starts at Intake with a policy check.');
-    return;
-  }
-  if (d.addall) {
-    const m = state.chat.find((x) => x.id === d.addall);
-    (m?.proposals || []).forEach((_, i) => addProposal(d.addall, i));
-    save();
-    render();
-    return toast('Tasks added to the board.');
-  }
-  if (d.clearchat !== undefined) {
-    if (!confirm('Clear the team chat? Tasks on the board, permission records and saved CLI sessions stay.')) return;
-    state.chat = [];
-    state.chatSessions = {};
-    audit('Team chat cleared');
-    save();
-    return render();
-  }
-  if (d.histscan !== undefined) return syncHistory();
-  if (d.histimport !== undefined) {
-    const r = await api.historyImport(ui.hist.kind).catch((err) => ({ ok: false, message: cleanErr(err.message) }));
-    if (r.cancelled) return;
-    if (r.ok) audit('Imported chat export', null, `${r.imported} conversations from ${r.file} (${r.kind})`);
-    toast(r.ok ? `Imported ${r.imported} conversations (${r.kind}).` : `Import failed: ${r.message}`);
-    await refreshHistory();
-    save();
-    return render();
-  }
-  if (d.histopen) { ui.hist.sel = await api.historyGet(d.histopen).catch(() => null); return render(); }
-  if (d.histresume) {
-    const r = await api.historyResume(d.histresume);
-    toast(r.ok ? `Opened “${r.command}” in ${r.terminal}.` : r.message);
-    return;
-  }
-  if (d.histweb) { await api.historyOpenWeb(d.histweb, false); return; }
-  if (d.histwebin) { await api.historyOpenWeb(d.histwebin, true); return; }
-  if (d.histremove) {
-    if (!confirm('Remove this conversation from the app’s history? The CLI’s own files are not touched.')) return;
-    await api.historyRemove(d.histremove);
-    ui.hist.sel = null;
-    await refreshHistory();
-    return render();
-  }
-  if (d.new !== undefined) { ui.modal = 'new'; render(); return document.getElementById('f-title')?.focus(); }
-  if (d.cancel !== undefined) { ui.modal = null; return render(); }
-  if (d.create !== undefined) return createTask();
-  if (d.close !== undefined) { ui.selected = null; return render(); }
-  if (d.advance) {
-    const t = task(d.advance);
-    return setStage(t, NEXT[t.stage][0], NEXT[t.stage][1], STAGES[NEXT[t.stage][0]]);
-  }
-  if (d.approve) {
-    const t = task(d.approve);
-    if (await recheckApprovals([t])) return toast(`T-${t.id} changed after its review, so it went back to review.`);
-    t.decision = 'approved';
-    setStage(t, 'approved', 'Owner approved', `${ACTIONS[t.action]} authorized (nothing merged into main or released).`);
-    return leadIntegrate(t);
-  }
-  if (d.reject) {
-    const t = task(d.reject);
-    t.decision = 'rejected';
-    return setStage(t, 'rejected', 'Owner rejected', 'Branch kept; decision recorded.');
-  }
-  if (d.changes) {
-    const t = task(d.changes);
-    requestChanges(t, { by: 'owner', reason: 'requested from Approvals', at: now() });
-    return setStage(t, 'implementing', 'Changes requested', 'Sent back to implementer');
-  }
-  if (d.open !== undefined) {
-    e.preventDefault();
-    if (!d.open) return;
-    ui.selected = d.open;
-    render();
-    const t = task(d.open);
-    if (t?.pr && !ui.prs.byTask[t.id] && gh.ghUser) {
-      const v = await api.gitPrView(t.id).catch(() => null);
-      if (v?.ok) { ui.prs.byTask[t.id] = v.pr; render(); }
-    }
-    return;
-  }
-  if (d.note) {
-    const text = document.getElementById('note-text').value.trim();
-    if (!text) return;
-    const t = task(d.note);
-    t.notes.push({ at: now(), who: 'Owner', text: text.slice(0, 5000) });
-    audit('Note added', t.id);
-    save();
-    return render();
-  }
-  if (d.delete) {
-    if (!confirm('Delete this task? The audit log keeps a record.')) return;
-    state.tasks = state.tasks.filter((t) => t.id !== d.delete);
-    audit('Task deleted', d.delete);
-    ui.selected = null;
-    save();
-    return render();
-  }
-  if (d.opinion) return askForTask(task(d.opinion), 'opinion', true); // the owner asked: always sent
-  if (d.savekey) {
-    const input = document.getElementById(`key-${d.savekey}`);
-    try {
-      await api.setKey(d.savekey, input.value);
-      input.value = '';
-      clearHold(d.savekey);
-      delete keyTests[d.savekey];
-      audit('API key saved', null, AGENTS[d.savekey].name);
-      save();
-      toast(`${AGENTS[d.savekey].name} key saved securely.`);
-    } catch (err) {
-      toast(`Not saved: ${cleanErr(err.message)}`);
-    }
-    await refreshProviders();
-    return render();
-  }
-  if (d.testkey) {
-    const p = d.testkey;
-    if (keyTests[p]?.busy || !prov.keys[p]) return;
-    const test = { busy: true };
-    keyTests[p] = test;
-    // Only the button and its result line change. A full redraw would wipe a key
-    // pasted into the field but not saved yet.
-    const show = () => {
-      const btn = document.getElementById(`testkey-${p}`);
-      if (btn) { btn.disabled = Boolean(test.busy); btn.textContent = test.busy ? 'Testing…' : 'Test'; }
-      const line = document.getElementById(`keytest-${p}`);
-      if (line) line.innerHTML = keyTestLine(test, esc);
-    };
-    show();
-    try {
-      test.result = await api.testKey(p, state.models[p] || '');
-      if (test.result?.ok && clearHold(p)) { save(); updatePanel(); }
-      // A refused key sets the same sign-in hold as a failed chat turn, so everything agrees.
-      const problem = test.result?.ok ? null : authProblem(test.result?.error, { method: 'api' });
-      if (problem) { setHold(p, problem); save(); updatePanel(); }
-    } catch {
-      test.result = { ok: false, error: { message: 'The test could not run. Try again.' } };
-    }
-    test.busy = false;
-    show();
-    return;
-  }
-  if (d.rmkey) {
-    await api.removeKey(d.rmkey);
-    clearHold(d.rmkey);
-    delete keyTests[d.rmkey];
-    audit('API key removed', null, AGENTS[d.rmkey].name);
-    save();
-    await refreshProviders();
-    return render();
-  }
-  if (d.ask) {
-    const p = d.ask;
-    const prompt = document.getElementById(`prompt-${p}`).value;
-    if (!prompt.trim()) return;
-    ui.busy[p] = true;
-    ui.keepScroll = true;
-    render();
-    consoleOut[p] = await callAgent(p, prompt, { mode: 'read', title: 'Quick test', thread: `quick-${p}`, historyText: prompt });
-    delete ui.busy[p];
-    ui.keepScroll = true;
-    render();
-    const box = document.getElementById(`prompt-${p}`);
-    if (box) box.value = prompt;
-    return;
-  }
-  if (d.export !== undefined) {
-    const r = await api.exportAll(state);
-    if (r.ok) toast(`Exported to ${r.file}`);
-    return;
-  }
-  if (d.restore) {
-    if (!confirm('Restore this earlier save? Your current state becomes a backup too, so you can switch back.')) return;
-    try {
-      const s = await api.restoreBackup(Number(d.restore));
-      if (s?.refused) return toast(s.message);
-      // The main process restored it into the open project's file; reload to show it.
-      ui.switching = true;
-      toast('Earlier save restored. Reloading…');
-      return setTimeout(() => reloadApp(), 600);
-    } catch (err) { toast(cleanErr(err.message)); }
-    return render();
-  }
-  if (d.reset !== undefined) {
-    if (!confirm('Clear all tasks and the audit log? This cannot be undone.')) return;
-    state.tasks = [];
-    state.audit = [];
-    save();
-    return render();
-  }
-  if (d.upd) {
-    const fn = { check: api.checkForUpdates, download: api.downloadUpdate, install: api.installUpdate, restart: api.restartApp }[d.upd];
-    const res = await fn();
-    if (res && !res.ok && res.message) toast(res.message);
-  }
-});
-
-// Look-only controls of the redesigned shell. Capture phase: closes menus before the
-// app's own click handler (below) acts and redraws. Never touches saved state or settings.
-const PREFILL = { plan: "Here's a feature to plan for Hearth OS — split it into tasks between you: " };
-document.addEventListener('click', async (e) => {
-  const t = e.target;
-  const wasMore = ui.more, wasMenu = ui.menu;
-  const el = t.closest?.('[data-ui],[data-panel],[data-pickmode],[data-prefill],[data-setsec],[data-goupdates],[data-teammember],[data-showchanges][data-inline]');
-  const closing = (ui.more && !t.closest?.('.more-menu,[data-ui="more"]')) || (ui.menu && !t.closest?.('.menu,[data-ui^="menu-"]'));
-  if (ui.renaming && t.id !== 'chat-rename' && !t.closest?.('[data-chatrenamesave],[data-chatrename]') && t.closest?.('[data-openchat],[data-newchat],[data-nav]')) ui.renaming = false;
-  if (closing) { ui.more = false; ui.menu = null; }
-  // A chat's options menu closes on any click outside it; renaming in the list saves on a click elsewhere.
-  if (ui.chatMenu && !t.closest?.('.chat-row-menu,[data-chatmenu]')) { ui.chatMenu = null; if (!t.closest?.(CLICK) && !el) render(); }
-  if (ui.sideRename && t.id !== 'side-rename') { finishSideRename(true); return; }
-  if (!el) { if (closing && !t.closest?.(CLICK)) render(); return; }
-  const d = el.dataset;
-  if (d.showchanges && d.inline !== undefined) { ui.selected = d.showchanges; return; } // the app's handler loads the changes and redraws
-  if (d.ui === 'more') { ui.more = !wasMore; return render(); }
-  if (d.ui === 'side') { ui.sideCollapsed = !ui.sideCollapsed; savePref('sideCollapsed', ui.sideCollapsed); return render(); }
-  if (d.ui === 'team') { ui.teamOpen = !ui.teamOpen; savePref('teamOpen', ui.teamOpen); return render(); }
-  if (d.ui === 'panel' || d.ui === 'panelclose') {
-    if (ui.panel) { ui.panel = null; ui.selected = null; lastSelected = null; }
-    else ui.panel = ui.selected ? 'task' : 'board';
-    savePref('panel', ui.panel === 'task' ? null : ui.panel);
-    return render();
-  }
-  if (d.ui === 'menu-target' || d.ui === 'menu-mode' || d.ui === 'menu-project' || d.ui === 'menu-chatproj') { const m = d.ui.slice(5); ui.menu = wasMenu === m ? null : m; return render(); }
-  // Chats: the wide sidebar lists them, so the button opens the open chat; narrowed, it opens the list.
-  if (d.ui === 'menu-chats') {
-    if (ui.sideCollapsed) { ui.menu = wasMenu === 'chats' ? null : 'chats'; return render(); }
-    ui.view = 'chat'; ui.selected = null; ui.menu = null; return render();
-  }
-  if (d.panel) { ui.panel = d.panel; savePref('panel', d.panel === 'task' ? null : d.panel); if (d.panel === 'approvals') recheckApprovals(); return render(); }
-  if (d.pickmode) { ui.mode = d.pickmode === 'major' ? 'major' : 'routine'; ui.menu = null; render(); return document.getElementById('chat-text')?.focus(); }
-  if (d.prefill) { ui.draft = PREFILL[d.prefill] || ''; render(); return document.getElementById('chat-text')?.focus(); }
-  if (d.teammember) { ui.view = 'agents'; ui.side = d.teammember; ui.expanded = d.teammember; ui.selected = null; return render(); }
-  if (d.setsec) { ui.setSec = d.setsec; document.querySelectorAll('[data-setsec]').forEach((b) => b.classList.toggle('on', b.dataset.setsec === d.setsec)); return document.getElementById(`set-${d.setsec}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
-  if (d.goupdates !== undefined) { ui.view = 'settings'; ui.selected = null; ui.setSec = 'updates'; ui.scrollSec = 'updates'; backups = await api.backups().catch(() => backups); return render(); }
-}, true);
-
-document.addEventListener('change', async (e) => {
-  const ds = e.target.dataset || {};
-  if (ds.role) {
-    state.roles[ds.role] = e.target.value.trim().slice(0, 200) || DEFAULT_ROLES[ds.role];
-    save();
-    return;
-  }
-  if (ds.histfilter) { ui.hist[ds.histfilter] = e.target.value; await refreshHistory(); return render(); }
-  if (ds.histkind !== undefined) { ui.hist.kind = e.target.value; return; }
-  if (e.target.id === 'rel-draft') { ui.release.draft = e.target.checked; return; }
-  const p = ds.model;
-  if (!p) return;
-  const val = e.target.value.trim();
-  if (!val) {
-    delete state.models[p];
-    save();
-  } else if (/^[A-Za-z0-9._:\-/]{1,100}$/.test(val)) {
-    state.models[p] = val;
-    save();
-  } else {
-    toast('Model name looks invalid.');
-  }
-});
-
-let histTimer;
-// Paste or drop images / videos into Team chat.
-async function addFiles(files) {
-  for (const f of [...(files || [])].slice(0, 10)) {
-    if (!/^(image|video)\//.test(f.type) && !/\.(png|jpe?g|webp|gif|mp4|webm|mov)$/i.test(f.name)) continue;
-    if (f.size > 200 * 1024 * 1024) { toast(`${f.name} is ${(f.size / 1048576).toFixed(0)} MB; attachments can be up to 200 MB.`); continue; }
-    const ext = (f.type.split('/')[1] || 'png').replace('jpeg', 'jpg').replace('quicktime', 'mov');
-    const name = f.name && /\.\w+$/.test(f.name) ? f.name : `pasted-${Date.now()}.${ext}`;
-    const r = await api.attachSave(name, await f.arrayBuffer()).catch((err) => ({ ok: false, message: cleanErr(err.message) }));
-    if (r.ok) ui.attach.push(r.att); else toast(r.message);
-  }
-  if (ui.view === 'chat' || ui.view === 'overview') render();
-}
-const canDrop = () => ui.view === 'chat' || ui.view === 'overview';
-document.addEventListener('paste', (e) => {
-  if (!canDrop() || !e.clipboardData?.files?.length) return;
-  e.preventDefault();
-  addFiles(e.clipboardData.files);
-});
-document.addEventListener('dragover', (e) => { if (canDrop()) e.preventDefault(); });
-document.addEventListener('drop', (e) => {
-  if (!canDrop() || !e.dataTransfer?.files?.length) return;
-  e.preventDefault();
-  addFiles(e.dataTransfer.files);
-});
-
-document.addEventListener('input', (e) => {
-  if (e.target.id === 'chat-text') { ui.draft = e.target.value; fitComposer(e.target); }
-  if (e.target.id === 'hist-q') {
-    ui.hist.q = e.target.value;
-    clearTimeout(histTimer);
-    histTimer = setTimeout(async () => {
-      await refreshHistory();
-      const pos = e.target.selectionStart;
-      render();
-      const box = document.getElementById('hist-q');
-      if (box) { box.focus(); box.setSelectionRange(pos, pos); }
-    }, 250);
-  }
-  const relMap = { 'rel-version': 'version', 'rel-confirm': 'confirm', 'rel-target': 'target', 'rel-notes': 'notes' };
-  if (relMap[e.target.id]) {
-    ui.release[relMap[e.target.id]] = e.target.value.trim ? (e.target.id === 'rel-notes' ? e.target.value : e.target.value.trim()) : e.target.value;
-    // Keep the Approve button in sync without stealing focus.
-    const btn = document.querySelector('[data-release]');
-    const rel = ui.release;
-    const ok = /^\d{1,4}\.\d{1,4}(\.\d{1,4})?$/.test(rel.version) && rel.version === rel.confirm;
-    if (btn) { btn.disabled = !(ok && gh.ghUser && repo.remote); btn.textContent = `Approve release ${ok ? `v${rel.version}` : ''}`; }
-  }
-});
-
-// Serialize rapid shortcut presses so the saved value and visible zoom stay in sync.
-let textSizeChange = Promise.resolve();
-function changeTextSize(value) {
-  textSizeChange = textSizeChange.then(async () => {
-    const sizes = [100, 115, 130, 150];
-    const current = sizes.indexOf(settings.textSize || 100);
-    const size = value === 'up' ? sizes[Math.min(3, current + 1)]
-      : value === 'down' ? sizes[Math.max(0, current - 1)] : value;
-    settings = await api.setSettings({ textSize: size });
-    const select = document.getElementById('text-size');
-    if (select) select.value = String(settings.textSize);
-  }).catch((e) => {
-    const select = document.getElementById('text-size');
-    if (select) select.value = String(settings.textSize || 100);
-    toast(`Could not save text size: ${cleanErr(e.message)}`);
-  });
-  return textSizeChange;
-}
-document.addEventListener('change', (e) => {
-  if (e.target.id === 'text-size') changeTextSize(Number(e.target.value));
-});
-
-document.addEventListener('keydown', (e) => {
-  if (e.ctrlKey && !e.altKey && !e.metaKey && ['=', '+', '-', '0'].includes(e.key)) {
-    e.preventDefault();
-    changeTextSize(e.key === '0' ? 100 : e.key === '-' ? 'down' : 'up');
-    return;
-  }
-  if (e.target.id === 'side-rename' && (e.key === 'Enter' || e.key === 'Escape')) { e.preventDefault(); return finishSideRename(e.key === 'Enter'); }
-  if (e.key === 'Escape' && ui.chatMenu) { ui.chatMenu = null; return render(); }
-  if (e.target.id === 'chat-rename' && e.key === 'Enter') { e.preventDefault(); document.querySelector('[data-chatrenamesave]')?.click(); return; }
-  if (e.target.id === 'chat-text' && e.key === 'Enter' && !e.shiftKey) {
-    e.preventDefault();
-    return sendChat();
-  }
-  if (e.key === 'Escape') {
-    if (ui.menu || ui.more) { ui.menu = null; ui.more = false; }
-    else if (ui.editing) ui.editing = null;
-    else if (ui.modal) ui.modal = null;
-    else ui.selected = null;
-    render();
-  }
-});
-
-// ---------- boot ----------
-async function boot() {
-  if (!api) {
-    document.getElementById('app').innerHTML = '<div style="padding:40px">This interface must run inside the Hearth AI Command Center app.</div>';
-    return;
-  }
-  try {
-    info = await api.appInfo();
-    try { settings = await api.settings(); } catch {}
-    try { hearthTheme = await api.themeGet(); } catch {}
-    applyTheme();
-    api.onThemeChanged?.((t) => { hearthTheme = t; applyTheme(); });
-    window.matchMedia?.('(prefers-color-scheme: dark)').addEventListener?.('change', applyTheme);
-    const saved = await api.loadState();
-    if (saved && Array.isArray(saved.tasks) && Array.isArray(saved.audit)) state = { models: {}, ...saved };
-    // The project this window is bound to (the main process refuses saves stamped otherwise).
-    state.projectId = saved?.projectId || (await Promise.resolve(api.opsProjects?.()).catch(() => null))?.active || null;
-    if (!Array.isArray(state.chat)) state.chat = [];
-    if (!Array.isArray(state.permissions)) state.permissions = [];
-    if (!state.chatSessions) state.chatSessions = {};
-    for (const m of state.chat) if (!m.id) m.id = uid();
-    // One-time move of the 3D view settings from this project's state to the app settings,
-    // so switching projects doesn't look like settings changed by themselves.
-    if (!settings.view3d && state.habitat3d && typeof state.habitat3d === 'object') {
-      const s2 = await api.setSettings({ view3d: state.habitat3d }).catch(() => null);
-      if (s2 && !s2.message) { settings = s2; audit('3D Habitat settings moved to app settings (one-time)', null, 'view mode, Lighter 3D, walk view, avatar, study decor and notes'); }
-    }
-    backups = await api.backups().catch(() => backups);
-    const interrupted = recoverInterrupted(state);
-    for (const t of interrupted) {
-      let cp = null;
-      if (t.ws) { try { cp = await api.checkpoint(t.id, 'owner', `Recovery checkpoint after interrupted run: ${t.title}`); } catch {} }
-      const r = t.runs.filter((x) => x.status === 'interrupted').slice(-1)[0];
-      if (r && cp) r.checkpoint = cp.sha;
-      audit('Recovered interrupted work', t.id, cp ? `checkpoint ${cp.sha} · ${cp.stat}` : 'no unsaved file changes');
-    }
-    if (interrupted.length) {
-      await save();
-      setTimeout(() => toast(`Recovered ${interrupted.length} interrupted task${interrupted.length > 1 ? 's' : ''} — marked Ready to Resume.`), 300);
-    }
-    if (backups.recoveredFrom) setTimeout(() => toast(`Your last save was damaged; restored from ${backups.recoveredFrom}.`), 600);
-    await refreshProviders();
-    await refreshAgents();
-    await refreshGit();
-    if (!state.agentStatus) state.agentStatus = {};
-    if (state.autoHandoff === undefined) state.autoHandoff = true;
-    if (!state.roles) state.roles = {};
-    if (!state.disabled) state.disabled = {};
-    if (!EDITORS.includes(state.lead)) state.lead = 'anthropic';
-    upd = await api.updaterInfo();
-    api.onUpdaterStatus((s) => {
-      const prev = upd.status?.state;
-      upd.status = s;
-      if (s.state === 'available' && prev !== 'available') toast(`Update ${s.version} is available — see Settings.`);
-      render();
-    });
-  } catch (e) {
-    toast(`Startup problem: ${e.message}`);
-  }
+  if (kind === 'rename') { S.renaming = id; return render(); }
+  if (kind === 'pin' || kind === 'unpin') { await call('chatsUpdate', id, { pinned: kind === 'pin' }); }
+  if (kind === 'up' || kind === 'down') { const ids = moveInGroup(S.chats, id, kind === 'up' ? -1 : 1); if (ids) await call('chatsReorder', ids); }
+  if (kind === 'hide' || kind === 'unhide') { const r = await call('chatsUpdate', id, { hidden: kind === 'hide' }); if (r?.ok === false) toast(r.message); if (kind === 'hide' && S.open === id) goHome(); }
+  if (kind === 'connect') { S.pick = { chatId: id }; S.pop = { kind: 'repo', chatId: id }; loadRepos(); return render(); }
+  if (kind === 'close') return closeCopy(id);
+  if (kind === 'delete') return deleteChat(id);
   await loadChats();
   render();
-  ops.boot();
-  wf.boot();
-  checkHealth();
-  ops.syncLocal();
-  // Update only the status panel, so a usage pause can expire without touching the draft.
-  setInterval(updatePanel, 15000);
-  // In the background: pick up CLI sessions started outside the app, and PR status.
-  setTimeout(() => { syncHistory(true); refreshPrs().then(() => { if (ui.view === 'overview') render(); }); }, 800);
+}
+
+async function deleteChat(id, opts = {}) {
+  if (S.busy && S.open === id) return toast('Stop the AI first.');
+  const r = await call('chatsDelete2', id, opts);
+  if (r?.unpushed) return askUnpushed(id, 'delete');
+  if (!r || r.ok === false) { if (!r?.cancelled) toast(r?.message || 'Not deleted.'); return; }
+  if (S.open === id) goHome();
+  await loadChats();
+  render();
+  toast(`Deleted “${entry(id)?.title || 'chat'}”. It's in Recently deleted.`, { kind: 'restore', trashId: r.trashId });
+}
+
+async function closeCopy(id, force = false) {
+  const r = await call('copiesRemove', id, force);
+  if (r?.unpushed) return askUnpushed(id, 'close');
+  if (r?.ok) { toast(`Removed the temporary copy${r.freed ? ` (${fmtBytes(r.freed)} freed)` : ''}. It comes back when the team works here again.`); if (S.open === id) S.copy = null; }
+  else if (!r?.cancelled) toast(r?.message || 'Not removed.');
+  await loadChats();
+  if (S.copies) await loadCopies();
+  render();
+}
+
+// Never delete unpushed work without asking: offer to push it to a branch first.
+function askUnpushed(chatId, then) {
+  S.modal = { kind: 'unpushed', chatId, then };
+  render();
+}
+
+// ---------- repos ----------
+async function loadRepos(force = false) {
+  if (S.repos && !force) return;
+  S.reposMsg = 'Loading your repos…';
+  renderOverlay();
+  const r = await call('ghRepos');
+  if (r?.ok) { S.repos = r.repos; S.reposMsg = ''; } else { S.repos = []; S.reposMsg = r?.message ? `Couldn't list your repos: ${r.message}` : 'Sign in to GitHub (Settings › GitHub) to pick a repo.'; }
+  renderOverlay();
+}
+async function loadBranches(repo) {
+  if (S.branches[repo]) return S.branches[repo];
+  const r = await call('ghBranches', repo);
+  S.branches[repo] = r?.ok ? r : { branches: [], default: null };
+  renderOverlay();
+  return S.branches[repo];
+}
+async function chooseRepo(repo, branch) {
+  const chatId = S.pop?.chatId || S.pick?.chatId || null;
+  S.pop = null;
+  if (!chatId && S.view !== 'chat') { S.conn = repo ? { repo, branch: branch || null } : null; return render(); }
+  const id = chatId || S.open;
+  if (!id) { S.conn = repo ? { repo, branch } : null; return render(); }
+  const r = await call('chatsConnect', id, repo ? { repo, branch } : null);
+  if (r?.unpushed) { S.modal = { kind: 'unpushed', chatId: id, then: 'connect', conn: repo ? { repo, branch } : null }; return render(); }
+  if (!r?.ok) return toast(r?.message || 'Not connected.');
+  if (S.open === id) S.copy = null;
+  await loadChats();
+  render();
+  toast(repo ? `Connected to ${repo}${branch ? ` · ${branch}` : ''}.` : 'This chat has no repo now; the team just talks.');
+}
+
+// ---------- attachments ----------
+async function addFiles(fileList) {
+  for (const f of [...fileList].slice(0, 10)) {
+    const buf = await f.arrayBuffer();
+    const r = await call('attachSaveAny', f.name || 'pasted.png', buf);
+    if (r?.ok) S.attach.push(r.att); else toast(r?.message || `Couldn't attach ${f.name}.`);
+  }
+  render();
+}
+
+// ---------- the team at work ----------
+async function send(textIn) {
+  const text = String(textIn ?? S.draft).trim();
+  if (!text && !S.attach.length) return;
+  // The owner is never blocked: while the team works, his message is posted now and
+  // answered as soon as the current turn ends.
+  if (S.busy) {
+    if (S.readOnly || !S.open) return;
+    S.msgs.push({ id: uid(), who: 'owner', text, at: now(), attachments: S.attach.slice() });
+    S.draft = '';
+    S.attach = [];
+    S.queued = [...(S.queued || []), text];
+    await save();
+    render(true);
+    return toast('Sent. The team reads it as soon as the current step is done.');
+  }
+  // "yes" / "no" answers Claude's newest request in this chat.
+  const pendingAct = [...S.msgs].reverse().flatMap((m) => (m.acts || []).filter((a) => a.status === 'pending' && !expired(a))).shift();
+  const typed = pendingAct ? typedAnswer(text) : null;
+  if (S.readOnly) return toast('This chat could not be read, so nothing is added to it.');
+  const c = await ensureChat(text || 'Files');
+  if (!c) return;
+  const msg = { id: uid(), who: 'owner', text, at: now(), attachments: S.attach.slice() };
+  S.msgs.push(msg);
+  S.draft = '';
+  S.attach = [];
+  if (c.titleAuto && S.msgs.filter((m) => m.who === 'owner').length === 1 && text) {
+    await call('chatsUpdate', c.id, { title: autoTitle(text), auto: true });
+    await loadChats();
+  }
+  await save();
+  render(true);
+  if (typed && pendingAct) return decideAct(pendingAct.id, typed === 'yes', 'typed');
+  await runTeam(text);
+}
+
+async function runTeam(text) {
+  // Right after start the AIs' sign-in checks may still be running: wait for them once.
+  if (team().members.some((a) => method(a) !== 'api' && !S.cli[a])) await refreshAgents();
+  const t = team();
+  const L = live();
+  const order = planTurn({ text, mode: S.mode, team: t, live: L });
+  if (!order.length) {
+    post({ who: 'system', text: L.length ? 'The AI you picked isn\'t ready. Set it up in Settings › Accounts, or pick another one.' : 'No AI is ready yet. Sign in to Claude (or another AI) in Settings › Accounts.' });
+    return save();
+  }
+  S.stop = false;
+  const done = [];
+  let changed = null;
+  for (let i = 0; i < order.length && !S.stop; i++) {
+    const agent = order[i];
+    const role = S.mode === 'team' && agent === t.lead ? 'lead' : 'member';
+    const r = await turn(agent, { role });
+    done.push(agent);
+    if (!r) break;
+    if (r.changes?.files?.length) changed = { by: agent, msgId: r.msgId };
+    if (role === 'lead') for (const h of handoffs(r.text, { team: t, live: L, done: [...done, ...order] })) order.push(h);
+  }
+  const reviewer = changed && S.mode === 'team' && !S.stop ? pickReviewer({ team: t, live: L, author: changed.by }) : null;
+  if (reviewer) {
+    const d = await call('chatDiff', S.open);
+    const diff = String(d?.diff || '').slice(0, 40000);
+    await turn(reviewer, { role: 'reviewer', task: `Review ${aiName(changed.by)}'s changes on this chat's branch. Say plainly if they are right and what (if anything) must change. Keep it short. Don't edit files.\n\nTHE CHANGES:\n${diff || '(no diff available)'}`, readOnly: true });
+  }
+  S.busy = null;
+  render();
+  // Messages the owner sent while the team was working.
+  if (S.queued?.length && !S.stop) { const next = S.queued.join('\n\n'); S.queued = []; return runTeam(next); }
+  S.queued = [];
+}
+
+function post(m) {
+  const msg = { id: uid(), at: now(), ...m };
+  S.msgs.push(msg);
+  render();
+  return msg;
+}
+
+async function turn(agent, { role = 'member', task = '', readOnly = false } = {}) {
+  const c = entry();
+  if (!c) return null;
+  const runId = uid().replace(/[^a-z0-9]/gi, '').slice(0, 10) + 'r';
+  S.busy = { agent, role, runId, steps: [], startedAt: Date.now() };
+  render(true);
+  const resumeId = typeof S.sessions[agent] === 'string' ? S.sessions[agent] : null;
+  const copy = S.copy ? { base: S.copy.base, work: S.copy.work } : null;
+  const opts = { agent, role, chat: c, copy, build: S.build && !readOnly, web: S.web, quickChecks: S.settings.tools?.quickChecks || [], team: team(), live: live(), actForMe: S.settings.actForMe === true, apiOnly: method(agent) === 'api' };
+  const briefText = brief(opts);
+  const prompt = turnPrompt({ agent, role, messages: S.msgs, briefText, resumed: Boolean(resumeId), task });
+  const fallbackPrompt = turnPrompt({ agent, role, messages: S.msgs, briefText, resumed: false, task });
+  const lastOwner = [...S.msgs].reverse().find((m) => m.who === 'owner');
+  const atts = lastOwner?.attachments || [];
+  const r = await call('chatRun', {
+    chatId: c.id, agent, runId, prompt: prompt.slice(-58000), fallbackPrompt: fallbackPrompt.slice(-58000), resumeId,
+    images: atts.filter((a) => a.kind === 'image').map((a) => a.path).concat(atts.filter((a) => a.kind === 'video').flatMap((a) => a.frames || [])),
+    files: atts.filter((a) => a.kind === 'file').map((a) => a.path),
+    web: S.web, build: S.build && !readOnly, title: c.title, historyText: lastOwner?.text || '',
+  }) || { ok: false, error: { message: 'The app could not start the AI.' } };
+  const steps = S.busy?.steps || [];
+  S.busy = null;
+  if (r.sessionId) S.sessions[agent] = r.sessionId;
+  if (r.resumeReset && r.sessionId) S.sessions[agent] = r.sessionId;
+  if (r.status) S.copy = { ...r.status, exists: true };
+  if (!r.ok) {
+    const kind = r.error?.kind;
+    const why = kind === 'limit' ? `${aiName(agent)} is out of usage${r.error.reset ? ` (${r.error.reset})` : ''}.` : kind === 'auth' ? `${aiName(agent)} isn't signed in. Sign in under Settings › Accounts.` : kind === 'cancelled' ? 'Stopped.' : kind === 'wrong_repo' ? r.error.message : r.error?.message || 'Something went wrong.';
+    post({ who: agent, role, err: true, text: why + (r.partial ? `\n\n${r.partial}` : ''), steps, outcome: outcomeSteps(r), ...(r.changes?.files?.length ? { changes: changesOf(r) } : {}) });
+    await save();
+    await loadChats();
+    return null;
+  }
+  const { text, previews: fenced } = extractPreviews(r.text || '');
+  const previews = [...(r.previews || []), ...fenced].map((p) => ({ id: uid(), name: p.name, kind: p.kind || kindOf(p.name), content: p.content }));
+  const { acts, refused } = parseActs(text, { agent, enabled: S.settings.actForMe === true });
+  const shown = text.split('\n').filter((l) => !/^\s*ACT FOR OWNER:/i.test(l.replace(/[*`]/g, ''))).join('\n').trim();
+  const msg = post({
+    who: agent, role, text: shown || (previews.length ? 'Here\'s the preview.' : '(no text)'), via: r.via, steps,
+    outcome: outcomeSteps({ ...r, previews }), previews,
+    ...(r.changes?.files?.length ? { changes: changesOf(r) } : {}),
+    ...(r.pushed?.ok ? { actions: { branch: r.pushed.branch, sha: r.pushed.sha, state: 'queued', since: now() } } : {}),
+    ...(acts.length ? { acts: acts.map((a) => makeAct(a.kind, { chatId: c.id, sha: r.status?.head || null })) } : {}),
+    ...(refused.length ? { refusedActs: refused } : {}),
+  });
+  if (previews.length) openPane(msg.id, previews[0].id);
+  await save();
+  await loadChats();
+  if (msg.actions) pollRuns(msg.id);
+  pushPhone();
+  return { text: shown, changes: r.changes, msgId: msg.id };
+}
+const changesOf = (r) => ({ ...r.changes, head: r.status?.head || null, unpushed: Boolean(r.status?.unpushed), pushed: r.pushed?.ok ? r.pushed.branch : null, base: r.changes?.base || r.status?.base, repo: entry()?.repo || null });
+
+async function stopRun() {
+  S.stop = true;
+  if (S.open) await call('chatCancel', S.open);
+  toast('Stopping…');
+}
+
+// ---------- the files-changed card ----------
+async function cardAction(kind, msgId) {
+  const m = S.msgs.find((x) => x.id === msgId);
+  const c = entry();
+  if (!m || !c) return;
+  if (kind === 'diff') {
+    const d = await call('chatDiff', c.id);
+    S.modal = { kind: 'diff', files: parseDiff(d?.diff || ''), title: `${m.changes?.files?.length || 0} files changed`, branch: m.changes?.branch };
+    return render();
+  }
+  if (kind === 'push') {
+    m.busy = 'push'; render();
+    const r = await call('chatPush', c.id);
+    m.busy = null;
+    if (r?.ok) { m.changes = { ...m.changes, pushed: r.branch, unpushed: false, head: r.sha }; m.actions = { branch: r.branch, sha: r.sha, state: 'queued', since: now() }; pollRuns(m.id); toast(`Pushed ${r.branch}.`); }
+    else toast(r?.message || 'Not pushed.');
+    S.copy = await call('copiesStatus', c.id);
+    await save(); return render();
+  }
+  if (kind === 'pr') {
+    m.busy = 'pr'; render();
+    const r = await call('chatPr', c.id, { title: c.title, body: prBody(m) });
+    m.busy = null;
+    if (r?.ok) { m.changes = { ...m.changes, pr: { number: r.number, url: r.url }, pushed: m.changes.branch, unpushed: false }; toast(`Pull request #${r.number || ''} is open.`); if (!m.actions) { const st = await call('copiesStatus', c.id); if (st?.head) { m.actions = { branch: m.changes.branch, sha: st.head, state: 'queued', since: now() }; pollRuns(m.id); } } }
+    else toast(r?.message || 'Couldn\'t open a pull request.');
+    await save(); return render();
+  }
+  if (kind === 'merge') {
+    m.busy = 'merge'; render();
+    // The main process always asks the owner in its own popup before anything is merged.
+    const r = await call('chatMerge', c.id, { sha: m.changes?.head || undefined, body: prBody(m) });
+    m.busy = null;
+    if (r?.ok) { m.changes = { ...m.changes, merged: true, pr: { number: r.number, url: r.url } }; post({ who: 'system', text: `${r.message} (pull request #${r.number}).` }); }
+    else if (!r?.cancelled) toast(r?.message || 'Not merged.');
+    await save(); return render();
+  }
+}
+const prBody = (m) => `${String(m.text || '').slice(0, 3000)}\n\nMade in Hearth AI Command Center; reviewed and merged by the owner.`;
+
+// GitHub Actions for a pushed commit: polled until it passes or fails.
+const polling = new Set();
+async function pollRuns(msgId) {
+  if (polling.has(msgId)) return;
+  polling.add(msgId);
+  const chatId = S.open;
+  const started = Date.now();
+  try {
+    while (Date.now() - started < 90 * 60000) {
+      if (S.open !== chatId) break;
+      const m = S.msgs.find((x) => x.id === msgId);
+      if (!m?.actions) break;
+      const r = await call('chatRuns', chatId, { branch: m.actions.branch, sha: m.actions.sha });
+      if (S.open !== chatId) break;
+      if (r?.ok) {
+        const state = r.state === 'none' ? (Date.now() - Date.parse(m.actions.since || now()) > 10 * 60000 ? 'none' : 'queued') : r.state;
+        m.actions = { ...m.actions, state, runs: r.runs || [], failedRun: r.failedRun || null, checkedAt: now() };
+        if (state === 'failure' && r.failedRun && !m.actions.failure) {
+          const f = await call('chatFailure', chatId, r.failedRun.id);
+          if (f?.ok) m.actions.failure = { job: f.job, annotations: f.annotations || [] };
+        }
+        render();
+        if (['success', 'failure', 'none'].includes(state)) { await save(); break; }
+      } else if (r && r.message) { m.actions = { ...m.actions, note: r.message }; render(); }
+      await new Promise((res) => setTimeout(res, 20000));
+    }
+  } finally { polling.delete(msgId); }
+}
+
+// ---------- Claude acting for the owner ----------
+async function decideAct(actId, yes, how = 'button') {
+  const m = S.msgs.find((x) => (x.acts || []).some((a) => a.id === actId));
+  const a = m?.acts.find((x) => x.id === actId);
+  if (!a || a.status !== 'pending') return;
+  if (expired(a)) { a.status = 'expired'; await save(); return render(); }
+  a.status = yes ? 'approved' : 'denied';
+  a.decidedAt = now();
+  a.how = how;
+  post({ who: 'system', text: yes ? `You said yes: ${ACT_KINDS[a.kind]}.` : `You said no to: ${ACT_KINDS[a.kind]}.` });
+  await save();
+  if (!yes) return render();
+  const target = [...S.msgs].reverse().find((x) => x.changes) || { id: null };
+  if (!target.id) { post({ who: 'system', text: 'There are no changes in this chat to do that with.' }); return save(); }
+  await cardAction(a.kind === 'pr' ? 'pr' : a.kind === 'merge' ? 'merge' : 'push', target.id);
+}
+
+// ---------- previews ----------
+function previewOf(msgId, pid) {
+  const m = S.msgs.find((x) => x.id === msgId);
+  return m?.previews?.find((p) => p.id === pid) || null;
+}
+async function openPane(msgId, pid, tab = 'preview') {
+  const p = previewOf(msgId, pid);
+  if (!p) return;
+  S.pane = { msgId, pid, tab, url: null };
+  const html = previewDoc({ kind: p.kind, content: p.content, name: p.name, dark: document.documentElement.dataset.mode !== 'light', allowNet: S.settings.previewNetwork === true });
+  if (api?.previewServe) { const r = await call('previewServe', html); if (r?.ok) S.pane.url = r.url; }
+  S.pane.srcdoc = html;
+  renderPane(true);
+  renderMain();
+}
+async function savePreviewToRepo(msgId, pid) {
+  const p = previewOf(msgId, pid);
+  const c = entry();
+  if (!p || !c) return;
+  if (!c.repo && !c.repoDir) return toast('Connect this chat to a repo first (the repo chip above the box).');
+  S.modal = { kind: 'saveto', msgId, pid, path: `docs/mockups/${p.name}` };
+  render();
+}
+
+// ---------- voice ----------
+async function toggleVoice() {
+  if (S.rec) { S.rec.stop(); return; }
+  if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined' || !api?.opsVoiceSave) return toast('Voice isn\'t available here.');
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const rec = new MediaRecorder(stream);
+    const parts = [];
+    rec.ondataavailable = (e) => parts.push(e.data);
+    rec.onstop = async () => {
+      stream.getTracks().forEach((t) => t.stop());
+      S.rec = null;
+      render();
+      const blob = new Blob(parts, { type: rec.mimeType || 'audio/webm' });
+      toast('Turning your voice into text on this PC…');
+      const r = await call('opsVoiceSave', await blob.arrayBuffer());
+      const t = r?.text || r?.transcript || '';
+      if (t) { S.draft = `${S.draft ? `${S.draft} ` : ''}${t}`; render(true); focusComposer(); }
+      else toast(r?.message || 'No words were heard (voice needs whisper.cpp on this PC).');
+    };
+    rec.start();
+    S.rec = rec;
+    render();
+  } catch (e) { toast(`Microphone: ${cleanErr(e)}`); }
+}
+
+// ---------- phone view (LAN only, off unless the owner turns it on) ----------
+let phoneTimer = null;
+function pushPhone() {
+  if (!S.phone?.enabled || !api?.opsPhonePush) return;
+  clearTimeout(phoneTimer);
+  phoneTimer = setTimeout(() => {
+    const t = team();
+    call('opsPhonePush', {
+      project: entry()?.title || 'Chats',
+      names: Object.fromEntries(TEAM_IDS.map((a) => [a, aiName(a)])),
+      team: t.members.map((a) => ({ id: a, lead: a === t.lead, dot: S.busy?.agent === a ? 'work' : ready(a) ? 'ok' : 'off' })),
+      chat: S.msgs.filter((m) => !m.local).slice(-60).map((m) => ({ who: m.who, text: String(m.text || '').slice(0, 4000), at: m.at })),
+      waiting: { permissions: [], approvals: [], cards: [] },
+      board: [],
+    });
+  }, 600);
+}
+function onPhone(a) {
+  if (!a || a.type !== 'chat') return;
+  const t = String(a.value || '').trim().slice(0, 4000);
+  if (!t) return;
+  send(`${t}`);
+}
+
+// ---------- rendering ----------
+const regions = {};
+function setRegion(id, html, force = false) {
+  const el = document.getElementById(id);
+  if (!el) return false;
+  if (!force && regions[id] === html) return false;
+  regions[id] = html;
+  el.innerHTML = html;
+  return true;
+}
+
+function shell() {
+  document.getElementById('app').innerHTML = `<div class="shell" id="shell"><aside class="side" id="side"></aside><main class="main" id="main"><header class="top" id="top"></header><section class="body" id="body"></section><div class="dock" id="dock"></div></main><aside class="pane" id="pane" hidden></aside></div><div id="overlay"></div>`;
+}
+
+function render(scroll = false) {
+  if (!document.getElementById('shell')) shell();
+  renderSide();
+  renderMain(scroll);
+  renderPane();
+  renderOverlay();
+}
+
+function renderSide() {
+  const groups = groupChats(S.chats, { query: S.search, hits: S.hits });
+  const hidden = S.chats.filter((c) => c.hidden);
+  const busyId = S.busy ? S.open : null;
+  const item = (c) => {
+    const on = S.view === 'chat' && S.open === c.id;
+    const pend = c.id === S.open && S.msgs.some((m) => (m.acts || []).some((a) => a.status === 'pending' && !expired(a)));
+    if (S.renaming === c.id) return `<div class="item on renaming"><input id="rename-input" class="rename" value="${esc(c.title)}" maxlength="120" aria-label="Chat name"><button class="ib sm" data-a="rename-save" title="Save">${icon('check', 'sm')}</button></div>`;
+    return `<div class="item ${on ? 'on' : ''}" draggable="true" data-chat="${esc(c.id)}" data-drag="${esc(c.id)}" title="${esc(c.title)}${c.repo ? ` · ${esc(c.repo)}` : ''}">
+      ${icon(c.pinned ? 'pin' : 'chat', 'sm')}<span class="t">${esc(c.title)}</span>
+      ${busyId === c.id || pend ? '<span class="dot"></span>' : repoHint(c) ? `<span class="repo">${esc(repoHint(c))}</span>` : ''}
+      <button class="more" data-a="chat-menu" data-id="${esc(c.id)}" title="More" aria-label="More for ${esc(c.title)}">${icon('dots', 'sm')}</button>
+    </div>`;
+  };
+  const html = `
+    <div class="brand"><img src="./icon.png" alt=""><div><b>Hearth AI</b><span>Command Center</span></div></div>
+    <button class="newchat" data-a="new-chat"><span class="plus">${icon('plus', 'sm')}</span>New chat</button>
+    <label class="search">${icon('search', 'sm')}<input id="chat-search" placeholder="Search chats" value="${esc(S.search)}" aria-label="Search chats"></label>
+    <div class="list" id="chat-list">
+      ${S.broken ? '<div class="note bad">Your chats list couldn\'t be read. It was left as it is; new chats can\'t be saved until it\'s fixed.</div>' : ''}
+      ${groups.map((g) => `<div class="sec">${esc(g.label)}</div>${g.items.map(item).join('')}`).join('') || `<div class="empty-list">${S.search ? 'No chats match.' : 'No chats yet.'}</div>`}
+      ${hidden.length ? `<button class="sec link" data-a="toggle-hidden">${icon(S.showHidden ? 'chev' : 'chevr', 'sm')}Hidden (${hidden.length})</button>${S.showHidden ? hidden.map((c) => `<div class="item dim"><span class="t">${esc(c.title)}</span><button class="mini" data-a="unhide" data-id="${esc(c.id)}">Show</button></div>`).join('') : ''}` : ''}
+      ${S.trash.length ? `<button class="sec link" data-a="toggle-trash">${icon(S.showTrash ? 'chev' : 'chevr', 'sm')}Recently deleted (${S.trash.length})</button>${S.showTrash ? S.trash.map((t) => `<div class="item dim"><span class="t">${esc(t.title)}</span><button class="mini" data-a="restore" data-id="${esc(t.trashId)}">Restore</button></div>`).join('') : ''}` : ''}
+    </div>
+    <div class="owner"><span class="av">${esc(ownerName()[0] || 'D')}</span><div><b>${esc(ownerName())}</b><span>${esc(team().members.filter(ready).map(aiName).join(' · ') || 'Set up your AI team')}</span></div><button class="ib ghost" data-a="settings" title="Settings" aria-label="Settings">${icon('gear')}</button></div>`;
+  const focused = document.activeElement?.id;
+  const sel = focused === 'chat-search' ? document.activeElement.selectionStart : null;
+  if (setRegion('side', html) && focused === 'chat-search') { const el = document.getElementById('chat-search'); el.focus(); try { el.setSelectionRange(sel, sel); } catch {} }
+  if (S.renaming) { const el = document.getElementById('rename-input'); if (el && document.activeElement !== el) { el.focus(); el.select(); } }
+}
+
+function topbar() {
+  const c = entry();
+  const title = S.view === 'settings' ? 'Settings' : S.view === 'chat' ? (c?.title || 'Chat') : '';
+  const chip = S.view === 'chat' && c && (c.repo || c.repoDir) ? `<button class="chip" data-a="repo-pop" title="Connected repo">${icon('gh', 'sm')}${esc(c.repo || c.repoDir)} <span class="faint">· ${esc(c.branch || S.copy?.base || 'default branch')}</span></button>` : '';
+  return `<span class="ttl">${esc(title)}</span>${chip}<span class="grow"></span>
+    <button class="tb" data-a="team-pop" title="Who's in this chat">${icon('users', 'sm')}Team</button>
+    <button class="tb" data-a="toggle-pane" title="Live preview panel" ${S.view !== 'chat' ? 'disabled' : ''}>${icon('panel', 'sm')}</button>`;
+}
+
+function renderMain(scroll = false) {
+  setRegion('top', topbar());
+  const body = document.getElementById('body');
+  const atBottom = body ? body.scrollHeight - body.scrollTop - body.clientHeight < 120 : true;
+  let html = '';
+  let dock = '';
+  if (S.view === 'settings') { html = settingsView(); dock = ''; }
+  else if (S.view === 'chat') { html = chatView(); dock = composer(S.open && S.msgs.some((m) => m.previews?.length) && S.pane ? 'Ask for changes to the preview…' : 'Reply to the team…') + `<div class="hint">${esc(hintLine())}</div>`; }
+  else { html = homeView(); dock = ''; }
+  document.getElementById('main').classList.toggle('home-mode', S.view === 'home');
+  document.getElementById('main').classList.toggle('settings-mode', S.view === 'settings');
+  setRegion('body', html);
+  const focused = document.activeElement?.id === 'composer';
+  const caret = focused ? [document.activeElement.selectionStart, document.activeElement.selectionEnd] : null;
+  if (setRegion('dock', dock) && focused) focusComposer(caret);
+  if (S.view === 'home' && focused) focusComposer(caret);
+  fitComposer();
+  if (body && (scroll || atBottom) && S.view === 'chat') body.scrollTop = body.scrollHeight;
+}
+
+function hintLine() {
+  const names = live().map(aiName);
+  const c = entry();
+  const who = names.length ? `${names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names.slice(-1)}` : names[0]} see${names.length > 1 ? '' : 's'} this chat` : 'No AI is set up yet';
+  return c && (c.repo || c.repoDir) ? `${who} · changes go to a branch · main only changes when you approve` : `${who} · no repo connected`;
+}
+
+function homeView() {
+  return `<div class="home">
+    <h1><img src="./icon.png" alt="">${esc(greeting())}, ${esc(ownerName())}</h1>
+    ${composer('What should the team work on?')}
+    <div class="sugs">${QUICK.map(([ic, label], i) => `<button class="sug" data-a="quick" data-i="${i}">${icon(ic, 'sm')}${esc(label)}</button>`).join('')}</div>
+    <div class="fine">Every chat can connect to one of your GitHub repos. The team works in a small temporary copy on this PC; builds and tests run in GitHub Actions.</div>
+    ${S.notices.length ? `<div class="notices">${S.notices.map((n, i) => `<div class="note">${esc(n)}<button class="mini" data-a="dismiss" data-i="${i}">Dismiss</button></div>`).join('')}</div>` : ''}
+    ${S.idle.length ? `<div class="notices">${S.idle.map((c) => `<div class="note warn">The temporary copy for “${esc(entry(c.chatId)?.title || c.repo || 'a chat')}” has work that isn't on GitHub, so it was kept. <button class="mini" data-a="open-data">Look at it</button></div>`).join('')}</div>` : ''}
+  </div>`;
+}
+
+function composer(placeholder) {
+  const c = S.view === 'chat' ? entry() : null;
+  const conn = c ? (c.repo ? { repo: c.repo, branch: c.branch } : c.repoDir ? { repo: c.repoDir } : null) : S.conn;
+  const t = team();
+  const teamLabel = S.mode === 'team' ? `Team <span class="faint">(${esc(aiName(t.lead))} ★ leads)</span>` : esc(aiName(S.mode));
+  const thumbs = S.attach.map((a, i) => a.kind === 'image' ? `<div class="th" style="background-image:url('${esc(a.url || '')}')" title="${esc(a.name)}"><button class="x" data-a="unattach" data-i="${i}" aria-label="Remove">${icon('x', 'sm')}</button></div>` : `<div class="th f" title="${esc(a.name)}"><span>${esc(a.name)}</span><button class="x" data-a="unattach" data-i="${i}" aria-label="Remove">${icon('x', 'sm')}</button></div>`).join('');
+  const busy = Boolean(S.busy);
+  return `<div class="composer ${busy ? 'busy' : ''}" id="composer-box">
+    ${thumbs ? `<div class="thumbs">${thumbs}</div>` : ''}
+    <textarea id="composer" rows="1" placeholder="${esc(placeholder)}" aria-label="Message">${esc(S.draft)}</textarea>
+    <div class="row">
+      <button class="ib" data-a="attach" title="Attach files and images (or paste a screenshot)" aria-label="Attach">${icon('plus', 'sm')}</button>
+      <button class="chip ${conn ? '' : 'off'}" data-a="repo-pop" title="Connect a GitHub repo">${icon('gh', 'sm')}${conn ? `${esc(String(conn.repo).split('/').pop())} <span class="faint">· ${esc(conn.branch || 'main')}</span>` : 'No repo'}</button>
+      <button class="chip" data-a="team-pop" title="Who answers">${icon('at', 'sm')}${teamLabel}</button>
+      <button class="chip sw ${S.web ? 'on' : ''}" data-a="toggle-web" aria-pressed="${S.web}" title="Web search and reading pages">${icon('globe', 'sm')}Web</button>
+      <button class="chip sw ${S.build ? 'on' : ''}" data-a="toggle-build" aria-pressed="${S.build}" title="Run quick checks here, push to the chat's branch, builds in GitHub Actions">${icon('play', 'sm')}Run &amp; build</button>
+      <span class="grow"></span>
+      <button class="ib ${S.rec ? 'rec' : ''}" data-a="voice" title="${S.rec ? 'Stop recording' : 'Talk instead of typing'}" aria-label="Voice">${icon('mic', 'sm')}</button>
+      ${busy ? `<button class="send stop" data-a="stop" title="Stop" aria-label="Stop">${icon('stop', 'sm')}</button>` : ''}<button class="send" data-a="send" title="Send (Enter)" aria-label="Send">${icon('up', 'sm')}</button>
+    </div>
+  </div>`;
+}
+
+function focusComposer(caret) {
+  const el = document.getElementById('composer');
+  if (!el) return;
+  el.focus();
+  const n = caret || [el.value.length, el.value.length];
+  try { el.setSelectionRange(n[0], n[1]); } catch {}
+}
+function fitComposer() {
+  const el = document.getElementById('composer');
+  if (!el) return;
+  el.style.height = 'auto';
+  el.style.height = `${Math.min(el.scrollHeight, Math.round(window.innerHeight * 0.35))}px`;
+}
+
+function chatView() {
+  const msgs = S.msgs.filter((m) => !m.deleted);
+  const lastChanges = [...msgs].reverse().find((m) => m.changes)?.id;
+  const items = msgs.map((m) => message(m, m.id === lastChanges)).join('');
+  const working = S.busy ? `<div class="msg-a working"><div class="who">${mono(S.busy.agent)}<b>${esc(aiName(S.busy.agent))}</b>${S.busy.role === 'lead' ? '<span class="star">★ lead</span>' : S.busy.role === 'reviewer' ? '<span>· reviewer</span>' : ''}<span>· working</span><span class="dots"><i></i><i></i><i></i></span></div>${stepsHtml(S.busy.steps, [], true)}</div>` : '';
+  const empty = !msgs.length && !S.busy ? `<div class="chat-empty"><p>Ask the team anything. ${entry()?.repo ? `They work in a temporary copy of <b>${esc(entry().repo)}</b> and push to their own branch.` : 'Connect a repo from the box below to let them change code.'}</p></div>` : '';
+  return `<div class="col">${empty}${items}${working}</div>`;
+}
+
+function stepsHtml(steps = [], outcome = [], liveNow = false, actions = null) {
+  // The app's own "Edited N files … committed as you" row replaces the AI's edit rows.
+  const summary = outcome.some((o) => o.kind === 'edit-summary');
+  const rows = [...groupSteps(steps).filter((r) => !(summary && r.kind === 'edit')), ...outcome];
+  if (actions) {
+    const st = actions.state;
+    rows.push({ icon: 'play', label: st === 'success' ? 'Ran the tests' : st === 'failure' ? 'Tests failed' : st === 'none' ? 'No tests ran' : 'Running the tests', detail: 'in GitHub Actions', note: st === 'success' ? `✓ passed${actions.runs?.length > 1 ? ` · ${actions.runs.length} workflows` : ''}` : st === 'failure' ? '✗ see below' : st === 'none' ? '' : 'running…', ok: st === 'success', bad: st === 'failure' });
+  }
+  if (!rows.length) return liveNow ? '<div class="steps"><div class="step"><span class="faint">Starting…</span></div></div>' : '';
+  return `<div class="steps">${rows.map((r) => `<div class="step ${r.bad ? 'bad' : ''}">${icon(r.icon || 'cpu', 'sm')}<b>${esc(r.label)}</b>${r.detail ? `<span class="d">${esc(r.detail)}</span>` : ''}${r.open ? `<button class="r link ok" data-a="open-preview-name" data-name="${esc(r.detail)}">${esc(r.note)}</button>` : r.note ? `<span class="r ${r.ok ? 'ok' : ''}">${esc(r.note)}</span>` : ''}</div>`).join('')}</div>`;
+}
+
+function message(m, latestChanges) {
+  if (m.who === 'owner') {
+    const atts = (m.attachments || []).map((a) => a.kind === 'image' ? `<img class="att" src="${esc(a.url || '')}" alt="${esc(a.name)}">` : `<span class="att-f">${icon('doc', 'sm')}${esc(a.name)}</span>`).join('');
+    return `<div class="msg-u">${atts ? `<div class="atts">${atts}</div>` : ''}${md(m.text)}</div>`;
+  }
+  if (m.who === 'system') return `<div class="msg-s">${md(m.text)}</div>`;
+  const role = m.role === 'lead' ? '<span class="star">★ lead</span>' : m.role === 'reviewer' ? '<span>· reviewer</span>' : '';
+  const when = ago(m.at);
+  return `<div class="msg-a ${m.err ? 'err' : ''}" data-msg="${esc(m.id)}">
+    <div class="who">${mono(m.who)}<b>${esc(aiName(m.who))}</b>${role}${when ? `<span>· ${esc(when)}</span>` : ''}${m.via ? `<span class="faint">· ${esc(m.via)}</span>` : ''}</div>
+    ${stepsHtml(m.steps, m.outcome || [], false, m.actions)}
+    <div class="text">${md(m.text)}</div>
+    ${(m.previews || []).map((p) => previewCard(m, p)).join('')}
+    ${m.changes ? changesCard(m, latestChanges) : ''}
+    ${m.actions && ['failure'].includes(m.actions.state) ? actionsCard(m) : ''}
+    ${(m.acts || []).map((a) => actCard(a)).join('')}
+    ${(m.refusedActs || []).map((r) => `<div class="msg-s">Claude asked to “${esc(r.kind)}”, which isn't allowed: ${esc(r.reason)}.</div>`).join('')}
+  </div>`;
+}
+
+function previewCard(m, p) {
+  return `<div class="card pv"><div class="hd">${icon('eye', 'sm')}<b>${esc(p.name)}</b><span class="grow"></span><span class="chip">Live preview</span></div>
+    <div class="ft"><button class="btn p" data-a="open-preview" data-m="${esc(m.id)}" data-p="${esc(p.id)}">Open</button><button class="btn" data-a="download-preview" data-m="${esc(m.id)}" data-p="${esc(p.id)}">${icon('dl', 'sm')}Download</button><button class="btn" data-a="save-preview" data-m="${esc(m.id)}" data-p="${esc(p.id)}">${icon('gh', 'sm')}Save to repo…</button></div></div>`;
+}
+
+function changesCard(m, latest) {
+  const ch = m.changes;
+  const files = ch.files || [];
+  const base = ch.base || 'main';
+  const state = m.actions?.state;
+  const badge = ch.merged ? '<span class="chip g">merged</span>' : state === 'success' ? '<span class="chip g">tests passed</span>' : state === 'failure' ? '<span class="chip b">tests failed</span>' : state && state !== 'none' ? '<span class="chip">tests running</span>' : ch.pushed ? '<span class="chip">on GitHub</span>' : '<span class="chip">only on this PC</span>';
+  const busy = m.busy;
+  const canAct = latest && !ch.merged && entry()?.repo;
+  return `<div class="card ch"><div class="hd">${icon('branch', 'sm')}<b>${files.length} file${files.length === 1 ? '' : 's'} changed</b>${ch.branch ? `<span class="chip">${esc(ch.branch)}</span>` : ''}<span class="grow"></span>${badge}</div>
+    <div class="bd">${files.slice(0, 12).map((f) => `<div>${esc(f.path)} ${f.binary ? '<span class="faint">binary</span>' : `<span class="add">+${f.add}</span> <span class="del">−${f.del}</span>`}</div>`).join('')}${files.length > 12 ? `<div class="faint">and ${files.length - 12} more</div>` : ''}</div>
+    <div class="ft">
+      ${canAct ? (ch.pr ? `<a class="btn p" href="${esc(ch.pr.url)}" target="_blank" rel="noopener">${icon('branch', 'sm')}Pull request #${esc(ch.pr.number)}</a>` : `<button class="btn p" data-a="card-pr" data-m="${esc(m.id)}" ${busy ? 'disabled' : ''}>${icon('branch', 'sm')}${busy === 'pr' ? 'Opening…' : 'Open pull request'}</button>`) : ''}
+      <button class="btn" data-a="card-diff" data-m="${esc(m.id)}">${icon('eye', 'sm')}Show changes</button>
+      ${canAct && !ch.pushed ? `<button class="btn" data-a="card-push" data-m="${esc(m.id)}" ${busy ? 'disabled' : ''}>${icon('push', 'sm')}${busy === 'push' ? 'Pushing…' : 'Push to branch'}</button>` : ''}
+      ${canAct ? `<button class="btn ghost" data-a="card-merge" data-m="${esc(m.id)}" ${busy ? 'disabled' : ''}>${busy === 'merge' ? 'Merging…' : `Merge into ${esc(base)}…`}</button>` : ''}
+      <span class="grow"></span><span class="fine">${ch.merged ? `Merged into ${esc(base)}` : entry()?.repo ? 'Merging asks you first' : 'Local repo: push and merge in your own git'}</span>
+    </div></div>`;
+}
+
+function actionsCard(m) {
+  const a = m.actions;
+  const label = { queued: 'Waiting for GitHub Actions to start…', pending: 'GitHub Actions is running…', success: 'GitHub Actions passed', failure: 'GitHub Actions failed', none: 'No GitHub Actions ran for this push' }[a.state] || 'GitHub Actions';
+  const runs = (a.runs || []).map((r) => `<div class="run"><span class="dot ${r.conclusion === 'success' ? 'g' : ['failure', 'timed_out', 'startup_failure'].includes(r.conclusion) ? 'b' : r.status === 'completed' ? '' : 'w'}"></span>${esc(r.name)}${r.url?.startsWith('https://github.com/') ? ` <a href="${esc(r.url)}" target="_blank" rel="noopener">open</a>` : ''}</div>`).join('');
+  const f = a.failure;
+  const ann = f ? `<div class="ann"><b>${esc(f.job?.name || 'Failing job')}${f.job?.step ? ` › ${esc(f.job.step)}` : ''}</b>${(f.annotations || []).slice(0, 8).map((x) => `<div class="a ${esc(x.level)}"><span class="mono">${esc(x.path)}${x.line ? `:${x.line}` : ''}</span> ${esc(x.message)}</div>`).join('') || '<div class="faint">No error lines were reported; open the run on GitHub.</div>'}</div>` : '';
+  return `<div class="card act ${a.state}"><div class="hd">${icon('play', 'sm')}<b>${esc(label)}</b><span class="chip">${esc(a.branch)}</span><span class="grow"></span><span class="fine mono">${esc(String(a.sha || '').slice(0, 7))}</span></div>${runs || ann ? `<div class="bd plain">${runs}${ann}</div>` : ''}${a.state === 'failure' ? `<div class="ft"><button class="btn" data-a="fix-failure" data-m="${esc(m.id)}">Ask the team to fix it</button></div>` : ''}</div>`;
+}
+
+function actCard(a) {
+  const st = a.status === 'pending' && expired(a) ? 'expired' : a.status;
+  return `<div class="card askc"><div class="hd">${icon('shield', 'sm')}<b>Claude asks: ${esc(ACT_KINDS[a.kind] || a.kind)}</b></div><div class="ft">${st === 'pending' ? `<button class="btn p" data-a="act-yes" data-id="${esc(a.id)}">Yes, do it</button><button class="btn" data-a="act-no" data-id="${esc(a.id)}">No</button><span class="fine">or type yes / no</span>` : `<span class="fine">${st === 'approved' ? 'You said yes.' : st === 'denied' ? 'You said no.' : 'Expired (30 minutes).'}</span>`}</div></div>`;
+}
+
+// ---------- the preview panel ----------
+let paneKey = '';
+function renderPane(force = false) {
+  const el = document.getElementById('pane');
+  if (!el) return;
+  const p = S.pane ? previewOf(S.pane.msgId, S.pane.pid) : null;
+  const show = Boolean(p) && S.view === 'chat';
+  el.hidden = !show;
+  document.getElementById('shell')?.classList.toggle('with-pane', show);
+  if (!show) { if (paneKey) { el.innerHTML = ''; paneKey = ''; } return; }
+  const key = `${S.pane.msgId}|${S.pane.pid}|${S.pane.tab}|${S.pane.url || ''}|${S.pane.n || 0}`;
+  if (!force && key === paneKey) return;
+  paneKey = key;
+  el.innerHTML = `<div class="ph2"><b>${esc(p.name)}</b><div class="tabs"><button class="${S.pane.tab === 'preview' ? 'on' : ''}" data-a="pane-tab" data-t="preview">Preview</button><button class="${S.pane.tab === 'code' ? 'on' : ''}" data-a="pane-tab" data-t="code">Code</button></div><span class="grow"></span><button class="tb" data-a="pane-reload" title="Reload">${icon('refresh', 'sm')}</button><button class="tb" data-a="pane-close" title="Close">${icon('x', 'sm')}</button></div>
+    <div class="frame-wrap">${S.pane.tab === 'code' ? `<pre class="code-view"><code>${esc(p.content)}</code></pre>` : frameHtml({ url: S.pane.url, srcdoc: S.pane.url ? null : S.pane.srcdoc, title: p.name })}</div>
+    <div class="pfoot">${S.settings.previewNetwork ? 'Previews may load from the internet (Settings › Tools).' : 'Sandboxed: no internet, no access to the app or your files.'}</div>`;
+}
+
+// ---------- popovers, modals, toast ----------
+function renderOverlay() {
+  let html = '';
+  if (S.pop) html += popHtml();
+  if (S.modal) html += modalHtml();
+  if (S.toast) html += `<div class="toast">${esc(S.toast.text)}${S.toast.undo ? `<button class="mini" data-a="undo">${icon('undo', 'sm')}Undo</button>` : ''}</div>`;
+  setRegion('overlay', html);
+  if (S.pop?.kind === 'repo') { const el = document.getElementById('repo-q'); if (el && document.activeElement !== el && !S.pop.noFocus) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } }
+}
+
+function popHtml() {
+  const p = S.pop;
+  if (p.kind === 'menu') {
+    const c = entry(p.id);
+    if (!c) return '';
+    const it = (a, ic, label) => `<button class="it" data-a="chat-act" data-k="${a}" data-id="${esc(c.id)}">${icon(ic, 'sm')}${label}</button>`;
+    return `<div class="scrim" data-a="close-pop"></div><div class="pop menu" style="left:${p.x}px;top:${p.y}px">
+      ${it('rename', 'pencil', 'Rename')}${it(c.pinned ? 'unpin' : 'pin', 'pin', c.pinned ? 'Unpin' : 'Pin to the top')}${it('up', 'up', 'Move up')}${it('down', 'chev', 'Move down')}
+      ${it('connect', 'gh', c.repo || c.repoDir ? 'Connect to another repo…' : 'Connect to a repo…')}
+      ${c.hasCopy ? it('close', 'x', 'Close (remove its temporary copy)') : ''}
+      ${it('hide', 'eyeoff', 'Hide')}<div class="sep"></div>${it('delete', 'trash', 'Delete')}</div>`;
+  }
+  if (p.kind === 'team') {
+    const t = team();
+    const opt = (v, label, sub) => `<button class="it ${S.mode === v ? 'on' : ''}" data-a="set-mode" data-v="${v}">${label}<small>${sub}</small></button>`;
+    return `<div class="scrim" data-a="close-pop"></div><div class="pop" style="${p.top ? 'right:20px;top:52px' : `left:${p.x}px;bottom:${p.b}px`}"><div class="mh">Who answers</div>
+      ${opt('team', `${icon('users', 'sm')}Whole team`, `${esc(aiName(t.lead))} ★ leads`)}
+      ${t.members.map((a) => opt(a, `${mono(a, 'sm')}${esc(aiName(a))}`, ready(a) ? (a === t.lead ? 'lead' : a === t.reviewer ? 'reviewer' : 'ready') : 'not set up')).join('')}
+      <div class="note">Or type @name in your message to ask one AI. Change who's in the team in Settings › AI team.</div></div>`;
+  }
+  if (p.kind === 'repo') {
+    const q = S.repoQuery.toLowerCase();
+    const repos = (S.repos || []).filter((r) => !q || r.full.toLowerCase().includes(q)).slice(0, 8);
+    const c = p.chatId ? entry(p.chatId) : S.view === 'chat' ? entry() : null;
+    const cur = c ? c.repo : S.conn?.repo;
+    const sel = S.pickRepo || cur || repos[0]?.full || null;
+    const br = sel ? S.branches[sel] : null;
+    const curBranch = S.pickBranch || (sel === cur ? (c ? c.branch : S.conn?.branch) : null) || br?.default || 'main';
+    return `<div class="scrim" data-a="close-pop"></div><div class="pop repo-pop" style="left:${p.x ?? 620}px;${p.b != null ? `bottom:${p.b}px` : `top:${p.y ?? 330}px`};${p.maxH ? `max-height:${p.maxH}px` : ''}"><div class="mh">Connect this chat to a GitHub repo</div>
+      <label class="search in">${icon('search', 'sm')}<input id="repo-q" placeholder="Search your repos" value="${esc(S.repoQuery)}"></label>
+      ${S.reposMsg ? `<div class="note">${esc(S.reposMsg)}</div>` : ''}
+      ${repos.map((r) => `<button class="it ${r.full === sel ? 'on' : ''}" data-a="pick-repo" data-r="${esc(r.full)}">${icon('gh', 'sm')}${esc(r.full)}<small>${r.private ? 'private' : 'public'}${r.pushedAt ? ` · ${esc(ago(r.pushedAt))}` : ''}</small></button>`).join('')}
+      <div class="sep"></div>
+      <div class="it static">${icon('branch', 'sm')}Branch<select id="branch-sel" ${sel ? '' : 'disabled'}>${(br?.branches?.length ? br.branches : [curBranch]).map((b) => `<option ${b === curBranch ? 'selected' : ''}>${esc(b)}</option>`).join('')}</select></div>
+      <button class="it" data-a="connect-repo" ${sel ? '' : 'disabled'}>${icon('check', 'sm')}${sel ? `Use ${esc(sel.split('/').pop())}` : 'Pick a repo'}</button>
+      <button class="it" data-a="no-repo">${icon('x', 'sm')}No repo, just talk</button>
+      <div class="note">The team works in a small temporary copy on this PC (newest commit only) and pushes to the chat's own branch; builds and tests run in GitHub Actions. The copy is deleted when you close the chat or it sits idle.</div></div>`;
+  }
+  return '';
+}
+
+function modalHtml() {
+  const m = S.modal;
+  if (m.kind === 'diff') {
+    const files = m.files || [];
+    return `<div class="scrim dark" data-a="close-modal"></div><div class="modal wide diffm"><div class="mhd"><b>${esc(m.title)}</b>${m.branch ? `<span class="chip">${esc(m.branch)}</span>` : ''}<span class="grow"></span><button class="tb" data-a="close-modal">${icon('x', 'sm')}</button></div>
+      <div class="diff-body"><nav class="dfiles">${files.map((f, i) => `<a href="#df${i}">${esc(f.path)} <span class="add">+${f.add}</span> <span class="del">−${f.del}</span></a>`).join('') || '<span class="faint">No changes.</span>'}</nav>
+      <div class="dview">${files.map((f, i) => `<section id="df${i}" class="dfile"><h4>${esc(f.path)} <span class="faint">${esc(f.status)}</span></h4>${f.binary ? '<div class="faint pad">Binary file</div>' : f.hunks.map((h) => `<div class="hunk"><div class="hh">${esc(h.header)}</div>${h.lines.map((l) => `<div class="dl ${l.t === '+' ? 'add' : l.t === '-' ? 'del' : ''}"><span class="ln">${l.o ?? ''}</span><span class="ln">${l.n ?? ''}</span><span class="tx">${esc(l.t === '\\' ? l.text : `${l.t}${l.text}`)}</span></div>`).join('')}</div>`).join('')}</section>`).join('')}</div></div></div>`;
+  }
+  if (m.kind === 'unpushed') {
+    const c = entry(m.chatId);
+    const verb = m.then === 'delete' ? 'deleting this chat' : m.then === 'connect' ? 'switching repos' : 'removing the copy';
+    return `<div class="scrim dark"></div><div class="modal"><div class="mhd"><b>This copy has work that isn't on GitHub</b></div>
+      <p>The temporary copy of ${esc(c?.repo || c?.repoDir || 'the repo')} for “${esc(c?.title || 'this chat')}” holds changes that were never pushed. Before ${verb}, push them to the chat's own branch so nothing is lost.</p>
+      <div class="mft"><button class="btn p" data-a="unpushed-push">${icon('push', 'sm')}Push to a branch first</button><button class="btn" data-a="unpushed-force">Delete the work…</button><button class="btn ghost" data-a="close-modal">Cancel</button></div></div>`;
+  }
+  if (m.kind === 'saveto') {
+    return `<div class="scrim dark" data-a="close-modal"></div><div class="modal"><div class="mhd"><b>Save the preview to the repo</b></div>
+      <p>It's saved in this chat's temporary copy and committed as you, on the chat's branch. Push or open a pull request to put it on GitHub.</p>
+      <label class="field">Path in the repo<input id="saveto-path" value="${esc(m.path)}"></label>
+      <div class="mft"><button class="btn p" data-a="saveto-do">Save</button><button class="btn ghost" data-a="close-modal">Cancel</button></div></div>`;
+  }
+  if (m.kind === 'board') {
+    const b = m.board;
+    return `<div class="scrim dark" data-a="close-modal"></div><div class="modal wide"><div class="mhd"><b>${esc(b.name)} — old board (read-only)</b><span class="grow"></span><button class="tb" data-a="close-modal">${icon('x', 'sm')}</button></div>
+      <p class="fine">${b.tasks.length} tasks · ${b.approvals} approval requests · ${b.audit} audit entries · ${b.chat} chat messages. Kept exactly as they were in ${esc(b.file)}.</p>
+      <div class="tbl">${b.tasks.map((t) => `<div class="tr"><span class="mono faint">T-${esc(t.id)}</span><span>${esc(t.title)}</span><span class="chip">${esc(t.stage)}</span><span class="faint">${esc(aiName(t.assignee) || '')}</span></div>`).join('') || '<div class="faint">No tasks.</div>'}</div></div>`;
+  }
+  return '';
+}
+
+// ---------- settings ----------
+function settingsView() {
+  const nav = SECTIONS.map(([k, label]) => `<button class="${S.tab === k ? 'on' : ''}" data-a="tab" data-t="${k}">${esc(label)}</button>`).join('');
+  return `<div class="set"><nav class="snav">${nav}</nav><div class="spage">${section(S.tab)}</div></div>`;
+}
+const tog = (on, a, extra = '') => `<button class="tog ${on ? 'on' : ''}" role="switch" aria-checked="${on}" data-a="${a}" ${extra}></button>`;
+function section(k) {
+  const s = S.settings;
+  const t = team();
+  if (k === 'team') {
+    return `<h1>AI team</h1><div class="box"><h3>Who's in your chats</h3>
+      ${TEAM_IDS.map((a) => { const inTeam = t.members.includes(a); const r = ready(a); return `<div class="srow mem">${mono(a)}<b>${esc(aiName(a))}</b><span class="d">${a === t.lead ? 'lead ★ · ' : a === t.reviewer ? 'reviewer · ' : ''}${esc(AGENTS[a].tool)}${r ? `, ${esc(AGENTS[a].plan)}` : ' · not set up'}${inTeam ? '' : ' · off'}</span><span class="grow"></span>${inTeam && a !== t.lead && AGENTS[a].edits ? `<button class="mini" data-a="make-lead" data-v="${a}">Make lead</button>` : ''}${inTeam && a !== t.lead && a !== t.reviewer ? `<button class="mini" data-a="make-reviewer" data-v="${a}">Make reviewer</button>` : ''}${tog(inTeam, 'team-member', `data-v="${a}" ${a === t.lead ? 'disabled title="The lead is always in"' : ''}`)}</div>`; }).join('')}
+      <div class="note">The lead (Claude unless you change it) answers first and hands parts to teammates. When the lead changes files, the reviewer checks the diff. Type @name in a message to ask one AI. ${t.reviewer ? '' : 'No reviewer is set.'}</div>
+      ${t.reviewer ? '<button class="mini" data-a="no-reviewer">No reviewer</button>' : ''}</div>`;
+  }
+  if (k === 'accounts') {
+    return `<h1>Accounts</h1><div class="box"><h3>Your AI accounts</h3><p class="fine">Each AI signs in with your own account in its own official app. The Command Center never holds your passwords.</p>
+      ${TEAM_IDS.map((a) => { const c = S.cli[a] || {}; const isApi = method(a) === 'api'; const st = isApi ? (S.prov.keys?.[a] ? 'API key saved' : 'needs an API key') : !c.installed ? 'not installed' : c.signedIn === false ? 'not signed in' : c.signedIn ? 'signed in' : 'installed'; return `<div class="srow">${mono(a)}<b>${esc(aiName(a))}</b><span class="d">${esc(AGENTS[a].tool)} · ${esc(st)}</span><span class="grow"></span>${isApi ? `<button class="mini" data-a="set-key" data-v="${a}">${S.prov.keys?.[a] ? 'Change key' : 'Add key'}</button>` : !c.installed && a !== 'ollama' ? `<button class="mini" data-a="install" data-v="${a}">Install</button>` : c.signedIn === false ? `<button class="mini" data-a="signin" data-v="${a}">Sign in</button>` : ''}<button class="mini" data-a="recheck" data-v="${a}">Re-check</button></div>`; }).join('')}</div>
+      <div class="box"><h3>${icon('phone', 'sm')}Your phone</h3><div class="srow">Phone view<span class="d">your chat on your phone, on your home network only</span><span class="grow"></span>${tog(Boolean(S.phone?.enabled), 'phone-toggle')}</div>${S.phone?.enabled ? `<div class="srow">Address<span class="d mono">${esc((S.phone.urls || []).join(', ') || 'starting…')}</span><span class="grow"></span><button class="mini" data-a="phone-code">Show pairing code</button></div>${S.phone.code ? `<div class="srow">Code<b class="mono big">${esc(S.phone.code)}</b><span class="d">type it on your phone within 5 minutes</span></div>` : ''}` : ''}</div>`;
+  }
+  if (k === 'github') {
+    const id = s.ownerIdentity;
+    return `<h1>GitHub</h1><div class="box"><h3>${icon('gh', 'sm')}GitHub</h3>
+      <div class="srow">Signed in as <b>${esc(S.gh.ghUser || 'nobody yet')}</b><span class="d">through gh${S.repos ? ` · ${S.repos.length} repos` : ''}</span><span class="grow"></span><button class="btn" data-a="gh-login">${S.gh.ghUser ? 'Change' : 'Sign in'}</button></div>
+      <div class="srow">Work in temporary copies<span class="d">a chat with a repo gets a small shallow copy on this PC (newest commit only, about 5–100 MB); the team edits and runs quick checks there and pushes to its own branch; builds and tests run in GitHub Actions</span></div>
+      <div class="srow">Remove idle copies after<span class="grow"></span><select data-a="idle-hours">${IDLE.map(([v, l]) => `<option value="${v}" ${s.copyIdleHours === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+      <div class="srow">Commits as<span class="d mono">${esc(id ? `${id.name} <${id.email}>` : 'Dragongamer9 <Dragongamer9@users.noreply.github.com>')}, no AI lines</span><span class="grow"></span><button class="mini" data-a="edit-identity">Change</button></div>
+      ${S.editIdentity ? `<div class="srow"><input id="id-name" placeholder="Name" value="${esc(id?.name || 'Dragongamer9')}"><input id="id-email" placeholder="Email" value="${esc(id?.email || 'Dragongamer9@users.noreply.github.com')}"><button class="btn p" data-a="save-identity">Save</button></div>` : ''}
+      <div class="note">Pushing to main, the chat's base branch or a tag is refused in every copy. Merging always asks you.</div></div>`;
+  }
+  if (k === 'tools') {
+    const qc = s.tools?.quickChecks || [];
+    return `<h1>Tools</h1><div class="box"><h3>New messages start with</h3>
+      <div class="srow">Web<span class="d">search the web and read pages</span><span class="grow"></span>${tog(s.tools?.web !== false, 'tool-web')}</div>
+      <div class="srow">Run &amp; build<span class="d">run quick checks on this PC and push to the chat's branch; heavy builds run in GitHub Actions</span><span class="grow"></span>${tog(s.tools?.build !== false, 'tool-build')}</div></div>
+      <div class="box"><h3>Quick checks the AIs may run on this PC</h3><p class="fine">One per line: the start of a command. Claude can run only these (plus git and reading files); everything heavier goes to GitHub Actions.</p>
+      <textarea id="quick-checks" rows="8" class="mono">${esc(qc.join('\n'))}</textarea><div class="mft left"><button class="btn" data-a="save-checks">Save</button></div></div>
+      <div class="box"><h3>Live previews</h3><div class="srow">Previews may load from the internet<span class="d">off: previews can't reach the network (safest)</span><span class="grow"></span>${tog(s.previewNetwork === true, 'preview-net')}</div></div>`;
+  }
+  if (k === 'perms') {
+    return `<h1>Permissions</h1><div class="box"><h3>${icon('shield', 'sm')}Permissions</h3>
+      <div class="srow">Claude can do everything I can<span class="d">asks me first every time (popup or typed yes)</span><span class="grow"></span>${tog(s.actForMe === true, 'act-for-me')}</div>
+      <div class="srow">Merging into main, releases and tags<span class="d">always ask me</span></div>
+      <div class="srow">Version numbers<span class="d">only you set them</span></div>
+      <div class="srow">Full access<span class="d">${s.access === 'full' ? 'on: with Run & build, AIs run any command with no checks' : 'off: AIs run only the quick checks you allow'}</span><span class="grow"></span>${tog(s.access === 'full', 'full-access')}</div></div>`;
+  }
+  if (k === 'look') {
+    return `<h1>Appearance</h1><div class="box"><h3>Look</h3>
+      <div class="srow">Theme<span class="grow"></span>${['hearth', 'dark', 'light', 'system'].map((v) => `<button class="seg ${s.theme === v ? 'on' : ''}" data-a="theme" data-v="${v}">${{ hearth: 'Follow Hearth OS', dark: 'Dark', light: 'Light', system: 'System' }[v]}</button>`).join('')}</div>
+      <div class="srow">Text size<span class="grow"></span>${[100, 115, 130, 150].map((v) => `<button class="seg ${s.textSize === v ? 'on' : ''}" data-a="text-size" data-v="${v}">${v}%</button>`).join('')}</div>
+      <div class="srow">Reduce motion<span class="grow"></span>${tog(s.reduceMotion === true, 'reduce-motion')}</div></div>`;
+  }
+  if (k === 'updates') {
+    const u = S.upd;
+    const st = u.status || {};
+    const msg = !u.enabled ? (u.reason || 'Updates unavailable.') : ({ idle: 'Not checked yet.', checking: 'Checking GitHub Releases…', none: st.message || 'You are on the latest version.', available: `Version ${st.version} is available.`, downloading: `Downloading… ${st.percent || 0}%`, ready: st.deb ? `Version ${st.version} downloaded and its checksum checked. Installing asks for your computer password.` : `Version ${st.version} downloaded. Restart when you're ready.`, installing: st.message || 'Installing…', installed: st.message || 'Installed. Restart to use the new version.', error: st.message || 'Update failed.' }[st.state] || '');
+    return `<h1>App updates</h1><div class="box"><h3>${icon('dl', 'sm')}Hearth AI Command Center ${esc(S.info.appVersion || '')}</h3>
+      <p class="${st.state === 'error' ? 'bad' : 'fine'}">${esc(msg)}${!u.enabled && u.link?.startsWith('https://github.com/') ? ` <a href="${esc(u.link)}" target="_blank" rel="noopener">Open the release page</a>` : ''}</p>
+      ${st.state === 'downloading' ? `<div class="progress"><div style="width:${st.percent || 0}%"></div></div>` : ''}
+      ${u.enabled ? `<div class="mft left"><button class="btn" data-a="upd" data-v="check" ${['checking', 'downloading'].includes(st.state) ? 'disabled' : ''}>Check for updates</button>
+      ${st.state === 'available' ? `<button class="btn p" data-a="upd" data-v="download">${u.install === 'deb' ? 'Download and install' : 'Download update'}</button>` : ''}
+      ${st.state === 'ready' ? `<button class="btn p" data-a="upd" data-v="install">${st.deb ? 'Install (asks for your password)' : 'Restart & install'}</button>` : ''}
+      ${st.state === 'installed' ? '<button class="btn p" data-a="upd" data-v="restart">Restart now</button>' : ''}</div>` : ''}
+      <p class="fine">Works for the AppImage and the .deb. Version numbers are always yours to pick.</p></div>`;
+  }
+  if (k === 'data') {
+    const cp = S.copies;
+    const total = (cp?.list || []).reduce((n, c) => n + (c.size || 0), 0);
+    return `<h1>Saved data</h1>
+      <div class="box"><h3>${icon('db', 'sm')}Temporary copies</h3>
+        <div class="srow">Space used<b>${cp ? fmtBytes(total) : '…'}</b><span class="d">${cp ? `${cp.list.length} cop${cp.list.length === 1 ? 'y' : 'ies'} · removed after ${esc(IDLE.find(([v]) => v === S.settings.copyIdleHours)?.[1] || '1 day')} idle` : ''}</span><span class="grow"></span><button class="btn" data-a="cleanup" ${cp?.list?.length ? '' : 'disabled'}>Clean up</button></div>
+        ${(cp?.list || []).map((c) => `<div class="srow copy">${icon('gh', 'sm')}<b>${esc(c.repo || c.dir || '?')}</b><span class="d">${esc(entry(c.chatId)?.title || 'deleted chat')} · ${esc(c.work || c.branch || '')} · ${fmtBytes(c.size)} · used ${esc(ago(c.lastUsedAt) || 'never')}</span><span class="grow"></span>${c.unpushed ? `<span class="chip b">not on GitHub</span><button class="mini" data-a="copy-push" data-id="${esc(c.chatId)}">Push to a branch</button>` : ''}<button class="mini" data-a="copy-remove" data-id="${esc(c.chatId)}">Remove</button></div>`).join('') || '<div class="fine">No temporary copies right now.</div>'}
+        <div class="note">Copies holding work that isn't on GitHub are never deleted without asking you. ${cp?.root ? `They live in ${esc(cp.root)}.` : ''}</div></div>
+      <div class="box"><h3>Backups</h3><div class="srow">Your chats list keeps its last good copy as a backup, and the list from before 2.0 is kept as index.json.pre-2.<span class="grow"></span><button class="mini" data-a="open-data-folder">Open the data folder</button></div></div>
+      <div class="box"><h3>Old boards (read-only)</h3><p class="fine">The task boards, approvals and audit logs from 1.x are kept on disk exactly as they were. They're not used any more.</p>
+        ${(S.boards || []).map((b) => `<div class="srow">${icon('board', 'sm')}<b>${esc(b.name)}</b><span class="d">${b.ok ? `${b.tasks.length} tasks · ${b.approvals} approvals · ${b.audit} audit entries` : 'couldn\'t be read (left as it is)'}</span><span class="grow"></span>${b.ok ? `<button class="mini" data-a="view-board" data-id="${esc(b.id)}">View</button>` : ''}</div>`).join('') || '<div class="fine">No old boards.</div>'}</div>`;
+  }
+  return '';
+}
+
+async function loadCopies() { S.copies = await call('copiesList'); render(); }
+async function setSettings(patch) {
+  const r = await call('setSettings', patch);
+  if (r && !r.message && r.tools) { S.settings = r; applyTheme(); }
+  else if (r?.message) toast(r.message);
+  render();
+}
+
+function applyTheme() {
+  const systemDark = window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? true;
+  const follow = S.settings.theme === 'hearth' && S.theme.found;
+  document.documentElement.dataset.mode = pickMode(S.settings.theme, { ...S.theme, systemDark });
+  document.documentElement.classList.toggle('reduce-motion', S.settings.reduceMotion === true);
+  const set = (id, css) => { let el = document.getElementById(id); if (!el) { el = document.createElement('style'); el.id = id; document.head.appendChild(el); } el.textContent = css; };
+  set('hearth-tokens', follow ? tokensToCss(S.theme.tokens) : '');
+  set('hearth-css', follow ? S.theme.css || '' : '');
+}
+
+// ---------- events ----------
+function popAt(el, kind, extra = {}) {
+  const r = el.getBoundingClientRect();
+  const below = window.innerHeight - r.bottom;
+  const up = below < 520 && r.top > below;
+  S.pop = { kind, x: Math.max(8, Math.min(r.left, window.innerWidth - 440)), ...(up ? { b: window.innerHeight - r.top + 8, maxH: r.top - 16 } : { y: r.bottom + 6, maxH: below - 16 }), ...extra };
+}
+
+document.addEventListener('click', async (ev) => {
+  const a = ev.target.closest('[data-a]');
+  const chatEl = !a && ev.target.closest('[data-chat]');
+  if (chatEl) return openChat(chatEl.dataset.chat);
+  if (!a) return;
+  const d = a.dataset;
+  const k = d.a;
+  if (a.tagName === 'SELECT') return;
+  ev.preventDefault();
+  switch (k) {
+    case 'new-chat': return goHome();
+    case 'settings': S.view = 'settings'; S.pane = null; render(true); if (S.tab === 'data') { loadCopies(); S.boards = await call('savedBoards'); render(); } return;
+    case 'tab': S.tab = d.t; render(); if (d.t === 'data') { loadCopies(); S.boards = await call('savedBoards'); render(); } if (d.t === 'accounts' || d.t === 'team') refreshAgents(); if (d.t === 'github') loadRepos(); return;
+    case 'chat-menu': ev.stopPropagation(); { const r = a.getBoundingClientRect(); S.pop = { kind: 'menu', id: d.id, x: Math.min(r.left, window.innerWidth - 260), y: Math.min(r.bottom + 4, window.innerHeight - 330) }; } return renderOverlay();
+    case 'chat-act': return chatAction(d.k, d.id);
+    case 'close-pop': S.pop = null; S.pickRepo = null; S.pickBranch = null; return renderOverlay();
+    case 'close-modal': S.modal = null; return renderOverlay();
+    case 'rename-save': return finishRename(true);
+    case 'toggle-hidden': S.showHidden = !S.showHidden; return renderSide();
+    case 'toggle-trash': S.showTrash = !S.showTrash; return renderSide();
+    case 'unhide': await call('chatsUpdate', d.id, { hidden: false }); await loadChats(); return render();
+    case 'restore': { const r = await call('chatsRestore', d.id); if (r?.ok === false || r?.message) toast(r.message || 'Not restored.'); await loadChats(); return render(); }
+    case 'undo': { const u = S.toast?.undo; S.toast = null; if (u?.kind === 'restore') { await call('chatsRestore', u.trashId); await loadChats(); render(); toast('Restored.'); } return renderOverlay(); }
+    case 'repo-pop': S.repoQuery = ''; S.pickRepo = null; S.pickBranch = null; popAt(a, 'repo', { chatId: S.view === 'chat' ? S.open : null }); renderOverlay(); await loadRepos(); { const c = S.view === 'chat' ? entry() : null; const cur = c?.repo || S.conn?.repo || S.repos?.[0]?.full; if (cur) loadBranches(cur); } return;
+    case 'pick-repo': S.pickRepo = d.r; S.pickBranch = null; S.pop.noFocus = true; renderOverlay(); await loadBranches(d.r); return;
+    case 'connect-repo': { const c = S.pop?.chatId ? entry(S.pop.chatId) : S.view === 'chat' ? entry() : null; const sel = S.pickRepo || c?.repo || S.conn?.repo || (S.repos || [])[0]?.full; const b = document.getElementById('branch-sel')?.value || null; S.pickRepo = null; return chooseRepo(sel, b); }
+    case 'no-repo': S.pickRepo = null; return chooseRepo(null, null);
+    case 'team-pop': popAt(a, 'team', { top: a.classList.contains('tb') }); return renderOverlay();
+    case 'set-mode': S.mode = d.v; S.pop = null; return render();
+    case 'toggle-web': S.web = !S.web; return render();
+    case 'toggle-build': S.build = !S.build; return render();
+    case 'toggle-pane': if (S.pane) { S.pane = null; } else { const m = [...S.msgs].reverse().find((x) => x.previews?.length); if (m) return openPane(m.id, m.previews[0].id); toast('No live preview in this chat yet.'); } return render();
+    case 'attach': { const r = await call('attachPickAny'); for (const x of r || []) { if (x?.ok) S.attach.push(x.att); else if (x?.message) toast(x.message); } return render(); }
+    case 'unattach': S.attach.splice(Number(d.i), 1); return render();
+    case 'voice': return toggleVoice();
+    case 'send': return send();
+    case 'stop': return stopRun();
+    case 'quick': { const q = QUICK[Number(d.i)]; S.draft = q[2]; render(); focusComposer(); return; }
+    case 'dismiss': S.notices.splice(Number(d.i), 1); return render();
+    case 'open-data': S.view = 'settings'; S.tab = 'data'; render(); loadCopies(); S.boards = await call('savedBoards'); return render();
+    case 'open-preview': return openPane(d.m, d.p);
+    case 'open-preview-name': { const m = a.closest('[data-msg]'); const msg = S.msgs.find((x) => x.id === m?.dataset.msg); const p = msg?.previews?.find((x) => x.name === d.name); if (p) openPane(msg.id, p.id); return; }
+    case 'download-preview': { const p = previewOf(d.m, d.p); if (p) { const r = await call('previewDownload', p.name, p.content); if (r === null) { const blob = new Blob([p.content], { type: 'text/plain' }); const u = URL.createObjectURL(blob); const l = document.createElement('a'); l.href = u; l.download = p.name; l.click(); URL.revokeObjectURL(u); } else if (r?.ok) toast(`Saved ${r.file}.`); } return; }
+    case 'save-preview': return savePreviewToRepo(d.m, d.p);
+    case 'saveto-do': { const m = S.modal; const p = previewOf(m.msgId, m.pid); const rel = document.getElementById('saveto-path')?.value || m.path; S.modal = null; const r = await call('chatSaveFile', S.open, rel, p?.content || ''); toast(r?.ok ? `Saved ${r.path} in the chat's branch (committed as you). Push or open a pull request to put it on GitHub.` : r?.message || 'Not saved.'); if (r?.ok) S.copy = await call('copiesStatus', S.open); return render(); }
+    case 'pane-tab': S.pane.tab = d.t; return renderPane(true);
+    case 'pane-reload': S.pane.n = (S.pane.n || 0) + 1; return renderPane(true);
+    case 'pane-close': S.pane = null; return render();
+    case 'card-diff': return cardAction('diff', d.m);
+    case 'card-push': return cardAction('push', d.m);
+    case 'card-pr': return cardAction('pr', d.m);
+    case 'card-merge': return cardAction('merge', d.m);
+    case 'fix-failure': { const m = S.msgs.find((x) => x.id === d.m); const f = m?.actions?.failure; S.draft = `GitHub Actions failed on ${m?.actions?.branch}${f?.job ? ` (${f.job.name}${f.job.step ? ` › ${f.job.step}` : ''})` : ''}. Fix it and push again.${f?.annotations?.length ? `\n\nErrors:\n${f.annotations.slice(0, 8).map((x) => `- ${x.path}${x.line ? `:${x.line}` : ''} ${x.message}`).join('\n')}` : ''}`; render(); focusComposer(); return; }
+    case 'act-yes': return decideAct(d.id, true);
+    case 'act-no': return decideAct(d.id, false);
+    case 'unpushed-push': { const m = S.modal; S.modal = null; render(); const r = await call('chatPush', m.chatId); if (!r?.ok) return toast(r?.message || 'Not pushed.'); toast(`Pushed ${r.branch}. Your work is safe on GitHub.`); if (m.then === 'delete') return deleteChat(m.chatId); if (m.then === 'connect') { S.pop = { chatId: m.chatId }; return chooseRepo(m.conn?.repo || null, m.conn?.branch || null); } return closeCopy(m.chatId); }
+    case 'unpushed-force': { const m = S.modal; S.modal = null; render(); if (m.then === 'delete') return deleteChat(m.chatId, { force: true }); const r = await call('copiesRemove', m.chatId, true); if (!r?.ok) { if (!r?.cancelled) toast(r?.message || 'Kept.'); return; } if (m.then === 'connect') { S.pop = { chatId: m.chatId }; return chooseRepo(m.conn?.repo || null, m.conn?.branch || null); } await loadChats(); if (S.copies) await loadCopies(); return render(); }
+    // settings
+    case 'team-member': { const t = team(); const v = d.v; const members = t.members.includes(v) ? t.members.filter((x) => x !== v) : [...t.members, v]; return setSettings({ team: { ...t, members, reviewer: t.reviewer === v && !members.includes(v) ? null : t.reviewer } }); }
+    case 'make-lead': { const t = team(); return setSettings({ team: { ...t, lead: d.v, reviewer: t.reviewer === d.v ? t.lead : t.reviewer } }); }
+    case 'make-reviewer': return setSettings({ team: { ...team(), reviewer: d.v } });
+    case 'no-reviewer': return setSettings({ team: { ...team(), reviewer: null } });
+    case 'tool-web': return setSettings({ tools: { web: !(S.settings.tools?.web !== false) } });
+    case 'tool-build': return setSettings({ tools: { build: !(S.settings.tools?.build !== false) } });
+    case 'save-checks': return setSettings({ tools: { quickChecks: String(document.getElementById('quick-checks')?.value || '').split('\n').map((x) => x.trim()).filter(Boolean) } });
+    case 'preview-net': return setSettings({ previewNetwork: !S.settings.previewNetwork });
+    case 'act-for-me': return setSettings({ actForMe: !S.settings.actForMe });
+    case 'full-access': return setSettings({ access: S.settings.access === 'full' ? 'standard' : 'full' });
+    case 'theme': return setSettings({ theme: d.v });
+    case 'text-size': return setSettings({ textSize: Number(d.v) });
+    case 'reduce-motion': return setSettings({ reduceMotion: !S.settings.reduceMotion });
+    case 'edit-identity': S.editIdentity = !S.editIdentity; return render();
+    case 'save-identity': { const name = document.getElementById('id-name')?.value; const email = document.getElementById('id-email')?.value; S.editIdentity = false; await setSettings({ ownerIdentity: { name, email } }); await call('opsIdentityApply'); return; }
+    case 'gh-login': { const r = await call('gitLogin'); toast(r?.ok ? 'GitHub sign-in opened in a terminal. Come back and press Re-check when done.' : r?.message || 'Couldn\'t start the sign-in.'); setTimeout(async () => { S.gh = (await call('gitTools')) || S.gh; S.repos = null; render(); }, 20000); return; }
+    case 'install': { const r = await call('agentInstall', d.v); toast(r?.ok ? 'Installing in a terminal. Press Re-check when it\'s done.' : r?.message || 'Couldn\'t start the install.'); return; }
+    case 'signin': { const r = await call('agentLogin', d.v); toast(r?.ok ? 'Sign-in opened in a terminal. Press Re-check when done.' : r?.message || 'Couldn\'t start the sign-in.'); return; }
+    case 'recheck': S.cli[d.v] = (await call('agentStatus', d.v)) || {}; return render();
+    case 'set-key': { const key = window.prompt?.(`Paste your ${aiName(d.v)} API key (saved encrypted on this PC):`); if (key) { const r = await call('setKey', d.v, key); if (r?.ok === false) toast(r.message); S.prov = (await call('providerStatus')) || S.prov; render(); } return; }
+    case 'phone-toggle': S.phone = await call(S.phone?.enabled ? 'opsPhoneDisable' : 'opsPhoneEnable'); render(); pushPhone(); return;
+    case 'phone-code': { const r = await call('opsPhoneNewCode'); S.phone = { ...(S.phone || {}), ...(r || {}) }; return render(); }
+    case 'upd': { const fn = { check: 'checkForUpdates', download: 'downloadUpdate', install: 'installUpdate', restart: 'restartApp' }[d.v]; const r = await call(fn); if (r?.ok === false && r.message) toast(r.message); return; }
+    case 'cleanup': { const r = await call('copiesCleanup'); await loadCopies(); await loadChats(); const freed = (r?.removed || []).reduce((n, c) => n + (c.freed || 0), 0); toast(`Removed ${r?.removed?.length || 0} cop${r?.removed?.length === 1 ? 'y' : 'ies'}${freed ? `, ${fmtBytes(freed)} freed` : ''}.${r?.unpushed?.length ? ` ${r.unpushed.length} with work not on GitHub ${r.unpushed.length === 1 ? 'was' : 'were'} kept: push or remove ${r.unpushed.length === 1 ? 'it' : 'them'} below.` : ''}`); return render(); }
+    case 'copy-push': { const r = await call('chatPush', d.id); toast(r?.ok ? `Pushed ${r.branch}.` : r?.message || 'Not pushed.'); return loadCopies(); }
+    case 'copy-remove': return closeCopy(d.id);
+    case 'open-data-folder': return call('savedOpenData');
+    case 'view-board': { const b = (S.boards || []).find((x) => x.id === d.id); if (b) { S.modal = { kind: 'board', board: b }; renderOverlay(); } return; }
+    default: return undefined;
+  }
+});
+
+document.addEventListener('change', (ev) => {
+  const t = ev.target;
+  if (t.matches?.('[data-a="idle-hours"]')) setSettings({ copyIdleHours: Number(t.value) });
+  if (t.id === 'branch-sel') S.pickBranch = t.value;
+});
+
+let searchTimer = null;
+document.addEventListener('input', (ev) => {
+  const t = ev.target;
+  if (t.id === 'composer') { S.draft = t.value; fitComposer(); return; }
+  if (t.id === 'chat-search') {
+    S.search = t.value;
+    clearTimeout(searchTimer);
+    if (!S.search.trim()) { S.hits = null; return renderSide(); }
+    renderSide();
+    searchTimer = setTimeout(async () => { const r = await call('chatsSearch', S.search); S.hits = Array.isArray(r) ? new Set([...r.map((x) => x.id), ...S.chats.filter((c) => `${c.title} ${c.repo || ''}`.toLowerCase().includes(S.search.toLowerCase())).map((c) => c.id)]) : null; renderSide(); }, 250);
+    return;
+  }
+  if (t.id === 'repo-q') { S.repoQuery = t.value; S.pop.noFocus = false; renderOverlay(); }
+});
+
+document.addEventListener('keydown', (ev) => {
+  const t = ev.target;
+  if (t.id === 'composer' && ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); send(); return; }
+  if (t.id === 'rename-input') { if (ev.key === 'Enter') { ev.preventDefault(); finishRename(true); } if (ev.key === 'Escape') finishRename(false); return; }
+  if (ev.key === 'Escape') { if (S.modal) { S.modal = null; renderOverlay(); } else if (S.pop) { S.pop = null; renderOverlay(); } }
+});
+document.addEventListener('focusout', (ev) => { if (ev.target.id === 'rename-input') setTimeout(() => { if (S.renaming) finishRename(true); }, 120); });
+
+async function finishRename(keep) {
+  const id = S.renaming;
+  const el = document.getElementById('rename-input');
+  const v = el?.value?.trim();
+  S.renaming = null;
+  if (keep && id && v) { await call('chatsUpdate', id, { title: v }); await loadChats(); }
+  render();
+}
+
+document.addEventListener('paste', (ev) => {
+  if (!(ev.target.id === 'composer')) return;
+  const files = [...(ev.clipboardData?.files || [])];
+  if (files.length) { ev.preventDefault(); addFiles(files); }
+});
+document.addEventListener('dragover', (ev) => { if (ev.dataTransfer?.types?.includes('Files')) ev.preventDefault(); });
+document.addEventListener('drop', (ev) => { if (ev.dataTransfer?.files?.length && S.view !== 'settings') { ev.preventDefault(); addFiles(ev.dataTransfer.files); } });
+
+// Drag a chat to reorder it within its group.
+let dragId = null;
+document.addEventListener('dragstart', (ev) => { const el = ev.target.closest?.('[data-drag]'); if (el) { dragId = el.dataset.drag; ev.dataTransfer.effectAllowed = 'move'; } });
+document.addEventListener('dragover', (ev) => { if (dragId && ev.target.closest?.('[data-drag]')) ev.preventDefault(); });
+document.addEventListener('drop', async (ev) => {
+  const el = ev.target.closest?.('[data-drag]');
+  if (!dragId || !el) return;
+  ev.preventDefault();
+  const ids = dropInGroup(S.chats, dragId, el.dataset.drag);
+  dragId = null;
+  if (ids) { await call('chatsReorder', ids); await loadChats(); renderSide(); }
+});
+document.addEventListener('dragend', () => { dragId = null; });
+
+window.addEventListener('resize', () => { fitComposer(); });
+
+// ---------- boot ----------
+async function refreshAgents() {
+  const ids = [...new Set([...team().members, ...(S.view === 'settings' ? TEAM_IDS : [])])].filter((a) => AGENTS[a]?.kind !== 'api');
+  await Promise.all(ids.map(async (a) => { S.cli[a] = (await call('agentStatus', a)) || {}; }));
+  render();
+}
+
+async function boot() {
+  if (!api) { document.getElementById('app').innerHTML = '<div style="padding:40px">This interface must run inside the Hearth AI Command Center app.</div>'; return; }
+  shell();
+  try {
+    S.info = (await call('appInfo')) || {};
+    S.settings = { ...S.settings, ...((await call('settings')) || {}) };
+    S.theme = (await call('themeGet')) || S.theme;
+    applyTheme();
+    api.onThemeChanged?.((t) => { S.theme = t; applyTheme(); });
+    window.matchMedia?.('(prefers-color-scheme: dark)').addEventListener?.('change', applyTheme);
+    S.web = S.settings.tools?.web !== false;
+    S.build = S.settings.tools?.build !== false;
+    const b = await call('v2Boot');
+    for (const n of b?.notices || []) if (!S.notices.includes(n)) S.notices.push(n);
+    await loadChats();
+    S.prov = (await call('providerStatus')) || S.prov;
+    S.upd = (await call('updaterInfo')) || S.upd;
+    api.onUpdaterStatus?.((s) => { const prev = S.upd.status?.state; S.upd.status = s; if (s.state === 'available' && prev !== 'available') toast(`Update ${s.version} is available — see Settings › App updates.`); if (S.view === 'settings') render(); });
+    api.onChatStep?.((e) => { if (S.busy && e && e.runId === S.busy.runId && e.step) { S.busy.steps.push(e.step); renderMain(); } });
+    api.onCopiesIdle?.((list) => { S.idle = Array.isArray(list) ? list : []; render(); });
+    api.onCopiesRemoved?.(async () => { await loadChats(); renderSide(); });
+    api.onOpsPhoneAction?.((a) => onPhone(a));
+    S.phone = await call('opsPhoneStatus');
+  } catch (e) { toast(`Startup problem: ${cleanErr(e)}`); }
+  let remembered = null;
+  try { remembered = localStorage.getItem('hearth.v2.open'); } catch {}
+  if (remembered && entry(remembered)) await openChat(remembered); else render(true);
+  refreshAgents();
+  call('gitTools').then((g) => { if (g) { S.gh = g; renderSide(); } });
 }
 
 boot();

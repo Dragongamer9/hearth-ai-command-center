@@ -26,11 +26,4 @@ test('key Test: the result line, and Test never redraws the page', () => {
   assert.match(keyTestLine({ busy: true }), /Testing/);
   assert.match(keyTestLine({ result: { ok: true } }), /Connection successful/);
   assert.match(keyTestLine({ result: { ok: false, error: { message: 'The provider rejected this key or denied access.' } } }), /note err.*rejected/);
-  const src = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
-  const i = src.indexOf('if (d.testkey) {');
-  const body = src.slice(i, src.indexOf('if (d.rmkey) {', i));
-  assert.ok(i > 0 && body.length > 100);
-  assert.doesNotMatch(body.replace(/\/\/.*$/gm, ''), /\brender\(/, 'a full render would wipe a pasted key');
-  assert.doesNotMatch(body, /\.value\s*=/);
-  assert.match(body, /keytest-\$\{p\}/);
 });

@@ -19,6 +19,52 @@ contextBridge.exposeInMainWorld('hearth', {
   chatsDelete: (id) => ipcRenderer.invoke('chats:delete', id),
   chatsTrash: () => ipcRenderer.invoke('chats:trash'),
   chatsRestore: (trashId) => ipcRenderer.invoke('chats:restore', trashId),
+  // 2.x chats (electron/v2.cjs)
+  v2Boot: () => ipcRenderer.invoke('v2:boot'),
+  chatsList2: () => ipcRenderer.invoke('chats:list2'),
+  chatsCreate2: (o) => ipcRenderer.invoke('chats:create2', o || {}),
+  chatsGet2: (id) => ipcRenderer.invoke('chats:get2', id),
+  chatsSearch: (q) => ipcRenderer.invoke('chats:search', q),
+  chatsConnect: (id, conn) => ipcRenderer.invoke('chats:connect', id, conn),
+  chatsDelete2: (id, opts) => ipcRenderer.invoke('chats:delete2', id, opts || {}),
+  chatRun: (o) => ipcRenderer.invoke('chat:run', o),
+  chatCancel: (chatId) => ipcRenderer.invoke('chat:cancel', chatId),
+  chatChanges: (id) => ipcRenderer.invoke('chat:changes', id),
+  chatDiff: (id) => ipcRenderer.invoke('chat:diff', id),
+  chatPush: (id) => ipcRenderer.invoke('chat:push', id),
+  chatPr: (id, o) => ipcRenderer.invoke('chat:pr', id, o || {}),
+  chatMerge: (id, o) => ipcRenderer.invoke('chat:merge', id, o || {}),
+  chatRuns: (id, o) => ipcRenderer.invoke('chat:runs', id, o || {}),
+  chatFailure: (id, runId) => ipcRenderer.invoke('chat:failure', id, runId),
+  chatSaveFile: (id, rel, content) => ipcRenderer.invoke('chat:saveFile', id, rel, content),
+  copiesStatus: (id) => ipcRenderer.invoke('copies:status', id),
+  copiesList: () => ipcRenderer.invoke('copies:list'),
+  copiesRemove: (id, force) => ipcRenderer.invoke('copies:remove', id, force === true),
+  copiesCleanup: () => ipcRenderer.invoke('copies:cleanup'),
+  copiesOpen: (id) => ipcRenderer.invoke('copies:open', id),
+  ghRepos: () => ipcRenderer.invoke('gh:repos'),
+  ghBranches: (repo) => ipcRenderer.invoke('gh:branches', repo),
+  previewServe: (html) => ipcRenderer.invoke('preview:serve', html),
+  previewDownload: (name, content) => ipcRenderer.invoke('preview:download', name, content),
+  savedBoards: () => ipcRenderer.invoke('saved:boards'),
+  savedOpenData: () => ipcRenderer.invoke('saved:openData'),
+  attachSaveAny: (name, data) => ipcRenderer.invoke('attach:saveAny', name, data),
+  attachPickAny: () => ipcRenderer.invoke('attach:pickAny'),
+  onChatStep: (cb) => {
+    const listener = (_e, a) => cb(a);
+    ipcRenderer.on('chat:step', listener);
+    return () => ipcRenderer.removeListener('chat:step', listener);
+  },
+  onCopiesIdle: (cb) => {
+    const listener = (_e, a) => cb(a);
+    ipcRenderer.on('copies:idleUnpushed', listener);
+    return () => ipcRenderer.removeListener('copies:idleUnpushed', listener);
+  },
+  onCopiesRemoved: (cb) => {
+    const listener = (_e, a) => cb(a);
+    ipcRenderer.on('copies:removed', listener);
+    return () => ipcRenderer.removeListener('copies:removed', listener);
+  },
 
   providerStatus: () => ipcRenderer.invoke('providers:status'),
   setKey: (provider, key) => ipcRenderer.invoke('providers:setKey', provider, key),

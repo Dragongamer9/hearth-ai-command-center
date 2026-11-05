@@ -100,9 +100,6 @@ test('fix 6: the sha-lock split never resets commits that are already on GitHub,
   assert.equal(run(wt, 'rev-parse', 'HEAD'), late, 'nothing reset');
   const idx = src('electron/ops/index.cjs');
   assert.match(idx.slice(idx.indexOf("handle('ops:splitFollowup'")), /activeCwds\.has\(d\)\) return \{ ok: false, busy: true/);
-  const main = src('src/main.js');
-  const re = main.slice(main.indexOf('async function recheckApprovals('));
-  assert.ok(re.indexOf('ui.running[t.id] || ui.busy[t.id]') < re.indexOf('opsSplitFollowup'), 'skips tasks with any run in progress');
 });
 
 test('fix 8: verify runs detect edits to files that were already dirty, and use per-task refs (not refs/stash)', async () => {
@@ -153,9 +150,6 @@ test('fix 11: the 3D view settings are app-wide settings, migrated once, written
   assert.match(main, /view3d: cleanView3d\(s\.view3d\)/);
   assert.match(main, /if \('view3d' in patch\) s\.view3d = cleanView3d\(patch\.view3d\)/);
   assert.match(main, /copyFileSync\(settingsFile\(\), `\$\{settingsFile\(\)\}\.bak`\)/);
-  const ui = src('src/main.js');
-  assert.match(ui, /view3d: \(\) => settings\.view3d \|\| null/);
-  assert.match(ui, /if \(!settings\.view3d && state\.habitat3d/);
 });
 
 test('fix 12: invalid docs paths are refused with a message, never silently reset', () => {

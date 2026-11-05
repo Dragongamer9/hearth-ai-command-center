@@ -110,6 +110,23 @@ function agentPath(base, rel) {
   return { ok: true, file: path.resolve(base, r) };
 }
 
+// Text files (logs, notes, code) attached in chat: kept in the attachments folder and given
+// to the AIs as a file path (and, when small, as text in the message).
+const TEXT_EXT = ['txt', 'log', 'md', 'json', 'yaml', 'yml', 'toml', 'ini', 'conf', 'cfg', 'csv', 'xml', 'html', 'css', 'js', 'mjs', 'cjs', 'ts', 'py', 'sh', 'qml', 'rs', 'c', 'h', 'cpp', 'cs', 'go', 'java', 'kt', 'diff', 'patch', 'desktop', 'service'];
+const TEXT_MAX = 20 * 1024 * 1024;
+function saveText(root, name, data, { max = TEXT_MAX } = {}) {
+  const buf = Buffer.isBuffer(data) ? data : Buffer.from(data instanceof ArrayBuffer ? new Uint8Array(data) : data || []);
+  const ext = extOf(name);
+  if (!TEXT_EXT.includes(ext) && !(ext === '' && buf.length && !buf.subarray(0, 8000).includes(0))) return { ok: false, message: 'That kind of file can\'t be attached. Images, videos and text files (logs, notes, code) can.' };
+  if (buf.subarray(0, 8000).includes(0)) return { ok: false, message: 'That doesn\'t look like a text file.' };
+  if (buf.length > max) return { ok: false, message: TOO_BIG(buf.length, max) };
+  if (!buf.length) return { ok: false, message: 'That file is empty.' };
+  const dest = newDest(root, name);
+  fs.writeFileSync(dest, buf, { mode: 0o600 });
+  const text = buf.length <= 100 * 1024 ? buf.toString('utf8') : null;
+  return { ok: true, att: { ...record(root, dest, name, 'file', buf.length), text } };
+}
+
 const ffmpegInput = (file) => ['-protocol_whitelist', 'file', '-f', /\.webm$/i.test(file) ? 'matroska' : 'mov', '-i', `file:${path.resolve(file)}`];
 
-module.exports = { probeResolution, agentPath, ffmpegInput, TYPES, MAX_BYTES, kindOf, safeName, attachDir, inside, saveBuffer, saveFromPath, extractFrames };
+module.exports = { saveText, TEXT_EXT, probeResolution, agentPath, ffmpegInput, TYPES, MAX_BYTES, kindOf, safeName, attachDir, inside, saveBuffer, saveFromPath, extractFrames };

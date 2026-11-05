@@ -245,20 +245,6 @@ test('N: Habitat presence line starts with You: <place> and still lists everyone
   assert.equal(alone, 'You (Grok): in your room (idle).');
   const working = teamHabitatLine(store, agents, names, now, 360, 'anthropic');
   assert.match(working, /^You \(Claude\): at the desk \(working on T-ABC123\)\. Team in the Habitat now:/);
-  const ui = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
-  const prompt = ui.slice(ui.indexOf('function habitatPrompt('), ui.indexOf('function updatePanel('));
-  assert.match(prompt, /teamHabitatLine\(state\.habitat, snap\.agents, NAMES, Date\.now\(\), 360, agent\)/, 'each turn names the speaker before the team list');
 });
 
 // ---------- wiring checks (the window code) ----------
-test('wiring: runs pass through the gate, verify/docs enforcement, the instruction log and the review packet', () => {
-  const ui = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
-  const run = ui.slice(ui.indexOf('async function runTask('), ui.indexOf('async function openInFreebuff('));
-  assert.ok(run.indexOf('wf.gate(') > 0 && run.indexOf('wf.gate(') < run.indexOf('callAgent('), 'gate before the call');
-  assert.ok(run.indexOf('wf.prepare(') < run.indexOf('callAgent('), 'verified workspace before the call');
-  assert.ok(run.indexOf('wf.enforce(') > run.indexOf('callAgent(') && run.indexOf('wf.enforce(') < run.indexOf('api.checkpoint(t.id, agent'), 'enforced before the checkpoint');
-  assert.ok(run.includes("mode === 'verify' ? 'read'"), 'verify runs use read-only access');
-  assert.ok(run.includes('instructionsBlock(t)'), 'instructions at the top of every run');
-  const review = ui.slice(ui.indexOf('async function askForTask('), ui.indexOf('async function runTask('));
-  assert.ok(review.includes('wf.packet(') && review.includes('shouldPing('), 'review packet, one ping per sha');
-});
