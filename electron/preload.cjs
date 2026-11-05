@@ -5,6 +5,7 @@ contextBridge.exposeInMainWorld('hearth', {
   loadState: () => ipcRenderer.invoke('state:load'),
   saveState: (state) => ipcRenderer.invoke('state:save', state),
   appInfo: () => ipcRenderer.invoke('app:info'),
+  reloadWindow: () => ipcRenderer.invoke('app:reload'),
   backups: () => ipcRenderer.invoke('state:backups'),
   restoreBackup: (n) => ipcRenderer.invoke('state:restore', n),
   exportAll: (state) => ipcRenderer.invoke('state:export', state),
@@ -14,6 +15,10 @@ contextBridge.exposeInMainWorld('hearth', {
   chatsGet: (id) => ipcRenderer.invoke('chats:get', id),
   chatsSave: (id, data) => ipcRenderer.invoke('chats:save', id, data),
   chatsUpdate: (id, patch) => ipcRenderer.invoke('chats:update', id, patch),
+  chatsReorder: (ids) => ipcRenderer.invoke('chats:reorder', ids),
+  chatsDelete: (id) => ipcRenderer.invoke('chats:delete', id),
+  chatsTrash: () => ipcRenderer.invoke('chats:trash'),
+  chatsRestore: (trashId) => ipcRenderer.invoke('chats:restore', trashId),
 
   providerStatus: () => ipcRenderer.invoke('providers:status'),
   setKey: (provider, key) => ipcRenderer.invoke('providers:setKey', provider, key),
