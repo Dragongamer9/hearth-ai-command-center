@@ -148,13 +148,20 @@ function save() {
 }
 // The main process refused a save: this window shows a project that is no longer open.
 // Nothing was written; reload to show the open project.
+// Reload the window through the main process (a page reload can be blocked by the window's
+// navigation guard); the page's own reload is only the fallback.
+function reloadApp() {
+  const r = window.hearth?.reloadWindow;
+  if (typeof r === 'function') return r().catch(() => location.reload());
+  return location.reload();
+}
 let refusedOnce = false;
 function refusedSave(message) {
   if (ui.switching || refusedOnce) return;
   refusedOnce = true;
   ui.switching = true;
   toast(`${message || 'Not saved.'} Reloading to show the open project…`);
-  setTimeout(() => location.reload(), 1200);
+  setTimeout(() => reloadApp(), 1200);
 }
 
 // ---------- chats ----------
@@ -3055,7 +3062,7 @@ document.addEventListener('click', async (e) => {
     return render();
   }
   // A folder is a project with its own board: switching reloads the window (saved first, never after).
-  if (d.useproject) { await save(); settings = await api.useProject(d.useproject); if (settings.projectSwitched) return location.reload(); chatWs = null; await refreshGit(); return render(); }
+  if (d.useproject) { await save(); settings = await api.useProject(d.useproject); if (settings.projectSwitched) return reloadApp(); chatWs = null; await refreshGit(); return render(); }
   if (d.clone !== undefined) {
     const input = document.getElementById('clone-input').value.trim();
     if (!input) return;
@@ -3063,7 +3070,7 @@ document.addEventListener('click', async (e) => {
     audit('Cloning a project', null, input);
     await save();
     const r = await api.gitClone(input).catch((err) => ({ ok: false, message: cleanErr(err.message) }));
-    if (r.ok && r.settings?.projectSwitched) return location.reload();
+    if (r.ok && r.settings?.projectSwitched) return reloadApp();
     if (r.ok) { settings = await api.settings(); chatWs = null; await refreshGit(); audit('Cloned project', null, r.dir); save(); }
     toast(r.ok ? `Cloned to ${r.dir} — it's now the active project.` : `Clone failed: ${r.message}`);
     return render();
@@ -3250,7 +3257,7 @@ document.addEventListener('click', async (e) => {
   if (d.fbdone) return freebuffDone(task(d.fbdone));
   if (d.openws !== undefined) return api.openWorkspace(d.openws || null);
   if (d.pickproject !== undefined) {
-    try { await save(); settings = await api.pickProject(); if (settings.projectSwitched) return location.reload(); chatWs = null; await refreshGit(); } catch (err) { toast(cleanErr(err.message)); }
+    try { await save(); settings = await api.pickProject(); if (settings.projectSwitched) return reloadApp(); chatWs = null; await refreshGit(); } catch (err) { toast(cleanErr(err.message)); }
     return render();
   }
   if (d.autohandoff !== undefined) { state.autoHandoff = !state.autoHandoff; save(); return render(); }
@@ -3438,7 +3445,7 @@ document.addEventListener('click', async (e) => {
       // The main process restored it into the open project's file; reload to show it.
       ui.switching = true;
       toast('Earlier save restored. Reloading…');
-      return setTimeout(() => location.reload(), 600);
+      return setTimeout(() => reloadApp(), 600);
     } catch (err) { toast(cleanErr(err.message)); }
     return render();
   }

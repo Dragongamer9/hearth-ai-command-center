@@ -819,7 +819,7 @@ async function onClick(e) {
       // From here this window saves nothing more (the main process would refuse it anyway).
       C.switching?.(true);
       const r = await call('opsProjectSwitch', arg);
-      if (r?.ok) { location.reload(); return; }
+      if (r?.ok) { const rw = C.api?.reloadWindow; if (typeof rw === 'function') rw().catch(() => location.reload()); else location.reload(); return; }
       C.switching?.(false);
       return C.toast(`Could not switch to ${name}: ${r?.message || 'no answer from the app'}`);
     } catch (err) { C.switching?.(false); return C.toast(`Could not switch to ${name}: ${String(err?.message || err)}`); }

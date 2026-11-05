@@ -111,7 +111,7 @@ test('fix 7: old Settings folders migrate into projects; the folder picker goes 
   const main = read('electron/main.cjs');
   assert.equal((main.match(/opsApi \? opsApi\.useFolder\(/g) || []).length, 3, 'pick, use and clone all go through projects');
   assert.match(main, /ops\.stateFile\(dataDir\(\), readSettings\(\)\.project, readSettings\(\)\.projects\)/);
-  assert.match(read('src/main.js'), /if \(settings\.projectSwitched\) return location\.reload\(\);/);
+  assert.match(read('src/main.js'), /if \(settings\.projectSwitched\) return reloadApp\(\);/);
 });
 
 test('fix 9: .hearth-ai/ goes in the shared exclude file; the tracked .gitignore is never edited', () => {

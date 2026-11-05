@@ -5,6 +5,7 @@ contextBridge.exposeInMainWorld('hearth', {
   loadState: () => ipcRenderer.invoke('state:load'),
   saveState: (state) => ipcRenderer.invoke('state:save', state),
   appInfo: () => ipcRenderer.invoke('app:info'),
+  reloadWindow: () => ipcRenderer.invoke('app:reload'),
   backups: () => ipcRenderer.invoke('state:backups'),
   restoreBackup: (n) => ipcRenderer.invoke('state:restore', n),
   exportAll: (state) => ipcRenderer.invoke('state:export', state),

@@ -117,6 +117,10 @@ function useProject(dir) {
   writeSettings(s);
   return s;
 }
+// Same page, ignoring the #hash and ?query (a reload of the app's own page).
+function sameDocument(a, b) {
+  try { const x = new URL(a), y = new URL(b); return x.protocol === y.protocol && x.host === y.host && x.pathname === y.pathname; } catch { return false; }
+}
 function writeSettings(s) {
   fs.mkdirSync(dataDir(), { recursive: true, mode: 0o700 });
   const data = JSON.stringify(s, null, 2);
@@ -205,7 +209,9 @@ function createWindow() {
     mainWindow.webContents.setZoomFactor(readSettings().textSize / 100);
   });
   mainWindow.once('ready-to-show', () => mainWindow.show());
-  mainWindow.webContents.on('will-navigate', (e) => e.preventDefault());
+  // No navigating away from the app. Reloading the app's own page is allowed: switching projects and
+  // chats reloads the window (in 1.3–1.4 the reload was blocked here, so a switch only showed after a restart).
+  mainWindow.webContents.on('will-navigate', (e, url) => { if (!sameDocument(url, mainWindow.webContents.getURL())) e.preventDefault(); });
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith('https://')) shell.openExternal(url);
     return { action: 'deny' };
@@ -242,6 +248,8 @@ function registerIpc() {
   // The window loads the open project's state, stamped with its id, and is bound to it.
   // Refused (never written) when the state isn't the open project's: no cross-project saves.
   const stateApi = guard.stateIpc({ binding, read: () => readState(), write: (st) => writeState(st) });
+  // The window asks the main process to reload it (always works, whatever the page's own navigation rules).
+  handle('app:reload', () => { setImmediate(() => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.reload(); }); return true; });
   handle('state:load', () => stateApi.load());
   handle('state:save', (state) => stateApi.save(state));
   // Look only: signs the open project's saved data was copied from another project.
