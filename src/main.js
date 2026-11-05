@@ -29,7 +29,8 @@ import { applyHabitatLines, habitatSection, stripHabitatLines } from './habitat/
 import { teamHabitatLine } from './habitat/status.mjs';
 import { activateLore, nextSpeakers, rpPrompt, addSwipe, moveSwipe, isSexual, fill, spriteFor } from './app/roleplay.mjs';
 import { createVoice } from './voice.mjs';
-import { voiceSettings, routeFor } from './app/voice-logic.mjs';
+import { creditsHtml } from './app/credits.mjs';
+import { voiceSettings, routeFor, isServer, serverIdOf, idOf } from './app/voice-logic.mjs';
 
 const api = window.hearth || null;
 const TEAM_IDS = ['anthropic', 'openai', 'google', 'xai', 'mistral', 'qwen', 'perplexity', 'deepseek', 'ollama', ...TEAMMATE_IDS];
@@ -900,6 +901,13 @@ function openTalk() {
 function pickVoice(key, provider, id) {
   const list = voice.state.lists[provider] || [];
   const val = !id ? null : provider === 'elevenlabs' ? { id, name: list.find((x) => x.id === id)?.name || id } : id;
+  // A speech server's voice is kept per server (voices[k].servers[<id>]).
+  if (isServer(provider)) {
+    const sid = serverIdOf(provider);
+    if (key === 'card') { const c = S.cardEdit; if (!c) return null; c.ownerVoice = { ...(c.ownerVoice || {}), servers: { ...(c.ownerVoice?.servers || {}), [sid]: val || undefined } }; c.voiceChanged = true; renderMain(); return null; }
+    if (key.startsWith('set:')) return { voices: { [key.slice(4)]: { servers: { [sid]: val } } } };
+    return null;
+  }
   if (key === 'card') { const c = S.cardEdit; if (!c) return null; c.ownerVoice = { ...(c.ownerVoice || {}), [provider]: val || undefined }; c.voiceChanged = true; renderMain(); return null; }
   if (key.startsWith('set:')) return { voices: { [key.slice(4)]: { [provider]: val } } };
   return null;
@@ -907,7 +915,7 @@ function pickVoice(key, provider, id) {
 function previewVoice(key, provider, who) {
   const v = voiceSettings(S.settings);
   const sel = key === 'card' ? (S.cardEdit?.ownerVoice || {}) : (v.voices[key.slice(4)] || {});
-  const id = document.querySelector(`[data-vpick="${CSS.escape(key)}"]`)?.value || (provider === 'elevenlabs' ? sel.elevenlabs?.id : sel[provider]) || (voice.state.lists[provider] || [])[0]?.id || '';
+  const id = document.querySelector(`[data-vpick="${CSS.escape(key)}"]`)?.value || idOf(sel, provider) || (voice.state.lists[provider] || [])[0]?.id || '';
   const name = key === 'card' ? (S.cardEdit?.name || 'your character') : key === 'set:narrator' ? 'the narrator' : key === 'set:default' ? 'the default voice' : aiName(key.slice(4));
   voice.preview({ provider, voice: id, speed: sel.speed, pitch: sel.pitch, who: who || 'owner' }, `Hello, ${ownerName()}. I'm ${name}, and this is how I sound.`);
 }
@@ -1662,7 +1670,8 @@ function section(k) {
       ${st.state === 'available' ? `<button class="btn p" data-a="upd" data-v="download">${u.install === 'deb' ? 'Download and install' : 'Download update'}</button>` : ''}
       ${st.state === 'ready' ? `<button class="btn p" data-a="upd" data-v="install">${st.deb ? 'Install (asks for your password)' : 'Restart & install'}</button>` : ''}
       ${st.state === 'installed' ? '<button class="btn p" data-a="upd" data-v="restart">Restart now</button>' : ''}</div>` : ''}
-      <p class="fine">Works for the AppImage and the .deb. Version numbers are always yours to pick.</p></div>`;
+      <p class="fine">Works for the AppImage and the .deb. Version numbers are always yours to pick.</p></div>
+      ${creditsHtml(esc)}`;
   }
   if (k === 'data') {
     const cp = S.copies;
@@ -1754,6 +1763,7 @@ async function setSettings(patch) {
   else if (r?.message) toast(r.message);
   if (patch.teammates) await refreshMates();
   render();
+  return r;
 }
 
 function applyTheme() {
@@ -1941,6 +1951,57 @@ document.addEventListener('click', async (ev) => {
     case 'voice-key': { const el = document.getElementById(`vkey-${d.k}`); const k2 = String(el?.value || '').trim(); if (!k2) return toast('Paste the key into the box first.'); if (el) el.value = ''; const r = await call('mediaSetKey', d.k, k2.trim()); toast(r?.ok ? 'Saved, encrypted on this PC.' : r?.message || 'Not saved.'); await refreshMates(); return loadSection('voice'); }
     case 'voice-key-remove': await call('mediaRemoveKey', d.k); await refreshMates(); return loadSection('voice');
     case 'voice-preview': return previewVoice(d.k, d.prov, d.who);
+    // Speech servers (Settings › Voice). Saved only from his clicks; the key goes to the encrypted store.
+    case 'vsrv-add': voice.state.srvErr = ''; voice.state.srvForm = { api: 'kokoro-fastapi', voices: [], extras: {} }; return render();
+    case 'vsrv-edit': { const x = voiceSettings(S.settings).servers.find((q) => q.id === d.id); if (!x) return; voice.state.srvErr = ''; voice.state.srvForm = JSON.parse(JSON.stringify(x)); return render(); }
+    case 'vsrv-cancel': voice.state.srvForm = null; voice.state.srvErr = ''; return render();
+    case 'vsrv-save': {
+      const f = voice.readServerForm();
+      if (!f) return;
+      if (!String(f.url || '').trim()) { voice.state.srvErr = 'Type the server\'s address, like http://localhost:8880 or http://100.64.0.5:8880.'; return render(); }
+      const isNew = !f.id;
+      const id = f.id || [...crypto.getRandomValues(new Uint8Array(6))].map((b) => b.toString(16).padStart(2, '0')).join('');
+      const r = await setSettings({ voice: { servers: voice.serverPatch(f, id) } });
+      if (r?.message || !r) { voice.state.srvErr = r?.message || 'Not saved.'; return render(); }
+      voice.state.srvErr = '';
+      if (f.key) { const kr = await call('voiceServerKey', id, f.key); if (!kr?.ok) { voice.state.srvForm = { ...f, id, key: undefined }; voice.state.srvErr = `The server was saved, but not its key: ${kr?.message || 'unknown error'}`; await voice.loadStatus(); return render(); } }
+      voice.state.srvForm = null;
+      toast(isNew ? `Added ${f.name || 'the speech server'}. Press Test to check it.` : 'Saved.');
+      await voice.loadStatus(); await voice.loadList(`server:${id}`, true);
+      return render();
+    }
+    case 'vsrv-key-remove': { const r = await call('voiceServerKey', d.id, null); toast(r?.ok ? 'Key removed.' : r?.message || 'Not removed.'); await voice.loadStatus(); return render(); }
+    case 'vsrv-remove': {
+      const x = voiceSettings(S.settings).servers.find((q) => q.id === d.id);
+      if (!x || !window.confirm?.(`Remove ${x.name}?\n\nIts key and any voice clips saved for it are removed from this PC too. Nothing on the server itself is changed.`)) return;
+      const r = await setSettings({ voice: { servers: { [d.id]: null } } });
+      if (r?.message || !r) return;
+      await call('voiceServerForget', d.id);
+      delete voice.state.srvTest[d.id];
+      if (voice.state.srvForm?.id === d.id) voice.state.srvForm = null;
+      await voice.loadStatus();
+      return render();
+    }
+    case 'vsrv-test': {
+      voice.state.srvTest[d.id] = { busy: true }; render();
+      const r = await call('voiceServerTest', d.id);
+      voice.state.srvTest[d.id] = r?.ok ? { ok: true, voices: r.voices, voice: r.voice, ms: r.ms, warning: r.warning } : { ok: false, step: r?.step, message: r?.message || 'No answer.' };
+      if (r?.ok) { await voice.loadList(`server:${d.id}`); voice.playAudio(r.audio, r.mime); }
+      return render();
+    }
+    case 'vsrv-clone': {
+      const sid = document.getElementById('sclone-server')?.value || '';
+      const name = document.getElementById('sclone-name')?.value || '';
+      const transcript = document.getElementById('sclone-text')?.value || '';
+      const consent = Boolean(document.getElementById('sclone-consent')?.checked);
+      if (!consent) return toast('Tick the box first: only your own voice, or one you have permission to use.');
+      if (!name.trim()) return toast('Give the voice a name.');
+      const r = await call('voiceServerClone', { id: sid, name, transcript, consent: true });
+      if (r?.cancelled) return;
+      toast(r?.ok ? `Added “${r.voice.name}” to the server's voices.` : r?.message || 'Not added.');
+      if (r?.ok) { await voice.loadList(`server:${sid}`, true); render(); }
+      return;
+    }
     case 'voice-clone': {
       const name = document.getElementById('clone-name')?.value || '';
       const consent = Boolean(document.getElementById('clone-consent')?.checked);
@@ -2081,6 +2142,14 @@ document.addEventListener('change', (ev) => {
   if (t.matches?.('[data-a="max-chats"]')) setSettings({ maxChats: Number(t.value) });
   if (t.matches?.('select[data-a="voice-set"]')) setSettings({ voice: { [t.dataset.k]: t.value } }).then(() => loadSection('voice'));
   if (t.matches?.('[data-vpick]')) { const vp = pickVoice(t.dataset.vpick, t.dataset.prov, t.value); if (vp) setSettings({ voice: vp }); }
+  // Which engine a voice uses: the main provider ('') or one of his speech servers.
+  if (t.matches?.('[data-vuse]')) {
+    const k = t.dataset.vuse;
+    const use = t.value || null;
+    if (use) voice.loadList(use).then(() => render());
+    if (k === 'card' && S.cardEdit) { const c = S.cardEdit; c.ownerVoice = { ...(c.ownerVoice || {}), use: use || undefined }; c.voiceChanged = true; renderMain(); } else if (k.startsWith('set:')) setSettings({ voice: { voices: { [k.slice(4)]: { use } } } });
+  }
+  if (t.matches?.('#vsrv-api')) { voice.readServerForm(); render(); }
   if (t.matches?.('[data-cvoice]') && S.cardEdit) { const c = S.cardEdit; c.ownerVoice = { ...(c.ownerVoice || {}), [t.dataset.cvoice]: Number(t.value) }; c.voiceChanged = true; renderMain(); }
   if (t.matches?.('[data-a="venice-model"]')) setSettings({ teammates: { venice: { model: t.value } } });
   if (t.matches?.('[data-a="venice-image"]')) setSettings({ teammates: { venice: { imageModel: t.value } } });

@@ -8,8 +8,13 @@
 //   Nothing is kept on disk unless he turns on "Keep voice recordings".
 // - The rule for the uncensored teammates (Venice, Civitai, his GPU server): their replies are
 //   never sent to OpenAI to be spoken unless he allowed it in Settings › Voice (checked here too).
-// - Voice cloning (ElevenLabs only): only with his explicit consent tick, for his own voice or a
-//   voice he has permission to use. No presets of real people.
+// - Speech servers (electron/speech-servers.cjs): the free open-source engines (Kokoro,
+//   Chatterbox, Sesame CSM, Dia, CosyVoice2, Orpheus) on his own machines. They are his, so the
+//   uncensored teammates may be spoken there; only that server's own key is ever sent to it.
+// - A voice choice can name a speech server (use), so different characters can use different
+//   engines (Dia for the narrator, Kokoro for a character...).
+// - Voice cloning (ElevenLabs, Chatterbox, Sesame, CosyVoice2): only with his explicit consent
+//   tick, for his own voice or a voice he has permission to use. No presets of real people.
 // API endpoints (checked against the providers' docs, November 2026):
 //   ElevenLabs: GET https://api.elevenlabs.io/v2/voices, POST /v1/text-to-speech/{voice_id}/stream,
 //               POST /v1/voices/add (multipart: name, files), header xi-api-key.
@@ -22,6 +27,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 const whisper = require('./ops/voice.cjs');
+const servers = require('./speech-servers.cjs');
 
 const ELEVEN = 'https://api.elevenlabs.io';
 const OPENAI = 'https://api.openai.com';
@@ -52,6 +58,9 @@ const DEFAULTS = Object.freeze({
 });
 const ELEVEN_ID = /^[A-Za-z0-9]{6,40}$/;
 const LOCAL_ID = /^(kokoro|piper|espeak|system):[^\0\r\n]{1,300}$/;
+const SERVER_VOICE = /^[^\0\r\n]{1,200}$/;
+const SERVER_P = /^server:([a-z0-9]{6,16})$/;
+const serverOf = (provider, s) => { const m = String(provider || '').match(SERVER_P); return m ? (s?.servers || []).find((x) => x.id === m[1]) || null : null; };
 const num = (v, lo, hi) => (Number.isFinite(Number(v)) && v !== null && v !== '' ? Math.min(hi, Math.max(lo, Number(v))) : undefined);
 // One voice choice: a voice per provider, plus speed and pitch where supported.
 function cleanVoice(v) {
@@ -60,6 +69,12 @@ function cleanVoice(v) {
   if (v.elevenlabs && typeof v.elevenlabs === 'object' && ELEVEN_ID.test(String(v.elevenlabs.id || ''))) out.elevenlabs = { id: String(v.elevenlabs.id), name: String(v.elevenlabs.name || '').slice(0, 80) };
   if (OPENAI_VOICES.includes(v.openai)) out.openai = v.openai;
   if (typeof v.local === 'string' && LOCAL_ID.test(v.local)) out.local = v.local;
+  if (v.servers && typeof v.servers === 'object' && !Array.isArray(v.servers)) {
+    const sv = {};
+    for (const [k, x] of Object.entries(v.servers).slice(0, servers.MAX_SERVERS * 2)) if (servers.ID_RE.test(k) && typeof x === 'string' && SERVER_VOICE.test(x)) sv[k] = x;
+    if (Object.keys(sv).length) out.servers = sv;
+  }
+  if (SERVER_P.test(String(v.use || ''))) out.use = v.use;
   const sp = num(v.speed, 0.5, 2);
   if (sp !== undefined && sp !== 1) out.speed = Math.round(sp * 100) / 100;
   const pi = num(v.pitch, 0.5, 1.5);
@@ -74,9 +89,10 @@ function cleanVoices(m) {
 }
 function cleanSettings(v) {
   const s = v && typeof v === 'object' && !Array.isArray(v) ? v : {};
+  const list = servers.cleanServers(s.servers);
   return {
     stt: ['auto', 'local', 'openai'].includes(s.stt) ? s.stt : DEFAULTS.stt,
-    tts: PROVIDERS.includes(s.tts) ? s.tts : DEFAULTS.tts,
+    tts: PROVIDERS.includes(s.tts) || serverOf(s.tts, { servers: list }) ? s.tts : DEFAULTS.tts,
     turn: ['auto', 'ptt'].includes(s.turn) ? s.turn : DEFAULTS.turn,
     bargeIn: s.bargeIn !== false,
     narration: ['same', 'narrator', 'skip'].includes(s.narration) ? s.narration : DEFAULTS.narration,
@@ -86,6 +102,7 @@ function cleanSettings(v) {
     openaiModel: OPENAI_TTS_MODELS.includes(s.openaiModel) ? s.openaiModel : DEFAULTS.openaiModel,
     sttModel: OPENAI_STT_MODELS.includes(s.sttModel) ? s.sttModel : DEFAULTS.sttModel,
     voices: cleanVoices(s.voices),
+    servers: list,
   };
 }
 // A change from the window merged into the current settings ({ voices: { venice: null } } clears one).
@@ -94,11 +111,19 @@ function mergeSettings(cur, patch) {
   const p = patch && typeof patch === 'object' && !Array.isArray(patch) ? patch : {};
   const next = { ...base };
   for (const k of Object.keys(DEFAULTS)) if (k in p) next[k] = p[k];
+  // Speech servers merge by id (one server's change never rewrites the others); a server that
+  // can't be saved throws a plain message and nothing is written.
+  if ('servers' in p) next.servers = servers.mergeServers(base.servers, p.servers);
   if (p.voices && typeof p.voices === 'object') {
     const voices = { ...base.voices };
     for (const [k, v] of Object.entries(p.voices)) {
       if (v === null) { delete voices[k]; continue; }
       const merged = { ...(voices[k] || {}), ...(v && typeof v === 'object' ? v : {}) };
+      // A server voice merges per server (picking one server's voice keeps the others').
+      if (v?.servers && typeof v.servers === 'object') {
+        merged.servers = { ...(voices[k]?.servers || {}), ...v.servers };
+        for (const [sk, sv] of Object.entries(v.servers)) if (sv === null) delete merged.servers[sk];
+      }
       for (const [kk, vv] of Object.entries(v || {})) if (vv === null) delete merged[kk];
       voices[k] = merged;
     }
@@ -125,7 +150,9 @@ function cleanSpeech(text) {
     .replace(/!\[[^\]]*\]\([^)]*\)/g, ' ')
     .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
     .replace(/https?:\/\/\S+/g, ' link ')
+    .replace(/<([a-z]{3,12})>/gi, '\u0001$1\u0002')
     .replace(/[#*_`>|~]/g, ' ')
+    .replace(/\u0001([a-z]{3,12})\u0002/gi, '<$1>')
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, MAX_TEXT);
@@ -350,7 +377,7 @@ function sttRoute({ settings, local, hasOpenAI, uncensoredOnly = false }) {
 
 // ---------- IPC ----------
 function register(d) {
-  const { handle, secrets, readSettings, send, which, media, mediaRoot, dialog, getWindow, fetchImpl = (...a) => fetch(...a) } = d;
+  const { handle, secrets, readSettings, send, which, media, mediaRoot, dialog, getWindow, clipsDir = null, fetchImpl = (...a) => fetch(...a) } = d;
   const settings = () => cleanSettings(readSettings().voice);
   const find = (b) => which([b]);
   let toolsCache = null;
@@ -370,9 +397,23 @@ function register(d) {
       stt: { local: w.tool ? { tool: w.tool } : { tool: null, missing: w.missing }, using: st.ok ? st.label : null, problem: st.ok ? null : st.message, ffmpeg: Boolean(find('ffmpeg')) },
       local: { kokoro: Boolean(t.kokoro), piper: t.piper ? t.piper.models.length : 0, espeak: t.espeak ? path.basename(t.espeak.bin) : null, spd: Boolean(t.spd), notes: t.notes },
       openaiVoices: OPENAI_VOICES, elevenModels: ELEVEN_MODELS, openaiModels: OPENAI_TTS_MODELS, sttModels: OPENAI_STT_MODELS,
+      // Speech servers: whether each has its own key saved (never the key), and the presets.
+      servers: Object.fromEntries(s.servers.map((x) => [x.id, { key: secrets.has(servers.secretName(x.id)), openaiHost: servers.isOpenAIHost(x) }])),
+      serverPresets: servers.presets(),
     };
   });
+  const serverKey = (srv) => secrets.get(servers.secretName(srv.id)) || null;
+  const serverCache = new Map();
   handle('voice:voices', async (provider, fresh) => {
+    if (SERVER_P.test(String(provider || ''))) {
+      const srv = serverOf(provider, settings());
+      if (!srv) return fail('That speech server was removed.', 'gone');
+      const c = serverCache.get(srv.id);
+      if (!fresh && c && Date.now() - c.at < 5 * 60000 && c.url === srv.url) return c.r;
+      const r = await servers.listVoices({ server: srv, key: serverKey(srv), fetchImpl, clips: servers.readClips(clipsDir, srv.id) });
+      if (r.ok) serverCache.set(srv.id, { at: Date.now(), r, url: srv.url });
+      return r;
+    }
     if (provider === 'openai') return { ok: true, voices: OPENAI_VOICES.map((v) => ({ id: v, name: v[0].toUpperCase() + v.slice(1) })) };
     if (provider === 'local') return { ok: true, voices: localVoices(tools()) };
     if (provider !== 'elevenlabs') return fail('Unknown provider.');
@@ -399,10 +440,16 @@ function register(d) {
   // Speak one part. Remote voices stream over voice:chunk; local voices come back whole.
   handle('voice:speak', async (o = {}) => {
     const s = settings();
-    const provider = PROVIDERS.includes(o.provider) ? o.provider : s.tts;
-    const text = cleanSpeech(o.text);
+    const provider = PROVIDERS.includes(o.provider) || SERVER_P.test(String(o.provider || '')) ? o.provider : s.tts;
+    // The server comes from his settings by id; the window never gives an address.
+    const srv = SERVER_P.test(provider) ? serverOf(provider, s) : null;
+    if (SERVER_P.test(provider) && !srv) return fail('That speech server was removed. Pick another voice in Settings › Voice.', 'gone');
+    let text = cleanSpeech(o.text);
+    // Expressive <tags> are for the engines that perform them (speech servers); others skip them.
+    if (!srv) text = text.replace(/<[a-z]{3,12}>/gi, ' ').replace(/\s+/g, ' ').trim();
     if (!text) return fail('Nothing to say.');
-    const g = guardOpenAI({ provider, who: String(o.who || ''), settings: s });
+    // A server at OpenAI's own address counts as OpenAI for the uncensored rule.
+    const g = guardOpenAI({ provider: srv ? (servers.isOpenAIHost(srv) ? 'openai' : 'server') : provider, who: String(o.who || ''), settings: s });
     if (!g.ok) return g;
     const speed = num(o.speed, 0.5, 2);
     const keep = s.keepAudio && o.chatId && media?.CHAT_RE.test(String(o.chatId)) ? String(o.chatId) : null;
@@ -422,23 +469,102 @@ function register(d) {
     const token = crypto.randomBytes(8).toString('hex');
     const ctl = new AbortController();
     streams.set(token, ctl);
+    if (srv) {
+      // Only this server's own key is ever sent to it.
+      const voiceId = typeof o.voice === 'string' && o.voice.length <= 200 ? o.voice : '';
+      const r = await servers.speak({ server: srv, key: serverKey(srv), voice: voiceId, text, speed, fetchImpl, signal: ctl.signal, clipsDir });
+      if (!r.ok || r.buf) streams.delete(token);
+      if (!r.ok) return r;
+      if (r.buf) {
+        if (keep) { try { media.storeBuffer(mediaRoot, keep, `reply-${Date.now()}.${/wav/.test(r.mime) ? 'wav' : /ogg/.test(r.mime) ? 'ogg' : /flac/.test(r.mime) ? 'flac' : 'mp3'}`, r.buf); } catch {} }
+        return { ok: true, mime: r.mime, audio: r.buf, via: provider };
+      }
+      pipe(token, ctl, r.res, keep);
+      return { ok: true, token, mime: r.mime, via: provider };
+    }
     const r = await startStream({ provider, key: secrets.get(provider), voiceId: o.voice, text, settings: s, speed, fetchImpl, signal: ctl.signal });
     if (!r.ok) { streams.delete(token); return r; }
+    pipe(token, ctl, r.res, keep);
+    return { ok: true, token, mime: r.mime, via: provider };
+  });
+  // A streamed reply to the window, chunk by chunk, stopped past servers.MAX_AUDIO.
+  function pipe(token, ctl, res, keep) {
     (async () => {
       const kept = [];
+      let n = 0;
+      let error = null;
       try {
-        for await (const chunk of r.res.body) {
+        for await (const chunk of res.body) {
           if (ctl.signal.aborted) break;
           const b = Buffer.from(chunk);
+          n += b.length;
+          if (n > servers.MAX_AUDIO) { error = 'The voice sent too much audio, so the rest was stopped.'; ctl.abort(); break; }
           if (keep) kept.push(b);
           send('voice:chunk', { token, data: b });
         }
-        send('voice:end', { token, stopped: ctl.signal.aborted });
+        send('voice:end', { token, error, stopped: ctl.signal.aborted && !error });
         if (keep && !ctl.signal.aborted) { try { media.storeBuffer(mediaRoot, keep, `reply-${Date.now()}.mp3`, Buffer.concat(kept)); } catch {} }
-      } catch (e) { send('voice:end', { token, error: ctl.signal.aborted ? null : String(e.message || e).slice(0, 200), stopped: ctl.signal.aborted }); }
+      } catch (e) { send('voice:end', { token, error: ctl.signal.aborted ? error : String(e.message || e).slice(0, 200), stopped: ctl.signal.aborted && !error }); }
       streams.delete(token);
     })();
-    return { ok: true, token, mime: r.mime, via: provider };
+  }
+
+  // ---------- speech servers (Settings › Voice) ----------
+  // Every call names a saved server by id; its address comes from his settings only.
+  const savedServer = (id) => (servers.ID_RE.test(String(id || '')) ? settings().servers.find((x) => x.id === id) || null : null);
+  // The server's own key, saved encrypted (never in settings). null or '' removes it.
+  handle('voice:serverKey', async (id, key) => {
+    const srv = savedServer(id);
+    if (!srv) return fail('Save the server first, then add its key.');
+    const name = servers.secretName(srv.id);
+    if (key === null || key === '') { secrets.remove(name); serverCache.delete(srv.id); return { ok: true, removed: true }; }
+    const k = String(key || '').trim();
+    if (!k || k.length > 500 || /[\s\0-\x1f]/.test(k)) return fail('That key doesn\'t look right (no spaces, up to 500 characters).');
+    try { await secrets.set(name, k); } catch (e) { return fail(e?.message || e, 'no_keyring'); }
+    serverCache.delete(srv.id);
+    return { ok: true };
+  });
+  // Test: list its voices, then speak one short line with the first voice.
+  handle('voice:serverTest', async (id) => {
+    const srv = savedServer(id);
+    if (!srv) return fail('That speech server was removed.', 'gone');
+    const key = serverKey(srv);
+    const t0 = Date.now();
+    const lv = await servers.listVoices({ server: srv, key, fetchImpl, clips: servers.readClips(clipsDir, srv.id) });
+    if (!lv.ok) return { ...lv, step: 'voices' };
+    serverCache.set(srv.id, { at: Date.now(), r: lv, url: srv.url });
+    const first = lv.voices.find((v) => !v.clip) || lv.voices[0];
+    const r = await servers.speak({ server: srv, key, voice: first.id, text: 'Hello! This is a test of your speech server.', fetchImpl, clipsDir, timeoutMs: servers.TIMEOUT.test });
+    if (!r.ok) return { ...r, step: 'speak', voices: lv.voices.length };
+    let audio = r.buf;
+    if (!audio) { audio = await servers.readCapped(r.res, servers.MAX_AUDIO).catch(() => null); if (!audio) return { ...fail(`${srv.name} sent too much audio.`), step: 'speak' }; }
+    return { ok: true, voices: lv.voices.length, voice: first.name, warning: lv.warning || null, audio, mime: r.mime, ms: Date.now() - t0 };
+  });
+  // Learn a voice on a server that can (with his consent tick, through the same rule as ElevenLabs).
+  handle('voice:serverClone', async (o = {}) => {
+    if (o.consent !== true) return fail('Tick the box first: only your own voice, or a voice you have the speaker\'s permission to use.', 'consent');
+    const srv = savedServer(o.id);
+    if (!srv) return fail('That speech server was removed.', 'gone');
+    if (!servers.APIS[srv.api]?.clone) return fail(`${srv.name} can't learn a voice from the app.`, 'unsupported');
+    const pick = await dialog.showOpenDialog(getWindow(), { title: 'A recording of the voice (your own, or one you have permission to use)', properties: ['openFile'], filters: [{ name: 'Audio', extensions: ['wav', 'mp3', 'flac'] }] });
+    if (pick.canceled || !pick.filePaths?.length) return { ok: false, cancelled: true };
+    const f = pick.filePaths[0];
+    const st = fs.statSync(f);
+    if (st.size > servers.MAX_CLIP) return fail(`${path.basename(f)} is over 20 MB. A clean 10 to 30 second clip is best.`);
+    const ext = path.extname(f).slice(1).toLowerCase();
+    const file = { name: path.basename(f), ext, buf: fs.readFileSync(f), mime: { mp3: 'audio/mpeg', wav: 'audio/wav', flac: 'audio/flac' }[ext] || 'audio/wav' };
+    const r = await servers.cloneOnServer({ server: srv, key: serverKey(srv), name: o.name, transcript: o.transcript, file, consent: true, fetchImpl, clipsDir });
+    if (r.ok) serverCache.delete(srv.id);
+    return r;
+  });
+  // After he removed a server from his settings: its key and saved clips go too.
+  handle('voice:serverForget', (id) => {
+    if (!servers.ID_RE.test(String(id || ''))) return fail('bad id');
+    if (savedServer(id)) return fail('That server is still in your settings.');
+    try { secrets.remove(servers.secretName(id)); } catch {}
+    servers.forgetClips(clipsDir, id);
+    serverCache.delete(id);
+    return { ok: true };
   });
   handle('voice:cancel', (token) => { const c = streams.get(String(token)); if (c) { c.abort(); streams.delete(String(token)); } return { ok: true }; });
   handle('voice:stopAll', () => { for (const c of streams.values()) c.abort(); streams.clear(); return { ok: true }; });
@@ -460,4 +586,4 @@ function register(d) {
   return { stop() { for (const c of streams.values()) c.abort(); streams.clear(); } };
 }
 
-module.exports = { register, cleanSettings, mergeSettings, cleanVoice, cleanVoices, guardOpenAI, cleanSpeech, elevenVoices, elevenRequest, openaiSpeechRequest, startStream, transcribeOpenAI, elevenClone, localTools, localVoices, localCommand, runLocal, transcribeLocal, sttRoute, DEFAULTS, PROVIDERS, UNCENSORED, OPENAI_VOICES, KOKORO_VOICES, ELEVEN_MODELS, OPENAI_TTS_MODELS, OPENAI_STT_MODELS };
+module.exports = { register, serverOf, cleanSettings, mergeSettings, cleanVoice, cleanVoices, guardOpenAI, cleanSpeech, elevenVoices, elevenRequest, openaiSpeechRequest, startStream, transcribeOpenAI, elevenClone, localTools, localVoices, localCommand, runLocal, transcribeLocal, sttRoute, DEFAULTS, PROVIDERS, UNCENSORED, OPENAI_VOICES, KOKORO_VOICES, ELEVEN_MODELS, OPENAI_TTS_MODELS, OPENAI_STT_MODELS };
