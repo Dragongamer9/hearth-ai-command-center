@@ -26,7 +26,7 @@ const runArgs = async (o) => {
 test('agy is detected and run headless with JSON output and its own modes', async () => {
   assert.equal(agents.isAgy(bin), true);
   assert.equal(agents.isAgy('/usr/bin/gemini'), false);
-  for (const [mode, expected] of [['read', 'plan'], ['standard', 'accept-edits'], ['full', 'auto']]) {
+  for (const [mode, expected] of [['read', 'plan'], ['standard', 'accept-edits'], ['full', 'accept-edits']]) {
     const { r, args } = await runArgs({ mode, resumeId: 'conv-1234', model: 'gemini-x', extraDirs: [dir] });
     assert.equal(r.via, 'Antigravity CLI');
     assert.equal(r.sessionId, 'conv-1234');
@@ -38,14 +38,12 @@ test('agy is detected and run headless with JSON output and its own modes', asyn
   }
 });
 
-test('full access adds --dangerously-skip-permissions and never --sandbox', async () => {
-  const full = (await runArgs({ mode: 'full' })).args;
-  assert.ok(full.includes('--dangerously-skip-permissions'));
-  assert.ok(!full.includes('--sandbox'));
-  for (const mode of ['read', 'standard']) {
+test('never --dangerously-skip-permissions, also with Full access (narrow access: agy\'s allow-list)', async () => {
+  for (const mode of ['read', 'standard', 'full']) {
     const a = (await runArgs({ mode })).args;
-    assert.ok(!a.includes('--dangerously-skip-permissions'));
+    assert.ok(!a.includes('--dangerously-skip-permissions'), mode);
     assert.ok(!a.includes('--sandbox'));
+    assert.notEqual(a[a.indexOf('--mode') + 1], 'auto', 'never auto mode');
   }
 });
 

@@ -128,6 +128,13 @@ contextBridge.exposeInMainWorld('hearth', {
     ipcRenderer.on('chat:step', listener);
     return () => ipcRenderer.removeListener('chat:step', listener);
   },
+  cardsFindSites: () => ipcRenderer.invoke('cards:findSites'),
+  cardsFindOpen: (id) => ipcRenderer.invoke('cards:findOpen', id),
+  onCardsFound: (cb) => {
+    const listener = (_e, a) => cb(a);
+    ipcRenderer.on('cards:found', listener);
+    return () => ipcRenderer.removeListener('cards:found', listener);
+  },
   onCopiesIdle: (cb) => {
     const listener = (_e, a) => cb(a);
     ipcRenderer.on('copies:idleUnpushed', listener);
@@ -151,6 +158,13 @@ contextBridge.exposeInMainWorld('hearth', {
   pickBinary: (agent) => ipcRenderer.invoke('settings:pickBinary', agent),
   useProject: (dir) => ipcRenderer.invoke('settings:useProject', dir),
   setSettings: (patch) => ipcRenderer.invoke('settings:set', patch),
+  // Settings › Saved data change log, Permissions, missing quick-check tools, Test team.
+  settingsLog: () => ipcRenderer.invoke('settings:log'),
+  permsTable: (ids, apiReady) => ipcRenderer.invoke('perms:table', ids, apiReady),
+  permsAgy: () => ipcRenderer.invoke('perms:agy'),
+  permsAgySetup: () => ipcRenderer.invoke('perms:agySetup'),
+  toolsMissing: () => ipcRenderer.invoke('tools:missing'),
+  teamTest: (ids) => ipcRenderer.invoke('team:test', ids),
   addDir: () => ipcRenderer.invoke('settings:addDir'),
   removeDir: (dir) => ipcRenderer.invoke('settings:removeDir', dir),
   gitTools: () => ipcRenderer.invoke('git:tools'),

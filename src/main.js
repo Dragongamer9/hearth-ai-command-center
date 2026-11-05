@@ -22,6 +22,7 @@ import { teamOf, mentionsIn, name as aiName } from './app/brief.mjs';
 import { expired, typedAnswer, ACT_KINDS } from './app/act.mjs';
 import { pickMaker, toolsBrief } from './app/tools.mjs';
 import { createTeamRunner } from './app/team-run.mjs';
+import { teammateStatus } from './app/errors.mjs';
 import { viewHabitat, mountHabitat, stopHabitat } from './habitat.mjs';
 import { mountHabitat3d, stopHabitat3d } from './habitat3d/view.mjs';
 import { applyHabitatLines, habitatSection, stripHabitatLines } from './habitat/actions.mjs';
@@ -61,6 +62,9 @@ const S = {
   mkeys: { keys: {} }, memory: null, memPrompt: '', schedules: null, connectors: null, skills: null, habitat: null,
   copies: null, boards: null, phone: null, idle: [], rec: null,
   cards: null, books: null, persona: null, cardEdit: null, loreEdit: null, cardQuery: '',
+  // Quick checks whose tool is missing on this PC, the Permissions table, Gemini's allow-list,
+  // the last team test and the settings change log.
+  missing: [], permsT: null, agy: null, teamTest: null, testing: false, slog: null, findSites: null, found: [],
 };
 
 const uid = () => Math.random().toString(36).slice(2, 10);
@@ -81,6 +85,14 @@ function ready(a) {
   return Boolean(c && c.installed && c.signedIn !== false);
 }
 const live = () => team().members.filter(ready);
+// Every teammate's true status: connected, needs a key, CLI missing, not signed in, or off.
+function statusOf(a) {
+  const kind = TEAMMATE_IDS.includes(a) ? 'teammate' : method(a) === 'api' ? 'api' : AGENTS[a]?.kind === 'local' ? 'local' : AGENTS[a]?.kind === 'manual' ? 'manual' : 'cli';
+  const c = S.cli[a];
+  return teammateStatus(a, { inTeam: team().members.includes(a), kind, installed: c ? c.installed : true, signedIn: c?.signedIn, ready: ready(a) });
+}
+const statusMap = () => Object.fromEntries(team().members.map((a) => [a, statusOf(a)]));
+const missingChecks = () => (S.missing || []).filter((x) => x.missing).map((x) => x.check);
 const mono = (a, cls = '') => { const m = MONO[a] || [(AGENTS[a]?.name || '?')[0], '#7a7166']; return `<span class="ava ${cls}" style="background:${m[1]}">${esc(m[0])}</span>`; };
 const setupHint = (a) => (a === 'gpu' ? 'Add your GPU server in Settings › Accounts' : TEAMMATE_IDS.includes(a) ? `Add your ${aiName(a)} key in Settings › Accounts` : `set up ${aiName(a)} in Settings › Accounts`);
 const makerReady = (a) => (TEAMMATE_IDS.includes(a) ? Boolean(S.mates.ready?.[a]) && team().members.includes(a) : Boolean(S.mkeys.keys?.[a]));
@@ -93,7 +105,7 @@ const runner = createTeamRunner({
   openId: () => (S.view === 'chat' && document.hasFocus?.() !== false ? S.open : (S.view === 'chat' ? S.open : null)),
   entry: (id) => entry(id),
   settings: () => S.settings,
-  team, live, method, setupHint,
+  team, live, method, setupHint, statusOf, statusMap, missingChecks,
   modeFor: (R) => R.mode || S.mode,
   webFor: (R) => (R.deep ? true : R.web ?? S.web),
   buildFor: (R) => R.build ?? S.build,
@@ -1048,10 +1060,11 @@ function hintLine() {
   const c = entry();
   const R = cur();
   if (R?.waiting) return `Waiting: ${runner.queue.active.size} chats are already working (your limit is ${S.settings.maxChats || 3}). This one starts when one finishes.`;
-  const who = names.length ? `${names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names.slice(-1)}` : names[0]} see${names.length > 1 ? '' : 's'} this chat` : 'No AI is set up yet';
+  const waitingOn = team().members.filter((a) => !ready(a)).map((a) => `${aiName(a)}: ${statusOf(a).label}`);
+  const who = (names.length ? `${names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names.slice(-1)}` : names[0]} see${names.length > 1 ? '' : 's'} this chat` : 'No AI is set up yet') + (waitingOn.length ? ` · ${waitingOn.join(', ')}` : '');
   if (c?.temp) return `${who} · temporary: nothing is saved`;
   if (c?.rp) return `Roleplay · ${rpCards(c).map((x) => `${x.name} played by ${aiName(playerOf(c, x.id))}`).join(' · ')} · built-in limits always on`;
-  return c && (c.repo || c.repoDir) ? `${who} · changes go to a branch · main only changes when you approve` : `${who} · no repo connected`;
+  return c && (c.repo || c.repoDir) ? `${who} · changes go to a branch · main only changes when you approve` : `${who} · no repo: nothing can be committed or pushed`;
 }
 
 function homeView() {
@@ -1076,6 +1089,8 @@ function composer(placeholder) {
   const picked = Object.entries(models).filter(([, v]) => v && v !== 'default').length;
   return `${c?.rp ? rpBar(c) : ''}<div class="composer ${busy ? 'busy' : ''}" id="composer-box">
     ${thumbs ? `<div class="thumbs">${thumbs}</div>` : ''}
+    ${c && !c.rp && !(c.repo || c.repoDir) ? `<div class="cnote" id="no-push-note">${icon('gh', 'sm')}<span>This chat has no repo, so the team can't commit or push anything. Connect a repo if the work should go to GitHub.</span><button class="mini" data-a="repo-pop">Connect a repo</button></div>` : ''}
+    ${S.build && S.missing?.some((x) => x.missing) ? `<div class="cnote warn">${icon('flag', 'sm')}<span>Not installed on this PC: ${esc(S.missing.filter((x) => x.missing).map((x) => x.tool).join(', '))}. Those checks run in GitHub Actions instead.</span></div>` : ''}
     ${S.deep || S.talk ? `<div class="modes">${S.deep ? `<button class="chip on" data-a="toggle-deep" title="Turn deep research off">${icon('globe', 'sm')}Deep research ×</button>` : ''}${S.talk ? `<button class="chip on" data-a="toggle-talk" title="Turn talk mode off">${icon('mic', 'sm')}Talk mode ×</button>` : ''}</div>` : ''}
     <textarea id="composer" rows="1" placeholder="${esc(placeholder)}" aria-label="Message">${esc(S.draft)}</textarea>
     <div class="row">
@@ -1118,7 +1133,15 @@ function chatView() {
   const c = entry();
   if (c?.rp && R?.vn) return `<div class="col vncol">${vnStage(R, c)}</div>`;
   const rpEmpty = c?.rp && !msgs.length && !b ? `<div class="chat-empty"><p>The story starts with your first line.</p></div>` : '';
-  return `<div class="col">${c?.rp ? rpEmpty : empty}${items}${working}</div>`;
+  return `<div class="col">${c?.rp ? rpEmpty : empty}${items}${working}${c?.rp ? '' : turnStrip(R)}</div>`;
+}
+
+// Who is in this turn: waiting, working, blocked, failed or done, with a plain reason and Retry.
+const TS_ICON = { waiting: 'clock', working: 'cpu', blocked: 'flag', failed: 'x', done: 'check', skipped: 'clock' };
+function turnStrip(R) {
+  const ts = R?.turnState;
+  if (!ts?.list?.length || (ts.list.length === 1 && ts.list[0].state === 'done')) return '';
+  return `<div class="tstrip" id="turn-strip"><div class="mh">This turn</div>${ts.list.map((x) => `<div class="ts ${esc(x.state)}">${mono(x.agent, 'sm')}<b>${esc(aiName(x.agent))}</b><span class="chip ${x.state === 'done' ? 'g' : ['failed', 'blocked'].includes(x.state) ? 'b' : ''}">${icon(TS_ICON[x.state] || 'cpu', 'sm')}${esc(x.state)}</span><span class="d">${esc(x.reason || (x.state === 'working' ? 'answering now' : x.state === 'waiting' ? 'answers after the ones above' : ''))}</span><span class="grow"></span>${['failed', 'blocked'].includes(x.state) && !R.round ? `<button class="mini" data-a="turn-retry" data-v="${esc(x.agent)}">Retry</button>` : ''}</div>`).join('')}</div>`;
 }
 
 function stepsHtml(steps = [], outcome = [], liveNow = false, actions = null) {
@@ -1170,7 +1193,10 @@ function message(m, latestChanges, last = false) {
     ${stepsHtml(m.steps, m.outcome || [], false, m.actions)}
     ${helpersHtml(m)}
     <div class="text">${rich(m.text)}</div>
+    ${m.err && m.rawError ? `<details class="raw"><summary class="fine">Details (the tool's own words)</summary><pre class="mono">${esc(m.rawError)}</pre></details>` : ''}
+    ${m.err && m.retryable !== false && AGENTS[m.who] && !cur()?.round ? `<div class="mft left"><button class="mini" data-a="turn-retry" data-v="${esc(m.who)}">Retry ${esc(aiName(m.who))}</button></div>` : ''}
     ${mediaHtml(m)}
+    ${(m.mediaProblems || []).map((p) => `<div class="media-why">${icon('eye', 'sm')}<span>Can't show <b class="mono">${esc(p.path)}</b>: ${esc(p.reason)}.</span></div>`).join('')}
     ${(m.previews || []).map((p) => previewCard(m, p)).join('')}
     ${sourcesHtml(m)}
     ${m.changes ? changesCard(m, latestChanges) : ''}
@@ -1234,8 +1260,9 @@ function charactersView() {
   const list = S.cards.filter((c) => !q || `${c.name} ${(c.tags || []).join(' ')}`.toLowerCase().includes(q));
   const p = S.persona || {};
   return `<div class="lib" id="drop-cards">
-    <div class="lib-hd"><h1>Characters</h1><span class="grow"></span><label class="search in">${icon('search', 'sm')}<input id="card-q" placeholder="Search characters" value="${esc(S.cardQuery)}"></label><button class="btn" data-a="card-import">${icon('dl', 'sm')}Import</button><button class="btn" data-a="card-new">${icon('plus', 'sm')}Create</button><button class="btn" data-a="lorebooks">${icon('doc', 'sm')}Lorebooks</button></div>
+    <div class="lib-hd"><h1>Characters</h1><span class="grow"></span><label class="search in">${icon('search', 'sm')}<input id="card-q" placeholder="Search characters" value="${esc(S.cardQuery)}"></label><button class="btn p" data-a="find-chars">${icon('search', 'sm')}Find characters</button><button class="btn" data-a="card-import">${icon('dl', 'sm')}Import</button><button class="btn" data-a="card-new">${icon('plus', 'sm')}Create</button><button class="btn" data-a="lorebooks">${icon('doc', 'sm')}Lorebooks</button></div>
     <div class="persona">${p.avatarUrl ? `<img class="cav" src="${esc(p.avatarUrl)}" alt="">` : `<span class="cav none">${esc((p.name || 'Y')[0])}</span>`}<div><b>Your persona: ${esc(p.name || 'not set')}</b><span class="fine">${esc(String(p.description || 'Who you are in the stories. The characters call you by this name.').slice(0, 160))}</span></div><span class="grow"></span><button class="mini" data-a="persona-edit">Edit</button></div>
+    ${foundHtml()}
     <p class="fine">Drop a character card here (PNG or JSON, Character Card V1, V2 or V3) or a lorebook JSON. Cards are kept on this PC with a backup. Built-in limits: no minors, no real people in anything sexual, nothing illegal.</p>
     <div class="cgrid">${list.map((c) => `<div class="ccard" data-card="${esc(c.id)}">${c.avatarUrl ? `<img src="${esc(c.avatarUrl)}" alt="">` : `<div class="noimg">${esc(c.name[0])}</div>`}<div class="cbody"><b>${esc(c.name)}</b><span class="fine">${esc((c.tags || []).slice(0, 4).join(' · ') || c.creator || '')}</span>${limitBadge(c)}<p>${esc(String(c.creator_notes || c.description || '').slice(0, 120))}</p></div><div class="cft"><button class="btn p" data-a="card-chat" data-id="${esc(c.id)}">Start chat</button><button class="mini" data-a="card-edit" data-id="${esc(c.id)}">Edit</button><button class="mini" data-a="card-export" data-id="${esc(c.id)}" data-f="png">PNG</button><button class="mini" data-a="card-export" data-id="${esc(c.id)}" data-f="json">JSON</button></div></div>`).join('') || '<div class="empty-list">No characters yet. Import a card or create one.</div>'}</div></div>`;
 }
@@ -1349,8 +1376,9 @@ function popHtml() {
     const opt = (v, label, sub) => `<button class="it ${S.mode === v ? 'on' : ''}" data-a="set-mode" data-v="${v}">${label}<small>${sub}</small></button>`;
     return `<div class="scrim" data-a="close-pop"></div><div class="pop" style="${p.top ? 'right:20px;top:52px' : `left:${p.x}px;bottom:${p.b}px`}"><div class="mh">Who answers</div>
       ${opt('team', `${icon('users', 'sm')}Whole team`, `${esc(aiName(t.lead))} ★ leads`)}
-      ${t.members.map((a) => opt(a, `${mono(a, 'sm')}${esc(aiName(a))}`, ready(a) ? (a === t.lead ? 'lead' : a === t.reviewer ? 'reviewer' : 'ready') : 'not set up')).join('')}
-      <div class="note">Or type @name in your message to ask one AI. Change who's in the team in Settings › AI team.</div></div>`;
+      ${t.members.map((a) => opt(a, `${mono(a, 'sm')}${esc(aiName(a))}`, ready(a) ? (a === t.lead ? 'lead · connected' : a === t.reviewer ? 'reviewer · connected' : 'connected') : `${statusOf(a).label}${statusOf(a).why ? ` · ${statusOf(a).why}` : ''}`)).join('')}
+      <div class="note">Or type @name in your message to ask one AI (several names on one line reach them all). Change who's in the team in Settings › AI team.</div>
+      <button class="it" data-a="team-test-go">${icon('check', 'sm')}Test team<small>a safe test of each connected teammate (Settings › AI team)</small></button></div>`;
   }
   if (p.kind === 'options') {
     const R = S.view === 'chat' ? cur() : null;
@@ -1452,6 +1480,14 @@ function modalHtml() {
       <div class="srow">${m.avatarUrl ? `<img class="cav" src="${esc(m.avatarUrl)}" alt="">` : ''}<button class="mini" data-a="persona-pic">Choose a picture</button></div>
       <div class="mft"><button class="btn p" data-a="persona-save">Save</button><button class="btn ghost" data-a="close-modal">Cancel</button></div></div>`;
   }
+  if (m.kind === 'find') {
+    const F = S.findSites || { sites: [], notListed: [] };
+    return `<div class="scrim dark" data-a="close-modal"></div><div class="modal" id="find-chars"><div class="mhd"><b>${icon('search', 'sm')} Find characters</b><span class="grow"></span><button class="tb" data-a="close-modal">${icon('x', 'sm')}</button></div>
+      <p class="fine">Opens the site in a separate, sandboxed window with its own browser profile: it can't reach the app, your files or your keys. Search and browse there; when you download a card (PNG, JSON or CHARX, up to ${F.maxMb || 20} MB) it is imported here straight away, picture included. Other downloads are ignored, and nothing from the site is ever run.</p>
+      ${F.sites.map((x) => `<div class="srow">${icon('globe', 'sm')}<b>${esc(x.name)}</b><span class="d">${esc(x.note)} · ${esc(x.url.replace(/^https:\/\//, '').replace(/\/$/, ''))}</span><span class="grow"></span><button class="btn" data-a="find-open" data-v="${esc(x.id)}">Open</button></div>`).join('')}
+      ${F.notListed?.length ? `<div class="note">${esc(F.notListed.join(' and '))} aren't listed yet: their official addresses couldn't be confirmed, and a guessed one could be someone else's site. Some sites have their own age check.</div>` : ''}
+      <div class="note">Cards that read as under 18 still import, and are always blocked from anything sexual. There's no search box here: none of these sites offers an official search API for other apps.</div></div>`;
+  }
   if (m.kind === 'board') {
     const b = m.board;
     return `<div class="scrim dark" data-a="close-modal"></div><div class="modal wide"><div class="mhd"><b>${esc(b.name)} — old board (read-only)</b><span class="grow"></span><button class="tb" data-a="close-modal">${icon('x', 'sm')}</button></div>
@@ -1479,9 +1515,10 @@ function section(k) {
   const t = team();
   if (k === 'team') {
     return `<h1>AI team</h1><div class="box"><h3>Who's in your chats</h3>
-      ${TEAM_IDS.map((a) => { const inTeam = t.members.includes(a); const r = ready(a); return `<div class="srow mem">${mono(a)}<b>${esc(aiName(a))}</b><span class="d">${a === t.lead ? 'lead ★ · ' : a === t.reviewer ? 'reviewer · ' : ''}${esc(AGENTS[a].tool)}${r ? `, ${esc(AGENTS[a].plan)}` : ` · ${TEAMMATE_IDS.includes(a) ? esc(setupHint(a)) : 'not set up'}`}${inTeam ? '' : ' · off'}</span><span class="grow"></span>${inTeam && a !== t.lead && AGENTS[a].edits ? `<button class="mini" data-a="make-lead" data-v="${a}">Make lead</button>` : ''}${inTeam && a !== t.lead && a !== t.reviewer && !UNFILTERED.includes(a) ? `<button class="mini" data-a="make-reviewer" data-v="${a}">Make reviewer</button>` : ''}${tog(inTeam, 'team-member', `data-v="${a}" ${a === t.lead ? 'disabled title="The lead is always in"' : ''}`)}</div>`; }).join('')}
+      ${TEAM_IDS.map((a) => { const inTeam = t.members.includes(a); const r = ready(a); return `<div class="srow mem">${mono(a)}<b>${esc(aiName(a))}</b><span class="d">${a === t.lead ? 'lead ★ · ' : a === t.reviewer ? 'reviewer · ' : ''}${esc(AGENTS[a].tool)}${r ? `, ${esc(AGENTS[a].plan)} · connected` : inTeam ? ` · ${esc(statusOf(a).label)}${statusOf(a).why ? `: ${esc(statusOf(a).why)}` : ''}` : ''}${inTeam ? '' : ' · off'}</span><span class="grow"></span>${inTeam && a !== t.lead && AGENTS[a].edits ? `<button class="mini" data-a="make-lead" data-v="${a}">Make lead</button>` : ''}${inTeam && a !== t.lead && a !== t.reviewer && !UNFILTERED.includes(a) ? `<button class="mini" data-a="make-reviewer" data-v="${a}">Make reviewer</button>` : ''}${tog(inTeam, 'team-member', `data-v="${a}" ${a === t.lead ? 'disabled title="The lead is always in"' : ''}`)}</div>`; }).join('')}
       <div class="note">The lead (Claude unless you change it) answers first and hands parts to teammates. When the lead changes files, the reviewer checks the diff. Type @name in a message to ask one AI. ${t.reviewer ? '' : 'No reviewer is set.'} Venice, Civitai and your GPU server never see the other AIs' private context and what they make is never passed to Claude, ChatGPT or Gemini.</div>
-      ${t.reviewer ? '<button class="mini" data-a="no-reviewer">No reviewer</button>' : ''}</div>`;
+      ${t.reviewer ? '<button class="mini" data-a="no-reviewer">No reviewer</button>' : ''}</div>
+      ${teamTestBox()}`;
   }
   if (k === 'accounts') {
     const M = S.mates;
@@ -1519,7 +1556,8 @@ function section(k) {
       <div class="srow">Web<span class="d">search the web and read pages; answers list their sources</span><span class="grow"></span>${tog(s.tools?.web !== false, 'tool-web')}</div>
       <div class="srow">Run &amp; build<span class="d">run quick checks on this PC and push to the chat's branch; heavy builds run in GitHub Actions</span><span class="grow"></span>${tog(s.tools?.build !== false, 'tool-build')}</div></div>
       <div class="box"><h3>Quick checks the AIs may run on this PC</h3><p class="fine">One per line: the start of a command. Claude can run only these (plus git and reading files); everything heavier goes to GitHub Actions.</p>
-      <textarea id="quick-checks" rows="8" class="mono">${esc(qc.join('\n'))}</textarea><div class="mft left"><button class="btn" data-a="save-checks">Save</button></div></div>
+      <textarea id="quick-checks" rows="8" class="mono">${esc(qc.join('\n'))}</textarea><div class="mft left"><button class="btn" data-a="save-checks">Save</button></div>
+      ${missingBox()}</div>
       <div class="box"><h3>${icon('star', 'sm')}Skills</h3><p class="fine">Claude Code skills from ~/.claude/skills and the chat's repo (.claude/skills) work in chats: Claude uses them by itself when they fit. The lead can also hand side tasks to helpers that work in parallel.</p>
       ${S.skills === null ? '<div class="fine">Loading…</div>' : (S.skills || []).map((x) => `<div class="srow">${icon('star', 'sm')}<b>${esc(x.name)}</b><span class="d">${esc(x.description || '')} · ${esc(x.where)}</span></div>`).join('') || '<div class="fine">No skills installed. Put a skill folder with a SKILL.md in ~/.claude/skills, or in a repo\'s .claude/skills.</div>'}</div>
       <div class="box"><h3>Live previews</h3><div class="srow">Previews may load from the internet<span class="d">off: previews can't reach the network (safest)</span><span class="grow"></span>${tog(s.previewNetwork === true, 'preview-net')}</div></div>`;
@@ -1567,7 +1605,9 @@ function section(k) {
       <div class="srow">Merging into main, releases and tags<span class="d">always ask me</span></div>
       <div class="srow">Version numbers<span class="d">only you set them</span></div>
       <div class="srow">Memory<span class="d">AIs only suggest; nothing is remembered without your yes</span></div>
-      <div class="srow">Full access<span class="d">${s.access === 'full' ? 'on: with Run & build, AIs run any command with no checks' : 'off: AIs run only the quick checks you allow'}</span><span class="grow"></span>${tog(s.access === 'full', 'full-access')}</div></div>`;
+      <div class="srow">Full access<span class="d">${s.access === 'full' ? 'on: with Run & build, Claude, ChatGPT and Qwen run any command with no checks (Gemini and Mistral always stay on their narrow list)' : 'off: AIs run only the quick checks you allow'}</span><span class="grow"></span>${tog(s.access === 'full', 'full-access')}</div>
+      ${leadSwitchesNote(s)}</div>
+      ${permsTableBox()}`;
   }
   if (k === 'alerts') {
     return `<h1>Notifications &amp; voice</h1><div class="box"><h3>${icon('flag', 'sm')}Notifications</h3>
@@ -1604,6 +1644,7 @@ function section(k) {
         <div class="srow">Space used<b>${cp ? fmtBytes(total) : '…'}</b><span class="d">${cp ? `${cp.list.length} cop${cp.list.length === 1 ? 'y' : 'ies'} · removed after ${esc(IDLE.find(([v]) => v === S.settings.copyIdleHours)?.[1] || '1 day')} idle` : ''}</span><span class="grow"></span><button class="btn" data-a="cleanup" ${cp?.list?.length ? '' : 'disabled'}>Clean up</button></div>
         ${(cp?.list || []).map((c) => `<div class="srow copy">${icon('gh', 'sm')}<b>${esc(c.repo || c.dir || '?')}</b><span class="d">${esc(entry(c.chatId)?.title || 'deleted chat')} · ${esc(c.work || c.branch || '')} · ${fmtBytes(c.size)} · used ${esc(ago(c.lastUsedAt) || 'never')}</span><span class="grow"></span>${c.unpushed ? `<span class="chip b">not on GitHub</span><button class="mini" data-a="copy-push" data-id="${esc(c.chatId)}">Push to a branch</button>` : ''}<button class="mini" data-a="copy-remove" data-id="${esc(c.chatId)}">Remove</button></div>`).join('') || '<div class="fine">No temporary copies right now.</div>'}
         <div class="note">Copies holding work that isn't on GitHub are never deleted without asking you. ${cp?.root ? `They live in ${esc(cp.root)}.` : ''}</div></div>
+      ${settingsLogBox()}
       <div class="box"><h3>Backups</h3><div class="srow">Your chats list keeps its last good copy as a backup, and the list from before 2.0 is kept as index.json.pre-2. Memory, scheduled tasks, connectors and the Habitat keep a .bak too.<span class="grow"></span><button class="mini" data-a="open-data-folder">Open the data folder</button></div></div>
       <div class="box"><h3>Old boards (read-only)</h3><p class="fine">The task boards, approvals and audit logs from 1.x are kept on disk exactly as they were. They're not used any more.</p>
         ${(S.boards || []).map((b) => `<div class="srow">${icon('board', 'sm')}<b>${esc(b.name)}</b><span class="d">${b.ok ? `${b.tasks.length} tasks · ${b.approvals} approvals · ${b.audit} audit entries` : 'couldn\'t be read (left as it is)'}</span><span class="grow"></span>${b.ok ? `<button class="mini" data-a="view-board" data-id="${esc(b.id)}">View</button>` : ''}</div>`).join('') || '<div class="fine">No old boards.</div>'}</div>`;
@@ -1611,9 +1652,61 @@ function section(k) {
   return '';
 }
 
+// ---- Settings › AI team › Test team ----
+function teamTestBox() {
+  const T = S.teamTest;
+  const ids = team().members.filter((a) => ready(a) && method(a) !== 'api' && ['anthropic', 'openai', 'google', 'xai', 'mistral', 'qwen'].includes(a));
+  const res = (T?.results || []).map((r) => `<div class="tt"><div class="srow">${mono(r.agent)}<b>${esc(aiName(r.agent))}</b><span class="d">${r.via ? esc(r.via) : ''}${r.ms ? ` · ${Math.round(r.ms / 1000)} s` : ''}</span><span class="grow"></span><span class="chip ${r.steps.every((x) => x.pass) ? 'g' : 'b'}">${r.steps.filter((x) => x.pass).length}/${r.steps.length} passed</span></div>
+    ${r.steps.map((x) => `<div class="srow sub step-${x.pass ? 'ok' : 'bad'}">${icon(x.pass ? 'check' : 'x', 'sm')}<b>${esc(x.label)}</b><span class="d">${x.pass ? 'pass' : 'fail'}${x.detail ? ` · ${esc(x.detail)}` : ''}${x.verified && !/checked by the app/.test(x.detail || '') ? ' · checked by the app' : ''}</span></div>`).join('')}</div>`).join('');
+  return `<div class="box" id="team-test"><h3>${icon('check', 'sm')}Test team</h3><p class="fine">Every connected teammate runs the same safe test in a temporary scratch folder: read a file, search the web, run node --check on a file it makes, then delete that file. Nothing is pushed, no pictures are made, and your settings are checked afterwards.</p>
+    <div class="srow"><span class="d">${ids.length ? `Will test: ${esc(ids.map(aiName).join(', '))}` : 'No connected teammate with a CLI yet.'}</span><span class="grow"></span><button class="btn p" data-a="team-test" ${S.testing || !ids.length ? 'disabled' : ''}>${S.testing ? 'Testing…' : 'Test team'}</button></div>
+    ${S.testing ? `<div class="fine">${esc((T?.running || []).map(aiName).join(', '))} are working on it (up to a few minutes)…</div>` : ''}
+    ${T?.error ? `<div class="note bad">${esc(T.error)}</div>` : ''}${res}
+    ${T?.settingsUndone ? '<div class="note warn">A teammate changed settings.json during the test; it was undone (see Saved data).</div>' : ''}</div>`;
+}
+// ---- Settings › Tools: quick checks whose tool isn't on this PC ----
+function missingBox() {
+  const miss = (S.missing || []).filter((x) => x.missing);
+  if (!miss.length) return S.missing?.length ? '<div class="fine">Every quick check\'s tool is installed on this PC.</div>' : '';
+  return `<div class="note warn" id="missing-tools">${icon('flag', 'sm')}<div><b>Not installed on this PC:</b> ${miss.map((x) => `<span class="chip">${esc(x.tool)}</span>`).join(' ')}<div class="fine">${miss.map((x) => esc(x.check)).join(', ')} can't run here. The AIs are told to leave them to GitHub Actions (push to the chat's branch). Or install ${esc(miss.map((x) => x.tool).join(', '))} and press Re-check.</div></div><button class="mini" data-a="tab" data-t="tools">Re-check</button></div>`;
+}
+// ---- Settings › Permissions ----
+function leadSwitchesNote(s) {
+  const on = [['leadMerge', 'Lead may merge'], ['leadRelease', 'Lead may publish releases'], ['leadTag', 'Lead may create tags']].filter(([k]) => s[k] === true);
+  return `<div class="srow">Old lead switches (from 1.4–1.5)<span class="d">${on.length ? `${esc(on.map((x) => x[1]).join(', '))}: on in your settings. Since this version they only let the lead ask; merging, releasing and tagging always ask you in a popup. They aren't used by chats.` : 'all off'}</span></div>
+    <div class="srow">Auto-push<span class="d">${s.autoPush !== false ? 'on: after a Run & build turn in a chat with a repo, the app pushes the chat\'s own hearth/ branch (never main, the base branch or a tag)' : 'off: pushes wait for you'}</span></div>`;
+}
+function permsTableBox() {
+  const P = S.permsT;
+  if (!P) return '<div class="box"><h3>What each AI can really do</h3><div class="fine">Checking the AI apps on this PC…</div></div>';
+  const agy = P.agy;
+  const agyRow = agy ? `<div class="srow" id="agy-setup">${mono('google')}<b>Gemini's allow-list (agy)</b><span class="d">${agy.state === 'set' ? 'set up: read-only commands, your quick checks and reading web pages' : agy.state === 'partly' ? `partly set up (${agy.missing} of ${agy.total} rules missing)` : agy.state === 'error' ? esc(agy.message) : 'not set up: Gemini\'s commands and web pages are refused'} · rules live in agy's own ${esc(agy.file || 'settings.json')}; the app adds them only when you press the button (your other agy settings stay)</span><span class="grow"></span>${agy.state !== 'set' && agy.state !== 'error' ? '<button class="btn p" data-a="agy-setup">Set up Gemini\'s allow-list</button>' : ''}</div>` : '';
+  const cell = (v) => `<td>${esc(v)}</td>`;
+  return `<div class="box"><h3>${icon('shield', 'sm')}What each AI can really do</h3><p class="fine">Worked out from the AI apps found on this PC (and their versions), your keys, and the exact flags the app passes. Signed-in state is on the Accounts page.</p>${agyRow}
+    <div class="tbl-wrap"><table class="perms" id="perms-table"><thead><tr><th>AI</th><th>Connection</th><th>Files</th><th>Commands</th><th>Web</th><th>Pictures</th><th>Push</th></tr></thead><tbody>
+    ${P.rows.map((r) => `<tr class="${r.ready ? '' : 'off'}"><td>${mono(r.id, 'sm')}<b>${esc(r.name)}</b>${r.notes?.length ? `<div class="fine">${esc(r.notes.join(' '))}</div>` : ''}</td><td>${esc(r.connection)}<div class="fine">${esc(r.tool)}</div></td>${cell(r.files)}${cell(r.commands)}${cell(r.web)}${cell(r.images)}${cell(r.push)}</tr>`).join('')}
+    </tbody></table></div><div class="mft left"><button class="mini" data-a="perms-refresh">Check again</button></div></div>`;
+}
+// ---- Settings › Saved data: the settings change log ----
+function settingsLogBox() {
+  const L = S.slog;
+  const rows = (L?.entries || []).slice(0, 60).map((e) => `<div class="srow log"><span class="d mono">${esc(String(e.at || '').slice(0, 16).replace('T', ' '))}</span><b class="mono">${esc(e.key)}</b><span class="d mono">${esc(e.from)} → ${esc(e.to)}</span><span class="grow"></span><span class="chip">${esc(e.by)}</span></div>`).join('');
+  return `<div class="box" id="settings-log"><h3>${icon('clock', 'sm')}Settings changes</h3><p class="fine">Every change to your settings: when, what (old → new) and who. Only what really changed is saved; defaults are never written for you. A change an AI makes to the settings file is undone at once and shown here.</p>
+    ${L?.broken ? `<div class="note bad">${esc(L.broken)}</div>` : ''}${rows || '<div class="fine">No changes recorded yet.</div>'}</div>`;
+}
+
+// Cards imported from a site's download (newest first, until dismissed).
+function foundHtml() {
+  return (S.found || []).slice(0, 4).map((f) => f.ok && f.card ? `<div class="note found" id="found-${esc(f.key)}">${icon('check', 'sm')}<span>Imported <b>${esc(f.card.name)}</b>${f.card.minor ? ` · reads as under 18 (${esc(f.card.minorWhy || '')}): stories only, nothing sexual` : ''}</span><span class="grow"></span><button class="mini" data-a="card-edit" data-id="${esc(f.card.id)}">Open</button><button class="mini" data-a="card-chat" data-id="${esc(f.card.id)}">Start chat</button><button class="mini" data-a="found-dismiss" data-v="${esc(f.key)}">×</button></div>`
+    : f.ok && f.lorebook ? `<div class="note found">${icon('doc', 'sm')}<span>Imported the lorebook <b>${esc(f.lorebook.name)}</b></span><span class="grow"></span><button class="mini" data-a="found-dismiss" data-v="${esc(f.key)}">×</button></div>`
+    : `<div class="note warn">${esc(f.message || 'Not imported.')}<span class="grow"></span><button class="mini" data-a="found-dismiss" data-v="${esc(f.key)}">×</button></div>`).join('');
+}
+
 async function loadCopies() { S.copies = await call('copiesList'); render(); }
 async function loadSection(t) {
-  if (t === 'data') { loadCopies(); S.boards = await call('savedBoards'); }
+  if (t === 'data') { loadCopies(); S.boards = await call('savedBoards'); S.slog = await call('settingsLog'); }
+  if (t === 'perms') { refreshAgents(); loadPerms(); }
+  if (t === 'tools') loadMissing();
   if (t === 'accounts' || t === 'team') { refreshAgents(); await refreshMates(); }
   if (t === 'github') loadRepos();
   if (t === 'memory') S.memory = await call('memoryList');
@@ -1721,6 +1814,9 @@ document.addEventListener('click', async (ev) => {
     case 'card-pic': { readCardForm(); const f = await pickFile('image/png,image/jpeg,image/webp'); if (f) { const url = await fileUrl(f); S.cardEdit.avatarData = url; S.cardEdit.avatarUrl = url; } return render(); }
     case 'card-save': { readCardForm(); const c = S.cardEdit; if (!String(c.name || '').trim()) return toast('Give the character a name.'); const r = await call('cardsSave', c); if (r?.ok === false || r?.message) return toast(r.message || 'Not saved.'); toast(`Saved ${r.name}.`); await loadCards(); S.cardEdit = null; S.view = 'characters'; return render(true); }
     case 'card-export': { const r = await call('cardsExport', d.id, d.f); if (r?.ok) toast(`Exported to ${r.file}.`); else if (r && !r.cancelled) toast(r.message || 'Not exported.'); return; }
+    case 'find-chars': S.findSites = (await call('cardsFindSites')) || S.findSites; S.modal = { kind: 'find' }; return renderOverlay();
+    case 'find-open': { const r = await call('cardsFindOpen', d.v); if (r?.ok === false) toast(r.message || 'Couldn\'t open it.'); return; }
+    case 'found-dismiss': S.found = S.found.filter((x) => x.key !== d.v); return render();
     case 'card-chat': { const c = cardById(d.id); if (!c) return; const pl = defaultPlayer(c); S.modal = { kind: 'rpstart', chars: [c.id], players: { [c.id]: pl }, order: 'natural', lorebooks: [] }; return renderOverlay(); }
     case 'lore-from-card': { const r = await call('loreFromCard', d.id); if (r?.ok) { toast(`Copied to Lorebooks as “${r.book.name}”.`); S.books = (await call('loreList')) || []; render(); } else toast(r?.message || 'Not copied.'); return; }
     case 'lore-new': S.loreEdit = { name: 'New lorebook', scan_depth: 4, token_budget: 1024, entries: [] }; return render(true);
@@ -1775,6 +1871,11 @@ document.addEventListener('click', async (ev) => {
     case 'voice': return toggleVoice();
     case 'send': return send();
     case 'stop': return stopRun();
+    case 'turn-retry': { const R = cur(); if (R && !R.round) runner.retry(R, d.v); return; }
+    case 'team-test-go': S.pop = null; renderOverlay(); S.view = 'settings'; S.tab = 'team'; render(true); return runTeamTest();
+    case 'team-test': return runTeamTest();
+    case 'agy-setup': { const r = await call('permsAgySetup'); toast(r?.message || (r?.ok ? 'Done.' : 'Not changed.')); return loadPerms(); }
+    case 'perms-refresh': return loadPerms(true);
     case 'follow': { const m = msgById(d.m); const f = m?.followUps?.[Number(d.i)]; if (f) send(f); return; }
     case 'quick': { const q = QUICK[Number(d.i)]; S.draft = q[2]; render(); focusComposer(); return; }
     case 'dismiss': S.notices.splice(Number(d.i), 1); return render();
@@ -2003,6 +2104,12 @@ async function boot() {
     api.onUpdaterStatus?.((s) => { const prev = S.upd.status?.state; S.upd.status = s; if (s.state === 'available' && prev !== 'available') toast(`Update ${s.version} is available — see Settings › App updates.`); if (S.view === 'settings') render(); });
     // Steps carry their chat: only that chat's runtime gets them, open or not.
     api.onChatStep?.((e) => runner.onStep(e));
+    api.onCardsFound?.(async (r) => {
+      S.found = [{ ...(r || {}), key: uid() }, ...(S.found || [])].slice(0, 6);
+      toast(r?.ok && r.card ? `Imported ${r.card.name}.` : r?.ok && r.lorebook ? `Imported the lorebook ${r.lorebook.name}.` : r?.message || 'Not imported.');
+      if (r?.ok) await loadCards();
+      render();
+    });
     api.onCopiesIdle?.((list) => { S.idle = Array.isArray(list) ? list : []; render(); });
     api.onCopiesRemoved?.(async () => { await loadChats(); renderSide(); });
     api.onOpsPhoneAction?.((a) => onPhone(a));
@@ -2022,6 +2129,26 @@ async function boot() {
   if (remembered && entry(remembered)) await openChat(remembered); else render(true);
   refreshAgents();
   call('gitTools').then((g) => { if (g) { S.gh = g; renderSide(); } });
+  loadMissing();
+}
+async function loadMissing() { const r = await call('toolsMissing'); if (Array.isArray(r)) { S.missing = r; render(); } }
+// What each AI can really do (Settings › Permissions).
+async function loadPerms(force = false) {
+  if (force) S.permsT = null;
+  const apiReady = Object.fromEntries(TEAM_IDS.map((a) => [a, method(a) === 'api' ? ready(a) : a === 'ollama' ? Boolean(S.cli.ollama?.installed) : false]));
+  S.permsT = (await call('permsTable', TEAM_IDS, apiReady)) || { rows: [] };
+  render();
+}
+// Settings › AI team › Test team: each connected teammate runs the same safe test.
+async function runTeamTest() {
+  if (S.testing) return;
+  const ids = team().members.filter((a) => ready(a) && method(a) !== 'api' && ['anthropic', 'openai', 'google', 'xai', 'mistral', 'qwen'].includes(a));
+  if (!ids.length) { toast('No connected teammate with a CLI to test.'); return; }
+  S.testing = true; S.teamTest = { running: ids, results: [] }; render();
+  const r = await call('teamTest', ids);
+  S.testing = false;
+  S.teamTest = r?.ok ? { results: r.results, at: new Date().toISOString(), settingsUndone: r.settingsUndone } : { results: [], error: r?.message || 'The test couldn\'t start.' };
+  render();
 }
 
 boot();

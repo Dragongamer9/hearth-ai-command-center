@@ -1,0 +1,51 @@
+# Next version (the number is yours to pick)
+
+Fixes for the problems your AI team reported in 1.7, plus a few new tools.
+
+## Fixed
+
+- **Gemini and Mistral can use their tools again, with narrow access only.** They may read files, search the web and run your quick checks (plus read-only commands like `ls` and `git status`). Nothing more: never a "skip all permissions" mode, also when Full access is on.
+  - Gemini (agy): agy keeps its rules only in its own settings file, so Settings › Permissions has a **Set up Gemini's allow-list** button. It adds the rules once, keeps everything else in that file, and saves a backup. The app never changes it by itself.
+  - Gemini (older Gemini CLI): gets a rules file for each run.
+  - Mistral: uses the app's own "Hearth team" profile. Your Vibe config is untouched. Folders you granted now reach it, so reading them is no longer refused.
+- **A teammate that fails no longer stops the rest.** In 1.7, one failure (like Gemini's) ended the turn, so Grok and Mistral never got theirs. A lead's hand-off also reached only the first two names. Now everyone named gets a turn.
+- **Several @names on one line reach everyone.** Spaces, commas and "and" all work.
+- **Clear status for every teammate in a turn:** waiting, working, blocked, failed or done, with the reason in plain words and a **Retry** button. Raw errors like "jetski" or "headless mode cannot prompt" are explained; the tool's own words stay under Details.
+- **The team list shows everyone in your team with their true status:** connected, needs a key, CLI missing, not signed in, or off. Venice, Civitai and your GPU server now show what they need. The AIs are told only you can connect them, so they stop saying the list is fixed.
+- **Settings never change by themselves:**
+  - Only what you really change is saved. Before, one click also saved every default.
+  - A settings file that can't be read is never overwritten.
+  - If an AI changes the settings file during its turn, the change is undone at once and the chat tells you.
+  - New **Settings › Saved data › Settings changes** log: when, what (old → new) and who.
+- **Merging, releasing and tagging always ask you.** The old "Lead may merge / release / tag" switches only let the lead ask now. They no longer skip your popup.
+- **Pushes go only to the chat's own branch.** The guard in every copy now refuses every other branch too, not only main, the base branch and tags.
+- **Pictures in chat show reliably:**
+  - Links to a file in the chat's folder now show the picture right where the link is.
+  - `ATTACH:` lines work inside lists too, as do `.hearth-media/` files.
+  - When a picture can't be shown, the chat says why: outside the chat's folder, missing, too large, or wrong type.
+- **The AIs' instructions match what the switches really do.** No more "never merge" next to "you may merge". They also learn:
+  - the one way of showing a picture that always works;
+  - that a check whose tool is missing goes to GitHub Actions;
+  - when a chat can't push.
+
+## New
+
+- **Test team** (Settings › AI team, also in the chat's Team menu). Every connected teammate runs the same safe test in a temporary folder: read a file, search the web, run `node --check` on a file it makes, then delete that file. You see pass or fail per step, with the real error. It never pushes, never makes pictures, and your settings are checked afterwards.
+- **What each AI can really do** (Settings › Permissions). One table for every AI: connection, files, commands, web, pictures and push. It is worked out from the AI apps found on this PC and their versions, your keys, and the exact settings the app uses.
+- **Missing tool warnings.** Quick checks whose tool isn't installed (for example pytest, shellcheck or cargo) are shown in Settings › Tools and above the message box. The AIs leave those checks to GitHub Actions.
+- **"Can't push" note.** A chat without a repo says up front that nothing can be committed or pushed, with a Connect a repo button.
+- **Find characters** (Characters › Find characters):
+  - Opens Chub, AICharacterCards or Datacat in a separate, sandboxed window that can't reach the app, your files or your keys.
+  - Download a card there (PNG, JSON or CHARX, up to 20 MB) and it is imported straight away, picture included, with Open and Start chat buttons.
+  - Other downloads are ignored. Cards that read as under 18 still import and are always blocked from anything sexual.
+  - Not included yet:
+    - **A search box inside the app:** none of these sites offers an official search API for other apps.
+    - **Botbooru and CharaVault:** their official addresses couldn't be confirmed.
+
+## Needs your PC to check
+
+- Press **Set up Gemini's allow-list**, then **Test team**. Gemini should pass all four steps.
+- Mistral's web search only works when Vibe can find a Mistral key (from `vibe --setup`). The app can't check that.
+- Download a card in Find characters and check that it lands in Characters.
+
+Screenshots: `31` to `39` in the UI screenshots run.

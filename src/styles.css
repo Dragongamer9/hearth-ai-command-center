@@ -512,3 +512,25 @@ label.day { display: inline-flex; align-items: center; gap: 4px; font-size: 12.5
 .vn-name { font: 600 15px var(--serif); color: #ffd2b8; margin-bottom: 4px; }
 @media (max-width: 900px) { .cedit { grid-template-columns: 1fr; } }
 .msg-a .text .codeblock code, .codeblock pre code.hljs { border: 0; background: none; padding: 0; border-radius: 0; }
+
+/* 1.8: teammates in a turn, can't-push note, permissions table, team test, settings log */
+.tstrip { border: 1px solid var(--line); border-radius: 12px; padding: 8px 10px; margin: 6px 0 12px; background: var(--panel); display: flex; flex-direction: column; gap: 4px; }
+.tstrip .mh { font-size: 12px; color: var(--faint); margin-bottom: 2px; }
+.tstrip .ts { display: flex; align-items: center; gap: 8px; font-size: 13px; min-height: 28px; }
+.tstrip .ts .d { color: var(--muted); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; }
+.tstrip .ts.working .chip { color: var(--accent); }
+.cnote { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted); padding: 6px 10px; margin: 2px 2px 6px; border-radius: 9px; background: var(--panel-2); border: 1px solid var(--line); }
+.cnote span { flex: 1; }
+.cnote.warn { color: var(--text); }
+details.raw { margin: 4px 0; } details.raw pre { white-space: pre-wrap; font-size: 12px; background: var(--panel-2); padding: 8px; border-radius: 8px; max-height: 200px; overflow: auto; }
+.media-why { margin: 6px 0; font-size: 13px; color: var(--warn); display: flex; gap: 8px; align-items: flex-start; } .media-why b { word-break: break-all; }
+table.perms { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+table.perms th, table.perms td { text-align: left; vertical-align: top; padding: 7px 8px; border-bottom: 1px solid var(--line); }
+table.perms th { color: var(--faint); font-weight: 600; }
+table.perms td b { margin-left: 6px; }
+table.perms tr.off td { color: var(--faint); }
+.tt { border-top: 1px solid var(--line); padding-top: 6px; margin-top: 6px; }
+.step-ok svg { color: var(--good); } .step-bad svg { color: var(--bad); }
+.srow.log { font-size: 12.5px; }
+.note.found { color: var(--text); background: var(--good-soft); border-radius: 10px; padding: 8px 12px; margin: 4px 0 10px; font-size: 13px; }
+.note.found svg { color: var(--good); }

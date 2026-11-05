@@ -28,6 +28,8 @@ const guard = require('./ops/project-guard.cjs');
 const { createChats } = require('./chats.cjs');
 const v2 = require('./v2.cjs');
 const parity = require('./parity.cjs');
+const { diffSettings, applyChanges, createSettingsLog } = require('./settings-log.cjs');
+const teamCheck = require('./team-check.cjs');
 
 // No Hearth OS version pin: the app never changes, bumps, publishes or deploys
 // Hearth OS versions (the owner picks every number). It only shows which Hearth
@@ -60,18 +62,45 @@ const runs = new Map(); // runId -> AbortController
 let settingsMem = null;
 let settingsHash = null;
 const hashText = (t) => require('node:crypto').createHash('sha256').update(String(t)).digest('hex');
+// A settings.json that can't be read is never overwritten: its .bak is used read-only and
+// saving stops with a clear message until the owner looks at it.
+let settingsBroken = null;
 function loadSettingsFile() {
-  try { const t = fs.readFileSync(settingsFile(), 'utf8'); settingsHash = hashText(t); return JSON.parse(t); } catch { return {}; }
+  let t = null;
+  try { t = fs.readFileSync(settingsFile(), 'utf8'); } catch { settingsBroken = null; settingsHash = null; return {}; }
+  settingsHash = hashText(t);
+  try { const j = JSON.parse(t); if (!j || typeof j !== 'object' || Array.isArray(j)) throw new Error('not an object'); settingsBroken = null; return j; } catch {
+    settingsBroken = 'settings.json could not be read, so nothing was saved over it. Your previous settings (settings.json.bak) are used until you fix or remove it.';
+    try { const b = JSON.parse(fs.readFileSync(`${settingsFile()}.bak`, 'utf8')); return b && typeof b === 'object' && !Array.isArray(b) ? b : {}; } catch { return {}; }
+  }
 }
+// The settings change log (Settings › Saved data): time, what changed (old -> new) and who.
+let settingsLogStore = null;
+const settingsLog = () => (settingsLogStore ||= createSettingsLog(path.join(dataDir(), 'settings-log.json')));
 const settingsDisk = {
   changed: () => { try { return hashText(fs.readFileSync(settingsFile(), 'utf8')) !== settingsHash; } catch { return false; } },
-  keep: () => { settingsMem = loadSettingsFile(); return readSettings(); },
-  discard: () => { writeSettings(settingsMem || {}); return readSettings(); },
+  // The owner chose to keep a change made outside the app: logged as his choice.
+  keep: () => { const before = readSettings(); settingsMem = loadSettingsFile(); settingsLog().add(diffSettings(before, readSettings()), 'you kept a change made outside the app'); return readSettings(); },
+  discard: () => { const outside = (() => { try { return JSON.parse(fs.readFileSync(settingsFile(), 'utf8')); } catch { return null; } })(); writeRawSettings(settingsMem || {}); if (outside) settingsLog().add(diffSettings(normalSettings(outside), readSettings()), 'you undid a change made outside the app'); return readSettings(); },
 };
+// After every AI turn: if settings.json changed on disk while the AI worked, the owner's
+// settings are put back at once (the changed file is kept next to it) and the log says who.
+function guardSettings(who) {
+  if (!settingsDisk.changed()) return null;
+  let outside = null;
+  try { const t = fs.readFileSync(settingsFile(), 'utf8'); fs.writeFileSync(`${settingsFile()}.changed-${Date.now()}`, t, { mode: 0o600 }); outside = JSON.parse(t); } catch {}
+  writeRawSettings(settingsMem || {});
+  const changes = outside ? diffSettings(readSettings(), normalSettings(outside)) : [];
+  settingsLog().add(changes.length ? changes : [{ key: 'settings.json', path: ['settings.json'], from: 'your settings', to: 'changed on disk' }], `${who} changed settings.json during a chat turn; undone`);
+  return { undone: true, keys: changes.map((c) => c.key) };
+}
 // Main-side settings: the renderer can never hand us an arbitrary path to run in.
 function readSettings() {
   if (settingsMem === null) settingsMem = loadSettingsFile();
-  const s = settingsMem;
+  return normalSettings(settingsMem);
+}
+// The saved values with every default filled in at read time (the defaults are never saved).
+function normalSettings(s) {
   return {
     project: typeof s.project === 'string' ? s.project : null,
     projects: Array.isArray(s.projects) ? s.projects.filter((p) => typeof p === 'string') : (typeof s.project === 'string' ? [s.project] : []),
@@ -170,7 +199,16 @@ function useProject(dir) {
 function sameDocument(a, b) {
   try { const x = new URL(a), y = new URL(b); return x.protocol === y.protocol && x.host === y.host && x.pathname === y.pathname; } catch { return false; }
 }
-function writeSettings(s) {
+// Saves only what really changed (merge-on-write into the saved file): a click on one
+// switch never writes the other settings' defaults. Every change is logged with who made it.
+function writeSettings(s, by = 'you, in the app') {
+  const changes = diffSettings(readSettings(), s);
+  if (!changes.length) return;
+  writeRawSettings(applyChanges(settingsMem || {}, changes));
+  settingsLog().add(changes, by);
+}
+function writeRawSettings(s) {
+  if (settingsBroken) throw new Error(settingsBroken);
   fs.mkdirSync(dataDir(), { recursive: true, mode: 0o700 });
   const data = JSON.stringify(s, null, 2);
   const tmp = `${settingsFile()}.tmp-${process.pid}`;
@@ -825,15 +863,16 @@ function registerIpc() {
     if (sha !== null && (await workspace.git(dir, ['rev-parse', 'HEAD'])).out !== sha) return { ok: false, message: 'The task branch changed after it was approved. Nothing was merged; review it again.' };
     // The lead's approval (only while the owner's switch is on, checked here) is the same
     // single Approve-to-merge step, without the owner's confirmation box. Never a release.
+    // The owner's rule: merging always asks him. The old "Lead may merge" switch only lets the
+    // lead ask; it never skips this native box (it did in 1.4–1.7).
     if (opts?.byLead === true) {
       if (s.leadActions !== true) return { ok: false, message: 'The lead switch is off.' };
       if (s.leadMerge !== true) return { ok: false, message: 'Lead may merge to main is off.' };
       if (!sha) return { ok: false, message: 'No approved commit recorded; the lead cannot merge it.' };
-      return gitops.mergeApproved(s.project, branch, sha);
     }
     const confirm = dialog.showMessageBoxSync(mainWindow, {
       type: 'warning',
-      message: `Merge ${branch} into the main branch and push it to GitHub?`,
+      message: `${opts?.byLead === true ? 'The lead asks: ' : ''}Merge ${branch} into the main branch and push it to GitHub?`,
       detail: 'This changes the main branch of your project. If it touches booting, make sure the previous version stays startable.',
       buttons: ['Merge and push', 'Cancel'],
       defaultId: 1,
@@ -915,15 +954,15 @@ function registerIpc() {
     if (!s.project) return { ok: false, message: 'Pick a project first.' };
     const n = Number(number);
     const sha = typeof opts?.sha === 'string' ? opts.sha : null;
+    // Always asks the owner, also when the lead asked (the switch never skips this box).
     if (opts?.byLead === true) {
       if (s.leadActions !== true) return { ok: false, message: 'The lead switch is off.' };
       if (s.leadMerge !== true) return { ok: false, message: 'Lead may merge to main is off.' };
       if (!sha) return { ok: false, message: 'No approved commit recorded; the lead cannot merge it.' };
-      return gitops.prMerge(s.project, n, sha);
     }
     const confirm = dialog.showMessageBoxSync(mainWindow, {
       type: 'warning',
-      message: `Merge pull request #${n} on GitHub?`,
+      message: `${opts?.byLead === true ? 'The lead asks: ' : ''}Merge pull request #${n} on GitHub?`,
       detail: 'You approved this in Hearth AI Command Center. This changes the base branch (usually main). If it touches booting, make sure the previous version stays startable.',
       buttons: ['Merge pull request', 'Cancel'],
       defaultId: 1,
@@ -1000,9 +1039,17 @@ function registerIpc() {
   handle('updater:download', () => updater.download());
   handle('updater:install', () => updater.install());
   handle('updater:restart', () => updater.restart());
+  // The settings change log (Settings › Saved data).
+  handle('settings:log', () => ({ ...settingsLog().list(), broken: settingsBroken || settingsLog().list().broken || null }));
   registerOps();
   registerV2();
   registerParity();
+  teamCheck.register({
+    handle, agents, readSettings, dataDir,
+    methodOf: (agent) => (TEAMMATES.includes(agent) || API_ONLY.includes(agent) ? 'api' : (LIVE_PROVIDERS.includes(agent) && readSettings().connection[agent] === 'api') ? 'api' : 'cli'),
+    guardSettings, logChange: (changes, by) => settingsLog().add(changes, by),
+    protectFiles: () => [settingsFile(), `${settingsFile()}.bak`, path.join(dataDir(), 'settings-log.json')],
+  });
 }
 
 let parityApi = null;
@@ -1029,6 +1076,7 @@ function registerV2() {
     projects: () => ops.projectsList(),
     stateFileFor: (id) => ops.projectStateFile(id),
     extraAgents: TEAMMATES,
+    guardSettings,
     apiConnected: (agent) => TEAMMATES.includes(agent) || API_ONLY.includes(agent) || (LIVE_PROVIDERS.includes(agent) && readSettings().connection[agent] === 'api'),
     callApi: async (agent, model, prompt, signal) => {
       if (TEAMMATES.includes(agent)) return parityApi ? parityApi.teammates.chat(agent, { prompt, model, signal }) : { ok: false, error: { kind: 'auth', message: 'Not ready.' } };

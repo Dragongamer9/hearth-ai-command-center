@@ -26,18 +26,18 @@ const ready = new Promise((resolve) => {
   }).listen(0, '127.0.0.1', () => resolve());
 });
 
-test('Gemini CLI: plan vs edit mode, JSON parsing, quota = usage limit', async () => {
+test('Gemini CLI: default (read) vs auto_edit, never yolo; JSON parsing, quota = usage limit', async () => {
   await ready;
   const agents = require('../electron/agents.cjs');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hearth-g-'));
   const bin = path.join(FIX, 'gemini');
-  let r = await agents.runAgent({ agent: 'google', prompt: 'x', cwd: dir, mode: 'read', bin });
+  let r = await agents.runAgent({ agent: 'google', prompt: 'x', cwd: dir, mode: 'read', bin, runDir: dir });
   assert.ok(r.ok, JSON.stringify(r));
-  assert.match(r.text, /plan mode/);
-  r = await agents.runAgent({ agent: 'google', prompt: 'x', cwd: dir, mode: 'edit', bin });
+  assert.match(r.text, /default mode/);
+  r = await agents.runAgent({ agent: 'google', prompt: 'x', cwd: dir, mode: 'edit', bin, runDir: dir });
   assert.match(r.text, /auto_edit mode/);
-  r = await agents.runAgent({ agent: 'google', prompt: 'x', cwd: dir, mode: 'full', bin });
-  assert.match(r.text, /yolo mode/);
+  r = await agents.runAgent({ agent: 'google', prompt: 'x', cwd: dir, mode: 'full', bin, runDir: dir });
+  assert.match(r.text, /auto_edit mode/, 'Full access never means yolo for Gemini');
   assert.equal(r.via, 'Gemini CLI');
   process.env.FAKE_GEMINI_LIMIT = '1';
   r = await agents.runAgent({ agent: 'google', prompt: 'x', cwd: dir, mode: 'edit', bin });
