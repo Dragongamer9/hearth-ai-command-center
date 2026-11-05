@@ -76,6 +76,17 @@ const ownerName = () => S.settings.ownerIdentity?.name || S.gh.ghUser || 'Dragon
 const team = () => teamOf(S.settings.team);
 
 // ---------- AIs ----------
+// Missing quick-check tools above the message box: each tool once, and it can be hidden (it
+// comes back only when the list of missing tools changes). Look only: nothing is saved in settings.
+function missingList() { return [...new Set((S.missing || []).filter((x) => x.missing).map((x) => x.tool))]; }
+function missingNote() {
+  const tools = missingList();
+  if (!S.build || !tools.length) return '';
+  let hidden = null;
+  try { hidden = localStorage.getItem('hearth.v2.missingHidden'); } catch {}
+  if (hidden === tools.join(',')) return '';
+  return `<div class="cnote warn">${icon('flag', 'sm')}<span>Not installed on this PC: ${esc(tools.join(', '))}. Those checks run in GitHub Actions instead.</span><button class="mini" data-a="missing-hide" title="Hide until this list changes">Hide</button></div>`;
+}
 function method(a) { return AGENTS[a]?.kind === 'api' ? 'api' : S.settings.connection?.[a] === 'api' ? 'api' : 'cli'; }
 function ready(a) {
   if (!AGENTS[a]?.headless) return false;
@@ -1090,7 +1101,7 @@ function composer(placeholder) {
   return `${c?.rp ? rpBar(c) : ''}<div class="composer ${busy ? 'busy' : ''}" id="composer-box">
     ${thumbs ? `<div class="thumbs">${thumbs}</div>` : ''}
     ${c && !c.rp && !(c.repo || c.repoDir) ? `<div class="cnote" id="no-push-note">${icon('gh', 'sm')}<span>This chat has no repo, so the team can't commit or push anything. Connect a repo if the work should go to GitHub.</span><button class="mini" data-a="repo-pop">Connect a repo</button></div>` : ''}
-    ${S.build && S.missing?.some((x) => x.missing) ? `<div class="cnote warn">${icon('flag', 'sm')}<span>Not installed on this PC: ${esc(S.missing.filter((x) => x.missing).map((x) => x.tool).join(', '))}. Those checks run in GitHub Actions instead.</span></div>` : ''}
+    ${missingNote()}
     ${S.deep || S.talk ? `<div class="modes">${S.deep ? `<button class="chip on" data-a="toggle-deep" title="Turn deep research off">${icon('globe', 'sm')}Deep research ×</button>` : ''}${S.talk ? `<button class="chip on" data-a="toggle-talk" title="Turn talk mode off">${icon('mic', 'sm')}Talk mode ×</button>` : ''}</div>` : ''}
     <textarea id="composer" rows="1" placeholder="${esc(placeholder)}" aria-label="Message">${esc(S.draft)}</textarea>
     <div class="row">
@@ -1668,7 +1679,7 @@ function teamTestBox() {
 function missingBox() {
   const miss = (S.missing || []).filter((x) => x.missing);
   if (!miss.length) return S.missing?.length ? '<div class="fine">Every quick check\'s tool is installed on this PC.</div>' : '';
-  return `<div class="note warn" id="missing-tools">${icon('flag', 'sm')}<div><b>Not installed on this PC:</b> ${miss.map((x) => `<span class="chip">${esc(x.tool)}</span>`).join(' ')}<div class="fine">${miss.map((x) => esc(x.check)).join(', ')} can't run here. The AIs are told to leave them to GitHub Actions (push to the chat's branch). Or install ${esc(miss.map((x) => x.tool).join(', '))} and press Re-check.</div></div><button class="mini" data-a="tab" data-t="tools">Re-check</button></div>`;
+  return `<div class="note warn" id="missing-tools">${icon('flag', 'sm')}<div><b>Not installed on this PC:</b> ${[...new Set(miss.map((x) => x.tool))].map((t) => `<span class="chip">${esc(t)}</span>`).join(' ')}<div class="fine">${miss.map((x) => esc(x.check)).join(', ')} can't run here. The AIs are told to leave them to GitHub Actions (push to the chat's branch). Or install ${esc([...new Set(miss.map((x) => x.tool))].join(', '))} and press Re-check.</div></div><button class="mini" data-a="tab" data-t="tools">Re-check</button></div>`;
 }
 // ---- Settings › Permissions ----
 function leadSwitchesNote(s) {
@@ -1844,6 +1855,7 @@ document.addEventListener('click', async (ev) => {
     case 'habitat': S.view = 'habitat'; S.pane = null; S.pop = null; if (!S.habitat) { const h = await call('habitatGet'); S.habitat = h?.store || null; } return render(true);
     case 'settings': S.view = 'settings'; S.pane = null; render(true); return loadSection(S.tab);
     case 'tab': S.tab = d.t; render(); return loadSection(d.t);
+    case 'missing-hide': { try { localStorage.setItem('hearth.v2.missingHidden', missingList().join(',')); } catch {} render(); return; }
     case 'chat-menu': ev.stopPropagation(); { const r = a.getBoundingClientRect(); S.pop = { kind: 'menu', id: d.id, x: Math.min(r.left, window.innerWidth - 260), y: Math.min(r.bottom + 4, window.innerHeight - 400) }; } return renderOverlay();
     case 'chat-act': return chatAction(d.k, d.id);
     case 'close-pop': S.pop = null; S.pickRepo = null; S.pickBranch = null; return renderOverlay();
