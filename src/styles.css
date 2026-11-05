@@ -610,3 +610,11 @@ tr.open td { background: var(--accent-soft); }
 .chat-note { max-width: 760px; width: 100%; margin: 4px auto 0; padding: 0 28px; font-size: 12.5px; color: var(--muted); }
 .chat-note.warn { color: var(--warn); }
 .newchat-tb { color: var(--strong); }
+
+/* ---------- Claude acts for you, with permission ---------- */
+.ask.act .facts .pill { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.act-modal .act-what { font-size: 15px; font-weight: 600; color: var(--strong); margin: 6px 0 10px; }
+.act-modal .act-facts { width: 100%; border-collapse: collapse; font-size: 13px; }
+.act-modal .act-facts td { padding: 5px 8px 5px 0; border-top: 1px solid var(--line); vertical-align: top; }
+.act-modal .act-facts td:first-child { width: 120px; }
+.sysin .ask { text-align: left; }

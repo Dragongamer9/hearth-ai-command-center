@@ -59,7 +59,7 @@ test('titles from the first message; newest first', () => {
 
 test('the window never trusts a saved chat workspace: the main process picks and verifies it every round', () => {
   assert.doesNotMatch(ui, /state\.chatWs\s*=/, 'state.chatWs is never assigned (saved data is left as it is)');
-  assert.match(ui, /api\.ensureChatWorkspace\(state\.projectId\)/);
+  assert.match(ui, /api\.ensureChatWorkspace\?\.\(state\.projectId\)/);
   assert.match(ui, /r\.projectId === state\.projectId/);
   assert.match(ui, /if \(ui\.switching\) return saveChain;/, 'nothing is saved while switching');
   assert.match(ui, /state\.projectId = saved\?\.projectId/, 'state is stamped with the project it was loaded for');

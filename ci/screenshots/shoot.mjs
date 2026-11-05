@@ -125,9 +125,24 @@ function stub(opts) {
   const ok = async (v) => v;
   const search = (q = '', f = {}) => history.filter((c) => (f.provider && f.provider !== 'all' ? c.provider === f.provider : true) && (f.source && f.source !== 'all' ? (f.source === 'import' ? c.source.startsWith('import') : c.source === f.source) : true) && (!q || JSON.stringify(c).toLowerCase().includes(q.toLowerCase()))).map((c) => ({ ...c, snippet: c.messages[c.messages.length - 1].text.slice(0, 140), messages: undefined }));
   window.__shots = { signinXai: () => { xaiChecks = 1; } };
+  const chatList = [
+    { id: 'team-default', team: true, title: 'team chat', projectId: 'default', createdAt: ago(900), updatedAt: ago(4) },
+    { id: 'c00000boot1', title: 'Boot menu after 0.6.53', titleAuto: false, projectId: 'default', createdAt: ago(60), updatedAt: ago(30) },
+    { id: 'c00000idea2', title: 'Weekend ideas', titleAuto: false, projectId: null, createdAt: ago(3000), updatedAt: ago(2000) },
+  ];
+  const chatFiles = { c00000boot1: [{ id: 'B1', who: 'owner', at: ago(31), text: 'Why does the boot menu disappear after 0.6.53?' }, { id: 'B2', who: 'anthropic', at: ago(30), model: 'Claude Code', text: 'The boot entry is written before the new kernel is in place. I can fix it on a task branch and keep the previous version startable.' }], c00000idea2: [] };
   window.hearth = {
     loadState: () => ok(JSON.parse(JSON.stringify(state))),
     saveState: (st) => { window.__saved = JSON.parse(JSON.stringify(st)); return ok(true); },
+    // Chats: the project's team chat plus two separate chats (one with no project).
+    chatsList: () => ok({ list: chatList, notices: [] }),
+    chatsGet: (id) => ok({ ok: true, messages: chatFiles[id] || [], sessions: {} }),
+    chatsSave: (id, d) => { chatFiles[id] = d.messages; return ok(true); },
+    chatsCreate: (pid) => { const e = { id: `c${String(chatList.length).padStart(10, '0')}`, title: 'New chat', titleAuto: true, projectId: pid, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }; chatList.unshift(e); chatFiles[e.id] = []; return ok(e); },
+    chatsUpdate: (id, p) => { const e = chatList.find((c) => c.id === id); Object.assign(e, p); return ok({ ...e }); },
+    ensureChatWorkspace: (pid) => ok({ ok: true, id: 'CHATB9YUUL', branch: 'hearth/chatb9yuul-team-chat', projectId: pid }),
+    stateHealth: () => ok({ ok: true, notices: [] }),
+    opsProjects: () => ok({ active: 'default', list: !populated ? [] : [{ id: 'default', name: 'hearth-os', dir: settings.project, settings: { nextVersion: '' } }, { id: 'b7c1d2e3', name: 'beacon', dir: '/home/owner/HearthProjects/beacon', settings: { nextVersion: '' } }] }),
     appInfo: () => ok({ appVersion: '0.4.0', hearthOs: populated ? { name: 'Hearth OS 1.0', version: '1.0' } : null, dataPath: '/home/owner/.config/Hearth AI Command Center', electron: '45.0.0', packaged: true }),
     backups: () => ok({ recoveredFrom: null, backups: populated ? [{ n: 1, ok: true, savedAt: ago(60), tasks: 6 }, { n: 2, ok: true, savedAt: ago(240), tasks: 5 }] : [] }),
     restoreBackup: () => ok(state), exportAll: () => ok({ ok: false }),
@@ -179,7 +194,7 @@ async function session(name, opts, steps, b = browser) {
     console.log('saved', f);
   };
   // Pages used less often sit under More in the sidebar: open it first when needed.
-  const nav = async (v) => { const sel = `.side [data-nav="${v}"]`; if (!(await page.locator(sel).count())) { await page.click('.side [data-ui="more"]'); await page.waitForTimeout(150); } await page.click(sel); await page.waitForTimeout(250); };
+  const nav = async (v) => { if (v === 'chat') { await page.click('.side [data-ui="menu-chats"]'); await page.waitForTimeout(250); return; } const sel = `.side [data-nav="${v}"]`; if (!(await page.locator(sel).count())) { await page.click('.side [data-ui="more"]'); await page.waitForTimeout(150); } await page.click(sel); await page.waitForTimeout(250); };
   await steps({ page, shot, nav });
   await ctx.close();
 }
@@ -191,6 +206,14 @@ await session('dark', { scenario: 'populated', theme: 'dark' }, async ({ page, s
   await page.click('[data-togglehist="C3GEMN"]'); await shot('team-chat-edited-message-history');
   await page.hover('.msg:has([data-editmsg="C4GROK"])'); await page.click('[data-editmsg="C4GROK"]'); await shot('team-chat-owner-editing');
   await page.keyboard.press('Escape');
+  // Chats: the list, a separate chat with its project chip, a chat with no project, the narrowed sidebar.
+  await page.click('.side [data-openchat="c00000boot1"]'); await shot('chats-list-and-chat');
+  await page.click('[data-ui="menu-chatproj"]'); await shot('chat-project-chip-menu');
+  await page.keyboard.press('Escape');
+  await page.click('.side [data-openchat="c00000idea2"]'); await shot('chat-no-project-talk-only');
+  check((await page.textContent('.chat')).includes('can’t edit files'), 'a chat with no project says it cannot edit files');
+  await page.click('.side [data-ui="side"]'); await page.click('.side [data-ui="menu-chats"]'); await shot('chats-narrow-sidebar-menu');
+  await page.click('.chats-menu [data-openchat="team-default"]'); await page.click('.side [data-ui="side"]');
   await nav('board'); await shot('board-filled', { full: true });
   await nav('approvals'); await shot('approvals-with-permission');
   await nav('agents'); await shot('agents-compact', { full: true });

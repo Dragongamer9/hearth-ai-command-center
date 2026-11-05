@@ -21,6 +21,7 @@ import { createWorkflow } from './ops/workflow-ui.mjs';
 import { instructionsBlock, recordReview, holdApproval, useHeldApproval, recordTest, shouldPing, lastReview } from './ops/workflow.mjs';
 import { teamHabitat, teamHabitatLine } from './habitat/status.mjs';
 import { icon } from './icons.mjs';
+import { ACT_AGENT, parseActLines, makeActRequest, describe as describeAct, typedDecision, stillValid, settle, undoEntry } from './ops/actforme.mjs';
 import { isTeam, teamChatId, sortChats, autoTitle, pickOpenChat, openPlan, savePlan, chatEditRule } from './chats.mjs';
 
 const api = window.hearth;
@@ -273,6 +274,158 @@ async function checkHealth() {
 }
 function chatTitle(c) { return c.team ? `${(ops.projectsList?.().list || []).find((x) => x.id === c.projectId)?.name || 'Project'} team chat` : c.title || 'New chat'; }
 function chatProjName(c) { return c.projectId ? (ops.projectsList?.().list || []).find((x) => x.id === c.projectId)?.name || 'missing project' : 'No project'; }
+
+// ---------- "Claude can do everything I can (asks me first every time)" ----------
+// Claude asks with ACT FOR OWNER lines; each request waits for the owner's yes (popup or
+// typed in that chat), is bound to its project, chat, target and commit, expires after
+// 30 minutes and is used once. The action itself runs through the owner's own buttons.
+const actPending = () => (state.actRequests || []).filter((r) => r.status === 'pending');
+function actLines(agent, text) {
+  const cmds = parseActLines(text);
+  if (!cmds.length) return;
+  state.actRequests = state.actRequests || [];
+  const projName = projectName();
+  for (const cmd of cmds) {
+    const r = cmd.kind === 'unknown' ? { ok: false, reason: 'unknown action' } : makeActRequest(cmd, {
+      agent, on: settings.actForMe === true, projectId: state.projectId, chatId: chatsState.open, nextVersion: ops.syncPowers()?.nextVersion || '',
+      tasks: state.tasks, permissions: state.permissions, settings, projectSettings: ((ops.projectsList?.().list || []).find((x) => x.id === state.projectId) || {}).settings || {},
+      agents: AGENT_IDS, shaOf: (t) => (t.ws ? approvedSha(t) || t.runs?.slice(-1)[0]?.head || null : null), now: Date.now(),
+    });
+    ops.actionResult(agent, cmd.raw, r.ok, r.ok ? `waiting for your yes (${r.request.id})` : r.reason);
+    if (!r.ok) {
+      if (settings.actForMe === true) audit(`${NAMES[agent]} asked to act for you: refused`, null, `${cmd.raw}: ${r.reason}`, agent);
+      continue;
+    }
+    const req = r.request;
+    state.actRequests.push(req);
+    state.actRequests = state.actRequests.slice(-100);
+    const d = describeAct(req, { projectName: projName });
+    audit(`${NAMES[agent]} asked to act for you`, req.taskId || null, `${req.id}: ${d.what} (waiting for your yes)`, agent);
+    post({ who: 'system', actReq: req.id, text: `${NAMES[agent]} asks to act for you: ${d.what}. Allow or deny below, or type yes or no.` });
+    if (!ui.modal && !ui.lightbox) { ui.modal = 'act'; ui.actReq = req.id; }
+  }
+}
+function actCard(req) {
+  const d = describeAct(req, { projectName: projectName() });
+  const st = req.status;
+  const expired = st === 'pending' && Date.now() > Date.parse(req.expiresAt);
+  return `<div class="ask act ${st}">
+    <div class="hd"><span class="ic">${icon(st === 'pending' ? 'shield' : st === 'allowed' ? 'check' : 'x')}</span><div style="flex:1;min-width:0"><div class="w">${esc(d.what)}</div><div class="k">${st === 'pending' ? 'Claude asks to act for you' : st === 'allowed' ? 'Allowed by you' : st === 'denied' ? 'Denied by you' : `Not done: ${esc(req.reason || '')}`} · ${esc(req.id)}${req.how ? ` · ${req.how === 'typed' ? 'you typed it' : 'popup'}` : ''}</div></div></div>
+    <div class="facts">${d.facts.map(([k, v]) => `<span class="pill" title="${esc(k)}">${esc(k)}: ${esc(v)}</span>`).join('')}</div>
+    ${st === 'pending' && !expired ? `<div class="ft"><button class="btn small primary" data-actallow="${esc(req.id)}">Allow</button><button class="btn small" data-actdeny="${esc(req.id)}">Deny</button><button class="btn small ghost" data-actview="${esc(req.id)}">Details</button><span class="grow"></span><span class="faint">or type <b>yes</b> / <b>no</b> here · expires ${esc(time(req.expiresAt))}</span></div>`
+      : st === 'pending' ? '<div class="ft"><span class="faint">Expired: nothing was done. Claude can ask again.</span></div>' : ''}
+  </div>`;
+}
+function actModal() {
+  const req = (state.actRequests || []).find((r) => r.id === ui.actReq);
+  if (!req) { ui.modal = null; return ''; }
+  const d = describeAct(req, { projectName: projectName() });
+  return `<div class="modal-bg" data-modalbg><div class="modal act-modal" role="dialog" aria-label="Claude asks to act for you">
+    <h2>Claude asks to act for you</h2>
+    <div class="act-what">${esc(d.what)}</div>
+    <table class="act-facts"><tbody>${d.facts.map(([k, v]) => `<tr><td class="faint">${esc(k)}</td><td class="${/Commit|Branch|value/.test(k) ? 'mono' : ''}">${esc(v)}</td></tr>`).join('')}<tr><td class="faint">Expires</td><td>${esc(time(req.expiresAt))} (or when the project or chat changes)</td></tr></tbody></table>
+    <p class="muted" style="font-size:12.5px">This allows only this one action, for exactly this ${req.sha ? 'commit' : req.key ? 'value' : 'target'}. Recorded in the Audit log.${req.key ? ' You can undo it in one click afterwards.' : ''}</p>
+    ${req.status === 'pending' ? `<div class="row" style="margin-top:14px;justify-content:flex-end"><button class="btn" data-actdeny="${esc(req.id)}">Deny</button><button class="btn primary" data-actallow="${esc(req.id)}">Allow</button></div>` : `<div class="row" style="justify-content:flex-end"><span class="faint">${esc(req.status)}</span><button class="btn" data-cancel>Close</button></div>`}
+  </div></div>`;
+}
+// The owner's answer. Allow runs the action only if it is still exactly what was asked.
+async function decideAct(id, decision, how) {
+  const req = (state.actRequests || []).find((r) => r.id === id);
+  if (!req) return toast('That request is gone.');
+  if (ui.modal === 'act') ui.modal = null;
+  if (req.status !== 'pending') { render(); return toast(`Already ${req.status}.`); }
+  const d = describeAct(req, { projectName: projectName() });
+  if (decision !== 'allow') {
+    settle(req, 'deny', { how });
+    audit('Owner denied a Claude request', req.taskId || null, `${req.id}: ${d.what} (${how})`);
+    post({ who: 'system', text: `You denied ${req.id}: ${d.what}. Nothing was done.` });
+    save();
+    return render();
+  }
+  const t = req.taskId ? state.tasks.find((x) => x.id === req.taskId) : null;
+  const cur = { now: Date.now(), projectId: state.projectId, chatId: chatsState.open, nextVersion: ops.syncPowers()?.nextVersion || '' };
+  if (req.sha && t?.ws) cur.sha = await api.workspaceHead(t.id).catch(() => null);
+  if (req.key) cur.settingNow = req.kind === 'setting' ? settings[req.key] : (((ops.projectsList?.().list || []).find((x) => x.id === state.projectId) || {}).settings || {})[req.key];
+  if (req.taskId && !t) { settle(req, 'refused', { how, reason: `T-${req.taskId} is gone` }); save(); return render(); }
+  const v = stillValid(req, cur);
+  if (!v.ok) {
+    settle(req, 'refused', { how, reason: v.reason });
+    audit('Claude request not done', req.taskId || null, `${req.id}: ${d.what}: ${v.reason}`);
+    post({ who: 'system', text: `${req.id} was not done: ${v.reason}. Nothing changed.` });
+    save();
+    return render();
+  }
+  settle(req, 'allow', { how });
+  audit('Owner allowed a Claude request', req.taskId || null, `${req.id}: ${d.what} (${how}${req.sha ? ` at ${String(req.sha).slice(0, 7)}` : ''})`);
+  post({ who: 'system', text: `You allowed ${req.id}: ${d.what}. Doing it now.` });
+  save();
+  render();
+  const r = await runAct(req, t).catch((e) => ({ ok: false, message: cleanErr(e.message) }));
+  if (r && r.ok === false) {
+    req.result = r.message;
+    audit('Claude request failed', req.taskId || null, `${req.id}: ${r.message}`);
+    post({ who: 'system', text: `${req.id} stopped: ${r.message}` });
+  }
+  save();
+  render();
+}
+// Each action through the owner's own button or call (the same checks as when he clicks).
+function ownerClick(attr, value) {
+  const b = document.createElement('button');
+  b.dataset[attr] = value;
+  b.hidden = true;
+  document.body.appendChild(b);
+  b.click();
+  b.remove();
+}
+async function runAct(req, t) {
+  switch (req.kind) {
+    case 'approve': return ownerClick('approve', t.id);
+    case 'merge': return t.ws ? ownerClick('approvemerge', t.id) : ownerClick('approve', t.id);
+    case 'reject': return ownerClick('reject', t.id);
+    case 'changes': requestChanges(t, { by: 'owner', reason: req.note || 'Claude asked; you allowed it', at: now() }); return setStage(t, 'implementing', 'Changes requested', `Sent back to implementer (Claude asked; you allowed ${req.id})`);
+    case 'push': { const r = await api.gitPushTask(t.id).catch((e) => ({ ok: false, message: cleanErr(e.message) })); audit(r.ok ? 'Pushed to GitHub' : 'Push failed', t.id, r.message || ''); return r.ok ? null : r; }
+    case 'pr': return ownerClick('openpr', t.id);
+    case 'start': return startOrQueue(t, t.assignee);
+    case 'stop': return ownerClick('stop', t.id);
+    case 'assign': assignTask(t, req.agent, `Claude asked; you allowed ${req.id}`); return null;
+    case 'allow': return decide(req.permId, 'approved', 'Owner');
+    case 'deny': return decide(req.permId, 'denied', 'Owner');
+    case 'release': case 'tag': {
+      const r = await api.opsActRelease(req.kind, req.version, req).catch((e) => ({ ok: false, message: cleanErr(e.message) }));
+      if (!r?.ok) return { ok: false, message: r?.message || 'not available' };
+      audit(`${req.kind === 'tag' ? 'Tagged' : 'Released'} v${req.version} (Claude asked; you allowed it)`, null, r.message);
+      post({ who: 'system', text: r.message });
+      if (r.dispatched) ops.watchRelease(req.version);
+      wf.madeTag?.(req.version);
+      return null;
+    }
+    case 'setting': case 'projectsetting': {
+      const r = req.kind === 'setting' ? await api.setSettings({ [req.key]: req.after }).catch((e) => ({ message: cleanErr(e.message) })) : await api.opsProjectSettings({ [req.key]: req.after }).catch((e) => ({ ok: false, message: cleanErr(e.message) }));
+      if (!r || r.message || r.ok === false) return { ok: false, message: r?.message || 'not changed' };
+      if (req.kind === 'setting') { settings = r; setApprovalLevels(r.approvalLevels); ops.syncPowers(); } else await ops.refreshProjects?.();
+      state.actLog = [undoEntry(req), ...(state.actLog || [])].slice(0, 50);
+      audit(`Setting changed by Claude with your yes: ${req.key}`, null, `${JSON.stringify(req.before)} → ${JSON.stringify(req.after)} (${req.id}; Undo in Settings › Team)`);
+      post({ who: 'system', text: `${req.key} is now ${JSON.stringify(req.after)} (was ${JSON.stringify(req.before)}). Changed by Claude with your yes; Undo in Settings › Team.`, actUndo: req.id });
+      return null;
+    }
+    default: return { ok: false, message: 'unknown action' };
+  }
+}
+// One-click undo of a setting Claude changed with the owner's yes.
+async function undoAct(id) {
+  const e = (state.actLog || []).find((x) => x.id === id);
+  if (!e || e.undone) return;
+  if (e.scope === 'project' && e.projectId !== state.projectId) return toast('That setting belongs to another project; switch to it to undo.');
+  const r = e.scope === 'app' ? await api.setSettings({ [e.key]: e.before }).catch((err) => ({ message: cleanErr(err.message) })) : await api.opsProjectSettings({ [e.key]: e.before }).catch((err) => ({ ok: false, message: cleanErr(err.message) }));
+  if (!r || r.message || r.ok === false) return toast(`Not undone: ${r?.message || 'no answer'}`);
+  if (e.scope === 'app') { settings = r; setApprovalLevels(r.approvalLevels); ops.syncPowers(); } else await ops.refreshProjects?.();
+  e.undone = true;
+  e.undoneAt = now();
+  audit(`Owner undid a setting Claude changed: ${e.key}`, null, `${JSON.stringify(e.after)} → ${JSON.stringify(e.before)}`);
+  save();
+  render();
+}
 
 function audit(event, taskId, detail = '', actor = 'owner') {
   state.audit.unshift({ id: uid(), at: now(), actor, event, taskId, detail });
@@ -963,6 +1116,7 @@ function chatCtx() {
     roster: AGENT_IDS.map((id) => ({ id, role: state.roles[id] || DEFAULT_ROLES[id], status: statusText(id) })),
     board: openTasks().map((t) => ({ id: t.id, title: t.title, stage: STAGES[t.stage], assignee: t.assignee, reviewer: t.reviewer, state: RUN_STATES[taskRunState(t, { running: Boolean(ui.running[t.id]) })], queue: queueText(t), truth: t.ws ? wf.truthLine(t) : '' })),
     leadActions: settings.leadActions === true,
+    actForMe: settings.actForMe === true,
     // With the lead switch on, the lead sees what waits for it and its refused actions.
     ...(settings.leadActions === true ? { waiting: waitingForLead({ tasks: state.tasks, permissions: state.permissions, lead: state.lead, running: ui.running, editors: EDITORS }), refusals: state.leadRefusals || [] } : {}),
   };
@@ -1173,7 +1327,9 @@ function chatMessage(m) {
       ${p.taskId ? `<button class="badge good" data-open="${p.taskId}" style="cursor:pointer">✓ T-${esc(p.taskId)} on board</button>` : p.dupOf && state.tasks.some((x) => x.id === p.dupOf) ? '' : `<button class="btn small" data-addprop="${m.id}:${i}">Add to board</button>${EDITORS.includes(p.assignee) ? `<button class="btn small primary" data-startprop="${m.id}:${i}" ${canRun(p.assignee) && settings.project ? '' : 'disabled'}>Add & start</button>` : ''}`}
     </div>`).join('');
   const pending = (m.proposals || []).filter((p) => !p.taskId).length;
-  const asks = (m.asks || []).map((id) => state.permissions.find((p) => p.id === id)).filter(Boolean).map(askCard).join('');
+  const asks = (m.asks || []).map((id) => state.permissions.find((p) => p.id === id)).filter(Boolean).map(askCard).join('')
+    + (m.actReq ? (() => { const r = (state.actRequests || []).find((x) => x.id === m.actReq); return r ? actCard(r) : ''; })() : '')
+    + (m.actUndo ? (() => { const e = (state.actLog || []).find((x) => x.id === m.actUndo); return e ? `<div class="row" style="margin-top:6px">${e.undone ? '<span class="badge">Undone</span>' : `<button class="btn small" data-actundo="${esc(e.id)}">Undo</button>`}</div>` : ''; })() : '');
   const edited = m.edited ? `<span class="edited" data-togglehist="${m.id}" title="Edited ${esc(time(m.editedAt))}${m.editedBy && m.editedBy !== m.who ? ` by ${esc(NAMES[m.editedBy])}` : ''} — click to see earlier versions">(edited)</span>` : '';
   const editing = ui.editing === m.id;
   const body = editing
@@ -1235,7 +1391,7 @@ function chatHeader() {
     <div class="chip-wrap"><button class="proj-chip ${c.projectId ? '' : 'none'}" data-ui="menu-chatproj" aria-expanded="${ui.menu === 'chatproj'}" title="The project this chat is linked to">${icon('folder', 'sm')}<span>${esc(chatProjName(c))}</span>${icon('chev', 'sm')}</button>${menu}</div></div>
     ${rule.unlinked ? `<div class="chat-note">${esc(rule.reason)}</div>` : ''}
     ${chatsState.readOnly ? '<div class="chat-note warn">This chat was damaged; an earlier copy is shown and nothing new is saved to it.</div>' : ''}
-    ${(ui.health || []).length ? `<div class="chat-note warn"><b>Please check your saved data.</b> ${ui.health.map(esc).join(' ')} Nothing was changed; see Settings › Data.</div>` : ''}`;
+    ${(ui.health || []).length ? `<div class="chat-note warn"><b>Please check your saved data.</b> ${ui.health.map(esc).join(' ')} Nothing was changed or repaired; your data is kept exactly as it is until you decide.</div>` : ''}`;
 }
 function viewChat() {
   const live = liveAgents();
@@ -1280,7 +1436,15 @@ async function sendChat() {
   const live = liveAgents();
   const plan = chatPlan(text, live, ui.target, state.lead);
   const who = plan.queue;
-  post({ who: 'owner', text: text.slice(0, 8000), attachments: ui.attach.length ? ui.attach : undefined });
+  const ownerMsg = post({ who: 'owner', text: text.slice(0, 8000), attachments: ui.attach.length ? ui.attach : undefined });
+  // "yes" / "no" typed by the owner answers Claude's request in this chat (nothing else counts).
+  const typed = typedDecision({ ...ownerMsg, text: raw }, actPending().filter((r) => (r.chatId || null) === (chatsState.open || null)));
+  if (typed) {
+    ui.draft = ''; ui.attach = [];
+    if (typed.error) { post({ who: 'system', text: typed.error }); save(); return render(); }
+    ownerMsg.actAnswer = typed.id;
+    return decideAct(typed.id, typed.decision, 'typed');
+  }
   // A new chat is named after its first message (the owner can rename it any time).
   const oc = openChatEntry();
   if (oc && !oc.team && oc.titleAuto && state.chat.filter((m) => m.who === 'owner').length === 1 && autoTitle(raw)) updateChat(oc.id, { title: autoTitle(raw), auto: true }).then(() => render());
@@ -1356,7 +1520,7 @@ async function roomPass(queue, { trigger = '', allow = [], hops = 0, parallel = 
   if (canEdit && queue.length) {
     // Asked of the main process every round: it picks this project's chat workspace and
     // checks that it belongs to this project's repository (a saved id is never trusted).
-    const r = await api.ensureChatWorkspace(state.projectId).catch((e) => ({ ok: false, message: cleanErr(e.message) }));
+    const r = await Promise.resolve(api.ensureChatWorkspace?.(state.projectId)).catch((e) => ({ ok: false, message: cleanErr(e.message) }));
     if (r?.ok && r.projectId === state.projectId) {
       if (r.notice && r.notice !== chatWs?.notice) post({ who: 'system', text: r.notice });
       chatWs = r;
@@ -1478,6 +1642,7 @@ async function chatTurn(agent, { trigger = '', canEdit = false, snapshot = null,
     ops.auditRoutine(agent, d.routine, null);
     await handleVerdicts(agent, d.text);
     handleLeadLines(agent, d.text);
+    actLines(agent, d.text); // ACT FOR OWNER: requests that wait for the owner's yes
     await ops.handleLines(agent, d.text, null, Boolean(edit)); // IMAGE REQUEST / BACKGROUND (jobs edit only if this turn could)
     await wf.lines(agent, d.text); // TASK NOTE / VERIFY / MERGE MAIN / REVERT
     wf.ensureResults(agent, d.text); // no action line without a ✓/✗
@@ -2141,6 +2306,7 @@ function lightbox() {
 
 function modal() {
   if (ui.lightbox) return lightbox();
+  if (ui.modal === 'act') return actModal();
   if (ui.modal !== 'new') return '';
   const opt = (sel, ids) => ids.map((k) => `<option value="${k}" ${k === sel ? 'selected' : ''}>${esc(AGENTS[k].name)}${k !== 'none' && !connected(k) ? ' (not linked)' : ''}</option>`).join('');
   const sug = ops.suggestHint(); // assign by strength and headroom (the owner can change both)
@@ -2767,7 +2933,7 @@ async function syncHistory(quiet = false) {
   if (ui.view === 'history') render();
 }
 
-const CLICK = '[data-openchat],[data-newchat],[data-allchats],[data-chatlink],[data-chatrename],[data-chatrenamesave],[data-chatrenamecancel],[data-sendreview],[data-owneract],[data-updatemain],[data-releasebranch],[data-leadundo],[data-opendup],[data-adddup],[data-stopround],[data-toggleleadgh],[data-attach],[data-unattach],[data-lightbox],[data-closelightbox],[data-testkey],[data-nav],[data-new],[data-open],[data-close],[data-cancel],[data-create],[data-advance],[data-approve],[data-reject],[data-changes],[data-note],[data-delete],[data-savekey],[data-rmkey],[data-ask],[data-export],[data-reset],[data-upd],[data-opinion],[data-modalbg],[data-sendchat],[data-target],[data-addprop],[data-addall],[data-clearchat],[data-method],[data-login],[data-recheck],[data-locate],[data-available],[data-run],[data-stop],[data-freebuff],[data-fbdone],[data-openws],[data-pickproject],[data-autohandoff],[data-restore],[data-install],[data-installall],[data-installollama],[data-startprop],[data-showchanges],[data-dismisssetup],[data-signin],[data-disconnect],[data-toggleagent],[data-ghlogin],[data-gitrefresh],[data-useproject],[data-clone],[data-gitpull],[data-pushbranch],[data-openpr],[data-approvemerge],[data-approvepr],[data-access],[data-togglesetting],[data-adddir],[data-removedir],[data-expand],[data-opensignin],[data-openweb],[data-openexport],[data-makelead],[data-decide],[data-editmsg],[data-delmsg],[data-saveedit],[data-canceledit],[data-togglehist],[data-checkin],[data-histscan],[data-histimport],[data-histopen],[data-histresume],[data-histweb],[data-histwebin],[data-histremove],[data-prlist],[data-prrefresh],[data-release],[data-theme]';
+const CLICK = '[data-actallow],[data-actdeny],[data-actview],[data-actundo],[data-openchat],[data-newchat],[data-allchats],[data-chatlink],[data-chatrename],[data-chatrenamesave],[data-chatrenamecancel],[data-sendreview],[data-owneract],[data-updatemain],[data-releasebranch],[data-leadundo],[data-opendup],[data-adddup],[data-stopround],[data-toggleleadgh],[data-attach],[data-unattach],[data-lightbox],[data-closelightbox],[data-testkey],[data-nav],[data-new],[data-open],[data-close],[data-cancel],[data-create],[data-advance],[data-approve],[data-reject],[data-changes],[data-note],[data-delete],[data-savekey],[data-rmkey],[data-ask],[data-export],[data-reset],[data-upd],[data-opinion],[data-modalbg],[data-sendchat],[data-target],[data-addprop],[data-addall],[data-clearchat],[data-method],[data-login],[data-recheck],[data-locate],[data-available],[data-run],[data-stop],[data-freebuff],[data-fbdone],[data-openws],[data-pickproject],[data-autohandoff],[data-restore],[data-install],[data-installall],[data-installollama],[data-startprop],[data-showchanges],[data-dismisssetup],[data-signin],[data-disconnect],[data-toggleagent],[data-ghlogin],[data-gitrefresh],[data-useproject],[data-clone],[data-gitpull],[data-pushbranch],[data-openpr],[data-approvemerge],[data-approvepr],[data-access],[data-togglesetting],[data-adddir],[data-removedir],[data-expand],[data-opensignin],[data-openweb],[data-openexport],[data-makelead],[data-decide],[data-editmsg],[data-delmsg],[data-saveedit],[data-canceledit],[data-togglehist],[data-checkin],[data-histscan],[data-histimport],[data-histopen],[data-histresume],[data-histweb],[data-histwebin],[data-histremove],[data-prlist],[data-prrefresh],[data-release],[data-theme]';
 
 document.addEventListener('click', async (e) => {
   const el = e.target.closest(CLICK);
@@ -2776,6 +2942,10 @@ document.addEventListener('click', async (e) => {
   const task = (id) => state.tasks.find((t) => t.id === id);
 
   if (d.modalbg !== undefined && e.target === el) { ui.modal = null; return render(); }
+  if (d.actallow) return decideAct(d.actallow, 'allow', ui.modal === 'act' ? 'popup' : 'card');
+  if (d.actdeny) return decideAct(d.actdeny, 'deny', ui.modal === 'act' ? 'popup' : 'card');
+  if (d.actview) { ui.modal = 'act'; ui.actReq = d.actview; return render(); }
+  if (d.actundo) return undoAct(d.actundo);
   if (d.openchat) return openChat(d.openchat);
   if (d.newchat !== undefined) return newChat();
   if (d.allchats !== undefined) { ui.allChats = !ui.allChats; return render(); }
@@ -3454,7 +3624,7 @@ async function boot() {
     const saved = await api.loadState();
     if (saved && Array.isArray(saved.tasks) && Array.isArray(saved.audit)) state = { models: {}, ...saved };
     // The project this window is bound to (the main process refuses saves stamped otherwise).
-    state.projectId = saved?.projectId || null;
+    state.projectId = saved?.projectId || (await Promise.resolve(api.opsProjects?.()).catch(() => null))?.active || null;
     if (!Array.isArray(state.chat)) state.chat = [];
     if (!Array.isArray(state.permissions)) state.permissions = [];
     if (!state.chatSessions) state.chatSessions = {};

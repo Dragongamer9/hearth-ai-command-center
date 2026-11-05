@@ -1,0 +1,25 @@
+# Next release (draft, no version yet: you pick the number)
+
+## Fixed: after switching projects, the team chat could work in the other project's folder
+- When you switched from one project to another, a save from the old project could still arrive after the switch and land in the new project's file. That is how Hearth OS ended up with Command Center's tasks, permissions and chat workspace (CHAT9D7ALX).
+- Now every save carries the project it belongs to. The app refuses a save for any project other than the open one, including one that arrives during a switch. Nothing gets written to the wrong project.
+- The app no longer trusts a saved chat workspace. Before every chat round it picks the open project's workspace and checks that it belongs to that project's repository. If one belongs to another repository, the team never works there. It uses the right workspace and tells you so.
+- Runs, merges, pushes, releases and tags are refused while the window still shows the previous project (that is, until it has reloaded).
+- Switching projects now waits while the team is still replying in a chat. Press Stop or wait, then switch.
+- The app checks whether a project's saved data looks copied from another project. If it does, you'll see a notice at the top of the chat. Nothing is repaired unless you say so.
+
+## New: many chats, each linkable to a project
+- The sidebar has a **Chats** list, newest first, with **+** for a new chat. With the sidebar narrowed, the Chats icon opens the same list. **New chat** is also always in the top bar.
+- Each chat has its own messages and its own AI sessions. A new chat is named after your first message, and you can rename it any time.
+- At the top of each chat, a project chip shows the linked project. Use it to link the chat to another project (the app switches to that project) or to unlink it.
+- A chat with no project can still talk, but the team can't edit files there, and the chat tells you so.
+- Opening a chat that belongs to another project switches to that project first, the same safe way as the project switcher. The board, approvals and Next version on screen always belong to the chat you're in.
+- Your existing team chats are untouched. Each project's team chat appears in the list, linked to its project, with all its messages. New chats are saved in their own files, with a backup each time.
+
+## New: "Claude can do everything I can (asks me first every time)"
+- A new switch in Settings › Team & lead powers. It is off by default. Only you can turn it on, and turning it on asks you to confirm.
+- When it's on, Claude can ask to do any of your actions: approve, reject or request changes, merge, push, open a pull request, start, stop or assign tasks, answer permission requests, release or tag your Next version, and change settings.
+- Nothing happens until you say yes, every single time. You can press **Allow** in the popup, which shows exactly what will happen (the task, branch, commit, project, and for settings the old and new value). Or you can type **yes** (or **no**) in that chat. Only your own typed message counts.
+- A request expires after 30 minutes, or when the project or chat changes. It is tied to the exact commit or value it showed you, so it can't be used for anything else. Every request and every answer goes in the Audit log.
+- These stay yours even with the switch on: version numbers (Claude can only release or tag the Next version you set), the in-app updaters, your identity, and commit authorship.
+- A setting Claude changes with your yes shows who changed it, and you can undo it in one click.

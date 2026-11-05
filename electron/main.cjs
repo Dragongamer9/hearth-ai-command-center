@@ -100,6 +100,8 @@ function readSettings() {
     ownerIdentity: cleanIdentity(s.ownerIdentity),
     // The Habitat 3D view's owner settings (view mode, Lighter 3D, walk view, avatar, study decor, notes).
     view3d: cleanView3d(s.view3d),
+    // "Claude can do everything I can (asks me first every time)". Off unless the owner turns it on.
+    actForMe: s.actForMe === true,
   };
 }
 // Plain JSON only, small; the window normalises the fields (src/habitat3d/map.mjs normPrefs).
@@ -377,6 +379,15 @@ function registerIpc() {
     for (const k of ['leadMerge', 'leadRelease', 'leadTag']) if (k in patch) s[k] = patch[k] === true;
     if ('ownerIdentity' in patch) s.ownerIdentity = cleanIdentity(patch.ownerIdentity);
     if ('view3d' in patch) s.view3d = cleanView3d(patch.view3d);
+    // Only the owner turns it on: a native confirmation the window can't answer for him.
+    if ('actForMe' in patch) {
+      const on = patch.actForMe === true;
+      if (on && !s.actForMe) {
+        const c = dialog.showMessageBoxSync(mainWindow, { type: 'warning', message: 'Let Claude ask to do everything you can?', detail: 'Claude may then ask to approve, merge, push, start or stop tasks, answer permission requests, release or tag your Next version, and change settings. Every single action waits for your yes (a popup, or you typing yes in that chat). Version numbers, the updaters and your identity stay yours. You can turn it off any time.', buttons: ['Turn on', 'Cancel'], defaultId: 1, cancelId: 1 });
+        if (c !== 0) return { ...readSettings(), message: 'Cancelled.' };
+      }
+      s.actForMe = on;
+    }
     writeSettings(s);
     mainWindow.webContents.setZoomFactor(s.textSize / 100);
     return s;

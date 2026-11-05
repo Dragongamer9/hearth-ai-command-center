@@ -73,6 +73,7 @@ function stub() {
     run: () => new Promise(() => {}), cancelRun: () => ok(true), checkpoint: () => ok(null), workspaceSummary: () => ok(''), workspaceHead: () => ok(H2),
     historyScan: () => ok({ ok: true, found: 0 }), historySearch: () => ok([]), historyStats: () => ok({ total: 0, by: {} }),
     themeGet: () => ok({ found: false, dir: '~/.config/hearth', tokens: {}, css: '' }), updaterInfo: () => ok({ enabled: false, reason: '', status: { state: 'idle' } }),
+    ensureChatWorkspace: () => ok({ ok: true, id: 'CHATB9YUUL', branch: 'hearth/chatb9yuul-team-chat', projectId: projects.active }),
     opsProjects: () => ok(projects), opsIdentityDefault: () => ok({ saved: settings.ownerIdentity, suggested: settings.ownerIdentity }),
     opsJobs: () => ok(jobs), opsJobRetry: (id) => ok({ id: 'J7777AAAA', retryOf: id }), opsTruth: (ids) => ok(Object.fromEntries(ids.filter((i) => truth[i]).map((i) => [i, truth[i]]))),
     opsReleasePreview: () => ok(preview), opsRemoteTags: () => ok({ ok: true, tags: [{ name: 'v0.9.0', sha: 'a' }, { name: 'v1.0.0', sha: '34c616d' }] }),
@@ -109,7 +110,7 @@ const shot = async (label, { full = false } = {}) => {
   console.log('saved', f);
 };
 // Pages used less often sit under More in the sidebar: open it first when needed.
-const nav = async (v) => { const sel = `.side [data-nav="${v}"]`; if (!(await page.locator(sel).count())) { await page.click('.side [data-ui="more"]'); await page.waitForTimeout(150); } await page.click(sel); await page.waitForTimeout(400); };
+const nav = async (v) => { if (v === 'chat') { await page.click('.side [data-ui="menu-chats"]'); await page.waitForTimeout(400); return; } const sel = `.side [data-nav="${v}"]`; if (!(await page.locator(sel).count())) { await page.click('.side [data-ui="more"]'); await page.waitForTimeout(150); } await page.click(sel); await page.waitForTimeout(400); };
 
 // Overview: a tag made outside the app.
 await nav('overview');
