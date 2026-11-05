@@ -99,6 +99,7 @@ contextBridge.exposeInMainWorld('hearth', {
   cardsImport: (name, data) => ipcRenderer.invoke('cards:import', name, data),
   cardsPick: () => ipcRenderer.invoke('cards:pick'),
   cardsSave: (card) => ipcRenderer.invoke('cards:save', card),
+  cardsConfirmAdult: (id, age, on) => ipcRenderer.invoke('cards:confirmAdult', id, age, on),
   cardsRemove: (id) => ipcRenderer.invoke('cards:remove', id),
   cardsExport: (id, fmt) => ipcRenderer.invoke('cards:export', id, fmt),
   loreList: () => ipcRenderer.invoke('lore:list'),

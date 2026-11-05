@@ -1264,6 +1264,14 @@ function memoCard(m, p) {
 
 // ---------- roleplay views: library, card editor, lorebooks, visual novel ----------
 const avatarHtml = (card, cls = '') => (card?.avatarUrl ? `<img class="cav ${cls}" src="${esc(card.avatarUrl)}" alt="">` : `<span class="cav ${cls} none">${esc((card?.name || '?')[0])}</span>`);
+// A false "under 18" alarm (only a word or age somewhere in the text) can be cleared by the owner
+// confirming the character's adult age. Not offered when the card itself says minor.
+const adultBox = (c) => {
+  if (!c?.id) return '';
+  if (c.limits?.adultConfirmed) return `<div class="adult-ok fine">Confirmed adult by you (age ${esc(c.limits.adultConfirmed.age)}). <button class="link" data-a="card-adult-undo">Undo</button></div>`;
+  if (!c.limits?.canConfirmAdult) return c.limits?.hard ? `<div class="fine">The card itself says this character is under 18 (${esc(c.limits.minorWhy)}), so it stays stories only.</div>` : '';
+  return `<div class="adult-box"><div class="fine">Flagged because ${esc(c.limits.minorWhy)}. If the character is actually an adult, confirm the age:</div><div class="row"><input type="number" id="adult-age" min="18" max="999" value="${esc(Number(c.age) >= 18 ? c.age : 18)}" aria-label="Character's age"><button class="mini" data-a="card-adult">This character is an adult</button></div></div>`;
+};
 const limitBadge = (c) => (c.limits?.minor ? `<span class="chip b" title="${esc(c.limits.minorWhy)}">stories only · reads as under 18</span>` : c.limits?.real ? `<span class="chip b" title="${esc(c.limits.realWhy)}">real person · nothing sexual</span>` : '');
 function charactersView() {
   if (S.cards === null) return '<div class="col"><div class="fine">Loading…</div></div>';
@@ -1283,7 +1291,7 @@ function cardEditView() {
   const f = (k, label, rows = 3, ph = '') => `<label class="field">${label}<textarea data-cf="${k}" rows="${rows}" placeholder="${esc(ph)}">${esc(c[k] || '')}</textarea></label>`;
   const voices = (window.speechSynthesis?.getVoices?.() || []).map((v) => v.name);
   return `<div class="lib edit"><div class="lib-hd"><button class="tb" data-a="characters">${icon('chevr', 'sm')}Characters</button><h1>${esc(c.id ? `Edit ${c.name}` : 'New character')}</h1><span class="grow"></span><button class="btn ghost" data-a="characters">Cancel</button><button class="btn p" data-a="card-save">Save</button></div>
-    <div class="cedit"><div class="cleft">${c.avatarUrl ? `<img class="big" src="${esc(c.avatarUrl)}" alt="">` : '<div class="big noimg">?</div>'}<button class="mini" data-a="card-pic">Change picture</button>${c.limits ? limitBadge(c) : ''}
+    <div class="cedit"><div class="cleft">${c.avatarUrl ? `<img class="big" src="${esc(c.avatarUrl)}" alt="">` : '<div class="big noimg">?</div>'}<button class="mini" data-a="card-pic">Change picture</button>${c.limits ? limitBadge(c) : ''}${adultBox(c)}
       <label class="field">Voice for read aloud<input data-cf="voice" list="voice-list" value="${esc(c.voice || '')}" placeholder="system default"><datalist id="voice-list">${voices.map((v) => `<option>${esc(v)}</option>`).join('')}</datalist></label>
       <label class="field">Lorebooks<select data-cf="lorebooks" multiple size="4">${(S.books || []).map((b) => `<option value="${esc(b.id)}" ${(c.lorebooks || []).includes(b.id) ? 'selected' : ''}>${esc(b.name)}</option>`).join('')}</select></label>
       ${c.character_book ? `<div class="fine">Embedded lorebook: ${c.character_book.entries?.length || 0} entries <button class="mini" data-a="lore-from-card" data-id="${esc(c.id || '')}">Copy to Lorebooks</button></div>` : ''}</div>
@@ -1823,6 +1831,17 @@ document.addEventListener('click', async (ev) => {
     case 'card-new': S.cardEdit = { name: '', tags: [], alternate_greetings: [], lorebooks: [] }; S.view = 'card'; return render(true);
     case 'card-edit': S.cardEdit = JSON.parse(JSON.stringify(cardById(d.id) || {})); S.view = 'card'; return render(true);
     case 'card-pic': { readCardForm(); const f = await pickFile('image/png,image/jpeg,image/webp'); if (f) { const url = await fileUrl(f); S.cardEdit.avatarData = url; S.cardEdit.avatarUrl = url; } return render(); }
+    case 'card-adult': case 'card-adult-undo': {
+      const c = S.cardEdit; if (!c?.id) return;
+      const age = Number(document.getElementById('adult-age')?.value || 0);
+      if (d.a === 'card-adult' && !(age >= 18)) return toast('Give an age of 18 or more.');
+      readCardForm();
+      const r = await call('cardsConfirmAdult', c.id, age, d.a === 'card-adult');
+      if (!r || r.ok === false || r.message) return toast(r?.message || 'Not changed.');
+      S.cardEdit = { ...S.cardEdit, limits: r.limits };
+      toast(d.a === 'card-adult' ? `${r.name} is confirmed as an adult (age ${r.limits?.adultConfirmed?.age}).` : `Adult confirmation removed from ${r.name}.`);
+      await loadCards(); return render();
+    }
     case 'card-save': { readCardForm(); const c = S.cardEdit; if (!String(c.name || '').trim()) return toast('Give the character a name.'); const r = await call('cardsSave', c); if (r?.ok === false || r?.message) return toast(r.message || 'Not saved.'); toast(`Saved ${r.name}.`); await loadCards(); S.cardEdit = null; S.view = 'characters'; return render(true); }
     case 'card-export': { const r = await call('cardsExport', d.id, d.f); if (r?.ok) toast(`Exported to ${r.file}.`); else if (r && !r.cancelled) toast(r.message || 'Not exported.'); return; }
     case 'find-chars': S.findSites = (await call('cardsFindSites')) || S.findSites; S.modal = { kind: 'find' }; return renderOverlay();

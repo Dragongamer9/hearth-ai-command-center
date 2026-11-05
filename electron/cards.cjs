@@ -186,30 +186,52 @@ const MINOR_WORDS = /\b(child|children|kid|kids|minor|minors|underage|under-age|
 const REAL_TAGS = /\b(real\s*person|real\s*people|celebrity|celebrities|irl|real\s*life\s*person)\b/i;
 const SEXUAL = /\b(sex|sexual|sexy|nude|nudes|naked|nsfw|porn|porno|pornographic|erotic|erotica|explicit|lewd|hentai|fuck\w*|cock|dick|pussy|breasts?|boobs?|tits|nipples?|genitals?|penis|vagina|orgasm\w*|cum|cumming|masturbat\w*|undress\w*|stripping|intercourse|blowjob|handjob|horny|aroused|lingerie|topless|bottomless|fetish|bdsm|seduc\w*|make\s+love|sleep\s+with)\b/i;
 
+// Words that always mean a minor (never overridable), and words that only might (a false alarm
+// can be cleared by the owner confirming the character's adult age).
+const HARD_WORDS = /\b(loli|lolis|lolicon|shota|shotacon|jailbait|preteen|pre-teen|underage|under-age|under\s*18)\b/i;
+
+// Ages stated about someone: "16 years old", "16-year-old", "16 y/o", "age 16", "aged: 16".
+// ("16 years ago" or "for 16 years" is not an age.)
 function ageNumbers(text) {
   const out = [];
   const t = String(text || '');
-  for (const m of t.matchAll(/\b(\d{1,2})\s*(?:-|\s)?\s*(?:years?|yrs?|y\/o|yo)(?:[\s-]*old)?\b/gi)) out.push(Number(m[1]));
+  for (const m of t.matchAll(/\b(\d{1,2})\s*(?:-|\s)?\s*(?:years?|yrs?)[\s-]*old\b/gi)) out.push(Number(m[1]));
+  for (const m of t.matchAll(/\b(\d{1,2})\s*(?:y\/o|yo)\b/gi)) out.push(Number(m[1]));
   for (const m of t.matchAll(/\bage[d]?\s*(?:is|:|=)?\s*(\d{1,2})\b/gi)) out.push(Number(m[1]));
   return out;
 }
 // Why a card must stay out of sexual content, or null.
+// hard: the card itself says the character is a minor (its own age field under 18, a minor tag,
+// or words like loli/shota/underage) — never overridable.
+// soft: only a word or an age somewhere in its text, which can be about someone else or the past
+// ("she has two kids", "a teacher at a middle school") — the owner can confirm the character's
+// adult age (18+), which clears only these.
 function cardLimits(card) {
   if (!card) return { minor: false, real: false };
   const ext = card.extensions || {};
   const fields = [card.name, card.description, card.personality, card.scenario, card.first_mes, card.mes_example, card.creator_notes, ...(card.alternate_greetings || [])].join('\n');
   const tags = (card.tags || []).join(', ');
-  const ageField = [ext.age, ext.hearth?.age, card.age].map(Number).find((n) => Number.isFinite(n) && n > 0);
-  let minor = null;
-  if (ageField !== undefined && ageField < 18) minor = `its age is set to ${ageField}`;
+  const ageField = [ext.age, card.age].map(Number).find((n) => Number.isFinite(n) && n > 0);
+  let hard = null;
+  if (ageField !== undefined && ageField < 18) hard = `its age is set to ${ageField}`;
+  const tagHit = tags.match(MINOR_WORDS) || tags.match(HARD_WORDS);
+  if (!hard && tagHit) hard = `it is tagged “${tagHit[0]}”`;
+  const hardWord = fields.match(HARD_WORDS);
+  if (!hard && hardWord) hard = `its text calls the character “${hardWord[0]}”`;
+  let soft = null;
   const young = ageNumbers(fields).find((n) => n > 0 && n < 18);
-  if (!minor && young !== undefined) minor = `it says the character is ${young}`;
-  const tagHit = tags.match(MINOR_WORDS);
-  if (!minor && tagHit) minor = `it is tagged “${tagHit[0]}”`;
+  if (young !== undefined) soft = `its text mentions the age ${young}`;
   const word = fields.match(MINOR_WORDS);
-  if (!minor && word) minor = `its text calls the character “${word[0]}”`;
+  if (!soft && word) soft = `its text says “${word[0]}”`;
+  const adult = card.ownerAdult && Number(card.ownerAdult.age) >= 18 ? card.ownerAdult : null;
+  const minorWhy = hard || (soft && !adult ? soft : null);
   const realHit = `${tags}\n${card.creator_notes || ''}`.match(REAL_TAGS);
-  return { minor: Boolean(minor), minorWhy: minor, real: Boolean(realHit), realWhy: realHit ? `it is marked “${realHit[0]}”` : null };
+  return {
+    minor: Boolean(minorWhy), minorWhy, hard: Boolean(hard),
+    // The owner may confirm an adult age only when nothing hard says minor.
+    canConfirmAdult: Boolean(!hard && soft && !adult), adultConfirmed: adult ? { age: Number(adult.age), at: adult.at || null, note: soft } : null,
+    real: Boolean(realHit), realWhy: realHit ? `it is marked “${realHit[0]}”` : null,
+  };
 }
 const isSexual = (text) => SEXUAL.test(String(text || ''));
 // The check before any roleplay message or picture request goes out.
@@ -289,6 +311,21 @@ function createCards({ dataDir }) {
     cards.write({ version: 1, cards: all });
     return view(c);
   }
+  // The owner confirms a character is an adult (only for a false alarm: refused when the card
+  // itself says minor). Kept with the card in this app, never written into exported card files.
+  function confirmAdult(id, age, on = true) {
+    const all = cards.read().cards.map((c) => ({ ...c }));
+    const i = all.findIndex((c) => c.id === id);
+    if (i < 0) throw new Error('No such character.');
+    if (!on) { delete all[i].ownerAdult; cards.write({ version: 1, cards: all }); return view(all[i]); }
+    const n = Math.floor(Number(age));
+    if (!Number.isFinite(n) || n < 18 || n > 999) throw new Error('Give an age of 18 or more.');
+    const l = cardLimits({ ...all[i], ownerAdult: null });
+    if (l.hard) throw new Error(`${all[i].name} can't be confirmed as an adult: ${l.minorWhy}. That stays stories only.`);
+    all[i].ownerAdult = { age: n, at: new Date().toISOString(), by: 'owner' };
+    cards.write({ version: 1, cards: all });
+    return view(all[i]);
+  }
   function remove(id) { const all = cards.read().cards; if (!all.some((c) => c.id === id)) return { ok: false }; cards.write({ version: 1, cards: all.filter((c) => c.id !== id) }); return { ok: true }; }
   function exportCard(id, fmt) {
     const c = get(id);
@@ -323,7 +360,7 @@ function createCards({ dataDir }) {
     return persona();
   }
 
-  return { list, get, add, importFile, save, remove, exportCard, bookList, addBook, saveBook, removeBook, exportBook, importBook, persona, setPersona, broken: () => cards.broken() || books.broken() || rp.broken(), dir };
+  return { confirmAdult, list, get, add, importFile, save, remove, exportCard, bookList, addBook, saveBook, removeBook, exportBook, importBook, persona, setPersona, broken: () => cards.broken() || books.broken() || rp.broken(), dir };
 }
 
 module.exports = { createCards, readCardFile, normalizeCard, toV2, toV3, cleanBook, cleanEntry, pngText, withPngText, plainPng, isPng, crc32, cardLimits, checkRequest, isSexual, b64, unb64 };

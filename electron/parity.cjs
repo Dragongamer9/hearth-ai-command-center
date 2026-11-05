@@ -320,6 +320,12 @@ function register(d) {
   handle('cards:findSites', () => ({ sites: Object.entries(finder.SITES).map(([id, x]) => ({ id, ...x })), notListed: finder.NOT_LISTED, maxMb: finder.MAX_CARD / 1048576 }));
   handle('cards:findOpen', (id) => (openSite ? openSite(String(id)) : { ok: false, message: 'Not available here.' }));
   handle('cards:remove', (id) => cards.remove(String(id)));
+  // Owner only: clears a false "under 18" alarm by confirming the character's adult age.
+  handle('cards:confirmAdult', (id, age, on) => {
+    const c = cards.confirmAdult(String(id), age, on !== false);
+    if (typeof d.audit === 'function') d.audit(on === false ? 'Adult confirmation removed' : 'Character confirmed as an adult by the owner', `${c.name}${on === false ? '' : ` (age ${c.limits?.adultConfirmed?.age})`}`);
+    return c;
+  });
   handle('cards:export', async (id, fmt) => {
     const x = cards.exportCard(String(id), fmt === 'json' ? 'json' : 'png');
     const s2 = await dialog.showSaveDialog(getWindow(), { title: 'Export character card', defaultPath: path.join(os.homedir(), 'Downloads', media.safeName(x.name)) });
