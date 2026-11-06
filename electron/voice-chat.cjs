@@ -21,6 +21,11 @@
 //   OpenAI:     POST https://api.openai.com/v1/audio/speech (model, input, voice, response_format,
 //               speed, instructions), POST /v1/audio/transcriptions (multipart: file, model),
 //               header Authorization: Bearer.
+// - Hearth devices (electron/hearth-devices.cjs): the Kokoro voices and whisper speech to text
+//   his Hearth OS machines share. Provider 'hearth' speaks on the best device (falling back down
+//   his device order, then to the system voice on this PC); speech to text on Automatic uses a
+//   device's whisper first when one is shared, then this PC, then OpenAI. They are his own
+//   machines, so the uncensored teammates may be spoken and heard there.
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -31,9 +36,9 @@ const servers = require('./speech-servers.cjs');
 
 const ELEVEN = 'https://api.elevenlabs.io';
 const OPENAI = 'https://api.openai.com';
-const PROVIDERS = ['elevenlabs', 'openai', 'local'];
-const UNCENSORED = ['venice', 'civitai', 'gpu'];
-const TEAM = ['anthropic', 'openai', 'google', 'xai', 'mistral', 'qwen', 'perplexity', 'deepseek', 'ollama', 'freebuff', 'venice', 'civitai', 'gpu'];
+const PROVIDERS = ['elevenlabs', 'openai', 'local', 'hearth'];
+const UNCENSORED = ['venice', 'civitai', 'gpu', 'hearth'];
+const TEAM = ['anthropic', 'openai', 'google', 'xai', 'mistral', 'qwen', 'perplexity', 'deepseek', 'ollama', 'freebuff', 'venice', 'civitai', 'gpu', 'hearth'];
 const OPENAI_VOICES = ['alloy', 'ash', 'ballad', 'coral', 'echo', 'fable', 'onyx', 'nova', 'sage', 'shimmer', 'verse', 'marin', 'cedar'];
 const OPENAI_TTS_MODELS = ['gpt-4o-mini-tts', 'tts-1', 'tts-1-hd'];
 const OPENAI_STT_MODELS = ['gpt-transcribe', 'gpt-4o-mini-transcribe', 'whisper-1'];
@@ -69,6 +74,7 @@ function cleanVoice(v) {
   if (v.elevenlabs && typeof v.elevenlabs === 'object' && ELEVEN_ID.test(String(v.elevenlabs.id || ''))) out.elevenlabs = { id: String(v.elevenlabs.id), name: String(v.elevenlabs.name || '').slice(0, 80) };
   if (OPENAI_VOICES.includes(v.openai)) out.openai = v.openai;
   if (typeof v.local === 'string' && LOCAL_ID.test(v.local)) out.local = v.local;
+  if (typeof v.hearth === 'string' && SERVER_VOICE.test(v.hearth)) out.hearth = v.hearth;
   if (v.servers && typeof v.servers === 'object' && !Array.isArray(v.servers)) {
     const sv = {};
     for (const [k, x] of Object.entries(v.servers).slice(0, servers.MAX_SERVERS * 2)) if (servers.ID_RE.test(k) && typeof x === 'string' && SERVER_VOICE.test(x)) sv[k] = x;
@@ -377,7 +383,8 @@ function sttRoute({ settings, local, hasOpenAI, uncensoredOnly = false }) {
 
 // ---------- IPC ----------
 function register(d) {
-  const { handle, secrets, readSettings, send, which, media, mediaRoot, dialog, getWindow, clipsDir = null, fetchImpl = (...a) => fetch(...a) } = d;
+  const { handle, secrets, readSettings, send, which, media, mediaRoot, dialog, getWindow, clipsDir = null, fetchImpl = (...a) => fetch(...a), hearth = null } = d;
+  const hearthOn = () => Boolean(hearth?.configured?.());
   const settings = () => cleanSettings(readSettings().voice);
   const find = (b) => which([b]);
   let toolsCache = null;
@@ -400,6 +407,8 @@ function register(d) {
       // Speech servers: whether each has its own key saved (never the key), and the presets.
       servers: Object.fromEntries(s.servers.map((x) => [x.id, { key: secrets.has(servers.secretName(x.id)), openaiHost: servers.isOpenAIHost(x) }])),
       serverPresets: servers.presets(),
+      // Hearth devices: whether any device shares Kokoro voices or whisper right now.
+      hearth: hearthOn() ? await hearth.status({ probe: true }).then((h) => ({ configured: true, voice: Boolean(h.has?.voice), stt: Boolean(h.has?.stt), error: h.error || null })).catch(() => ({ configured: true, voice: false, stt: false })) : { configured: false, voice: false, stt: false },
     };
   });
   const serverKey = (srv) => secrets.get(servers.secretName(srv.id)) || null;
@@ -416,6 +425,7 @@ function register(d) {
     }
     if (provider === 'openai') return { ok: true, voices: OPENAI_VOICES.map((v) => ({ id: v, name: v[0].toUpperCase() + v.slice(1) })) };
     if (provider === 'local') return { ok: true, voices: localVoices(tools()) };
+    if (provider === 'hearth') return hearthOn() ? hearth.voices() : fail('Set up Hearth devices in Settings › Accounts first.', 'not_set');
     if (provider !== 'elevenlabs') return fail('Unknown provider.');
     if (!fresh && elevenCache && Date.now() - elevenCache.at < 10 * 60000) return elevenCache.r;
     const r = await elevenVoices({ key: secrets.get('elevenlabs'), fetchImpl });
@@ -427,6 +437,13 @@ function register(d) {
     if (buf.length < 1000) return fail('Nothing was heard.');
     if (buf.length > 25 * 1024 * 1024) return fail('The recording is too long.');
     const s = settings();
+    // Automatic: a Hearth device's whisper first when one is shared (his own machine).
+    let hearthNote = null;
+    if (s.stt === 'auto' && hearthOn()) {
+      const h = await hearth.transcribe({ buf, mime: String(o.mime || 'audio/webm') });
+      if (h.ok) return { ok: true, text: whisper.cleanTranscript(h.text), via: h.via, item: null };
+      hearthNote = h.message;
+    }
     const w = whisperTool();
     const route = sttRoute({ settings: s, local: w, hasOpenAI: secrets.has('openai'), uncensoredOnly: o.uncensoredOnly === true });
     if (!route.ok) return route;
@@ -435,7 +452,7 @@ function register(d) {
       : await transcribeOpenAI({ key: secrets.get('openai'), buf, mime: String(o.mime || 'audio/webm'), model: s.sttModel, fetchImpl });
     let item = null;
     if (r.ok && s.keepAudio && o.chatId && media?.CHAT_RE.test(String(o.chatId))) { try { item = media.storeBuffer(mediaRoot, String(o.chatId), `voice-${Date.now()}.webm`, buf); } catch {} }
-    return r.ok ? { ok: true, text: r.text, via: route.label, item } : { ...r, via: route.label };
+    return r.ok ? { ok: true, text: r.text, via: route.label, item, ...(hearthNote ? { note: `Hearth devices: ${hearthNote}` } : {}) } : { ...r, via: route.label };
   });
   // Speak one part. Remote voices stream over voice:chunk; local voices come back whole.
   handle('voice:speak', async (o = {}) => {
@@ -453,6 +470,16 @@ function register(d) {
     if (!g.ok) return g;
     const speed = num(o.speed, 0.5, 2);
     const keep = s.keepAudio && o.chatId && media?.CHAT_RE.test(String(o.chatId)) ? String(o.chatId) : null;
+    // Hearth devices: Kokoro on the best device, down his order; when none can, the system voice here.
+    if (provider === 'hearth') {
+      const r = hearthOn() ? await hearth.speak({ voice: typeof o.voice === 'string' ? o.voice : '', text, speed }) : fail('Hearth devices aren\'t set up.', 'not_set');
+      if (r.ok) {
+        if (keep) { try { media.storeBuffer(mediaRoot, keep, `reply-${Date.now()}.${/wav/.test(r.mime) ? 'wav' : 'mp3'}`, r.buf); } catch {} }
+        return { ok: true, mime: r.mime, audio: r.buf, via: r.via };
+      }
+      if (r.kind === 'cancelled') return r;
+      return { ok: true, system: true, notice: `No Hearth device could speak (${r.message}), so your system voice is used.` };
+    }
     if (provider === 'local') {
       const id = String(o.voice || '');
       if (id.startsWith('system:') || !id) {

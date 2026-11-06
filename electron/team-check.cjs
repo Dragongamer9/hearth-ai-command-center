@@ -15,7 +15,7 @@ const crypto = require('node:crypto');
 const perms = require('./permissions.cjs');
 
 const CLI = ['anthropic', 'openai', 'google', 'xai', 'mistral', 'qwen'];
-const NAME = { anthropic: 'Claude', openai: 'ChatGPT', google: 'Gemini', xai: 'Grok', mistral: 'Mistral', qwen: 'Qwen', perplexity: 'Perplexity', deepseek: 'DeepSeek', ollama: 'Local AI', venice: 'Venice', civitai: 'Civitai', gpu: 'Your GPU server' };
+const NAME = { anthropic: 'Claude', openai: 'ChatGPT', google: 'Gemini', xai: 'Grok', mistral: 'Mistral', qwen: 'Qwen', perplexity: 'Perplexity', deepseek: 'DeepSeek', ollama: 'Local AI', venice: 'Venice', civitai: 'Civitai', gpu: 'Your GPU server', hearth: 'Hearth devices' };
 const PUSH_CHAT = 'Only the chat\'s own hearth/ branch, and only in a chat with a repo (main, the base branch and tags are refused)';
 
 // One row per AI. cli: { installed, path, version, tool }, api: connected by key/URL,
@@ -28,7 +28,7 @@ function capabilities({ id, method = 'cli', cli = {}, apiReady = false, agy = nu
     row.tool = apiReady ? 'API key or address saved' : 'needs a key';
     row.files = 'No (text only)';
     if (id === 'perplexity') row.web = 'Yes: Sonar searches the web itself';
-    if (['venice', 'gpu'].includes(id)) row.images = 'Makes pictures';
+    if (['venice', 'gpu', 'hearth'].includes(id)) row.images = 'Makes pictures';
     if (id === 'civitai') { row.images = 'Makes pictures only'; row.files = 'No'; }
     return row;
   }

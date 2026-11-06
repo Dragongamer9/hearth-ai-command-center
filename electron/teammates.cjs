@@ -160,7 +160,8 @@ function createTeammates({ secrets, file, settings = () => ({}), fetchImpl = (..
 
   async function comfyImage(prompt, signal) {
     const s = imageServer();
-    if (!s) return fail('Your GPU server has no ComfyUI entry.', 'unsupported');
+    // Say what is there, so the reason is plain (a server saved as OpenAI-compatible chat isn't ComfyUI).
+    if (!s) { const have = list().map((x) => `${x.name} (${x.type === 'comfy' ? 'ComfyUI' : 'OpenAI-compatible chat'})`); return fail(`Your GPU server has no ComfyUI entry${have.length ? `: your GPU servers are ${have.join(', ')}` : ''}. Add one with the type “ComfyUI pictures” in Settings › Accounts.`, 'unsupported'); }
     const key = secrets.get(`server.${s.id}`);
     const headers = { 'content-type': 'application/json', ...(key ? { authorization: `Bearer ${key}` } : {}) };
     let wf = DEFAULT_WORKFLOW;

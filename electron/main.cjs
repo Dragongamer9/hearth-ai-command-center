@@ -32,6 +32,8 @@ const { diffSettings, applyChanges, createSettingsLog } = require('./settings-lo
 const teamCheck = require('./team-check.cjs');
 const voiceChat = require('./voice-chat.cjs');
 const voicePerms = require('./voice-perms.cjs');
+const hearthDevices = require('./hearth-devices.cjs');
+const comfy = require('./comfy.cjs');
 
 // No Hearth OS version pin: the app never changes, bumps, publishes or deploys
 // Hearth OS versions (the owner picks every number). It only shows which Hearth
@@ -167,6 +169,11 @@ function normalSettings(s) {
     // Voice chat (Settings › Voice): speech to text, the voice provider, voices per teammate.
     // Defaults filled in here at read time; only what he changes is saved.
     voice: voiceChat.cleanSettings(s.voice),
+    // Hearth devices (Settings › Accounts): the Home server's address, the device order and the
+    // skip rules. Defaults filled in here at read time; only what he changes is saved.
+    hearthDevices: hearthDevices.cleanSettings(s.hearthDevices),
+    // His ComfyUI server for Characters chat scene pictures (address and default checkpoint).
+    comfy: comfy.cleanSettings(s.comfy),
   };
 }
 const MODEL_OK = /^[A-Za-z0-9._:\-/]{1,100}$/;
@@ -181,9 +188,10 @@ function cleanInstructions(c) {
   const t = (v) => (typeof v === 'string' ? v.slice(0, 3000) : '');
   return c && typeof c === 'object' && !Array.isArray(c) ? { about: t(c.about), style: t(c.style) } : { about: '', style: '' };
 }
-const TEAM_IDS = ['anthropic', 'openai', 'google', 'xai', 'mistral', 'qwen', 'perplexity', 'deepseek', 'ollama', 'venice', 'civitai', 'gpu'];
-// Teammates by key or URL (electron/teammates.cjs): answered through their own API.
-const TEAMMATES = ['venice', 'civitai', 'gpu'];
+const TEAM_IDS = ['anthropic', 'openai', 'google', 'xai', 'mistral', 'qwen', 'perplexity', 'deepseek', 'ollama', 'venice', 'civitai', 'gpu', 'hearth'];
+// Teammates by key or URL (electron/teammates.cjs; Hearth devices: electron/hearth-devices.cjs):
+// answered through their own API.
+const TEAMMATES = ['venice', 'civitai', 'gpu', 'hearth'];
 function cleanTeam(t) {
   if (!t || typeof t !== 'object' || Array.isArray(t)) return null;
   const members = [...new Set((Array.isArray(t.members) ? t.members : []).filter((a) => TEAM_IDS.includes(a)))];
@@ -513,6 +521,8 @@ function registerIpc() {
     }
     if ('customInstructions' in patch) s.customInstructions = cleanInstructions(patch.customInstructions);
     if ('voice' in patch) s.voice = voiceChat.mergeSettings(s.voice, patch.voice);
+    if ('hearthDevices' in patch) s.hearthDevices = hearthDevices.mergeSettings(s.hearthDevices, patch.hearthDevices);
+    if ('comfy' in patch) s.comfy = comfy.mergeSettings(s.comfy, patch.comfy);
     if ('teammates' in patch) {
       const t = cleanTeammates(patch.teammates);
       if (t.civitai?.fields) { try { JSON.parse(t.civitai.fields); } catch { throw new Error('The Civitai request fields must be JSON, like {"prompt": "{prompt}"}.'); } }
@@ -1090,6 +1100,7 @@ function registerV2() {
     guardSettings,
     apiConnected: (agent) => TEAMMATES.includes(agent) || API_ONLY.includes(agent) || (LIVE_PROVIDERS.includes(agent) && readSettings().connection[agent] === 'api'),
     callApi: async (agent, model, prompt, signal) => {
+      if (agent === 'hearth') return parityApi ? parityApi.hearth.chat({ prompt, model, signal }) : { ok: false, error: { kind: 'auth', message: 'Not ready.' } };
       if (TEAMMATES.includes(agent)) return parityApi ? parityApi.teammates.chat(agent, { prompt, model, signal }) : { ok: false, error: { kind: 'auth', message: 'Not ready.' } };
       const r = await callProvider({ provider: agent, apiKey: secrets.get(agent), model: validateModel(model || DEFAULT_MODELS[agent]), prompt });
       if (!r.ok) {

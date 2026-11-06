@@ -238,6 +238,30 @@ function cardLimits(card) {
   };
 }
 const isSexual = (text) => SEXUAL.test(String(text || ''));
+// A character whose age is clearly adult: its age field is 18 or more, the owner confirmed an
+// adult age, or its own text states an adult age (and no age under 18), with nothing that says minor.
+function clearlyAdult(card) {
+  if (!card) return false;
+  const l = cardLimits(card);
+  if (l.minor) return false;
+  if (l.adultConfirmed) return true;
+  const ext = card.extensions || {};
+  const ageField = [ext.age, card.age].map(Number).find((n) => Number.isFinite(n) && n > 0);
+  if (ageField !== undefined) return ageField >= 18;
+  const fields = [card.description, card.personality, card.scenario, card.ownerLook?.appearance].join('\n');
+  const ages = ageNumbers(fields);
+  if (ages.length && ages.every((n) => n >= 18)) return true;
+  return /\b(adult|grown[- ]up|in (?:her|his|their) (?:twenties|thirties|forties|fifties|sixties)|middle[- ]aged|elderly)\b/i.test(fields) && !ages.some((n) => n < 18);
+}
+// The saved look (appearance text, seed, keep-the-same-seed), cleaned, or null.
+function cleanLook(v) {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+  const out = {};
+  if (typeof v.appearance === 'string' && v.appearance.trim()) out.appearance = v.appearance.slice(0, 1500);
+  if (Number.isInteger(v.seed) && v.seed >= 0 && v.seed < 2 ** 48) out.seed = v.seed;
+  if (v.keepSeed === false) out.keepSeed = false;
+  return Object.keys(out).length ? out : null;
+}
 // The check before any roleplay message or picture request goes out.
 function checkRequest({ cards = [], text = '', image = false }) {
   const sexual = isSexual(text);
@@ -341,6 +365,25 @@ function createCards({ dataDir }) {
     cards.write({ version: 1, cards: all });
     return view(all[i]);
   }
+  // The character's look for scene pictures: an appearance text and a seed ("keep the same seed",
+  // on by default), so pictures of the character stay alike. Kept with the character in this app
+  // only (never in exported card files), changed only by the owner's edits or buttons.
+  // patch: { appearance?, seed?, keepSeed?, reroll? } (reroll: a new random seed).
+  function setLook(id, patch = {}) {
+    const all = cards.read().cards.map((c) => ({ ...c }));
+    const i = all.findIndex((c) => c.id === id);
+    if (i < 0) throw new Error('No such character.');
+    const cur = cleanLook(all[i].ownerLook) || {};
+    const next = { ...cur };
+    if ('appearance' in patch) next.appearance = String(patch.appearance || '').replace(/[\0-\x08\x0b-\x1f]/g, ' ').slice(0, 1500);
+    if ('keepSeed' in patch) next.keepSeed = patch.keepSeed !== false;
+    if ('seed' in patch) { const n = Number(patch.seed); if (patch.seed === null || patch.seed === '') delete next.seed; else if (Number.isInteger(n) && n >= 0 && n < 2 ** 48) next.seed = n; else throw new Error('The seed must be a whole number.'); }
+    if (patch.reroll === true) next.seed = crypto.randomInt(1, 2 ** 31);
+    const v = cleanLook(next);
+    if (v) all[i].ownerLook = v; else delete all[i].ownerLook;
+    cards.write({ version: 1, cards: all });
+    return view(all[i]);
+  }
   function remove(id) { const all = cards.read().cards; if (!all.some((c) => c.id === id)) return { ok: false }; cards.write({ version: 1, cards: all.filter((c) => c.id !== id) }); return { ok: true }; }
   function exportCard(id, fmt) {
     const c = get(id);
@@ -375,7 +418,7 @@ function createCards({ dataDir }) {
     return persona();
   }
 
-  return { confirmAdult, setVoice, list, get, add, importFile, save, remove, exportCard, bookList, addBook, saveBook, removeBook, exportBook, importBook, persona, setPersona, broken: () => cards.broken() || books.broken() || rp.broken(), dir };
+  return { confirmAdult, setVoice, setLook, list, get, add, importFile, save, remove, exportCard, bookList, addBook, saveBook, removeBook, exportBook, importBook, persona, setPersona, broken: () => cards.broken() || books.broken() || rp.broken(), dir };
 }
 
-module.exports = { createCards, readCardFile, normalizeCard, toV2, toV3, cleanBook, cleanEntry, pngText, withPngText, plainPng, isPng, crc32, cardLimits, checkRequest, isSexual, b64, unb64 };
+module.exports = { clearlyAdult, cleanLook, ageNumbers, MINOR_WORDS, HARD_WORDS, REAL_TAGS, SEXUAL, createCards, readCardFile, normalizeCard, toV2, toV3, cleanBook, cleanEntry, pngText, withPngText, plainPng, isPng, crc32, cardLimits, checkRequest, isSexual, b64, unb64 };

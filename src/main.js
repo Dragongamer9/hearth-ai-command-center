@@ -34,7 +34,7 @@ import { voiceSettings, routeFor, isServer, serverIdOf, idOf } from './app/voice
 
 const api = window.hearth || null;
 const TEAM_IDS = ['anthropic', 'openai', 'google', 'xai', 'mistral', 'qwen', 'perplexity', 'deepseek', 'ollama', ...TEAMMATE_IDS];
-const MONO = { anthropic: ['C', '#c96b3c'], openai: ['G', '#3f8f6f'], google: ['Ge', '#4b6fd0'], xai: ['X', '#5d636b'], mistral: ['M', '#6b5bd2'], qwen: ['Q', '#7a5cc9'], perplexity: ['P', '#1f8a99'], deepseek: ['D', '#3d56c9'], ollama: ['L', '#6d746e'], freebuff: ['F', '#8a7bc6'], venice: ['V', '#c2453b'], civitai: ['Ci', '#2f6fd6'], gpu: ['GP', '#6f7a3e'] };
+const MONO = { hearth: ['H', '#c8743a'], anthropic: ['C', '#c96b3c'], openai: ['G', '#3f8f6f'], google: ['Ge', '#4b6fd0'], xai: ['X', '#5d636b'], mistral: ['M', '#6b5bd2'], qwen: ['Q', '#7a5cc9'], perplexity: ['P', '#1f8a99'], deepseek: ['D', '#3d56c9'], ollama: ['L', '#6d746e'], freebuff: ['F', '#8a7bc6'], venice: ['V', '#c2453b'], civitai: ['Ci', '#2f6fd6'], gpu: ['GP', '#6f7a3e'] };
 const QUICK = [
   ['gh', 'Fix a bug in a repo', 'There\'s a bug I want fixed: '],
   ['dl', 'Look at a sent log', 'Look at the log I attached (or the newest one in Dragongamer9/hearth-logs) and find the cause: '],
@@ -46,7 +46,7 @@ const QUICK = [
 const SECTIONS = [['team', 'AI team'], ['accounts', 'Accounts'], ['github', 'GitHub'], ['tools', 'Tools'], ['memory', 'Memory'], ['scheduled', 'Scheduled'], ['connectors', 'Connectors'], ['perms', 'Permissions'], ['alerts', 'Notifications'], ['voice', 'Voice'], ['look', 'Appearance'], ['updates', 'App updates'], ['data', 'Saved data']];
 const IDLE = [[1, '1 hour'], [6, '6 hours'], [24, '1 day'], [72, '3 days'], [168, '1 week'], [0, 'Never']];
 const MAX_CHATS = [1, 2, 3, 4, 5, 6, 8, 10];
-const IMAGE_MAKERS = ['openai', 'google', 'xai', 'venice', 'civitai', 'gpu'];
+const IMAGE_MAKERS = ['openai', 'google', 'xai', 'venice', 'civitai', 'gpu', 'hearth'];
 const VIDEO_MAKERS = ['openai', 'google'];
 const MODEL_PRESETS = { anthropic: ['opus', 'sonnet', 'haiku'], openai: ['gpt-5', 'gpt-5-codex', 'o4-mini'], google: ['gemini-2.5-pro', 'gemini-2.5-flash'], xai: ['grok-4', 'grok-code-fast-1'], mistral: ['mistral-large-latest', 'codestral-latest'], perplexity: ['sonar', 'sonar-pro', 'sonar-reasoning-pro'], deepseek: ['deepseek-chat', 'deepseek-reasoner'], qwen: [], ollama: [], venice: [], civitai: [], gpu: [] };
 const MEDIA_KEYS = [['google', 'Gemini API key', 'pictures (Gemini image model), Veo videos'], ['openai', 'OpenAI API key', 'pictures and edits (OpenAI Images), Sora videos; the same key as ChatGPT by API'], ['xai', 'xAI API key', 'Grok pictures'], ['mistral', 'Mistral API key', 'reading PDFs and scans (Mistral OCR)']];
@@ -108,7 +108,7 @@ function statusOf(a) {
 const statusMap = () => Object.fromEntries(team().members.map((a) => [a, statusOf(a)]));
 const missingChecks = () => (S.missing || []).filter((x) => x.missing).map((x) => x.check);
 const mono = (a, cls = '') => { const m = MONO[a] || [(AGENTS[a]?.name || '?')[0], '#7a7166']; return `<span class="ava ${cls}" style="background:${m[1]}">${esc(m[0])}</span>`; };
-const setupHint = (a) => (a === 'gpu' ? 'Add your GPU server in Settings › Accounts' : TEAMMATE_IDS.includes(a) ? `Add your ${aiName(a)} key in Settings › Accounts` : `set up ${aiName(a)} in Settings › Accounts`);
+const setupHint = (a) => (a === 'gpu' ? 'Add your GPU server in Settings › Accounts' : a === 'hearth' ? 'Type your Home server\'s address in Settings › Accounts › Hearth devices' : TEAMMATE_IDS.includes(a) ? `Add your ${aiName(a)} key in Settings › Accounts` : `set up ${aiName(a)} in Settings › Accounts`);
 const makerReady = (a) => (TEAMMATE_IDS.includes(a) ? Boolean(S.mates.ready?.[a]) && team().members.includes(a) : Boolean(S.mkeys.keys?.[a]));
 
 // ---------- every chat's own runtime ----------
@@ -1358,7 +1358,7 @@ function rpMessage(m) {
 }
 function rpBar(c) {
   const cards = rpCards(c);
-  return `<div class="rpbar">${cards.map((x) => `<button class="mini" data-a="rp-reply-as" data-id="${esc(x.id)}" title="${esc(x.name)} replies next (played by ${esc(aiName(playerOf(c, x.id)))})">${avatarHtml(x, 'xs')}${esc(x.name)}</button>`).join('')}<span class="grow"></span><button class="mini" data-a="rp-impersonate" title="The AI writes your next line as a draft">${icon('pencil', 'sm')}Impersonate</button><button class="mini" data-a="rp-picture">${icon('eye', 'sm')}Picture</button><button class="mini ${cur()?.vn ? 'on' : ''}" data-a="rp-vn">${icon('panel', 'sm')}Visual novel</button></div>`;
+  return `<div class="rpbar">${cards.map((x) => `<button class="mini" data-a="rp-reply-as" data-id="${esc(x.id)}" title="${esc(x.name)} replies next (played by ${esc(aiName(playerOf(c, x.id)))})">${avatarHtml(x, 'xs')}${esc(x.name)}</button>`).join('')}<span class="grow"></span><button class="mini" data-a="rp-impersonate" title="The AI writes your next line as a draft">${icon('pencil', 'sm')}Impersonate</button><button class="mini" data-a="rp-picture">${icon('eye', 'sm')}Picture</button><button class="mini" data-a="rp-scene" title="A ComfyUI picture of this moment: you see and can edit the prompt first">${icon('eye', 'sm')}Generate scene</button><button class="mini ${cur()?.vn ? 'on' : ''}" data-a="rp-vn">${icon('panel', 'sm')}Visual novel</button></div>`;
 }
 
 // ---------- the preview panel and canvas ----------
@@ -1497,6 +1497,22 @@ function modalHtml() {
       ${L.length ? '' : '<div class="note bad">No AI is set up to play a character yet (Settings › Accounts).</div>'}
       <div class="mft"><button class="btn p" data-a="rp-start-do" ${m.chars.length && L.length ? '' : 'disabled'}>Start</button><button class="btn ghost" data-a="close-modal">Cancel</button></div></div>`;
   }
+  if (m.kind === 'rpscene') {
+    const c = entry(m.chatId);
+    const all = rpCards(c);
+    const sel = all.filter((x) => m.ids.includes(x.id));
+    const lookRow = (x) => { const L = x.ownerLook || {}; return `<div class="srow sub rs-look"><b>${esc(x.name)}</b><textarea id="rs-look-${esc(x.id)}" rows="2" style="flex:1;min-width:16em" placeholder="Appearance (kept the same in every picture): hair, eyes, clothes…" aria-label="${esc(x.name)}'s appearance">${esc(L.appearance || '')}</textarea><label class="day"><input type="checkbox" id="rs-keep-${esc(x.id)}" ${L.keepSeed !== false ? 'checked' : ''}>Keep the same seed</label><span class="d">${Number.isInteger(L.seed) ? `saved seed ${L.seed}` : 'no saved seed'}</span><button class="mini" data-a="rs-look-save" data-id="${esc(x.id)}">Save look</button><button class="mini" data-a="rs-reroll" data-id="${esc(x.id)}">Re-roll seed</button></div>`; };
+    return `<div class="scrim dark" data-a="close-modal"></div><div class="modal wide"><div class="mhd"><b>Generate scene</b></div>
+      <p>A ComfyUI picture of this moment, built from the characters and the last messages. Check or change the prompt, then generate. The built-in limits are checked before anything is sent: nothing sexual unless every character is clearly an adult, and never a real person's likeness.</p>
+      <div class="srow">Characters${all.map((x) => `<label class="day"><input type="checkbox" class="rsc" value="${esc(x.id)}" ${m.ids.includes(x.id) ? 'checked' : ''} data-a="rs-chars">${esc(x.name)}</label>`).join('')}</div>
+      ${sel.map(lookRow).join('')}
+      <label class="field">Prompt<textarea id="rs-prompt" rows="6">${esc(m.prompt || '')}</textarea></label>
+      <div class="srow"><button class="mini" data-a="rs-rebuild">Rebuild from the chat</button><span class="grow"></span>Seed<input id="rs-seed" class="mono" value="${esc(String(m.seed ?? ''))}" inputmode="numeric" aria-label="Seed" style="width:9em"><span class="d">${m.seedSaved ? 'the saved seed' : 'not saved (Save look keeps it)'}</span></div>
+      <div class="srow">Made on<select id="rs-src">${(m.sources || []).map((x) => `<option value="${esc(x.id)}" ${m.source === x.id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></div>
+      ${(m.sources || []).length ? '' : '<div class="note bad">No ComfyUI is set up. Add your ComfyUI server (or Hearth devices) in Settings › Accounts.</div>'}
+      ${m.error ? `<div class="note bad">${esc(m.error)}</div>` : ''}
+      <div class="mft"><button class="btn p" data-a="rs-go" ${(m.sources || []).length ? '' : 'disabled'}>Generate</button><button class="btn ghost" data-a="close-modal">Cancel</button></div></div>`;
+  }
   if (m.kind === 'rppic') {
     const c = entry(m.chatId);
     const makers = IMAGE_MAKERS.filter((a) => (TEAMMATE_IDS.includes(a) ? S.mates.ready?.[a] : S.mkeys.keys?.[a]));
@@ -1575,6 +1591,8 @@ function section(k) {
       <div class="srow sub form"><input id="sv-name" placeholder="Name (e.g. RunPod 4090)"><select id="sv-type"><option value="openai">OpenAI-compatible chat</option><option value="comfy">ComfyUI pictures</option></select><input id="sv-url" class="grow" placeholder="https://…/v1 or http://192.168.1.20:8188"><input id="sv-model" placeholder="Model or checkpoint (optional)"><input id="sv-key" type="password" placeholder="Key (optional)"><button class="mini" data-a="server-add">Add server</button></div>
       <details class="sub"><summary class="fine">ComfyUI workflow (optional): paste your own workflow JSON; {prompt}, {negative}, {seed} and {ckpt} are filled in. Empty uses a stock SDXL text-to-image graph.</summary><textarea id="sv-workflow" rows="4" class="mono" placeholder='{"3": {"class_type": "KSampler", …}}'></textarea></details>
       <div class="note">NovelAI isn't offered: it has no public developer API, and its terms restrict third-party apps.</div></div>
+      ${hearthBox()}
+      ${comfyBox()}
       <div class="box"><h3>${icon('phone', 'sm')}Your phone</h3><div class="srow">Phone view<span class="d">your chat on your phone, on your home network only</span><span class="grow"></span>${tog(Boolean(S.phone?.enabled), 'phone-toggle')}</div>${S.phone?.enabled ? `<div class="srow">Address<span class="d mono">${esc((S.phone.urls || []).join(', ') || 'starting…')}</span><span class="grow"></span><button class="mini" data-a="phone-code">Show pairing code</button></div>${S.phone.code ? `<div class="srow">Code<b class="mono big">${esc(S.phone.code)}</b><span class="d">type it on your phone within 5 minutes</span></div>` : ''}` : ''}</div>`;
   }
   if (k === 'github') {
@@ -1746,6 +1764,7 @@ async function loadSection(t) {
   if (t === 'perms') { refreshAgents(); loadPerms(); }
   if (t === 'tools') loadMissing();
   if (t === 'accounts' || t === 'team') { refreshAgents(); await refreshMates(); }
+  if (t === 'accounts') { S.hd = (await call('hearthStatus', { probe: true })) || S.hd; }
   if (t === 'github') loadRepos();
   if (t === 'memory') S.memory = await call('memoryList');
   if (t === 'scheduled') S.schedules = await call('scheduleList');
@@ -1753,6 +1772,85 @@ async function loadSection(t) {
   if (t === 'tools') { S.skills = (await call('skillsList', S.lastChat)) || []; }
   render();
 }
+// ---------- Characters chat: Generate scene (ComfyUI; electron/scene.cjs) ----------
+// The last messages as plain text for the prompt (built in the main process, shown to edit).
+const sceneMsgs = (chatId) => (rt(chatId)?.msgs || []).filter((x) => !x.deleted && x.who !== 'system').slice(-12).map((x) => ({ who: x.who, text: String(x.text || '').slice(0, 2000), err: x.err === true }));
+async function openScene(chatId) {
+  const c = entry(chatId);
+  if (!S.cards) await loadCards();
+  const ids = rpCards(c).map((x) => x.id);
+  const [sources, pr] = await Promise.all([call('rpSceneSources'), call('rpScenePrompt', ids, sceneMsgs(chatId))]);
+  const L = cardById(ids[0])?.ownerLook || {};
+  const kept = L.keepSeed !== false && Number.isInteger(L.seed);
+  S.modal = { kind: 'rpscene', chatId, ids, prompt: pr?.prompt || '', sources: Array.isArray(sources) ? sources : [], source: (Array.isArray(sources) && sources[0]?.id) || '', seed: kept ? L.seed : Math.floor(Math.random() * 2 ** 31), seedSaved: kept };
+  renderOverlay();
+}
+async function makeSceneNow() {
+  const m = S.modal;
+  if (m?.kind !== 'rpscene') return;
+  const prompt = document.getElementById('rs-prompt')?.value || '';
+  const seed = (document.getElementById('rs-seed')?.value || '').trim();
+  const source = document.getElementById('rs-src')?.value || m.source;
+  const ids = [...document.querySelectorAll('.rsc:checked')].map((x) => x.value);
+  const R = rt(m.chatId);
+  S.modal = null; renderOverlay();
+  R.busy = { agent: source === 'hearth' ? 'hearth' : 'gpu', role: 'member', runId: `scn${uid()}`, steps: [{ kind: 'image', label: 'Making a scene picture', detail: (m.sources.find((x) => x.id === source) || {}).name || 'ComfyUI' }], startedAt: Date.now() };
+  render();
+  const r = await call('rpScene', m.chatId, { cardIds: ids, prompt, seed: seed === '' ? null : Number(seed), source });
+  R.busy = null;
+  // Shown and saved with this chat (its media folder); the prompt stays out of the text the other AIs read.
+  runner.post(R, r?.ok ? { who: 'system', text: `Scene picture · ${r.via}`, media: r.items || [], scene: { seed: r.seed, checkpoint: r.checkpoint } } : { who: 'system', block: ['minor', 'real', 'age'].includes(r?.error?.kind), text: r?.error?.message || r?.message || 'No picture came back.' });
+  await saveRt(R);
+  return render();
+}
+
+// ---------- Hearth devices and the ComfyUI server (Settings › Accounts) ----------
+// The devices come from the Home server (main process); nothing here is saved unless he clicks.
+function hdOrder() {
+  const hd = S.hd || {};
+  return hd.order || (hd.devices || []).map((d) => d.device);
+}
+function hearthBox() {
+  const hd = S.hd || {};
+  const st = hd.settings || S.settings.hearthDevices || {};
+  const devs = Object.fromEntries((hd.devices || []).map((d) => [d.device, d]));
+  const kindName = { chat: 'chat', voice: 'Kokoro voices', image: 'ComfyUI pictures', stt: 'whisper speech to text' };
+  const rows = hdOrder().map((n, i, all) => {
+    const d = devs[n];
+    if (!d) return '';
+    const flags = [d.gaming ? 'gaming' : '', d.busy ? 'busy' : '', d.battery ? `battery ${d.battery.percent ?? '?'}%${d.battery.charging ? ' (charging)' : ''}` : ''].filter(Boolean).join(' · ');
+    const svc = d.services.map((x) => `${kindName[x.kind] || x.kind}${x.healthy ? '' : ' (not healthy)'}${x.allowed === false ? ' (address not allowed)' : ''}`).join(', ') || 'shares nothing';
+    const chat = d.services.find((x) => x.kind === 'chat');
+    const img = d.services.find((x) => x.kind === 'image');
+    const pick = (k, list, cur) => `<select data-a="hd-pick" data-k="${k}" data-v="${esc(n)}" aria-label="${k === 'models' ? 'Chat model' : 'Checkpoint'} on ${esc(n)}"><option value="">${k === 'models' ? 'first model' : 'first checkpoint'}</option>${list.map((m) => `<option ${cur === m ? 'selected' : ''}>${esc(m)}</option>`).join('')}</select>`;
+    return `<div class="srow sub hd-dev"><b>${i + 1}. ${esc(n)}</b><span class="d">${esc(svc)}${flags ? ` · ${esc(flags)}` : ''}</span><span class="grow"></span><button class="mini" data-a="hd-move" data-v="${esc(n)}" data-d="-1" ${i ? '' : 'disabled'} title="Try earlier">↑</button><button class="mini" data-a="hd-move" data-v="${esc(n)}" data-d="1" ${i < all.length - 1 ? '' : 'disabled'} title="Try later">↓</button></div>${chat?.models?.length || img?.models?.length ? `<div class="srow sub">${chat?.models?.length ? `Chat model${pick('models', chat.models, st.models?.[n])}` : ''}${img?.models?.length ? `Checkpoint${pick('checkpoints', img.models, st.checkpoints?.[n])}` : ''}</div>` : ''}`;
+  }).join('');
+  return `<div class="box" id="hearth-devices"><h3>${mono('hearth')}Hearth devices</h3><p class="fine">The AI your Hearth OS machines share: chat (Ollama) and pictures (ComfyUI) on your Nvidia PC first, voices (Kokoro) and speech to text (whisper) on the others when it's busy, gaming or off. The best device is picked for each job and the next one is tried if it fails. Your own machines: chats with uncensored teammates may use them.</p>
+    <div class="srow">Home server<span class="d">its address, port ${8189}</span><span class="grow"></span><input id="hd-url" class="mono" value="${esc(st.url || '')}" placeholder="http://nvidia-pc:8189" aria-label="Home server address"><button class="mini" data-a="hd-url">Save</button><button class="mini" data-a="hd-test">Test</button></div>
+    <div class="srow">Share code<span class="d">only if your Hearth devices ask for one · ${hd.shareCode ? 'saved, encrypted on this PC' : 'none'}</span><span class="grow"></span><input id="hd-code" type="password" placeholder="${hd.shareCode ? 'Type a new code to replace it' : 'Share code (optional)'}" autocomplete="off" aria-label="Share code"><button class="mini" data-a="hd-code">Save</button>${hd.shareCode ? '<button class="mini" data-a="hd-code-remove">Remove</button>' : ''}</div>
+    <div class="srow">Skip a device while it's gaming<span class="d">a game keeps its GPU to itself</span><span class="grow"></span>${tog(st.skipGaming !== false, 'hd-tog', 'data-k="skipGaming"')}</div>
+    <div class="srow">Skip handhelds on battery<span class="d">the ROG Ally (or a laptop) is used only when plugged in</span><span class="grow"></span>${tog(st.skipBattery !== false, 'hd-tog', 'data-k="skipBattery"')}</div>
+    <div class="srow">Tailscale addresses<span class="d">devices may point to their 100.x or .ts.net address</span><span class="grow"></span>${tog(st.tailscale !== false, 'hd-tog', 'data-k="tailscale"')}</div>
+    <div class="srow">Other allowed names<span class="d">device names on your home network that services may use (besides the Home server)</span><span class="grow"></span><input id="hd-hosts" class="mono" value="${esc((st.allowHosts || []).join(', '))}" placeholder="rog-ally, laptop" aria-label="Other allowed names"><button class="mini" data-a="hd-hosts">Save</button></div>
+    ${hd.error ? `<div class="note warn">${esc(hd.error)}</div>` : ''}
+    ${rows ? `<div class="srow"><b>Order</b><span class="d">tried top to bottom${st.order?.length ? '' : ' (your Nvidia PC first by default)'}</span></div>${rows}` : st.url && !hd.error ? '<div class="note">Press Test to list your devices.</div>' : ''}
+    <div class="note">Turn on “Hearth devices” in Settings › AI team to chat with it. Pictures: pick Hearth devices as the picture maker. Voices and speech to text: Settings › Voice.</div></div>`;
+}
+function comfyBox() {
+  const c = S.settings.comfy || {};
+  const list = S.comfyCkpts?.url === c.url ? S.comfyCkpts.list : null;
+  const opts = [...new Set([...(list || []), ...(c.checkpoint ? [c.checkpoint] : [])])];
+  return `<div class="box" id="comfy-server"><h3>${icon('eye', 'sm')}ComfyUI server</h3><p class="fine">Scene pictures in Characters chats (Generate scene). On this PC, your home network or Tailscale only. Your GPU servers set up as ComfyUI and Hearth devices can make scenes too.</p>
+    <div class="srow">Address<span class="grow"></span><input id="comfy-url" class="mono" value="${esc(c.url || '')}" placeholder="http://100.72.99.97:8188" aria-label="ComfyUI address"><button class="mini" data-a="comfy-url">Save</button><button class="mini" data-a="comfy-list" ${c.url ? '' : 'disabled'}>Load models</button></div>
+    <div class="srow">Default model<span class="d">${list ? `${list.length} checkpoint${list.length === 1 ? '' : 's'} on the server` : c.url ? 'press Load models to see the server\'s checkpoints' : 'save the address first'}</span><span class="grow"></span><select data-a="comfy-ckpt" aria-label="Default model" ${opts.length ? '' : 'disabled'}><option value="">the server's first checkpoint</option>${opts.map((m) => `<option ${c.checkpoint === m ? 'selected' : ''}>${esc(m)}</option>`).join('')}</select></div>
+    ${S.comfyCkpts?.error && S.comfyCkpts.url === c.url ? `<div class="note warn">${esc(S.comfyCkpts.error)}</div>` : ''}</div>`;
+}
+// After he changed a Hearth devices setting (setSettings is called only from his clicks).
+function hdAfter(r) {
+  if (r && !r.message && r.hearthDevices) S.hd = { ...(S.hd || {}), settings: r.hearthDevices };
+  return r;
+}
+
 async function refreshMates() {
   S.mates = (await call('teammatesStatus')) || S.mates;
   S.mkeys = (await call('mediaKeys')) || S.mkeys;
@@ -1908,6 +2006,11 @@ document.addEventListener('click', async (ev) => {
     case 'rp-edit-save': { const m = msgById(d.m); const v = document.getElementById('edit-text')?.value; if (m && typeof v === 'string') { m.text = v; if (Array.isArray(m.swipes)) m.swipes[m.sw ?? 0] = v; } S.editing = null; await save(); return render(); }
     case 'rp-vn': { const R = cur(); if (R) R.vn = !R.vn; return render(true); }
     case 'rp-picture': S.modal = { kind: 'rppic', chatId: S.open }; return renderOverlay();
+    case 'rp-scene': return openScene(S.open);
+    case 'rs-chars': case 'rs-rebuild': { const m = S.modal; if (m?.kind !== 'rpscene') return; m.ids = [...document.querySelectorAll('.rsc:checked')].map((x) => x.value); const pr = await call('rpScenePrompt', m.ids, sceneMsgs(m.chatId)); m.prompt = pr?.prompt || m.prompt; return renderOverlay(); }
+    case 'rs-look-save': { const m = S.modal; const keep = document.getElementById(`rs-keep-${d.id}`)?.checked !== false; const seed = (document.getElementById('rs-seed')?.value || '').trim(); const r = await call('cardsSetLook', d.id, { appearance: document.getElementById(`rs-look-${d.id}`)?.value || '', keepSeed: keep, ...(seed && m?.ids?.[0] === d.id ? { seed: Number(seed) } : {}) }); if (r?.ok === false || r?.message) { toast(r.message || 'Not saved.'); return; } await loadCards(); toast(`Saved ${r.name}'s look.`); if (m?.kind === 'rpscene') { if (m.ids[0] === d.id) m.seedSaved = Boolean(seed); const pr = await call('rpScenePrompt', m.ids, sceneMsgs(m.chatId)); m.prompt = pr?.prompt || m.prompt; } return renderOverlay(); }
+    case 'rs-reroll': { const m = S.modal; const r = await call('cardsSetLook', d.id, { reroll: true }); if (r?.ok === false || r?.message) { toast(r.message || 'Not changed.'); return; } await loadCards(); if (m?.kind === 'rpscene' && m.ids[0] === d.id) { m.seed = r.ownerLook?.seed ?? m.seed; m.seedSaved = true; } toast(`New seed for ${r.name}: ${r.ownerLook?.seed}.`); return renderOverlay(); }
+    case 'rs-go': return makeSceneNow();
     case 'rp-pic-do': { const m = S.modal; const R = rt(m.chatId); const kind = document.querySelector('input[name="rpk"]:checked')?.value || 'portrait'; const ids = [...document.querySelectorAll('.rpc:checked')].map((x) => x.value); const note = document.getElementById('rp-note')?.value || ''; const provider = document.getElementById('rp-maker')?.value || ''; S.modal = null; renderOverlay(); R.busy = { agent: provider, role: 'member', runId: `pic${uid()}`, steps: [{ kind: 'image', label: kind === 'scene' ? 'Making a scene picture' : 'Making a portrait', detail: aiName(provider) }], startedAt: Date.now() }; render(); const r = await call('rpImage', m.chatId, { kind, cardIds: ids, note, provider }); R.busy = null; runner.post(R, r?.ok ? { who: provider, text: `${kind === 'scene' ? 'Scene' : 'Portrait'}${note ? `: ${note}` : ''}`, via: r.via, media: r.items || [] } : r?.error?.kind === 'minor' || r?.error?.kind === 'real' ? { who: 'system', block: true, text: r.error.message } : { who: provider, err: true, text: r?.error?.message || r?.message || 'No picture came back.' }); await saveRt(R); return render(); }
     case 'temp-chat': return startTemp();
     case 'temp-end': ev.stopPropagation(); return endTemp(d.id);
@@ -2112,6 +2215,15 @@ document.addEventListener('click', async (ev) => {
     case 'mate-unkey': await call('teammatesRemoveKey', d.v); await refreshMates(); return render();
     case 'server-add': { const v = (id) => document.getElementById(id)?.value || ''; const r = await call('teammatesAddServer', { name: v('sv-name'), type: v('sv-type'), url: v('sv-url'), model: v('sv-model').trim(), key: v('sv-key'), workflow: v('sv-workflow').trim() }); if (r?.ok === false || r?.message) toast(r.message || 'Not added.'); else toast(`Added ${r.name}. Turn on “Your GPU server” in Settings › AI team to use it.`); await refreshMates(); return render(); }
     case 'server-remove': await call('teammatesRemoveServer', d.id); await refreshMates(); return render();
+    case 'hd-url': { hdAfter(await setSettings({ hearthDevices: { url: document.getElementById('hd-url')?.value || '' } })); S.hd = (await call('hearthStatus', { probe: true, fresh: true })) || S.hd; await refreshMates(); return render(); }
+    case 'hd-test': { toast('Asking your Home server…'); S.hd = (await call('hearthStatus', { probe: true, fresh: true })) || S.hd; toast(S.hd?.error ? 'The test didn\'t work (see Hearth devices).' : `${(S.hd?.devices || []).length} device${(S.hd?.devices || []).length === 1 ? '' : 's'} found.`); return render(); }
+    case 'hd-code': { const v = document.getElementById('hd-code')?.value || ''; if (!v.trim()) return toast('Type the share code first.'); const r = await call('hearthShareCode', v); toast(r?.ok ? 'Share code saved (encrypted).' : r?.message || 'Not saved.'); S.hd = (await call('hearthStatus', { probe: true, fresh: true })) || S.hd; return render(); }
+    case 'hd-code-remove': { await call('hearthShareCode', null); S.hd = (await call('hearthStatus', {})) || S.hd; return render(); }
+    case 'hd-tog': { const st = S.hd?.settings || S.settings.hearthDevices || {}; hdAfter(await setSettings({ hearthDevices: { [d.k]: st[d.k] === false } })); return render(); }
+    case 'hd-hosts': { hdAfter(await setSettings({ hearthDevices: { allowHosts: document.getElementById('hd-hosts')?.value || '' } })); return render(); }
+    case 'hd-move': { const o = hdOrder().slice(); const i = o.indexOf(d.v); const j = i + Number(d.d); if (i < 0 || j < 0 || j >= o.length) return; [o[i], o[j]] = [o[j], o[i]]; hdAfter(await setSettings({ hearthDevices: { order: o } })); S.hd = { ...(S.hd || {}), order: o }; return render(); }
+    case 'comfy-url': { const r = await setSettings({ comfy: { url: document.getElementById('comfy-url')?.value || '' } }); if (r && !r.message && r.comfy?.url) { const l = await call('comfyCheckpoints'); S.comfyCkpts = { url: r.comfy.url, list: l?.ok ? l.checkpoints : null, error: l?.ok ? null : l?.message }; } return render(); }
+    case 'comfy-list': { const l = await call('comfyCheckpoints'); S.comfyCkpts = { url: S.settings.comfy?.url, list: l?.ok ? l.checkpoints : null, error: l?.ok ? null : l?.message }; return render(); }
     case 'mem-add': { const v = document.getElementById('mem-new')?.value || ''; const r = await call('memoryAdd', v); if (r?.ok === false || r?.message) toast(r.message || 'Not saved.'); S.memory = await call('memoryList'); return render(); }
     case 'mem-edit': S.memEdit = d.id; return render();
     case 'mem-cancel': S.memEdit = null; return render();
@@ -2154,6 +2266,8 @@ document.addEventListener('change', (ev) => {
   if (t.matches?.('[data-a="venice-model"]')) setSettings({ teammates: { venice: { model: t.value } } });
   if (t.matches?.('[data-a="venice-image"]')) setSettings({ teammates: { venice: { imageModel: t.value } } });
   if (t.matches?.('[data-a="civitai-engine"]')) setSettings({ teammates: { civitai: { engine: t.value } } });
+  if (t.matches?.('[data-a="hd-pick"]')) setSettings({ hearthDevices: { [t.dataset.k]: { [t.dataset.v]: t.value || null } } }).then(hdAfter);
+  if (t.matches?.('[data-a="comfy-ckpt"]')) setSettings({ comfy: { checkpoint: t.value } });
   if (t.matches?.('[data-a="pick-model"]')) {
     // A model per AI for this chat: kept with the chat's own data, never in settings.
     const R = S.view === 'chat' ? cur() : null;

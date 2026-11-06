@@ -136,6 +136,15 @@ contextBridge.exposeInMainWorld('hearth', {
   rpSetPersona: (p) => ipcRenderer.invoke('rp:setPersona', p),
   rpCheck: (ids, text) => ipcRenderer.invoke('rp:check', ids, text),
   rpImage: (chatId, o) => ipcRenderer.invoke('rp:image', chatId, o || {}),
+  // Characters chat scene pictures (ComfyUI) and the character's saved look.
+  rpSceneSources: () => ipcRenderer.invoke('rp:sceneSources'),
+  rpScenePrompt: (ids, messages) => ipcRenderer.invoke('rp:scenePrompt', ids, messages),
+  rpScene: (chatId, o) => ipcRenderer.invoke('rp:scene', chatId, o || {}),
+  cardsSetLook: (id, patch) => ipcRenderer.invoke('cards:setLook', id, patch || {}),
+  comfyCheckpoints: () => ipcRenderer.invoke('comfy:checkpoints'),
+  // Hearth devices (Settings › Accounts): status and test, and the share code (encrypted).
+  hearthStatus: (o) => ipcRenderer.invoke('hearth:status', o || {}),
+  hearthShareCode: (code) => ipcRenderer.invoke('hearth:shareCode', code),
   chatsRp: (id, rp) => ipcRenderer.invoke('chats:rp', id, rp),
   notifyShow: (o) => ipcRenderer.invoke('notify:show', o || {}),
   onNotifyOpen: (cb) => {

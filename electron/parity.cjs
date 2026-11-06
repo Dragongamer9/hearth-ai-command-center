@@ -18,12 +18,16 @@ const { createJsonFile } = require('./jsonfile.cjs');
 const { createTeammates } = require('./teammates.cjs');
 const cardsLib = require('./cards.cjs');
 const voiceChat = require('./voice-chat.cjs');
+const { createHearthDevices } = require('./hearth-devices.cjs');
+const comfy = require('./comfy.cjs');
+const scene = require('./scene.cjs');
+const hnet = require('./hearth-net.cjs');
 
 // elevenlabs: voice chat's most realistic voices (electron/voice-chat.cjs).
 const KEY_NAMES = ['google', 'openai', 'xai', 'mistral', 'elevenlabs'];
-const whoName = { owner: 'Owner', system: 'App', anthropic: 'Claude', openai: 'ChatGPT', google: 'Gemini', xai: 'Grok', mistral: 'Mistral', qwen: 'Qwen', perplexity: 'Perplexity', deepseek: 'DeepSeek', ollama: 'Local AI', venice: 'Venice', civitai: 'Civitai', gpu: 'Your GPU server' };
+const whoName = { owner: 'Owner', system: 'App', anthropic: 'Claude', openai: 'ChatGPT', google: 'Gemini', xai: 'Grok', mistral: 'Mistral', qwen: 'Qwen', perplexity: 'Perplexity', deepseek: 'DeepSeek', ollama: 'Local AI', venice: 'Venice', civitai: 'Civitai', gpu: 'Your GPU server', hearth: 'Hearth devices' };
 // Teammates whose output never reaches the other AIs (the same rule as src/app/brief.mjs).
-const UNFILTERED = ['venice', 'civitai', 'gpu'];
+const UNFILTERED = ['venice', 'civitai', 'gpu', 'hearth'];
 const uid = () => crypto.randomBytes(5).toString('hex');
 
 // A chat as text for an AI that is NOT one of the unfiltered teammates: their messages and
@@ -54,6 +58,8 @@ function register(d) {
   const connectors = createConnectors({ file: path.join(dataDir(), 'connectors.json'), secrets });
   const habitat = createJsonFile(path.join(dataDir(), 'habitat.json'), { empty: () => null, check: (j) => typeof j === 'object', label: 'Your Habitat file' });
   const teammates = d.teammates || createTeammates({ secrets, file: path.join(dataDir(), 'servers.json'), settings: readSettings });
+  // Hearth devices: the AI his Hearth OS machines share (electron/hearth-devices.cjs).
+  const hearth = d.hearth || createHearthDevices({ settings: () => readSettings().hearthDevices, secrets, ...(d.fetchImpl ? { fetchImpl: d.fetchImpl } : {}), ...(d.sleep ? { sleep: d.sleep } : {}) });
   const entryOf = (id) => v2().entryOf(String(id));
   const attachRoot = () => attachments.attachDir(worktreeRoot());
 
@@ -115,6 +121,13 @@ function register(d) {
   // A picture made (or edited) by an AI that can, posted into the chat.
   handle('media:image', async (chatId, o = {}) => {
     entryOf(chatId);
+    // Hearth devices: ComfyUI on the best device that shares it.
+    if (o.provider === 'hearth') {
+      const r = await hearth.image({ prompt: String(o.prompt || ''), negative: `${scene.NEG_MINOR}, blurry, low quality` });
+      if (!r.ok) return { ok: false, provider: 'hearth', error: { kind: r.kind, message: r.message } };
+      const items = r.images.map((im, i) => media.storeBuffer(root, String(chatId), `hearth-${Date.now()}-${i + 1}.${/jpeg/.test(im.mime) ? 'jpg' : /webp/.test(im.mime) ? 'webp' : 'png'}`, im.buf)).filter(Boolean);
+      return { ok: true, provider: 'hearth', via: r.via, item: items[0], items };
+    }
     // The unfiltered teammates (Venice, Civitai, the owner's GPU server) make pictures their own way.
     if (teammates.IDS.includes(o.provider)) {
       const r = await teammates.image(o.provider, { prompt: o.prompt });
@@ -293,7 +306,10 @@ function register(d) {
   });
 
   // ---- more teammates: Venice, Civitai, the owner's GPU servers ----
-  handle('teammates:status', () => teammates.status());
+  handle('teammates:status', () => { const st = teammates.status(); return { ...st, ready: { ...st.ready, hearth: hearth.configured() }, imagesOnly: { ...st.imagesOnly, hearth: false } }; });
+  // ---- Hearth devices (Settings › Accounts › Hearth devices) ----
+  handle('hearth:status', (o = {}) => hearth.status({ probe: o.probe === true, fresh: o.fresh === true }));
+  handle('hearth:shareCode', (code) => hearth.setShareCode(code === null ? null : String(code ?? '')));
   handle('teammates:setKey', (agent, key) => teammates.setKey(String(agent), key));
   handle('teammates:removeKey', (agent) => teammates.removeKey(String(agent)));
   handle('teammates:addServer', (spec) => teammates.addServer(spec || {}));
@@ -362,6 +378,14 @@ function register(d) {
     const chk = cardsLib.checkRequest({ cards: list, text: `${prompt}\n${note}`, image: true });
     if (!chk.ok) return { ok: false, error: { kind: chk.kind, message: chk.message } };
     const provider = String(o.provider || '');
+    if (provider === 'hearth') {
+      const sc = scene.checkScene({ cards: list, prompt });
+      if (!sc.ok) return { ok: false, error: { kind: sc.kind, message: sc.message } };
+      const r = await hearth.image({ prompt, negative: sc.negative });
+      if (!r.ok) return { ok: false, provider, error: { kind: r.kind, message: r.message } };
+      const items = r.images.map((im, i) => media.storeBuffer(root, String(chatId), `${o.kind === 'scene' ? 'scene' : 'portrait'}-${Date.now()}-${i + 1}.${/jpeg/.test(im.mime) ? 'jpg' : 'png'}`, im.buf)).filter(Boolean);
+      return { ok: true, provider, via: r.via, items, safe: sc.safe };
+    }
     if (teammates.IDS.includes(provider)) {
       const r = await teammates.image(provider, { prompt, safe: chk.safe });
       if (!r.ok) return { ...r, provider };
@@ -373,11 +397,73 @@ function register(d) {
     if (!r.ok) return { ...r, provider };
     return { ok: true, provider, via: r.via, items: [media.storeBuffer(root, String(chatId), `portrait-${Date.now()}.png`, r.buf)].filter(Boolean) };
   });
+  // ---- Characters chat scene pictures (ComfyUI; electron/scene.cjs, electron/comfy.cjs) ----
+  // The character's look (appearance text, seed, keep the same seed): his edits and buttons only.
+  handle('cards:setLook', (id, patch) => cards.setLook(String(id), patch && typeof patch === 'object' ? patch : {}));
+  // Where a scene can be made: his ComfyUI server, his GPU servers set up as ComfyUI, Hearth devices.
+  function sceneSources() {
+    const out = [];
+    const c = readSettings().comfy || {};
+    if (c.url) out.push({ id: 'comfy', name: `Your ComfyUI server (${hnet.hostOf(c.url)})`, seed: true });
+    for (const s of teammates.list().filter((x) => x.type === 'comfy')) out.push({ id: `gpu:${s.id}`, name: `${s.name} (your GPU server, ComfyUI)`, seed: true });
+    if (hearth.configured()) out.push({ id: 'hearth', name: 'Hearth devices (ComfyUI on the best device)', seed: true });
+    return out;
+  }
+  handle('rp:sceneSources', () => sceneSources());
+  // The prompt built here from the cards and the recent messages; the window shows it to edit.
+  handle('rp:scenePrompt', (ids, messages) => {
+    const list = cardsOf(ids);
+    const msgs = (Array.isArray(messages) ? messages : []).slice(-20).map((m) => ({ who: String(m?.who || ''), text: String(m?.text || '').slice(0, 4000), err: m?.err === true }));
+    return { prompt: scene.buildScenePrompt({ cards: list, messages: msgs, persona: cards.persona() }), looks: list.map((c) => ({ id: c.id, name: c.name, look: c.ownerLook || null })) };
+  });
+  // The checkpoints on his ComfyUI server (its address from his settings only).
+  handle('comfy:checkpoints', async () => {
+    const c = readSettings().comfy || {};
+    if (!c.url) return hnet.fail('Type your ComfyUI server\'s address first.', 'not_set');
+    return comfy.listCheckpoints({ base: c.url, allow: comfy.allowOnly(c.url), fetchImpl: d.fetchImpl || ((...a) => fetch(...a)), name: 'Your ComfyUI server' });
+  });
+  async function makeScene(o = {}) {
+    const list = cardsOf(o.cardIds);
+    const prompt = String(o.prompt || '').trim().slice(0, 2500);
+    const chk = scene.checkScene({ cards: list, prompt });
+    if (!chk.ok) return { ok: false, error: { kind: chk.kind, message: chk.message } };
+    // The seed: the one he typed or kept for the first character, else a new one (not saved).
+    const look = list[0]?.ownerLook || {};
+    const typed = Number(o.seed);
+    const seed = Number.isInteger(typed) && typed >= 0 && typed < 2 ** 48 ? typed : look.keepSeed !== false && Number.isInteger(look.seed) ? look.seed : null;
+    const src = String(o.source || '');
+    const fetchImpl = d.fetchImpl || ((...a) => fetch(...a));
+    const extra = d.sleep ? { sleep: d.sleep } : {};
+    if (src === 'hearth') return hearth.image({ prompt, negative: chk.negative, seed });
+    if (src === 'comfy') {
+      const c = readSettings().comfy || {};
+      if (!c.url) return hnet.fail('Add your ComfyUI server in Settings › Accounts first.', 'not_set');
+      const r = await comfy.generate({ base: c.url, allow: comfy.allowOnly(c.url), checkpoint: c.checkpoint || null, prompt, negative: chk.negative, seed, fetchImpl, name: 'Your ComfyUI server', ...extra });
+      return r.ok ? { ...r, via: `Your ComfyUI server · ${r.checkpoint} · seed ${r.seed}` } : r;
+    }
+    const m = src.match(/^gpu:([a-f0-9]{8})$/);
+    const s = m ? teammates.list().find((x) => x.id === m[1] && x.type === 'comfy') : null;
+    if (!s) return hnet.fail('Pick where to make the scene (add a ComfyUI server in Settings › Accounts).', 'not_set');
+    const key = secrets.get(`server.${s.id}`);
+    const h = hnet.hostOf(s.url);
+    const r = await comfy.generate({ base: s.url, allow: (host) => host === h, headers: key ? { authorization: `Bearer ${key}` } : {}, checkpoint: s.model || null, prompt, negative: chk.negative, seed, fetchImpl, name: s.name, ...extra });
+    return r.ok ? { ...r, via: `${s.name} · ComfyUI · ${r.checkpoint} · seed ${r.seed}` } : r;
+  }
+  // A scene picture: checked against the hard limits here, then saved with the chat (its media folder).
+  handle('rp:scene', async (chatId, o = {}) => {
+    entryOf(chatId);
+    const r = await makeScene(o);
+    if (!r.ok) return r.error ? r : { ok: false, error: { kind: r.kind, message: r.message } };
+    const items = r.images.map((im, i) => media.storeBuffer(root, String(chatId), `scene-${Date.now()}-${i + 1}.${/jpeg/.test(im.mime) ? 'jpg' : /webp/.test(im.mime) ? 'webp' : 'png'}`, im.buf)).filter(Boolean);
+    if (!items.length) return { ok: false, error: { kind: 'failed', message: 'The picture couldn\'t be saved with the chat.' } };
+    return { ok: true, items, via: r.via || `seed ${r.seed}`, seed: r.seed, checkpoint: r.checkpoint };
+  });
+
   // Roleplay turns are checked against the hard limits before and after the AI writes.
   function rpGuard(agent, rp, phase, text) {
     const list = cardsOf(rp?.cardIds);
     if (!list.length) return { ok: true };
-    if (phase === 'before' && teammates.IDS.includes(agent)) {
+    if (phase === 'before' && UNFILTERED.includes(agent)) {
       const young = list.find((c) => cardsLib.cardLimits(c).minor);
       if (young) return { ok: false, kind: 'minor', message: `Blocked: ${young.name} reads as under 18 (${cardsLib.cardLimits(young).minorWhy}), so ${whoName[agent] || agent} (an uncensored teammate) can't play in this story. Pick Claude, ChatGPT or Gemini to play it as a non-sexual story.` };
     }
@@ -414,9 +500,9 @@ function register(d) {
 
   // ---- voice chat: speech to text, voices, cloning (electron/voice-chat.cjs) ----
   // CosyVoice2 voice clips (his, with consent) live in voice-clips/<server id>/, never in settings.
-  const voice = voiceChat.register({ handle, secrets, readSettings, send, which: makers.which, media, mediaRoot: root, dialog, getWindow, clipsDir: path.join(dataDir(), 'voice-clips') });
+  const voice = voiceChat.register({ handle, secrets, readSettings, send, which: makers.which, media, mediaRoot: root, dialog, getWindow, clipsDir: path.join(dataDir(), 'voice-clips'), hearth });
 
-  return { memory, scheduler, connectors, teammates, cards, rpGuard, docText, mcpForRun: (dir) => connectors.forRun(dir), stop() { scheduler.stop(); makers.stopSpeaking(); voice.stop(); } };
+  return { memory, scheduler, connectors, teammates, hearth, makeScene, cards, rpGuard, docText, mcpForRun: (dir) => connectors.forRun(dir), stop() { scheduler.stop(); makers.stopSpeaking(); voice.stop(); } };
 }
 
 module.exports = { register, transcriptOf, shieldLine, KEY_NAMES, UNFILTERED };
