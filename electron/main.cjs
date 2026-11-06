@@ -32,6 +32,8 @@ const { diffSettings, applyChanges, createSettingsLog } = require('./settings-lo
 const teamCheck = require('./team-check.cjs');
 const voiceChat = require('./voice-chat.cjs');
 const voicePerms = require('./voice-perms.cjs');
+const hearthDevices = require('./hearth-devices.cjs');
+const comfy = require('./comfy.cjs');
 
 // No Hearth OS version pin: the app never changes, bumps, publishes or deploys
 // Hearth OS versions (the owner picks every number). It only shows which Hearth
@@ -167,6 +169,11 @@ function normalSettings(s) {
     // Voice chat (Settings › Voice): speech to text, the voice provider, voices per teammate.
     // Defaults filled in here at read time; only what he changes is saved.
     voice: voiceChat.cleanSettings(s.voice),
+    // Hearth devices (Settings › Accounts): the Home server's address, the device order and the
+    // skip rules. Defaults filled in here at read time; only what he changes is saved.
+    hearthDevices: hearthDevices.cleanSettings(s.hearthDevices),
+    // His ComfyUI server for Characters chat scene pictures (address and default checkpoint).
+    comfy: comfy.cleanSettings(s.comfy),
   };
 }
 const MODEL_OK = /^[A-Za-z0-9._:\-/]{1,100}$/;
@@ -181,9 +188,10 @@ function cleanInstructions(c) {
   const t = (v) => (typeof v === 'string' ? v.slice(0, 3000) : '');
   return c && typeof c === 'object' && !Array.isArray(c) ? { about: t(c.about), style: t(c.style) } : { about: '', style: '' };
 }
-const TEAM_IDS = ['anthropic', 'openai', 'google', 'xai', 'mistral', 'qwen', 'perplexity', 'deepseek', 'ollama', 'venice', 'civitai', 'gpu'];
-// Teammates by key or URL (electron/teammates.cjs): answered through their own API.
-const TEAMMATES = ['venice', 'civitai', 'gpu'];
+const TEAM_IDS = ['anthropic', 'openai', 'google', 'xai', 'mistral', 'qwen', 'perplexity', 'deepseek', 'ollama', 'venice', 'civitai', 'gpu', 'hearth'];
+// Teammates by key or URL (electron/teammates.cjs; Hearth devices: electron/hearth-devices.cjs):
+// answered through their own API.
+const TEAMMATES = ['venice', 'civitai', 'gpu', 'hearth'];
 function cleanTeam(t) {
   if (!t || typeof t !== 'object' || Array.isArray(t)) return null;
   const members = [...new Set((Array.isArray(t.members) ? t.members : []).filter((a) => TEAM_IDS.includes(a)))];
@@ -513,6 +521,8 @@ function registerIpc() {
     }
     if ('customInstructions' in patch) s.customInstructions = cleanInstructions(patch.customInstructions);
     if ('voice' in patch) s.voice = voiceChat.mergeSettings(s.voice, patch.voice);
+    if ('hearthDevices' in patch) s.hearthDevices = hearthDevices.mergeSettings(s.hearthDevices, patch.hearthDevices);
+    if ('comfy' in patch) s.comfy = comfy.mergeSettings(s.comfy, patch.comfy);
     if ('teammates' in patch) {
       const t = cleanTeammates(patch.teammates);
       if (t.civitai?.fields) { try { JSON.parse(t.civitai.fields); } catch { throw new Error('The Civitai request fields must be JSON, like {"prompt": "{prompt}"}.'); } }
@@ -777,6 +787,8 @@ function registerIpc() {
   const withFrames = async (r) => {
     if (!r.ok) return r;
     const att = { ...r.att, url: pathToFileURL(r.att.path).href, ...(r.att.kind === 'image' && opsApi ? opsApi.imageInfo(r.att.path) : {}) };
+    // A picture too big to decode is never put in an <img> in the window (it shows as a file).
+    if (att.kind === 'image') { const fit = require('./bigfiles.cjs').pictureFit(att); if (!fit.decode) att.huge = fit.reason; }
     if (att.kind === 'video') {
       const f = await attachments.extractFrames(att.path, { ffmpeg: gitops.find('ffmpeg'), count: 4 });
       Object.assign(att, { frames: f.frames, duration: f.duration, note: f.note, ...(f.width ? { width: f.width, height: f.height } : {}) });
@@ -784,11 +796,21 @@ function registerIpc() {
     return { ok: true, att };
   };
   handle('attach:save', (name, data) => withFrames(attachments.saveBuffer(worktreeRoot(), String(name || ''), Buffer.from(data instanceof ArrayBuffer ? new Uint8Array(data) : data || []))));
+  // Picked files are streamed from disk (up to 10 GB each) with progress; attach:cancel stops it.
+  let picking = null;
+  const pickedCopy = async (f) => {
+    picking = picking && !picking.signal.aborted ? picking : new AbortController();
+    const name = path.basename(f);
+    return withFrames(await attachments.saveFromPathStreamed(worktreeRoot(), f, { signal: picking.signal, onProgress: (p) => send('media:progress', { chatId: null, attach: true, name, done: p.done, total: p.total ?? null, finished: p.finished === true }) }));
+  };
+  handle('attach:cancel', () => { picking?.abort(); return true; });
   handle('attach:pick', async () => {
     const r = await dialog.showOpenDialog(mainWindow, { title: 'Attach images or videos', properties: ['openFile', 'multiSelections'], filters: [{ name: 'Images and videos', extensions: Object.keys(attachments.TYPES) }] });
     if (r.canceled) return [];
     const out = [];
-    for (const f of r.filePaths.slice(0, 10)) out.push(await withFrames(attachments.saveFromPath(worktreeRoot(), f)));
+    for (const f of r.filePaths.slice(0, 10)) out.push(await pickedCopy(f));
+    picking = null;
+    send('media:progress', { chatId: null, attach: true, finished: true });
     return out;
   });
   // An AI's ATTACH line: relative to its workspace; only files inside the project,
@@ -1026,10 +1048,16 @@ function registerIpc() {
     if (r.canceled) return [];
     const out = [];
     for (const f of r.filePaths.slice(0, 10)) {
-      if (attachments.kindOf(f)) out.push(await withFrames(attachments.saveFromPath(worktreeRoot(), f)));
-      else if (/\.pdf$/i.test(f)) out.push(await savePdf(path.basename(f), fs.readFileSync(f)));
+      if (attachments.kindOf(f)) { out.push(await pickedCopy(f)); continue; }
+      // PDFs and text files are read whole (their text goes to the AIs), so their size is checked first.
+      let size = 0;
+      try { size = fs.statSync(f).size; } catch { out.push({ ok: false, message: `File not found: ${path.basename(f)}` }); continue; }
+      if (/\.pdf$/i.test(f)) out.push(size > 100 * 1024 * 1024 ? { ok: false, message: `${path.basename(f)} is ${Math.round(size / 1048576)} MB; PDFs can be up to 100 MB.` } : await savePdf(path.basename(f), fs.readFileSync(f)));
+      else if (size > attachments.TEXT_MAX) out.push({ ok: false, message: `${path.basename(f)} is ${Math.round(size / 1048576)} MB; text files can be up to ${Math.round(attachments.TEXT_MAX / 1048576)} MB (the AIs read them as text).` });
       else { const t = attachments.saveText(worktreeRoot(), path.basename(f), fs.readFileSync(f)); out.push(t.ok ? { ok: true, att: { ...t.att, url: null } } : t); }
     }
+    picking = null;
+    send('media:progress', { chatId: null, attach: true, finished: true });
     return out;
   });
 
@@ -1090,6 +1118,7 @@ function registerV2() {
     guardSettings,
     apiConnected: (agent) => TEAMMATES.includes(agent) || API_ONLY.includes(agent) || (LIVE_PROVIDERS.includes(agent) && readSettings().connection[agent] === 'api'),
     callApi: async (agent, model, prompt, signal) => {
+      if (agent === 'hearth') return parityApi ? parityApi.hearth.chat({ prompt, model, signal }) : { ok: false, error: { kind: 'auth', message: 'Not ready.' } };
       if (TEAMMATES.includes(agent)) return parityApi ? parityApi.teammates.chat(agent, { prompt, model, signal }) : { ok: false, error: { kind: 'auth', message: 'Not ready.' } };
       const r = await callProvider({ provider: agent, apiKey: secrets.get(agent), model: validateModel(model || DEFAULT_MODELS[agent]), prompt });
       if (!r.ok) {
@@ -1132,7 +1161,7 @@ app.whenReady().then(async () => {
   // The active project's board (the data from before projects is the default project, in the same file).
   store = createStore(ops.stateFile(dataDir(), readSettings().project, readSettings().projects));
   binding.setActive(ops.activeProjectId());
-  chats = createChats(dataDir());
+  chats = createChats(dataDir(), { onPurge: (id) => require('./media.cjs').removeChat(require('./media.cjs').mediaRoot(dataDir()), id) });
   history = createHistory(historyFile());
   openWeb = web.createWebWindows({ BrowserWindow, shell, iconPath: path.join(__dirname, '..', 'dist', 'icon.png') });
   theme.watchTheme((t) => send('theme:changed', t));

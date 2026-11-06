@@ -12,7 +12,7 @@ const MAX = 500;
 const plain = (v) => v && typeof v === 'object' && !Array.isArray(v);
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 // Objects whose own keys are separate settings (a change to one never rewrites the others).
-const NESTED = new Set(['tools', 'connection', 'bins', 'teammates', 'customInstructions', 'voice']);
+const NESTED = new Set(['tools', 'connection', 'bins', 'teammates', 'customInstructions', 'voice', 'hearthDevices', 'comfy']);
 
 function diffSettings(before = {}, after = {}) {
   const out = [];

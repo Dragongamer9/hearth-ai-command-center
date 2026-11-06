@@ -38,7 +38,7 @@ export function plainError(agent, error = {}) {
 export function teammateStatus(id, info = {}) {
   if (!info.inTeam) return { state: 'off', label: 'off', why: 'Not in your team (Settings › AI team).' };
   if (info.ready) return { state: 'connected', label: 'connected', why: '' };
-  if (info.kind === 'teammate') return { state: 'key', label: id === 'gpu' ? 'needs a server' : 'needs a key', why: id === 'gpu' ? 'Add your GPU server in Settings › Accounts.' : `Add your ${nm(id)} key in Settings › Accounts.` };
+  if (info.kind === 'teammate') return { state: 'key', label: id === 'gpu' || id === 'hearth' ? 'needs a server' : 'needs a key', why: id === 'gpu' ? 'Add your GPU server in Settings › Accounts.' : id === 'hearth' ? 'Type your Home server\'s address in Settings › Accounts › Hearth devices.' : `Add your ${nm(id)} key in Settings › Accounts.` };
   if (info.kind === 'api') return { state: 'key', label: 'needs a key', why: `Add your ${nm(id)} API key in Settings › Accounts.` };
   if (info.kind === 'local') return { state: 'cli', label: 'not running', why: 'Ollama isn\'t running on this PC.' };
   if (info.kind === 'manual') return { state: 'off', label: 'terminal only', why: 'FreeBuff only works in a terminal.' };

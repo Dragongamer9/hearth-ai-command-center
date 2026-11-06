@@ -95,7 +95,12 @@ test('previews written to .hearth-preview/ during the turn are picked up (and no
   fs.writeFileSync(old, 'old');
   fs.utimesSync(old, new Date(Date.now() - 3600e3), new Date(Date.now() - 3600e3));
   const got = previews.collect(dir, Date.now() - 60e3);
-  assert.deepEqual(got.map((p) => p.name).sort(), ['chart.svg', 'notes.md', 'page.html']);
+  assert.deepEqual(got.filter((p) => !p.big).map((p) => p.name).sort(), ['chart.svg', 'notes.md', 'page.html']);
+  // Over 1 MB: not read into memory here, handed on to previews.storeBig (shown from disk).
+  const huge = got.find((p) => p.name === 'huge.html');
+  assert.equal(huge.big, true);
+  assert.equal(huge.content, undefined);
+  assert.equal(huge.size, previews.MAX_FILE + 1);
   assert.equal(got.find((p) => p.name === 'notes.md').kind, 'markdown');
 });
 

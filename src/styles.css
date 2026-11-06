@@ -591,3 +591,29 @@ table.perms tr.off td { color: var(--faint); }
 .vpick select[data-vuse] { max-width: 180px; }
 .credits td, .credits th { text-align: left; padding: 4px 10px 4px 0; font-size: 12.5px; vertical-align: top; }
 .credits th { color: var(--muted); font-weight: 600; }
+
+/* Big media: the too-big card, the gallery grid and viewer, sound, copy progress. */
+.media img { height: auto; }
+.media.aud audio { display: block; width: min(460px, 100%); margin: 8px; }
+.toobig { border-color: var(--line-2); }
+.toobig .fn { display: flex; flex-direction: column; min-width: 0; } .toobig .fn b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.toobig .tb-why { margin: 4px 14px 10px; font-size: 13px; color: var(--muted); }
+.galwrap { margin: 8px 0; }
+.galwrap .mh { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted); margin-bottom: 6px; }
+.gal { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 6px; max-width: 760px; }
+.gal-t { aspect-ratio: 1; border-radius: 8px; overflow: hidden; border: 1px solid var(--line); background: var(--panel-2); padding: 0; content-visibility: auto; contain-intrinsic-size: 104px 104px; cursor: zoom-in; }
+.gal-t img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.gal-t:focus-visible { outline: 2px solid var(--accent); }
+.gal-more { aspect-ratio: 1; border-radius: 8px; border: 1px dashed var(--line-2); color: var(--muted); font-size: 13px; }
+.gviewer { position: fixed; z-index: 23; inset: 24px; display: flex; flex-direction: column; gap: 10px; outline: none; pointer-events: none; }
+.gv-stage { flex: 1; min-height: 0; overflow: auto; display: flex; align-items: center; justify-content: center; pointer-events: auto; border-radius: 12px; }
+.gv-stage.fit img { max-width: 100%; max-height: 100%; object-fit: contain; cursor: zoom-in; }
+.gv-stage.zoomed { align-items: flex-start; justify-content: flex-start; } .gv-stage.zoomed img { cursor: zoom-out; }
+.gv-stage img { border-radius: 8px; box-shadow: var(--shadow); }
+.gv-nav { position: absolute; top: 45%; width: 48px; height: 64px; border-radius: 12px; background: var(--panel); border: 1px solid var(--line-2); font-size: 30px; color: var(--text); pointer-events: auto; opacity: .9; }
+.gv-nav.prev { left: 6px; } .gv-nav.next { right: 6px; } .gv-nav:disabled { opacity: .3; }
+.gviewer .lb-bar { align-self: center; flex-wrap: wrap; max-width: 100%; }
+.gv-z { min-width: 42px; text-align: center; font-size: 12px; }
+.gv-keys { align-self: center; color: #cfc6ba; pointer-events: none; }
+.copybar { position: fixed; z-index: 24; left: 50%; bottom: 18px; transform: translateX(-50%); display: flex; align-items: center; gap: 10px; background: var(--panel); border: 1px solid var(--line-2); border-radius: 12px; padding: 8px 12px; box-shadow: var(--shadow); font-size: 13px; max-width: calc(100% - 40px); }
+.copybar .bar { width: 140px; height: 6px; border-radius: 3px; background: var(--panel-2); overflow: hidden; flex: none; } .copybar .bar i { display: block; height: 100%; background: var(--accent); }

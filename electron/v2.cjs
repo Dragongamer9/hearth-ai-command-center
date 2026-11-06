@@ -11,6 +11,7 @@ const steps = require('./steps.cjs');
 const previews = require('./previews.cjs');
 const { migrateV2, remoteReader, readStateReadOnly } = require('./migrate-v2.cjs');
 const media = require('./media.cjs');
+const { Readable } = require('node:stream');
 const crypto = require('node:crypto');
 
 // Commands the AIs may run in a copy by themselves (Claude Code enforces this list; the
@@ -38,7 +39,7 @@ function register(d) {
   // (tests pass urlFor/github to work against local repos without the network)
   const copies = createCopies({ dataDir: dataDir(), gitBin: gitops.find('git') || 'git', owner: ownerIdentity, ...(d.urlFor ? { urlFor: d.urlFor } : {}) });
   const github = d.github || createGithub({ ghBin: () => gitops.find('gh') });
-  const store = previews.createPreviewStore({ libDir: d.libDir || path.join(__dirname, '..', 'dist', 'vendor') });
+  const store = previews.createPreviewStore({ libDir: d.libDir || path.join(__dirname, '..', 'dist', 'vendor'), mediaRoot: media.mediaRoot(dataDir()) });
   // Every run is keyed by its chat (helpers by chat#run), never one global: several chats
   // can have their teams working at once, each in its own copy, branch and sessions.
   const running = new Map(); // chatId (or chatId#runId for a helper) -> AbortController
@@ -60,8 +61,8 @@ function register(d) {
   // ---- preview pages (hearth-preview://<id>/) ----
   if (protocol?.handle) {
     protocol.handle(previews.SCHEME, (req) => {
-      const r = store.respond(req.url);
-      return new Response(r.body, { status: r.status, headers: r.headers });
+      const r = store.respond(req.url, req.headers);
+      return new Response(r.stream ? Readable.toWeb(r.stream()) : r.body, { status: r.status, headers: r.headers });
     });
   }
 
@@ -248,10 +249,25 @@ function register(d) {
         }
         copies.touch(e.id);
       }
-      out.previews = previews.collect(cwd, startedAt);
+      // Big files are streamed into the chat's media folder with progress; Stop cancels them.
+      const progress = (p) => send('media:progress', { chatId: e.id, name: p.name, done: p.done, total: p.total ?? null, finished: p.finished === true });
+      // Live previews: up to 1 MB kept in the chat; bigger ones stored as files (previews.storeBig).
+      out.previews = [];
+      for (const p of previews.collect(cwd, startedAt)) {
+        if (!p.big) { out.previews.push(p); continue; }
+        try { out.previews.push(await previews.storeBig({ root: mediaRoot, chatId: e.id, name: p.name, kind: p.kind, src: p.path, signal: controller.signal, onProgress: (x) => progress({ name: p.name, ...x }) })); } catch (err) { out.previews.push({ name: p.name, kind: p.kind, size: p.size, tooBig: { reason: `it couldn't be stored: ${err.message}` } }); }
+      }
+      // A fenced preview block over 1 MB in the reply is stored the same way (the text keeps a note).
+      if (r.text && r.text.length > previews.MAX_FILE) {
+        const f = previews.bigFences(r.text);
+        if (f.blocks.length) {
+          out.text = f.text;
+          for (const b of f.blocks) { try { out.previews.push(await previews.storeBig({ root: mediaRoot, chatId: e.id, name: b.name, kind: b.kind, buf: b.buf })); } catch {} }
+        }
+      }
       // Pictures, videos and files the AI made or named: copied into the app's media folder.
       // … with a plain reason for each one that can't be shown (outside, missing, too large, wrong type).
-      try { const m = media.collectAll({ cwd, sinceMs: startedAt, text: r.text || r.partial || '', chatId: e.id, root: mediaRoot }); out.media = m.items; if (m.problems.length) out.mediaProblems = m.problems; } catch { out.media = []; }
+      try { const m = await media.collectAll({ cwd, sinceMs: startedAt, text: r.text || r.partial || '', chatId: e.id, root: mediaRoot, signal: controller.signal, onProgress: progress }); out.media = m.items; if (m.problems.length) out.mediaProblems = m.problems; } catch { out.media = []; } finally { send('media:progress', { chatId: e.id, finished: true }); }
       if (r.ok && r.sessionId && !e.temp) {
         try { history.append({ provider: agent, sessionId: r.sessionId, title: e.title, cwd, taskId: null, resumable: true, messages: [{ role: 'user', text: String(o.historyText || prompt).slice(0, 8000), at: new Date(startedAt).toISOString() }, { role: 'assistant', text: r.text, at: new Date().toISOString() }] }); } catch {}
       }
@@ -338,6 +354,21 @@ function register(d) {
     // A diagram (mermaid) frame: the bundled library only, never the network.
     ? { ok: true, url: store.add(String(html || ''), false, { lib: true }), net: false }
     : { ok: true, url: store.add(String(html || ''), readSettings().previewNetwork === true), net: readSettings().previewNetwork === true }));
+  // A big preview kept in the chat's media folder (previews.storeBig), shown from disk.
+  handle('preview:serveFile', (chatId, file, kind) => {
+    const e = entryOf(chatId);
+    const net = readSettings().previewNetwork === true;
+    try { return { ok: true, url: store.addFile(e.id, String(file || ''), String(kind || 'html'), net), net }; } catch (err) { return { ok: false, message: err.message }; }
+  });
+  // A file the AI made that was too big to copy into the chat: shown in its folder.
+  handle('media:revealSource', (chatId, rel) => {
+    const e = entryOf(chatId);
+    const cwd = connOf(e) && !e.temp ? copies.dirOf(e.id) : scratchDir(e.id);
+    const f = media.inside(cwd, String(rel || ''));
+    if (!f) return { ok: false, message: 'That file isn\'t there any more (the AI\'s folder may have been cleaned up).' };
+    shell.showItemInFolder(f);
+    return { ok: true };
+  });
   handle('preview:download', async (name, content) => {
     const safe = String(name || 'preview.html').replace(/[^A-Za-z0-9._ -]+/g, '_').slice(0, 100) || 'preview.html';
     const r = await dialog.showSaveDialog(getWindow(), { title: 'Download preview', defaultPath: safe });

@@ -6,10 +6,14 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { execFile } = require('node:child_process');
+const big = require('./bigfiles.cjs');
 
-const TYPES = { png: 'image', jpg: 'image', jpeg: 'image', webp: 'image', gif: 'image', mp4: 'video', webm: 'video', mov: 'video' };
+const TYPES = { png: 'image', jpg: 'image', jpeg: 'image', webp: 'image', gif: 'image', avif: 'image', mp4: 'video', webm: 'video', mov: 'video' };
+// Pasted or dropped files arrive as bytes from the window (one IPC message), so they stay at
+// 200 MB. Files picked with the Attach button are streamed from disk, up to 10 GB each.
 const MAX_BYTES = 200 * 1024 * 1024;
-const TOO_BIG = (size, max = MAX_BYTES) => `That file is ${(size / 1048576).toFixed(0)} MB; attachments can be up to ${Math.round(max / 1048576)} MB.`;
+const MAX_PICKED = big.MAX_STORED;
+const TOO_BIG = (size, max = MAX_BYTES) => `That file is ${big.fmtBytes(size)}; ${max === MAX_BYTES ? 'pasted or dropped files' : 'attachments'} can be up to ${big.fmtBytes(max)}.${max === MAX_BYTES ? ' Use the + button to pick bigger files (up to 10 GB): they are copied from disk.' : ''}`;
 
 const extOf = (name) => path.extname(String(name || '')).slice(1).toLowerCase();
 const kindOf = (name) => TYPES[extOf(name)] || null;
@@ -66,6 +70,24 @@ function saveFromPath(root, src, { roots = null, max = MAX_BYTES } = {}) {
   const dest = newDest(root, src);
   fs.copyFileSync(real, dest);
   return { ok: true, att: record(root, dest, src, kind, st.size) };
+}
+
+// The same, streamed (never read whole), up to MAX_PICKED, with a free-space check,
+// progress and cancel. Used for files the owner picks with the Attach button.
+async function saveFromPathStreamed(root, src, { roots = null, max = MAX_PICKED, signal = null, onProgress = null, statfs } = {}) {
+  let real;
+  try { real = fs.realpathSync(src); } catch { return { ok: false, message: `File not found: ${path.basename(String(src))}` }; }
+  const kind = kindOf(real);
+  if (!kind || !kindOf(src)) return { ok: false, message: 'Only images (png, jpg, webp, gif, avif) and videos (mp4, webm, mov) can be attached.' };
+  const st = fs.statSync(real);
+  if (!st.isFile()) return { ok: false, message: 'Not a file.' };
+  if (roots && !inside(real, roots)) return { ok: false, message: 'Only files inside the project workspace or the attachments folder can be posted.' };
+  if (st.size > max) return { ok: false, tooBig: true, size: st.size, limit: max, message: TOO_BIG(st.size, max) };
+  if (!st.size) return { ok: false, message: 'That file is empty.' };
+  const dir = attachDir(root);
+  const r = await big.copyFile(real, dir, safeName(src), { max, signal, onProgress, ...(statfs ? { statfs } : {}) });
+  if (!r.ok) return { ok: false, ...(r.code === 'no-space' ? { noSpace: true } : {}), message: r.code === 'too-big' ? TOO_BIG(r.size, max) : r.message };
+  return { ok: true, att: record(root, r.path, src, kind, r.size) };
 }
 
 function exec(file, args, timeoutMs = 60000) {
@@ -129,4 +151,4 @@ function saveText(root, name, data, { max = TEXT_MAX } = {}) {
 
 const ffmpegInput = (file) => ['-protocol_whitelist', 'file', '-f', /\.webm$/i.test(file) ? 'matroska' : 'mov', '-i', `file:${path.resolve(file)}`];
 
-module.exports = { saveText, TEXT_EXT, probeResolution, agentPath, ffmpegInput, TYPES, MAX_BYTES, kindOf, safeName, attachDir, inside, saveBuffer, saveFromPath, extractFrames };
+module.exports = { saveFromPathStreamed, MAX_PICKED, TEXT_MAX, saveText, TEXT_EXT, probeResolution, agentPath, ffmpegInput, TYPES, MAX_BYTES, kindOf, safeName, attachDir, inside, saveBuffer, saveFromPath, extractFrames };

@@ -45,6 +45,17 @@ contextBridge.exposeInMainWorld('hearth', {
   ghRepos: () => ipcRenderer.invoke('gh:repos'),
   ghBranches: (repo) => ipcRenderer.invoke('gh:branches', repo),
   previewServe: (html, o) => ipcRenderer.invoke('preview:serve', html, o || {}),
+  previewServeFile: (chatId, file, kind) => ipcRenderer.invoke('preview:serveFile', chatId, file, kind),
+  mediaOpenBrowser: (chatId, file) => ipcRenderer.invoke('media:openBrowser', chatId, file),
+  mediaReveal: (chatId, file) => ipcRenderer.invoke('media:reveal', chatId, file),
+  mediaRevealSource: (chatId, rel) => ipcRenderer.invoke('media:revealSource', chatId, rel),
+  mediaCancelFetch: (chatId) => ipcRenderer.invoke('media:cancelFetch', chatId),
+  attachCancel: () => ipcRenderer.invoke('attach:cancel'),
+  onMediaProgress: (cb) => {
+    const listener = (_e, a) => cb(a);
+    ipcRenderer.on('media:progress', listener);
+    return () => ipcRenderer.removeListener('media:progress', listener);
+  },
   previewDownload: (name, content) => ipcRenderer.invoke('preview:download', name, content),
   savedBoards: () => ipcRenderer.invoke('saved:boards'),
   savedOpenData: () => ipcRenderer.invoke('saved:openData'),
@@ -136,6 +147,23 @@ contextBridge.exposeInMainWorld('hearth', {
   rpSetPersona: (p) => ipcRenderer.invoke('rp:setPersona', p),
   rpCheck: (ids, text) => ipcRenderer.invoke('rp:check', ids, text),
   rpImage: (chatId, o) => ipcRenderer.invoke('rp:image', chatId, o || {}),
+  // Characters chat scene pictures (ComfyUI) and the character's saved look.
+  rpSceneSources: () => ipcRenderer.invoke('rp:sceneSources'),
+  rpScenePrompt: (ids, messages) => ipcRenderer.invoke('rp:scenePrompt', ids, messages),
+  rpScene: (chatId, o) => ipcRenderer.invoke('rp:scene', chatId, o || {}),
+  cardsSetLook: (id, patch) => ipcRenderer.invoke('cards:setLook', id, patch || {}),
+  comfyCheckpoints: () => ipcRenderer.invoke('comfy:checkpoints'),
+  comfyTest: () => ipcRenderer.invoke('comfy:test'),
+  comfyStats: () => ipcRenderer.invoke('comfy:stats'),
+  rpSceneCancel: (job) => ipcRenderer.invoke('rp:sceneCancel', job),
+  onSceneProgress: (cb) => {
+    const listener = (_e, a) => cb(a);
+    ipcRenderer.on('rp:sceneProgress', listener);
+    return () => ipcRenderer.removeListener('rp:sceneProgress', listener);
+  },
+  // Hearth devices (Settings › Accounts): status and test, and the share code (encrypted).
+  hearthStatus: (o) => ipcRenderer.invoke('hearth:status', o || {}),
+  hearthShareCode: (code) => ipcRenderer.invoke('hearth:shareCode', code),
   chatsRp: (id, rp) => ipcRenderer.invoke('chats:rp', id, rp),
   notifyShow: (o) => ipcRenderer.invoke('notify:show', o || {}),
   onNotifyOpen: (cb) => {

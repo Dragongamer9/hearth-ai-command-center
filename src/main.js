@@ -15,6 +15,7 @@ import { autoTitle, moveInGroup, dropInGroup } from './chats.mjs';
 import { groupChats, repoHint, greeting, fmtBytes, ago } from './app/groups.mjs';
 import { groupSteps } from './app/steps.mjs';
 import { previewDoc, frameHtml } from './app/previews.mjs';
+import { SAFE_MEDIA, GALLERY_MIN, thumbUrl, shownUrl, tooBigCard, previewTooBig, problemCard, hugePictureCard, galleryItems, galleryGrid, galleryViewer, galleryKey, padActions, galleryStep, progressLine } from './app/bigmedia.mjs';
 import { esc } from './app/text.mjs';
 import { rich, sourcesOf, plainText, hostOf } from './app/rich.mjs';
 import { parseDiff } from './app/diff.mjs';
@@ -34,7 +35,7 @@ import { voiceSettings, routeFor, isServer, serverIdOf, idOf } from './app/voice
 
 const api = window.hearth || null;
 const TEAM_IDS = ['anthropic', 'openai', 'google', 'xai', 'mistral', 'qwen', 'perplexity', 'deepseek', 'ollama', ...TEAMMATE_IDS];
-const MONO = { anthropic: ['C', '#c96b3c'], openai: ['G', '#3f8f6f'], google: ['Ge', '#4b6fd0'], xai: ['X', '#5d636b'], mistral: ['M', '#6b5bd2'], qwen: ['Q', '#7a5cc9'], perplexity: ['P', '#1f8a99'], deepseek: ['D', '#3d56c9'], ollama: ['L', '#6d746e'], freebuff: ['F', '#8a7bc6'], venice: ['V', '#c2453b'], civitai: ['Ci', '#2f6fd6'], gpu: ['GP', '#6f7a3e'] };
+const MONO = { hearth: ['H', '#c8743a'], anthropic: ['C', '#c96b3c'], openai: ['G', '#3f8f6f'], google: ['Ge', '#4b6fd0'], xai: ['X', '#5d636b'], mistral: ['M', '#6b5bd2'], qwen: ['Q', '#7a5cc9'], perplexity: ['P', '#1f8a99'], deepseek: ['D', '#3d56c9'], ollama: ['L', '#6d746e'], freebuff: ['F', '#8a7bc6'], venice: ['V', '#c2453b'], civitai: ['Ci', '#2f6fd6'], gpu: ['GP', '#6f7a3e'] };
 const QUICK = [
   ['gh', 'Fix a bug in a repo', 'There\'s a bug I want fixed: '],
   ['dl', 'Look at a sent log', 'Look at the log I attached (or the newest one in Dragongamer9/hearth-logs) and find the cause: '],
@@ -46,7 +47,7 @@ const QUICK = [
 const SECTIONS = [['team', 'AI team'], ['accounts', 'Accounts'], ['github', 'GitHub'], ['tools', 'Tools'], ['memory', 'Memory'], ['scheduled', 'Scheduled'], ['connectors', 'Connectors'], ['perms', 'Permissions'], ['alerts', 'Notifications'], ['voice', 'Voice'], ['look', 'Appearance'], ['updates', 'App updates'], ['data', 'Saved data']];
 const IDLE = [[1, '1 hour'], [6, '6 hours'], [24, '1 day'], [72, '3 days'], [168, '1 week'], [0, 'Never']];
 const MAX_CHATS = [1, 2, 3, 4, 5, 6, 8, 10];
-const IMAGE_MAKERS = ['openai', 'google', 'xai', 'venice', 'civitai', 'gpu'];
+const IMAGE_MAKERS = ['openai', 'google', 'xai', 'venice', 'civitai', 'gpu', 'hearth'];
 const VIDEO_MAKERS = ['openai', 'google'];
 const MODEL_PRESETS = { anthropic: ['opus', 'sonnet', 'haiku'], openai: ['gpt-5', 'gpt-5-codex', 'o4-mini'], google: ['gemini-2.5-pro', 'gemini-2.5-flash'], xai: ['grok-4', 'grok-code-fast-1'], mistral: ['mistral-large-latest', 'codestral-latest'], perplexity: ['sonar', 'sonar-pro', 'sonar-reasoning-pro'], deepseek: ['deepseek-chat', 'deepseek-reasoner'], qwen: [], ollama: [], venice: [], civitai: [], gpu: [] };
 const MEDIA_KEYS = [['google', 'Gemini API key', 'pictures (Gemini image model), Veo videos'], ['openai', 'OpenAI API key', 'pictures and edits (OpenAI Images), Sora videos; the same key as ChatGPT by API'], ['xai', 'xAI API key', 'Grok pictures'], ['mistral', 'Mistral API key', 'reading PDFs and scans (Mistral OCR)']];
@@ -108,7 +109,7 @@ function statusOf(a) {
 const statusMap = () => Object.fromEntries(team().members.map((a) => [a, statusOf(a)]));
 const missingChecks = () => (S.missing || []).filter((x) => x.missing).map((x) => x.check);
 const mono = (a, cls = '') => { const m = MONO[a] || [(AGENTS[a]?.name || '?')[0], '#7a7166']; return `<span class="ava ${cls}" style="background:${m[1]}">${esc(m[0])}</span>`; };
-const setupHint = (a) => (a === 'gpu' ? 'Add your GPU server in Settings › Accounts' : TEAMMATE_IDS.includes(a) ? `Add your ${aiName(a)} key in Settings › Accounts` : `set up ${aiName(a)} in Settings › Accounts`);
+const setupHint = (a) => (a === 'gpu' ? 'Add your GPU server in Settings › Accounts' : a === 'hearth' ? 'Type your Home server\'s address in Settings › Accounts › Hearth devices' : TEAMMATE_IDS.includes(a) ? `Add your ${aiName(a)} key in Settings › Accounts` : `set up ${aiName(a)} in Settings › Accounts`);
 const makerReady = (a) => (TEAMMATE_IDS.includes(a) ? Boolean(S.mates.ready?.[a]) && team().members.includes(a) : Boolean(S.mkeys.keys?.[a]));
 
 // ---------- every chat's own runtime ----------
@@ -347,8 +348,12 @@ async function chooseRepo(repo, branch) {
 }
 
 // ---------- attachments ----------
+// Pasted or dropped files come as bytes through the window, so they're capped at 200 MB;
+// the + button picks bigger ones (up to 10 GB), copied from disk with progress.
+const PASTE_MAX = 200 * 1024 * 1024;
 async function addFiles(fileList) {
   for (const f of [...fileList].slice(0, 10)) {
+    if (f.size > PASTE_MAX) { toast(`${f.name} is ${fmtBytes(f.size)}. Pasted or dropped files can be up to 200 MB; use the + button to pick it (up to 10 GB, copied from disk).`); continue; }
     const buf = await f.arrayBuffer();
     const r = await call('attachSaveAny', f.name || 'pasted.png', buf);
     if (r?.ok) S.attach.push(r.att); else toast(r?.message || `Couldn't attach ${f.name}.`);
@@ -789,6 +794,17 @@ function previewOf(msgId, pid, R = cur()) {
 async function openPane(msgId, pid, tab = 'preview') {
   const p = previewOf(msgId, pid);
   if (!p) return;
+  // Too big for the panel: the card in the chat says why and offers "Open in browser".
+  if (p.tooBig) { if (tab !== 'preview') toast('That preview is too big to edit here. Use Save as… and edit it in your editor.'); return; }
+  // Over 1 MB: kept as a file in the chat's media folder and shown from disk (no srcdoc).
+  if (p.file) {
+    S.pane = { msgId, pid, tab: 'preview', url: null, big: true };
+    const r = await call('previewServeFile', S.open, p.file, p.kind);
+    if (r?.ok) S.pane.url = r.url; else { S.pane = null; toast(r?.message || 'That preview couldn\'t be opened.'); }
+    renderPane(true);
+    renderMain();
+    return;
+  }
   S.pane = { msgId, pid, tab, url: null };
   const html = p.kind === 'code' ? `<!doctype html><meta charset="utf-8"><style>body{margin:0;background:#0d1117;color:#c9d1d9;font:13px/1.55 ui-monospace,monospace}pre{margin:0;padding:16px;white-space:pre-wrap}</style><pre>${esc(p.content)}</pre>` : previewDoc({ kind: p.kind, content: p.content, name: p.name, dark: document.documentElement.dataset.mode !== 'light', allowNet: S.settings.previewNetwork === true });
   if (api?.previewServe) { const r = await call('previewServe', html); if (r?.ok) S.pane.url = r.url; }
@@ -821,15 +837,55 @@ async function codeToCanvas(btn) {
 }
 
 // ---------- pictures, videos and files in chat ----------
-const SAFE_MEDIA = /^(hearth-media:\/\/c\/[A-Za-z0-9-]+\/[A-Za-z0-9%._ -]+|data:(image|video)\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+|blob:[a-z0-9:/.-]+)$/i;
 function mediaHtml(m) {
   const items = (m.media || []).filter((x) => x && SAFE_MEDIA.test(String(x.url || '')));
   if (!items.length) return '';
+  // Pictures are files streamed from disk; very big ones show a screen-sized copy, ones too big
+  // to decode get the clear card, and five or more become a gallery of small thumbnails.
+  const huge = items.filter((x) => x.kind === 'image' && x.huge).map((x) => hugePictureCard(x, icon)).join('');
+  const picItems = items.filter((x) => x.kind === 'image' && !x.huge);
+  const gallery = picItems.length >= GALLERY_MIN ? `<div class="galwrap"><div class="mh">${icon('eye', 'sm')}${picItems.length} pictures <button class="mini" data-a="gallery" data-m="${esc(m.id)}" data-i="0">Open gallery</button></div>${galleryGrid(picItems, { msg: m.id, limit: 60 })}</div>` : '';
+  const auds = items.filter((x) => x.kind === 'audio').map((x) => `<figure class="media aud"><audio controls preload="metadata" src="${esc(x.url)}"></audio><figcaption><span>${esc(x.name)}</span><span class="faint">${fmtBytes(x.size)}</span><span class="grow"></span><button class="mini" data-a="media-save" data-f="${esc(x.file || '')}" data-n="${esc(x.name)}">${icon('dl', 'sm')}Save as…</button><button class="mini" data-a="media-reveal" data-f="${esc(x.file || '')}">Show in folder</button></figcaption></figure>`).join('');
   const btns = (x) => `<button class="mini" data-a="media-save" data-f="${esc(x.file || '')}" data-n="${esc(x.name)}">${icon('dl', 'sm')}Download</button><button class="mini" data-a="media-repo" data-f="${esc(x.file || '')}" data-n="${esc(x.name)}">${icon('gh', 'sm')}Save to repo…</button>`;
-  const pics = items.filter((x) => x.kind === 'image').map((x) => `<figure class="media"><img src="${esc(x.url)}" alt="${esc(x.name)}" data-a="lightbox" data-src="${esc(x.url)}" data-f="${esc(x.file || '')}" data-n="${esc(x.name)}" loading="lazy"><figcaption><span>${esc(x.name)}</span><span class="grow"></span>${btns(x)}</figcaption></figure>`).join('');
+  const pics = gallery ? '' : picItems.map((x, i) => `<figure class="media"><img src="${esc(shownUrl(x))}" alt="${esc(x.name)}" data-a="gallery" data-m="${esc(m.id)}" data-i="${i}" loading="lazy" decoding="async"${x.width ? ` width="${Number(x.width)}" height="${Number(x.height)}"` : ''}><figcaption><span>${esc(x.name)}</span>${x.view ? `<span class="faint" title="The original is ${esc(fmtBytes(x.size))}${x.width ? `, ${x.width}×${x.height}` : ''}">screen-sized copy</span>` : ''}<span class="grow"></span>${btns(x)}</figcaption></figure>`).join('');
   const vids = items.filter((x) => x.kind === 'video').map((x) => `<figure class="media vid"><video controls preload="metadata" src="${esc(x.url)}"${x.poster && SAFE_MEDIA.test(x.poster) ? ` poster="${esc(x.poster)}"` : ''}></video><figcaption><span>${esc(x.name)}</span><span class="faint">${fmtBytes(x.size)}</span><span class="grow"></span>${btns(x)}</figcaption></figure>`).join('');
   const files = items.filter((x) => x.kind === 'file').map((x) => `<div class="card filec"><div class="hd">${icon('doc')}<div class="fn"><b>${esc(x.name)}</b><span class="faint">${fmtBytes(x.size)} · ${esc(String(x.name).split('.').pop().toUpperCase())}</span></div><span class="grow"></span><button class="btn" data-a="media-open" data-f="${esc(x.file || '')}">Open</button><button class="btn" data-a="media-save" data-f="${esc(x.file || '')}" data-n="${esc(x.name)}">${icon('dl', 'sm')}Save</button><button class="btn ghost" data-a="media-repo" data-f="${esc(x.file || '')}" data-n="${esc(x.name)}">${icon('gh', 'sm')}To repo…</button></div></div>`).join('');
-  return `${pics ? `<div class="pics">${pics}</div>` : ''}${vids}${files}`;
+  return `${gallery}${pics ? `<div class="pics">${pics}</div>` : ''}${huge}${vids}${auds}${files}`;
+}
+
+// Big files being copied or downloaded into a chat: one line at the bottom with Stop.
+// Drawn straight into its own element (the chat isn't re-rendered for every update).
+function showCopy(p) {
+  let el = document.getElementById('copybar');
+  if (!p || p.finished) { S.copying = null; el?.remove(); return; }
+  S.copying = p;
+  if (!el) { el = document.createElement('div'); el.id = 'copybar'; el.className = 'copybar'; el.setAttribute('role', 'status'); document.body.appendChild(el); }
+  const pct = p.total ? Math.min(100, Math.round((p.done / p.total) * 100)) : null;
+  el.innerHTML = `<span>${esc(progressLine(p))}</span>${pct != null ? `<span class="bar"><i style="width:${pct}%"></i></span>` : ''}<button class="mini" data-a="copy-cancel">${icon('x', 'sm')}Stop</button>`;
+}
+
+// The gallery viewer: keys, controller and zoom. Only the shown picture is loaded.
+function galleryDo(actName) {
+  const g = S.modal;
+  if (g?.kind !== 'gallery') return;
+  if (actName === 'close') { S.modal = null; renderOverlay(); return; }
+  S.modal = galleryStep(g, actName);
+  renderOverlay();
+  galleryFocus();
+}
+let padPrev = [];
+function galleryFocus() {
+  document.getElementById('gviewer')?.focus({ preventScroll: true });
+  // A controller (Steam Deck, ROG Ally, Xbox pad): polled only while the gallery is open.
+  if (galleryFocus.polling || !navigator.getGamepads) return;
+  galleryFocus.polling = true;
+  const poll = () => {
+    if (S.modal?.kind !== 'gallery') { galleryFocus.polling = false; padPrev = []; return; }
+    const pad = [...(navigator.getGamepads() || [])].find(Boolean);
+    if (pad) { const now = pad.buttons.map((b) => b.pressed); for (const x of padActions(now, padPrev)) galleryDo(x); padPrev = now; }
+    requestAnimationFrame(poll);
+  };
+  requestAnimationFrame(poll);
 }
 
 // Mermaid diagrams: drawn in a sandboxed frame with the bundled library (never in this window).
@@ -926,9 +982,9 @@ async function exportChat(id, fmt) {
   const c = entry(id);
   const who = (m) => (m.who === 'owner' ? ownerName() : m.who === 'system' ? 'App' : aiName(m.who));
   const msgs = R.msgs.filter((m) => !m.local && !m.deleted);
-  const md = [`# ${c?.title || 'Chat'}`, '', ...msgs.flatMap((m) => [`**${who(m)}** · ${String(m.at || '').slice(0, 16).replace('T', ' ')}`, '', String(m.text || ''), ...(m.media || []).map((x) => (x.kind === 'image' ? `![${x.name}](${x.url})` : `[${x.name}](${x.url})`)), ''])].join('\n');
+  const md = [`# ${c?.title || 'Chat'}`, '', ...msgs.flatMap((m) => [`**${who(m)}** · ${String(m.at || '').slice(0, 16).replace('T', ' ')}`, '', String(m.text || ''), ...(m.media || []).map((x) => (x.kind === 'image' ? `![${x.name}](${x.url})` : `[${x.name}](${x.url})`)), ...(m.previews || []).filter((p) => p.original).map((p) => `[${p.name}](hearth-media://c/${id}/${encodeURIComponent(p.original)})`), ''])].join('\n');
   const body = msgs.map((m) => `<section class="${m.who === 'owner' ? 'u' : 'a'}"><h4>${esc(who(m))} <small>${esc(String(m.at || '').slice(0, 16).replace('T', ' '))}</small></h4>${rich(m.text)}${(m.media || []).filter((x) => x.kind === 'image').map((x) => `<img src="${esc(x.url)}" alt="${esc(x.name)}">`).join('')}${(m.media || []).filter((x) => x.kind !== 'image').map((x) => `<p class="f">${esc(x.kind === 'video' ? 'Video' : 'File')}: ${esc(x.name)}</p>`).join('')}</section>`).join('');
-  const html = `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'"><title>${esc(c?.title || 'Chat')}</title><style>body{font:15px/1.6 system-ui,sans-serif;max-width:820px;margin:32px auto;padding:0 24px;color:#2d2822}h1{font-family:Georgia,serif}section{margin:0 0 22px}section.u{background:#f4efe7;border-radius:12px;padding:10px 16px}h4{margin:0 0 4px;font-size:13px}small{color:#9a9083;font-weight:400}img{max-width:100%;border-radius:10px;margin:6px 0}pre{background:#0d1117;color:#c9d1d9;padding:12px;border-radius:8px;overflow:auto;white-space:pre-wrap}table{border-collapse:collapse}td,th{border:1px solid #ddd;padding:4px 8px}.cb-hd button{display:none}.f{color:#71685c}</style></head><body><h1>${esc(c?.title || 'Chat')}</h1>${body}</body></html>`;
+  const html = `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: file:; media-src data: file:; style-src 'unsafe-inline'"><title>${esc(c?.title || 'Chat')}</title><style>body{font:15px/1.6 system-ui,sans-serif;max-width:820px;margin:32px auto;padding:0 24px;color:#2d2822}h1{font-family:Georgia,serif}section{margin:0 0 22px}section.u{background:#f4efe7;border-radius:12px;padding:10px 16px}h4{margin:0 0 4px;font-size:13px}small{color:#9a9083;font-weight:400}img{max-width:100%;border-radius:10px;margin:6px 0}pre{background:#0d1117;color:#c9d1d9;padding:12px;border-radius:8px;overflow:auto;white-space:pre-wrap}table{border-collapse:collapse}td,th{border:1px solid #ddd;padding:4px 8px}.cb-hd button{display:none}.f{color:#71685c}</style></head><body><h1>${esc(c?.title || 'Chat')}</h1>${body}</body></html>`;
   const r = await call('chatExport', id, fmt, { markdown: md, html });
   if (r?.ok) toast(`Exported to ${r.file}.`); else if (!r?.cancelled) toast(r?.message || 'Not exported.');
 }
@@ -1039,6 +1095,7 @@ function topbar() {
   if (S.view === 'habitat') return `<span class="ttl">Habitat</span><span class="faint hab-sub">${S.lastChat && entry(S.lastChat) ? `the team of “${esc(entry(S.lastChat).title)}”` : 'your AI team'}</span><span class="grow"></span>`;
   return `<span class="ttl">${esc(title)}</span>${chip}${temp}<span class="grow"></span>${know}
     <button class="tb" data-a="team-pop" title="Who's in this chat">${icon('users', 'sm')}Team</button>
+    ${S.view === 'chat' && S.msgs.some((m) => (m.media || []).some((x) => x.kind === 'image')) ? `<button class="tb" data-a="gallery" data-m="" data-i="0" title="Every picture in this chat">${icon('eye', 'sm')}Gallery</button>` : ''}
     <button class="tb" data-a="toggle-pane" title="Live preview and canvas panel" ${S.view !== 'chat' ? 'disabled' : ''}>${icon('panel', 'sm')}</button>`;
 }
 
@@ -1104,7 +1161,7 @@ function composer(placeholder) {
   const conn = c ? (c.repo ? { repo: c.repo, branch: c.branch } : c.repoDir ? { repo: c.repoDir } : null) : S.conn;
   const t = team();
   const teamLabel = S.mode === 'team' ? `Team <span class="faint">(${esc(aiName(t.lead))} ★ leads)</span>` : esc(aiName(S.mode));
-  const thumbs = S.attach.map((a, i) => a.kind === 'image' ? `<div class="th" style="background-image:url('${esc(a.url || '')}')" title="${esc(a.name)}"><button class="x" data-a="unattach" data-i="${i}" aria-label="Remove">${icon('x', 'sm')}</button></div>` : `<div class="th f" title="${esc(a.name)}"><span>${esc(a.name)}</span><button class="x" data-a="unattach" data-i="${i}" aria-label="Remove">${icon('x', 'sm')}</button></div>`).join('');
+  const thumbs = S.attach.map((a, i) => a.kind === 'image' && !a.huge ? `<div class="th" style="background-image:url('${esc(a.url || '')}')" title="${esc(a.name)}"><button class="x" data-a="unattach" data-i="${i}" aria-label="Remove">${icon('x', 'sm')}</button></div>` : `<div class="th f" title="${esc(a.name)}"><span>${esc(a.name)}</span><button class="x" data-a="unattach" data-i="${i}" aria-label="Remove">${icon('x', 'sm')}</button></div>`).join('');
   const busy = Boolean(S.busy) || S.working;
   const models = c ? (cur()?.sessions?._models || {}) : S.homeModels;
   const picked = Object.entries(models).filter(([, v]) => v && v !== 'default').length;
@@ -1155,7 +1212,7 @@ function chatView() {
   const c = entry();
   if (c?.rp && R?.vn) return `<div class="col vncol">${vnStage(R, c)}</div>`;
   const rpEmpty = c?.rp && !msgs.length && !b ? `<div class="chat-empty"><p>The story starts with your first line.</p></div>` : '';
-  return `<div class="col">${c?.rp ? rpEmpty : empty}${items}${working}${c?.rp ? '' : turnStrip(R)}</div>`;
+  return `<div class="col">${c?.rp ? rpEmpty : empty}${items}${working}${c?.rp ? sceneJobsHtml(R) : ''}${c?.rp ? '' : turnStrip(R)}</div>`;
 }
 
 // Who is in this turn: waiting, working, blocked, failed or done, with a plain reason and Retry.
@@ -1202,8 +1259,10 @@ function controlsHtml(m, owner = false) {
 function message(m, latestChanges, last = false) {
   if (m.char) return rpMessage(m);
   if (m.block) return `<div class="msg-s block">${icon('shield', 'sm')} ${esc(m.text)}</div>`;
+  if (m.who === 'system' && m.scene) return sceneMsg(m);
+  if (m.who === 'system' && m.sceneFailed) return `<div class="msg-s" data-msg="${esc(m.id)}">${rich(m.text)}${S.readOnly ? '' : `<div class="mft left"><button class="mini" data-a="scene-edit" data-m="${esc(m.id)}">${icon('pencil', 'sm')}Try again</button></div>`}</div>`;
   if (m.who === 'owner') {
-    const atts = (m.attachments || []).map((a) => a.kind === 'image' ? `<img class="att" src="${esc(a.url || '')}" alt="${esc(a.name)}">` : `<span class="att-f">${icon('doc', 'sm')}${esc(a.name)}</span>`).join('');
+    const atts = (m.attachments || []).map((a) => a.kind === 'image' && !a.huge ? `<img class="att" src="${esc(a.url || '')}" alt="${esc(a.name)}" loading="lazy" decoding="async">` : `<span class="att-f" ${a.huge ? `title="${esc(a.huge)}"` : ''}>${icon('doc', 'sm')}${esc(a.name)}${a.size > 50 * 1024 * 1024 ? ` <span class="faint">${fmtBytes(a.size)}</span>` : ''}</span>`).join('');
     if (S.editing === m.id) return `<div class="msg-u editing" data-msg="${esc(m.id)}"><textarea id="edit-text" rows="3">${esc(m.text)}</textarea><div class="mft"><button class="btn ghost" data-a="edit-cancel">Cancel</button><button class="btn p" data-a="edit-send" data-m="${esc(m.id)}">Save and send</button></div></div>`;
     return `<div class="uwrap" data-msg="${esc(m.id)}"><div class="msg-u">${atts ? `<div class="atts">${atts}</div>` : ''}${rich(m.text)}${m.to ? `<div class="fine">only for ${esc(m.to.map(aiName).join(', '))}: not shown to your other AIs</div>` : ''}</div>${controlsHtml(m, true)}</div>`;
   }
@@ -1218,7 +1277,7 @@ function message(m, latestChanges, last = false) {
     ${m.err && m.rawError ? `<details class="raw"><summary class="fine">Details (the tool's own words)</summary><pre class="mono">${esc(m.rawError)}</pre></details>` : ''}
     ${m.err && m.retryable !== false && AGENTS[m.who] && !cur()?.round ? `<div class="mft left"><button class="mini" data-a="turn-retry" data-v="${esc(m.who)}">Retry ${esc(aiName(m.who))}</button></div>` : ''}
     ${mediaHtml(m)}
-    ${(m.mediaProblems || []).map((p) => `<div class="media-why">${icon('eye', 'sm')}<span>Can't show <b class="mono">${esc(p.path)}</b>: ${esc(p.reason)}.</span></div>`).join('')}
+    ${(m.mediaProblems || []).map((p) => p.tooBig || p.noSpace ? problemCard(p, icon) : `<div class="media-why">${icon('eye', 'sm')}<span>Can't show <b class="mono">${esc(p.path)}</b>: ${esc(p.reason)}.</span></div>`).join('')}
     ${(m.previews || []).map((p) => previewCard(m, p)).join('')}
     ${sourcesHtml(m)}
     ${m.changes ? changesCard(m, latestChanges) : ''}
@@ -1232,6 +1291,9 @@ function message(m, latestChanges, last = false) {
 }
 
 function previewCard(m, p) {
+  if (p.tooBig) return previewTooBig(p, icon);
+  if (p.file) return `<div class="card pv"><div class="hd">${icon('eye', 'sm')}<b>${esc(p.name)}</b><span class="faint">${fmtBytes(p.size)}${p.extracted ? ` · ${p.extracted} picture${p.extracted > 1 ? 's' : ''} loaded from disk` : ''}</span><span class="grow"></span><span class="chip">Live preview</span></div>
+    <div class="ft"><button class="btn p" data-a="open-preview" data-m="${esc(m.id)}" data-p="${esc(p.id)}">Open</button><button class="btn" data-a="media-browser" data-f="${esc(p.original || p.file)}">${icon('globe', 'sm')}Open in browser</button><button class="btn" data-a="media-save" data-f="${esc(p.original || p.file)}" data-n="${esc(p.name)}">${icon('dl', 'sm')}Save as…</button><button class="btn" data-a="media-reveal" data-f="${esc(p.original || p.file)}">Show in folder</button></div></div>`;
   return `<div class="card pv"><div class="hd">${icon(p.kind === 'code' ? 'code' : 'eye', 'sm')}<b>${esc(p.name)}</b><span class="grow"></span><span class="chip">${p.kind === 'code' ? 'Canvas' : 'Live preview'}</span></div>
     <div class="ft"><button class="btn p" data-a="open-preview" data-m="${esc(m.id)}" data-p="${esc(p.id)}">Open</button><button class="btn" data-a="open-canvas" data-m="${esc(m.id)}" data-p="${esc(p.id)}">${icon('pencil', 'sm')}Edit in canvas</button><button class="btn" data-a="download-preview" data-m="${esc(m.id)}" data-p="${esc(p.id)}">${icon('dl', 'sm')}Download</button><button class="btn" data-a="save-preview" data-m="${esc(m.id)}" data-p="${esc(p.id)}">${icon('gh', 'sm')}Save to repo…</button></div></div>`;
 }
@@ -1358,7 +1420,7 @@ function rpMessage(m) {
 }
 function rpBar(c) {
   const cards = rpCards(c);
-  return `<div class="rpbar">${cards.map((x) => `<button class="mini" data-a="rp-reply-as" data-id="${esc(x.id)}" title="${esc(x.name)} replies next (played by ${esc(aiName(playerOf(c, x.id)))})">${avatarHtml(x, 'xs')}${esc(x.name)}</button>`).join('')}<span class="grow"></span><button class="mini" data-a="rp-impersonate" title="The AI writes your next line as a draft">${icon('pencil', 'sm')}Impersonate</button><button class="mini" data-a="rp-picture">${icon('eye', 'sm')}Picture</button><button class="mini ${cur()?.vn ? 'on' : ''}" data-a="rp-vn">${icon('panel', 'sm')}Visual novel</button></div>`;
+  return `<div class="rpbar">${cards.map((x) => `<button class="mini" data-a="rp-reply-as" data-id="${esc(x.id)}" title="${esc(x.name)} replies next (played by ${esc(aiName(playerOf(c, x.id)))})">${avatarHtml(x, 'xs')}${esc(x.name)}</button>`).join('')}<span class="grow"></span><button class="mini" data-a="rp-impersonate" title="The AI writes your next line as a draft">${icon('pencil', 'sm')}Impersonate</button><button class="mini" data-a="rp-picture">${icon('eye', 'sm')}Picture</button><button class="mini" data-a="rp-scene" title="A ComfyUI picture of this moment: you see and can edit the prompt first">${icon('eye', 'sm')}Generate scene</button><button class="mini ${cur()?.vn ? 'on' : ''}" data-a="rp-vn">${icon('panel', 'sm')}Visual novel</button></div>`;
 }
 
 // ---------- the preview panel and canvas ----------
@@ -1375,10 +1437,10 @@ function renderPane(force = false) {
   if (!force && key === paneKey) return;
   paneKey = key;
   const tab = (t, label) => `<button class="${S.pane.tab === t ? 'on' : ''}" data-a="pane-tab" data-t="${t}">${label}</button>`;
-  const body = S.pane.tab === 'code' ? `<pre class="code-view"><code>${esc(p.content)}</code></pre>`
+  const body = p.file ? (S.pane.url ? frameHtml({ url: S.pane.url, title: p.name }) : '<div class="pfoot">Loading…</div>') : S.pane.tab === 'code' ? `<pre class="code-view"><code>${esc(p.content)}</code></pre>`
     : S.pane.tab === 'canvas' ? `<div class="canvas-wrap"><textarea id="canvas-text" class="canvas" spellcheck="false" aria-label="Canvas">${esc(p.content)}</textarea></div>`
       : frameHtml({ url: S.pane.url, srcdoc: S.pane.url ? null : S.pane.srcdoc, title: p.name });
-  el.innerHTML = `<div class="ph2"><b>${esc(p.name)}</b><div class="tabs">${p.kind !== 'code' ? tab('preview', 'Preview') : ''}${tab('code', 'Code')}${tab('canvas', 'Canvas')}</div><span class="grow"></span><button class="tb" data-a="pane-reload" title="Reload">${icon('refresh', 'sm')}</button><button class="tb" data-a="pane-close" title="Close">${icon('x', 'sm')}</button></div>
+  el.innerHTML = `<div class="ph2"><b>${esc(p.name)}</b><div class="tabs">${p.kind !== 'code' ? tab('preview', 'Preview') : ''}${p.file ? '' : `${tab('code', 'Code')}${tab('canvas', 'Canvas')}`}</div><span class="grow"></span><button class="tb" data-a="pane-reload" title="Reload">${icon('refresh', 'sm')}</button><button class="tb" data-a="pane-close" title="Close">${icon('x', 'sm')}</button></div>
     <div class="frame-wrap">${body}</div>
     ${S.pane.tab === 'canvas' ? `<div class="canvas-bar"><button class="btn" data-a="canvas-save">${icon('check', 'sm')}Save version</button><button class="btn p" data-a="canvas-ask">${icon('users', 'sm')}Ask the team to change it</button><button class="btn ghost" data-a="download-preview" data-m="${esc(S.pane.msgId)}" data-p="${esc(S.pane.pid)}">${icon('dl', 'sm')}Download</button><span class="fine">${p.versions?.length ? `${p.versions.length} earlier version${p.versions.length === 1 ? '' : 's'} kept` : 'Your edits stay in this chat'}</span></div>` : ''}
     <div class="pfoot">${S.settings.previewNetwork ? 'Previews may load from the internet (Settings › Tools).' : 'Sandboxed: no internet, no access to the app or your files.'}</div>`;
@@ -1472,6 +1534,7 @@ function modalHtml() {
       <label class="field">Path in the repo<input id="saveto-path" value="${esc(m.path)}"></label>
       <div class="mft"><button class="btn p" data-a="saveto-do">Save</button><button class="btn ghost" data-a="close-modal">Cancel</button></div></div>`;
   }
+  if (m.kind === 'gallery') return galleryViewer(m, icon);
   if (m.kind === 'lightbox') {
     return `<div class="scrim dark lb" data-a="close-modal"></div><div class="lightbox"><img src="${esc(m.src)}" alt="${esc(m.name || '')}"><div class="lb-bar"><span>${esc(m.name || '')}</span><span class="grow"></span>${m.file ? `<button class="btn" data-a="media-save" data-f="${esc(m.file)}" data-n="${esc(m.name)}">${icon('dl', 'sm')}Download</button><button class="btn" data-a="media-repo" data-f="${esc(m.file)}" data-n="${esc(m.name)}">${icon('gh', 'sm')}Save to repo…</button>` : ''}<button class="btn ghost" data-a="close-modal">${icon('x', 'sm')}Close</button></div></div>`;
   }
@@ -1496,6 +1559,29 @@ function modalHtml() {
       ${(S.books || []).length ? `<div class="srow">Lorebooks for this chat${(S.books || []).map((b) => `<label class="day"><input type="checkbox" data-a="rp-lore" data-id="${esc(b.id)}" ${m.lorebooks.includes(b.id) ? 'checked' : ''}>${esc(b.name)}</label>`).join('')}</div>` : ''}
       ${L.length ? '' : '<div class="note bad">No AI is set up to play a character yet (Settings › Accounts).</div>'}
       <div class="mft"><button class="btn p" data-a="rp-start-do" ${m.chars.length && L.length ? '' : 'disabled'}>Start</button><button class="btn ghost" data-a="close-modal">Cancel</button></div></div>`;
+  }
+  if (m.kind === 'rpscene') {
+    const c = entry(m.chatId);
+    const all = rpCards(c);
+    const sel = all.filter((x) => m.ids.includes(x.id));
+    const lookRow = (x) => { const L = x.ownerLook || {}; return `<div class="srow sub rs-look"><b>${esc(x.name)}</b><textarea id="rs-look-${esc(x.id)}" rows="2" style="flex:1;min-width:16em" placeholder="Appearance: hair, eyes, clothes… (helps keep the look similar; the scene still changes it)" aria-label="${esc(x.name)}'s appearance">${esc(L.appearance || '')}</textarea><label class="day"><input type="checkbox" id="rs-keep-${esc(x.id)}" ${L.keepSeed !== false ? 'checked' : ''}>Keep the same seed</label><span class="d">${Number.isInteger(L.seed) ? `saved seed ${L.seed}` : 'no saved seed'}</span><button class="mini" data-a="rs-look-save" data-id="${esc(x.id)}">Save look</button><button class="mini" data-a="rs-reroll" data-id="${esc(x.id)}">Re-roll seed</button></div>`; };
+    const st = m.settings || {};
+    const fromComfy = m.source === 'comfy' || (m.source || '').startsWith('gpu:');
+    return `<div class="scrim dark" data-a="close-modal"></div><div class="modal wide"><div class="mhd"><b>Generate scene</b></div>
+      <p>A ComfyUI picture of this moment, built from the characters and the last messages. Check or change the prompts, then generate. The built-in limits are checked before anything is sent: nothing sexual unless every character is clearly an adult (never anyone who looks under 18), and never a real person's likeness.</p>
+      <div class="srow">Characters${all.map((x) => `<label class="day"><input type="checkbox" class="rsc" value="${esc(x.id)}" ${m.ids.includes(x.id) ? 'checked' : ''} data-a="rs-chars">${esc(x.name)}</label>`).join('')}</div>
+      ${sel.map(lookRow).join('')}
+      ${sel.length ? '<p class="fine">A saved appearance and seed help keep a character looking similar between pictures, but each new scene still changes the picture, so the look won\'t be exactly the same every time.</p>' : ''}
+      <label class="field">Prompt<textarea id="rs-prompt" rows="6">${esc(m.prompt || '')}</textarea></label>
+      <label class="field">Negative prompt <span class="d">(your words, added after the built-in ones)</span><textarea id="rs-neg" rows="2" placeholder="What to leave out, like: hats, rain">${esc(m.negative || '')}</textarea></label>
+      ${m.negativeBase ? `<div class="fine">Always left out: <span class="mono">${esc(m.negativeBase)}</span></div>` : ''}
+      <div class="srow"><button class="mini" data-a="rs-rebuild">Rebuild from the chat</button><span class="grow"></span>Seed<input id="rs-seed" class="mono" value="${esc(String(m.seed ?? ''))}" inputmode="numeric" aria-label="Seed" style="width:9em"><span class="d">${m.seedSaved ? 'the saved seed' : 'not saved (Save look keeps it)'}</span></div>
+      <div class="srow">Made on<select id="rs-src" data-a="rs-src">${(m.sources || []).map((x) => `<option value="${esc(x.id)}" ${m.source === x.id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></div>
+      ${st.width ? `<div class="fine" id="rs-settings">${st.width} × ${st.height} · ${st.steps} steps · CFG ${st.cfg} · ${esc(st.sampler)} / ${esc(st.scheduler)}${m.source === 'comfy' ? ` · ${esc(st.checkpoint || 'suggested model')}` : ''} <span class="faint">(change these in Settings › Accounts › ComfyUI server)</span></div>` : ''}
+      ${fromComfy && m.vram?.note ? `<div class="note warn" id="rs-vram">${esc(m.vram.note)}</div>` : fromComfy && m.vram?.ok ? `<div class="fine" id="rs-vram">${esc(vramLine(m.vram))}</div>` : ''}
+      ${(m.sources || []).length ? '' : '<div class="note bad">No ComfyUI is set up. Add your ComfyUI server (or Hearth devices) in Settings › Accounts.</div>'}
+      ${m.error ? `<div class="note bad">${esc(m.error)}</div>` : ''}
+      <div class="mft"><button class="btn p" data-a="rs-go" ${(m.sources || []).length ? '' : 'disabled'}>Generate</button><button class="btn ghost" data-a="close-modal">Cancel</button></div></div>`;
   }
   if (m.kind === 'rppic') {
     const c = entry(m.chatId);
@@ -1575,6 +1661,8 @@ function section(k) {
       <div class="srow sub form"><input id="sv-name" placeholder="Name (e.g. RunPod 4090)"><select id="sv-type"><option value="openai">OpenAI-compatible chat</option><option value="comfy">ComfyUI pictures</option></select><input id="sv-url" class="grow" placeholder="https://…/v1 or http://192.168.1.20:8188"><input id="sv-model" placeholder="Model or checkpoint (optional)"><input id="sv-key" type="password" placeholder="Key (optional)"><button class="mini" data-a="server-add">Add server</button></div>
       <details class="sub"><summary class="fine">ComfyUI workflow (optional): paste your own workflow JSON; {prompt}, {negative}, {seed} and {ckpt} are filled in. Empty uses a stock SDXL text-to-image graph.</summary><textarea id="sv-workflow" rows="4" class="mono" placeholder='{"3": {"class_type": "KSampler", …}}'></textarea></details>
       <div class="note">NovelAI isn't offered: it has no public developer API, and its terms restrict third-party apps.</div></div>
+      ${hearthBox()}
+      ${comfyBox()}
       <div class="box"><h3>${icon('phone', 'sm')}Your phone</h3><div class="srow">Phone view<span class="d">your chat on your phone, on your home network only</span><span class="grow"></span>${tog(Boolean(S.phone?.enabled), 'phone-toggle')}</div>${S.phone?.enabled ? `<div class="srow">Address<span class="d mono">${esc((S.phone.urls || []).join(', ') || 'starting…')}</span><span class="grow"></span><button class="mini" data-a="phone-code">Show pairing code</button></div>${S.phone.code ? `<div class="srow">Code<b class="mono big">${esc(S.phone.code)}</b><span class="d">type it on your phone within 5 minutes</span></div>` : ''}` : ''}</div>`;
   }
   if (k === 'github') {
@@ -1746,6 +1834,7 @@ async function loadSection(t) {
   if (t === 'perms') { refreshAgents(); loadPerms(); }
   if (t === 'tools') loadMissing();
   if (t === 'accounts' || t === 'team') { refreshAgents(); await refreshMates(); }
+  if (t === 'accounts') { S.hd = (await call('hearthStatus', { probe: true })) || S.hd; }
   if (t === 'github') loadRepos();
   if (t === 'memory') S.memory = await call('memoryList');
   if (t === 'scheduled') S.schedules = await call('scheduleList');
@@ -1753,6 +1842,168 @@ async function loadSection(t) {
   if (t === 'tools') { S.skills = (await call('skillsList', S.lastChat)) || []; }
   render();
 }
+// ---------- Characters chat: Generate scene (ComfyUI; electron/scene.cjs) ----------
+// The last messages as plain text for the prompt (built in the main process, shown to edit).
+const sceneMsgs = (chatId) => (rt(chatId)?.msgs || []).filter((x) => !x.deleted && x.who !== 'system').slice(-12).map((x) => ({ who: x.who, text: String(x.text || '').slice(0, 2000), err: x.err === true }));
+const GB = 1024 ** 3;
+const vramLine = (v) => (v?.vramTotal ? `${v.gpu || 'GPU'}: ${(v.vramFree / GB).toFixed(1)} GB of ${(v.vramTotal / GB).toFixed(1)} GB graphics memory free` : v?.gpu || '');
+async function openScene(chatId, preset = null) {
+  const c = entry(chatId);
+  if (!S.cards) await loadCards();
+  const ids = preset?.cardIds?.length ? preset.cardIds : rpCards(c).map((x) => x.id);
+  const [sources, pr] = await Promise.all([call('rpSceneSources'), call('rpScenePrompt', ids, sceneMsgs(chatId))]);
+  const L = cardById(ids[0])?.ownerLook || {};
+  const kept = L.keepSeed !== false && Number.isInteger(L.seed);
+  const list = Array.isArray(sources) ? sources : [];
+  const source = preset?.source && list.some((x) => x.id === preset.source) ? preset.source : list[0]?.id || '';
+  S.modal = { kind: 'rpscene', chatId, ids, prompt: preset?.positive || pr?.prompt || '', negative: preset?.ownNegative || '', negativeBase: pr?.negativeBase || '', settings: pr?.settings || null, sources: list, source, seed: kept ? L.seed : Math.floor(Math.random() * 2 ** 31), seedSaved: kept };
+  renderOverlay();
+  sceneVram();
+}
+// Free graphics memory on his ComfyUI server, read live when the dialog opens (never unloads anything).
+async function sceneVram() {
+  const m = S.modal;
+  if (m?.kind !== 'rpscene' || m.source !== 'comfy') return;
+  const v = await call('comfyStats');
+  if (S.modal !== m) return;
+  m.vram = v?.ok ? v : null;
+  renderOverlay();
+}
+// Scene pictures being made now, per chat (shown at the bottom of the chat with Cancel). The chat
+// keeps working meanwhile: nothing here blocks sending or other messages.
+function sceneJobsHtml(R) {
+  const jobs = R?.scenes || [];
+  if (!jobs.length) return '';
+  const phase = { checking: 'Checking the server', queued: 'Queued on ComfyUI', generating: 'Generating', downloading: 'Downloading the picture', cancelling: 'Cancelling' };
+  return jobs.map((j) => `<div class="msg-s scenejob" data-job="${esc(j.job)}">${icon('eye', 'sm')} <b>Scene picture</b> · <span class="sj-phase">${esc(phase[j.phase] || 'Sending')}</span> · <span class="sj-time">${Number(j.elapsed) || 0} s</span> <span class="faint">· ${esc(j.where || 'ComfyUI')}</span>${j.note ? `<div class="note warn">${esc(j.note)}</div>` : ''} <button class="mini" data-a="rs-cancel" data-job="${esc(j.job)}" ${j.phase === 'cancelling' ? 'disabled' : ''}>${icon('x', 'sm')}Cancel</button></div>`).join('');
+}
+function onSceneProgress(p) {
+  const R = rt(p?.chatId);
+  const j = R?.scenes?.find((x) => x.job === p.job);
+  if (!j) return;
+  if (p.phase && p.phase !== 'tick' && j.phase !== 'cancelling') j.phase = p.phase;
+  j.elapsed = Math.max(Number(p.elapsed) || 0, Math.round((Date.now() - j.started) / 1000));
+  if (p.note) j.note = p.note;
+  // Drawn straight into its row (the chat isn't re-rendered for every second).
+  const el = document.querySelector(`.scenejob[data-job="${CSS.escape(j.job)}"]`);
+  if (el && !p.note) { const ph = el.querySelector('.sj-phase'); const tm = el.querySelector('.sj-time'); if (ph) ph.textContent = ({ checking: 'Checking the server', queued: 'Queued on ComfyUI', generating: 'Generating', downloading: 'Downloading the picture', cancelling: 'Cancelling' })[j.phase] || 'Sending'; if (tm) tm.textContent = `${j.elapsed} s`; } else if (R === cur()) renderMain();
+}
+async function makeSceneNow() {
+  const m = S.modal;
+  if (m?.kind !== 'rpscene') return;
+  const prompt = document.getElementById('rs-prompt')?.value || '';
+  const negative = document.getElementById('rs-neg')?.value || '';
+  const seed = (document.getElementById('rs-seed')?.value || '').trim();
+  const source = document.getElementById('rs-src')?.value || m.source;
+  const ids = [...document.querySelectorAll('.rsc:checked')].map((x) => x.value);
+  S.modal = null; renderOverlay();
+  return runScene(m.chatId, { cardIds: ids, prompt, negative, seed: seed === '' ? null : Number(seed), source }, (m.sources.find((x) => x.id === source) || {}).name);
+}
+// Make one scene picture in the background of this chat, then post it (or a clear message).
+async function runScene(chatId, o, where) {
+  const R = rt(chatId);
+  if (!R) return;
+  const job = `s${uid().replace(/[^A-Za-z0-9]/g, '').slice(0, 20)}`;
+  R.scenes = [...(R.scenes || []), { job, phase: 'checking', elapsed: 0, started: Date.now(), where: where || 'ComfyUI' }];
+  render();
+  const r = await call('rpScene', chatId, { ...o, job });
+  R.scenes = (R.scenes || []).filter((x) => x.job !== job);
+  // Shown and saved with this chat (its media folder); the prompt and settings used stay with
+  // the message (never in settings) and out of the text the other AIs read.
+  const meta = r?.meta || { seed: r?.seed, checkpoint: r?.checkpoint };
+  const dims = meta.width ? ` · ${meta.width}×${meta.height}` : '';
+  if (r?.ok) runner.post(R, { who: 'system', text: `Scene picture · ${r.via}${dims}`, media: r.items || [], scene: meta, ...(r.vramNote ? { sceneNote: r.vramNote } : {}) });
+  else if (r?.error?.kind === 'cancelled') runner.post(R, { who: 'system', text: r.error.message || 'Cancelled.' });
+  else runner.post(R, { who: 'system', block: ['minor', 'real', 'age'].includes(r?.error?.kind), sceneFailed: { ...o, seed: o.seed ?? null }, text: `Scene picture: ${r?.error?.message || r?.message || 'no picture came back.'}` });
+  await saveRt(R);
+  return render();
+}
+// A scene picture's message: the picture (from its file), what was used, Regenerate (new seed),
+// Use this seed for the character, Edit prompt.
+function sceneMsg(m) {
+  const sc = m.scene || {};
+  const used = [sc.seed != null ? `seed ${sc.seed}` : '', sc.checkpoint || '', sc.width ? `${sc.width}×${sc.height}` : '', sc.steps ? `${sc.steps} steps` : '', sc.cfg ? `CFG ${sc.cfg}` : '', sc.sampler ? `${sc.sampler}${sc.scheduler ? ` / ${sc.scheduler}` : ''}` : ''].filter(Boolean).join(' · ');
+  const first = (sc.cardIds || []).map(cardById).find(Boolean);
+  const ro = S.readOnly;
+  return `<div class="msg-s scene" data-msg="${esc(m.id)}">${rich(m.text)}${mediaHtml(m)}${m.sceneNote ? `<div class="fine">${esc(m.sceneNote)}</div>` : ''}
+    ${sc.positive ? `<details class="raw"><summary class="fine">Prompt and settings used</summary><div class="fine mono">${esc(used)}</div><div class="fine"><b>Prompt:</b> ${esc(sc.positive)}</div>${sc.negative ? `<div class="fine"><b>Negative:</b> ${esc(sc.negative)}</div>` : ''}</details>` : used ? `<div class="fine mono">${esc(used)}</div>` : ''}
+    ${ro ? '' : `<div class="mft left">${sc.positive ? `<button class="mini" data-a="scene-regen" data-m="${esc(m.id)}" title="The same prompt and settings with a new seed">${icon('refresh', 'sm')}Regenerate</button>` : ''}<button class="mini" data-a="scene-edit" data-m="${esc(m.id)}">${icon('pencil', 'sm')}Edit prompt</button>${first && Number.isInteger(sc.seed) ? `<button class="mini" data-a="scene-seed" data-m="${esc(m.id)}" title="Save this seed in ${esc(first.name)}'s look">Use this seed for ${esc(first.name)}</button>` : ''}</div>`}</div>`;
+}
+
+// ---------- Hearth devices and the ComfyUI server (Settings › Accounts) ----------
+// The devices come from the Home server (main process); nothing here is saved unless he clicks.
+function hdOrder() {
+  const hd = S.hd || {};
+  return hd.order || (hd.devices || []).map((d) => d.device);
+}
+function hearthBox() {
+  const hd = S.hd || {};
+  const st = hd.settings || S.settings.hearthDevices || {};
+  const devs = Object.fromEntries((hd.devices || []).map((d) => [d.device, d]));
+  const kindName = { chat: 'chat', voice: 'Kokoro voices', image: 'ComfyUI pictures', stt: 'whisper speech to text' };
+  const rows = hdOrder().map((n, i, all) => {
+    const d = devs[n];
+    if (!d) return '';
+    const flags = [d.gaming ? 'gaming' : '', d.busy ? 'busy' : '', d.battery ? `battery ${d.battery.percent ?? '?'}%${d.battery.charging ? ' (charging)' : ''}` : ''].filter(Boolean).join(' · ');
+    const svc = d.services.map((x) => `${kindName[x.kind] || x.kind}${x.healthy ? '' : ' (not healthy)'}${x.allowed === false ? ' (address not allowed)' : ''}`).join(', ') || 'shares nothing';
+    const chat = d.services.find((x) => x.kind === 'chat');
+    const img = d.services.find((x) => x.kind === 'image');
+    const pick = (k, list, cur) => `<select data-a="hd-pick" data-k="${k}" data-v="${esc(n)}" aria-label="${k === 'models' ? 'Chat model' : 'Checkpoint'} on ${esc(n)}"><option value="">${k === 'models' ? 'first model' : 'first checkpoint'}</option>${list.map((m) => `<option ${cur === m ? 'selected' : ''}>${esc(m)}</option>`).join('')}</select>`;
+    return `<div class="srow sub hd-dev"><b>${i + 1}. ${esc(n)}</b><span class="d">${esc(svc)}${flags ? ` · ${esc(flags)}` : ''}</span><span class="grow"></span><button class="mini" data-a="hd-move" data-v="${esc(n)}" data-d="-1" ${i ? '' : 'disabled'} title="Try earlier">↑</button><button class="mini" data-a="hd-move" data-v="${esc(n)}" data-d="1" ${i < all.length - 1 ? '' : 'disabled'} title="Try later">↓</button></div>${chat?.models?.length || img?.models?.length ? `<div class="srow sub">${chat?.models?.length ? `Chat model${pick('models', chat.models, st.models?.[n])}` : ''}${img?.models?.length ? `Checkpoint${pick('checkpoints', img.models, st.checkpoints?.[n])}` : ''}</div>` : ''}`;
+  }).join('');
+  return `<div class="box" id="hearth-devices"><h3>${mono('hearth')}Hearth devices</h3><p class="fine">The AI your Hearth OS machines share: chat (Ollama) and pictures (ComfyUI) on your Nvidia PC first, voices (Kokoro) and speech to text (whisper) on the others when it's busy, gaming or off. The best device is picked for each job and the next one is tried if it fails. Your own machines: chats with uncensored teammates may use them.</p>
+    <div class="srow">Home server<span class="d">its address, port ${8189}</span><span class="grow"></span><input id="hd-url" class="mono" value="${esc(st.url || '')}" placeholder="http://nvidia-pc:8189" aria-label="Home server address"><button class="mini" data-a="hd-url">Save</button><button class="mini" data-a="hd-test">Test</button></div>
+    <div class="srow">Share code<span class="d">only if your Hearth devices ask for one · ${hd.shareCode ? 'saved, encrypted on this PC' : 'none'}</span><span class="grow"></span><input id="hd-code" type="password" placeholder="${hd.shareCode ? 'Type a new code to replace it' : 'Share code (optional)'}" autocomplete="off" aria-label="Share code"><button class="mini" data-a="hd-code">Save</button>${hd.shareCode ? '<button class="mini" data-a="hd-code-remove">Remove</button>' : ''}</div>
+    <div class="srow">Skip a device while it's gaming<span class="d">a game keeps its GPU to itself</span><span class="grow"></span>${tog(st.skipGaming !== false, 'hd-tog', 'data-k="skipGaming"')}</div>
+    <div class="srow">Skip handhelds on battery<span class="d">the ROG Ally (or a laptop) is used only when plugged in</span><span class="grow"></span>${tog(st.skipBattery !== false, 'hd-tog', 'data-k="skipBattery"')}</div>
+    <div class="srow">Tailscale addresses<span class="d">devices may point to their 100.x or .ts.net address</span><span class="grow"></span>${tog(st.tailscale !== false, 'hd-tog', 'data-k="tailscale"')}</div>
+    <div class="srow">Other allowed names<span class="d">device names on your home network that services may use (besides the Home server)</span><span class="grow"></span><input id="hd-hosts" class="mono" value="${esc((st.allowHosts || []).join(', '))}" placeholder="rog-ally, laptop" aria-label="Other allowed names"><button class="mini" data-a="hd-hosts">Save</button></div>
+    ${hd.error ? `<div class="note warn">${esc(hd.error)}</div>` : ''}
+    ${rows ? `<div class="srow"><b>Order</b><span class="d">tried top to bottom${st.order?.length ? '' : ' (your Nvidia PC first by default)'}</span></div>${rows}` : st.url && !hd.error ? '<div class="note">Press Test to list your devices.</div>' : ''}
+    <div class="note">Turn on “Hearth devices” in Settings › AI team to chat with it. Pictures: pick Hearth devices as the picture maker. Voices and speech to text: Settings › Voice.</div></div>`;
+}
+// The ComfyUI server box. The suggested address and model are only placeholders: nothing is
+// saved until he presses Save or picks something.
+const COMFY_SUGGEST = { url: 'http://chris-hearth.tail0e2082.ts.net:8188', checkpoint: 'NoobAI-XL-v1.1.safetensors' };
+const COMFY_SIZES = [['1024x1024', '1024 × 1024 (square, about 8 s)'], ['1344x768', '1344 × 768 (wide, about 13 s)'], ['768x1344', '768 × 1344 (tall, about 13 s)']];
+function comfyBox() {
+  const c = S.settings.comfy || {};
+  const t = S.comfyTest?.url === c.url ? S.comfyTest : null;
+  const list = S.comfyCkpts?.url === c.url ? S.comfyCkpts.list : t?.checkpoints?.length ? t.checkpoints : null;
+  const opts = [...new Set([...(list || []), ...(c.checkpoint ? [c.checkpoint] : [])])];
+  const missing = c.checkpoint && list && !list.includes(c.checkpoint);
+  const status = t ? (t.ok || t.gpu ? `<div class="note ${t.ok ? '' : 'warn'}" id="comfy-status">${icon(t.ok ? 'check' : 'flag', 'sm')}Online${t.version ? ` · ComfyUI ${esc(t.version)}` : ''}${t.gpu ? ` · ${esc(t.gpu)}` : ''}${t.vramTotal ? ` · <span id="comfy-vram">${((t.vramFree || 0) / GB).toFixed(1)} GB of ${(t.vramTotal / GB).toFixed(1)} GB graphics memory free</span>` : ''}${t.ok ? ` · ${t.checkpoints.length} model${t.checkpoints.length === 1 ? '' : 's'}` : ''}${t.message ? `<br>${esc(t.message)}` : ''}${t.low ? '<br>Graphics memory is low (another model may be loaded), so pictures may be slower. Nothing is unloaded unless you do it.' : ''}</div>` : `<div class="note bad" id="comfy-status">${icon('x', 'sm')}${esc(t.message || 'Not reachable.')}</div>`) : '';
+  return `<div class="box" id="comfy-server"><h3>${icon('eye', 'sm')}ComfyUI server</h3><p class="fine">Scene pictures in Characters chats (Generate scene). On this PC, your home network or Tailscale only, never the internet. Your GPU servers set up as ComfyUI and Hearth devices can make scenes too.</p>
+    <div class="srow">Address<span class="grow"></span><input id="comfy-url" class="mono" value="${esc(c.url || '')}" placeholder="${esc(COMFY_SUGGEST.url)}" aria-label="ComfyUI address"><button class="mini" data-a="comfy-url">Save</button><button class="mini" data-a="comfy-test" ${c.url ? '' : 'disabled'}>Test connection</button><button class="mini" data-a="comfy-list" ${c.url ? '' : 'disabled'}>Load models</button></div>
+    ${status}
+    <div class="srow">Default model<span class="d">${list ? `${list.length} checkpoint${list.length === 1 ? '' : 's'} on the server` : c.url ? 'press Test connection or Load models to see the server\'s checkpoints' : 'save the address first'}</span><span class="grow"></span><select data-a="comfy-ckpt" aria-label="Default model" ${opts.length ? '' : 'disabled'}><option value="">suggested: ${esc(COMFY_SUGGEST.checkpoint)} if the server has it, else its first</option>${opts.map((m) => `<option ${c.checkpoint === m ? 'selected' : ''}>${esc(m)}</option>`).join('')}</select></div>
+    ${missing ? `<div class="note warn">Your default model ${esc(c.checkpoint)} isn't on the server any more. Pick another one, or scenes will stop with "model missing".</div>` : ''}
+    <div class="srow">Picture size<span class="d">bigger sizes fall apart without an upscaler, so they aren't offered</span><span class="grow"></span><select data-a="comfy-size" aria-label="Picture size"><option value="" ${c.size ? '' : 'selected'}>default: 1024 × 1024</option>${COMFY_SIZES.map(([id, label]) => `<option value="${id}" ${c.size === id ? 'selected' : ''}>${label}</option>`).join('')}</select></div>
+    <div class="srow">Steps and CFG<span class="d">sampler euler_ancestral, scheduler normal</span><span class="grow"></span><input id="comfy-steps" class="mono" inputmode="numeric" style="width:5em" value="${esc(c.steps ?? '')}" placeholder="26" aria-label="Steps"><input id="comfy-cfg" class="mono" inputmode="decimal" style="width:5em" value="${esc(c.cfg ?? '')}" placeholder="5.5" aria-label="CFG"><button class="mini" data-a="comfy-tune">Save</button></div>
+    ${S.comfyCkpts?.error && S.comfyCkpts.url === c.url ? `<div class="note warn">${esc(S.comfyCkpts.error)}</div>` : ''}</div>`;
+}
+// Test connection, and the free graphics memory kept live (every 5 s) while the box is shown.
+async function comfyTest() {
+  const url = S.settings.comfy?.url;
+  const r = await call('comfyTest');
+  S.comfyTest = { url, ...(r || { ok: false, message: 'No answer.' }) };
+  if (r?.ok) S.comfyCkpts = { url, list: r.checkpoints, error: null };
+  render();
+  clearInterval(comfyTest.t);
+  if (!r?.vramTotal) return;
+  comfyTest.t = setInterval(async () => {
+    const el = document.getElementById('comfy-vram');
+    if (!el || S.comfyTest?.url !== S.settings.comfy?.url) { clearInterval(comfyTest.t); return; }
+    const v = await call('comfyStats');
+    if (v?.ok && v.vramTotal) { Object.assign(S.comfyTest, { vramFree: v.vramFree, vramTotal: v.vramTotal, low: v.low }); el.textContent = `${(v.vramFree / GB).toFixed(1)} GB of ${(v.vramTotal / GB).toFixed(1)} GB graphics memory free`; }
+  }, 5000);
+}
+// After he changed a Hearth devices setting (setSettings is called only from his clicks).
+function hdAfter(r) {
+  if (r && !r.message && r.hearthDevices) S.hd = { ...(S.hd || {}), settings: r.hearthDevices };
+  return r;
+}
+
 async function refreshMates() {
   S.mates = (await call('teammatesStatus')) || S.mates;
   S.mkeys = (await call('mediaKeys')) || S.mkeys;
@@ -1908,6 +2159,11 @@ document.addEventListener('click', async (ev) => {
     case 'rp-edit-save': { const m = msgById(d.m); const v = document.getElementById('edit-text')?.value; if (m && typeof v === 'string') { m.text = v; if (Array.isArray(m.swipes)) m.swipes[m.sw ?? 0] = v; } S.editing = null; await save(); return render(); }
     case 'rp-vn': { const R = cur(); if (R) R.vn = !R.vn; return render(true); }
     case 'rp-picture': S.modal = { kind: 'rppic', chatId: S.open }; return renderOverlay();
+    case 'rp-scene': return openScene(S.open);
+    case 'rs-chars': case 'rs-rebuild': { const m = S.modal; if (m?.kind !== 'rpscene') return; m.ids = [...document.querySelectorAll('.rsc:checked')].map((x) => x.value); const pr = await call('rpScenePrompt', m.ids, sceneMsgs(m.chatId)); m.prompt = pr?.prompt || m.prompt; return renderOverlay(); }
+    case 'rs-look-save': { const m = S.modal; const keep = document.getElementById(`rs-keep-${d.id}`)?.checked !== false; const seed = (document.getElementById('rs-seed')?.value || '').trim(); const r = await call('cardsSetLook', d.id, { appearance: document.getElementById(`rs-look-${d.id}`)?.value || '', keepSeed: keep, ...(seed && m?.ids?.[0] === d.id ? { seed: Number(seed) } : {}) }); if (r?.ok === false || r?.message) { toast(r.message || 'Not saved.'); return; } await loadCards(); toast(`Saved ${r.name}'s look.`); if (m?.kind === 'rpscene') { if (m.ids[0] === d.id) m.seedSaved = Boolean(seed); const pr = await call('rpScenePrompt', m.ids, sceneMsgs(m.chatId)); m.prompt = pr?.prompt || m.prompt; } return renderOverlay(); }
+    case 'rs-reroll': { const m = S.modal; const r = await call('cardsSetLook', d.id, { reroll: true }); if (r?.ok === false || r?.message) { toast(r.message || 'Not changed.'); return; } await loadCards(); if (m?.kind === 'rpscene' && m.ids[0] === d.id) { m.seed = r.ownerLook?.seed ?? m.seed; m.seedSaved = true; } toast(`New seed for ${r.name}: ${r.ownerLook?.seed}.`); return renderOverlay(); }
+    case 'rs-go': return makeSceneNow();
     case 'rp-pic-do': { const m = S.modal; const R = rt(m.chatId); const kind = document.querySelector('input[name="rpk"]:checked')?.value || 'portrait'; const ids = [...document.querySelectorAll('.rpc:checked')].map((x) => x.value); const note = document.getElementById('rp-note')?.value || ''; const provider = document.getElementById('rp-maker')?.value || ''; S.modal = null; renderOverlay(); R.busy = { agent: provider, role: 'member', runId: `pic${uid()}`, steps: [{ kind: 'image', label: kind === 'scene' ? 'Making a scene picture' : 'Making a portrait', detail: aiName(provider) }], startedAt: Date.now() }; render(); const r = await call('rpImage', m.chatId, { kind, cardIds: ids, note, provider }); R.busy = null; runner.post(R, r?.ok ? { who: provider, text: `${kind === 'scene' ? 'Scene' : 'Portrait'}${note ? `: ${note}` : ''}`, via: r.via, media: r.items || [] } : r?.error?.kind === 'minor' || r?.error?.kind === 'real' ? { who: 'system', block: true, text: r.error.message } : { who: provider, err: true, text: r?.error?.message || r?.message || 'No picture came back.' }); await saveRt(R); return render(); }
     case 'temp-chat': return startTemp();
     case 'temp-end': ev.stopPropagation(); return endTemp(d.id);
@@ -2042,6 +2298,13 @@ document.addEventListener('click', async (ev) => {
     case 'code-canvas': return codeToCanvas(a);
     // pictures, videos, files
     case 'lightbox': S.modal = { kind: 'lightbox', src: d.src, file: d.f || null, name: d.n || '', chatId: S.open }; return renderOverlay();
+    // The gallery: one full picture at a time (a message's pictures, or the whole chat's).
+    case 'gallery': { const msg = d.m ? msgById(d.m) : null; const items = galleryItems(msg ? [msg] : S.msgs); if (!items.length) return toast('No pictures in this chat yet.'); S.modal = { kind: 'gallery', items, i: Math.min(items.length - 1, Number(d.i) || 0), zoom: 1, chatId: S.open }; renderOverlay(); galleryFocus(); return; }
+    case 'gal-prev': case 'gal-next': case 'gal-zoom': case 'gal-zoom-toggle': { if (S.modal?.kind !== 'gallery') return; galleryDo(k === 'gal-prev' ? 'prev' : k === 'gal-next' ? 'next' : k === 'gal-zoom' ? (d.d === '1' ? 'in' : 'out') : 'toggle'); return; }
+    case 'media-browser': { const r = await call('mediaOpenBrowser', mediaChat(a), d.f); if (r && !r.ok) toast(r.message || 'Couldn\'t open it.'); return; }
+    case 'media-reveal': { const r = await call('mediaReveal', mediaChat(a), d.f); if (r && !r.ok) toast(r.message || 'Couldn\'t show it.'); return; }
+    case 'media-reveal-src': { const r = await call('mediaRevealSource', mediaChat(a), d.src); if (r && !r.ok) toast(r.message || 'Couldn\'t show it.'); return; }
+    case 'copy-cancel': { const p = S.copying; if (!p) return; if (p.attach) await call('attachCancel'); else if (p.fetch) await call('mediaCancelFetch', p.chatId); else await call('chatCancel', p.chatId); return; }
     case 'media-save': { const r = await call('mediaSave', mediaChat(a), d.f, d.n); if (r?.ok) toast(`Saved ${r.file}.`); else if (r && !r.cancelled) toast(r.message || 'Not saved.'); return; }
     case 'media-open': { const r = await call('mediaOpen', mediaChat(a), d.f); if (r && !r.ok) toast(r.message || 'Couldn\'t open it.'); return; }
     case 'media-repo': { const c = entry(mediaChat(a)); if (!c?.repo && !c?.repoDir) return toast('Connect this chat to a repo first (the repo chip above the box).'); S.modal = { kind: 'mediarepo', chatId: c.id, file: d.f, name: d.n, path: `assets/${d.n}` }; return renderOverlay(); }
@@ -2112,6 +2375,21 @@ document.addEventListener('click', async (ev) => {
     case 'mate-unkey': await call('teammatesRemoveKey', d.v); await refreshMates(); return render();
     case 'server-add': { const v = (id) => document.getElementById(id)?.value || ''; const r = await call('teammatesAddServer', { name: v('sv-name'), type: v('sv-type'), url: v('sv-url'), model: v('sv-model').trim(), key: v('sv-key'), workflow: v('sv-workflow').trim() }); if (r?.ok === false || r?.message) toast(r.message || 'Not added.'); else toast(`Added ${r.name}. Turn on “Your GPU server” in Settings › AI team to use it.`); await refreshMates(); return render(); }
     case 'server-remove': await call('teammatesRemoveServer', d.id); await refreshMates(); return render();
+    case 'hd-url': { hdAfter(await setSettings({ hearthDevices: { url: document.getElementById('hd-url')?.value || '' } })); S.hd = (await call('hearthStatus', { probe: true, fresh: true })) || S.hd; await refreshMates(); return render(); }
+    case 'hd-test': { toast('Asking your Home server…'); S.hd = (await call('hearthStatus', { probe: true, fresh: true })) || S.hd; toast(S.hd?.error ? 'The test didn\'t work (see Hearth devices).' : `${(S.hd?.devices || []).length} device${(S.hd?.devices || []).length === 1 ? '' : 's'} found.`); return render(); }
+    case 'hd-code': { const v = document.getElementById('hd-code')?.value || ''; if (!v.trim()) return toast('Type the share code first.'); const r = await call('hearthShareCode', v); toast(r?.ok ? 'Share code saved (encrypted).' : r?.message || 'Not saved.'); S.hd = (await call('hearthStatus', { probe: true, fresh: true })) || S.hd; return render(); }
+    case 'hd-code-remove': { await call('hearthShareCode', null); S.hd = (await call('hearthStatus', {})) || S.hd; return render(); }
+    case 'hd-tog': { const st = S.hd?.settings || S.settings.hearthDevices || {}; hdAfter(await setSettings({ hearthDevices: { [d.k]: st[d.k] === false } })); return render(); }
+    case 'hd-hosts': { hdAfter(await setSettings({ hearthDevices: { allowHosts: document.getElementById('hd-hosts')?.value || '' } })); return render(); }
+    case 'hd-move': { const o = hdOrder().slice(); const i = o.indexOf(d.v); const j = i + Number(d.d); if (i < 0 || j < 0 || j >= o.length) return; [o[i], o[j]] = [o[j], o[i]]; hdAfter(await setSettings({ hearthDevices: { order: o } })); S.hd = { ...(S.hd || {}), order: o }; return render(); }
+    case 'comfy-url': { const r = await setSettings({ comfy: { url: document.getElementById('comfy-url')?.value || '' } }); if (r && !r.message && r.comfy?.url) { const l = await call('comfyCheckpoints'); S.comfyCkpts = { url: r.comfy.url, list: l?.ok ? l.checkpoints : null, error: l?.ok ? null : l?.message }; } return render(); }
+    case 'comfy-test': return comfyTest();
+    case 'comfy-tune': { const st = (document.getElementById('comfy-steps')?.value || '').trim(); const cf = (document.getElementById('comfy-cfg')?.value || '').trim(); await setSettings({ comfy: { steps: st === '' ? null : Number(st), cfg: cf === '' ? null : Number(cf) } }); return; }
+    case 'rs-cancel': { for (const R of runner.runtimes.values()) { const j = (R.scenes || []).find((x) => x.job === d.job); if (j) j.phase = 'cancelling'; } await call('rpSceneCancel', d.job); return render(); }
+    case 'scene-regen': { const m = msgById(d.m); const sc = m?.scene; if (!sc?.positive || !S.open) return; return runScene(S.open, { cardIds: sc.cardIds || [], prompt: sc.positive, negative: sc.ownNegative || '', seed: Math.floor(Math.random() * 2 ** 31), source: sc.source || 'comfy', width: sc.width, height: sc.height, steps: sc.steps, cfg: sc.cfg, checkpoint: sc.source === 'comfy' ? sc.checkpoint : undefined }, 'Regenerating with a new seed'); }
+    case 'scene-edit': { const m = msgById(d.m); if (!m || !S.open) return; const sc = m.scene || m.sceneFailed || {}; return openScene(S.open, { cardIds: sc.cardIds, positive: sc.positive || sc.prompt, ownNegative: sc.ownNegative || sc.negative || '', source: sc.source }); }
+    case 'scene-seed': { const m = msgById(d.m); const sc = m?.scene; const id = (sc?.cardIds || []).find((x) => cardById(x)); if (!id || !Number.isInteger(sc.seed)) return; const r = await call('cardsSetLook', id, { seed: sc.seed, keepSeed: true }); if (r?.ok === false || r?.message) { toast(r.message || 'Not saved.'); return; } await loadCards(); toast(`Saved seed ${sc.seed} in ${r.name}'s look.`); return render(); }
+    case 'comfy-list': { const l = await call('comfyCheckpoints'); S.comfyCkpts = { url: S.settings.comfy?.url, list: l?.ok ? l.checkpoints : null, error: l?.ok ? null : l?.message }; return render(); }
     case 'mem-add': { const v = document.getElementById('mem-new')?.value || ''; const r = await call('memoryAdd', v); if (r?.ok === false || r?.message) toast(r.message || 'Not saved.'); S.memory = await call('memoryList'); return render(); }
     case 'mem-edit': S.memEdit = d.id; return render();
     case 'mem-cancel': S.memEdit = null; return render();
@@ -2154,6 +2432,10 @@ document.addEventListener('change', (ev) => {
   if (t.matches?.('[data-a="venice-model"]')) setSettings({ teammates: { venice: { model: t.value } } });
   if (t.matches?.('[data-a="venice-image"]')) setSettings({ teammates: { venice: { imageModel: t.value } } });
   if (t.matches?.('[data-a="civitai-engine"]')) setSettings({ teammates: { civitai: { engine: t.value } } });
+  if (t.matches?.('[data-a="hd-pick"]')) setSettings({ hearthDevices: { [t.dataset.k]: { [t.dataset.v]: t.value || null } } }).then(hdAfter);
+  if (t.matches?.('[data-a="comfy-ckpt"]')) setSettings({ comfy: { checkpoint: t.value } });
+  if (t.matches?.('[data-a="comfy-size"]')) setSettings({ comfy: { size: t.value || null } });
+  if (t.matches?.('[data-a="rs-src"]') && S.modal?.kind === 'rpscene') { S.modal.source = t.value; S.modal.vram = null; S.modal.prompt = document.getElementById('rs-prompt')?.value ?? S.modal.prompt; S.modal.negative = document.getElementById('rs-neg')?.value ?? S.modal.negative; renderOverlay(); sceneVram(); }
   if (t.matches?.('[data-a="pick-model"]')) {
     // A model per AI for this chat: kept with the chat's own data, never in settings.
     const R = S.view === 'chat' ? cur() : null;
@@ -2191,6 +2473,7 @@ document.addEventListener('keydown', (ev) => {
   if (t.id === 'composer' && ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); send(); return; }
   if (t.id === 'edit-text' && ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); resendEdited(S.editing, t.value); return; }
   if (t.id === 'rename-input') { if (ev.key === 'Enter') { ev.preventDefault(); finishRename(true); } if (ev.key === 'Escape') finishRename(false); return; }
+  if (S.modal?.kind === 'gallery' && !ev.ctrlKey && !ev.metaKey && !ev.altKey) { const g = galleryKey(ev.key); if (g) { ev.preventDefault(); galleryDo(g); return; } }
   if (ev.key === 'Escape' && voice.isOpen() && !S.modal && !S.pop) { voice.closeView(); return; }
   if (ev.key === 'Escape') { if (S.modal) { S.modal = null; renderOverlay(); } else if (S.pop) { S.pop = null; renderOverlay(); } else if (S.editing) { S.editing = null; render(); } }
 });
@@ -2273,6 +2556,8 @@ async function boot() {
     api.onUpdaterStatus?.((s) => { const prev = S.upd.status?.state; S.upd.status = s; if (s.state === 'available' && prev !== 'available') toast(`Update ${s.version} is available — see Settings › App updates.`); if (S.view === 'settings') render(); });
     // Steps carry their chat: only that chat's runtime gets them, open or not.
     api.onChatStep?.((e) => runner.onStep(e));
+    api.onMediaProgress?.((p) => showCopy(p));
+    api.onSceneProgress?.((p) => onSceneProgress(p));
     api.onCardsFound?.(async (r) => {
       S.found = [{ ...(r || {}), key: uid() }, ...(S.found || [])].slice(0, 6);
       toast(r?.ok && r.card ? `Imported ${r.card.name}.` : r?.ok && r.lorebook ? `Imported the lorebook ${r.lorebook.name}.` : r?.message || 'Not imported.');
