@@ -46,7 +46,7 @@ function cleanRp(r) {
   return { characters, players, order: r.order === 'list' ? 'list' : 'natural', lorebooks: (Array.isArray(r.lorebooks) ? r.lorebooks : []).filter((x) => typeof x === 'string' && CARD_ID.test(x)).slice(0, 10), ...(typeof r.background === 'string' && r.background.length < 300 ? { background: r.background } : {}) };
 }
 
-function createChats(dataDir, { now = () => new Date().toISOString() } = {}) {
+function createChats(dataDir, { now = () => new Date().toISOString(), onPurge = null } = {}) {
   const dir = path.join(dataDir, 'chats');
   const indexFile = path.join(dir, 'index.json');
   let idx = null;
@@ -271,8 +271,12 @@ function createChats(dataDir, { now = () => new Date().toISOString() } = {}) {
     if (fs.existsSync(src)) fs.renameSync(src, dest);
     if (fs.existsSync(`${src}.bak`)) fs.renameSync(`${src}.bak`, `${dest}.bak`);
     idx.list = idx.list.filter((x) => x.id !== id);
-    idx.trash = [{ trashId, deletedAt: now(), file: dest, entry: { ...e } }, ...(idx.trash || [])].slice(0, 50);
+    const all = [{ trashId, deletedAt: now(), file: dest, entry: { ...e } }, ...(idx.trash || [])];
+    idx.trash = all.slice(0, 50);
     saveIndex();
+    // A chat that falls out of the bin is gone for good: its pictures, videos and files too
+    // (they stay while it can still be restored).
+    for (const t of all.slice(50)) { if (!idx.list.some((x) => x.id === t.entry.id) && !idx.trash.some((x) => x.entry.id === t.entry.id)) { try { onPurge?.(t.entry.id); } catch {} } }
     return { ok: true, trashId };
   }
   const trash = () => { load(); return (idx.trash || []).map((t) => ({ trashId: t.trashId, deletedAt: t.deletedAt, id: t.entry.id, title: t.entry.title, projectId: t.entry.projectId })); };

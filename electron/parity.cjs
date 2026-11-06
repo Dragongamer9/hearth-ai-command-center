@@ -10,6 +10,8 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { Readable } = require('node:stream');
 const media = require('./media.cjs');
+const big = require('./bigfiles.cjs');
+const { pathToFileURL } = require('node:url');
 const makers = require('./makers.cjs');
 const { createMemory } = require('./memory-store.cjs');
 const { createScheduler } = require('./schedule.cjs');
@@ -64,20 +66,36 @@ function register(d) {
   const attachRoot = () => attachments.attachDir(worktreeRoot());
 
   // ---- pictures, videos and files in the chat ----
+  // Thumbnails and screen-sized copies of pictures: Electron's nativeImage, no extra native deps.
+  const nativeImage = d.nativeImage !== undefined ? d.nativeImage : (() => { try { return require('electron').nativeImage || null; } catch { return null; } })();
+  const render = d.renderPicture || (nativeImage ? (file, side) => {
+    const im = nativeImage.createFromPath(file);
+    if (!im || im.isEmpty()) return null;
+    const { width, height } = im.getSize();
+    const k = Math.min(1, side / Math.max(width, height));
+    const small = k < 1 ? im.resize({ width: Math.max(1, Math.round(width * k)), height: Math.max(1, Math.round(height * k)), quality: 'good' }) : im;
+    return /\.jpe?g$/i.test(file) ? { buf: small.toJPEG(82), ext: 'jpg' } : { buf: small.toPNG(), ext: 'png' };
+  } : null);
   if (protocol?.handle) {
     protocol.handle(media.SCHEME, (req) => {
-      const r = media.respond(req, root);
+      const r = media.respond(req, root, { render });
       return new Response(r.stream ? Readable.toWeb(r.stream()) : r.body, { status: r.status, headers: r.headers });
     });
   }
   const resolveItem = (chatId, file) => media.resolve(media.urlFor(String(chatId), String(file)), root);
   handle('media:open', (chatId, file) => { const r = resolveItem(chatId, file); if (!r.ok) return { ok: false, message: 'Not found.' }; shell.openPath(r.file); return { ok: true }; });
+  // Too big for the chat: open it in the browser (HTML) or show it in its folder.
+  handle('media:openBrowser', (chatId, file) => { const r = resolveItem(chatId, file); if (!r.ok) return { ok: false, message: 'Not found.' }; shell.openExternal(pathToFileURL(r.file).href); return { ok: true }; });
+  handle('media:reveal', (chatId, file) => { const r = resolveItem(chatId, file); if (!r.ok) return { ok: false, message: 'Not found.' }; shell.showItemInFolder(r.file); return { ok: true }; });
   handle('media:save', async (chatId, file, name) => {
     const r = resolveItem(chatId, file);
     if (!r.ok) return { ok: false, message: 'Not found.' };
     const s = await dialog.showSaveDialog(getWindow(), { title: 'Save', defaultPath: path.join(os.homedir(), 'Downloads', media.safeName(name || file.replace(/^[0-9a-f]{10}-/, ''))) });
     if (s.canceled || !s.filePath) return { ok: false, cancelled: true };
-    fs.copyFileSync(r.file, s.filePath);
+    const space = await big.checkSpace(path.dirname(s.filePath), r.size);
+    if (!space.ok) return { ok: false, message: space.message };
+    // Copied off the main thread (a big video doesn't freeze the window).
+    await fs.promises.copyFile(r.file, s.filePath);
     return { ok: true, file: s.filePath };
   });
   handle('media:toRepo', async (chatId, file, rel) => {
@@ -86,24 +104,35 @@ function register(d) {
     const e = entryOf(chatId);
     if (!e.repo && !e.repoDir) return { ok: false, message: 'Connect this chat to a repo first.' };
     try { await v2().copyFor(e); } catch (err) { return { ok: false, message: err.message }; }
+    if (r.size > 100 * 1024 * 1024) return { ok: false, message: `That file is ${big.fmtBytes(r.size)}; files over 100 MB don't belong in a git repo. Use Save as… instead.` };
     return v2().copies.writeFile(e.id, String(rel || ''), fs.readFileSync(r.file));
   });
-  // A picture or video an AI linked on the web: fetched only when the owner clicks.
+  // A picture, video or sound an AI linked on the web: fetched only when the owner clicks.
+  // Streamed straight to the chat's media folder (up to big.MAX_STORED, with a free-space
+  // check), with progress; media:cancelFetch stops it.
+  const fetches = new Map();
   handle('media:fetchRemote', async (chatId, url) => {
-    entryOf(chatId);
+    const e = entryOf(chatId);
     let u;
     try { u = new URL(String(url)); } catch { return { ok: false, message: 'Bad link.' }; }
     if (u.protocol !== 'https:') return { ok: false, message: 'Only https links.' };
+    const ctl = new AbortController();
+    fetches.get(e.id)?.abort();
+    fetches.set(e.id, ctl);
     try {
-      const res = await fetch(u.href, { redirect: 'follow', signal: AbortSignal.timeout(30000) });
+      const res = await (d.fetchImpl || fetch)(u.href, { redirect: 'follow', signal: AbortSignal.any([ctl.signal, AbortSignal.timeout(30000)]) });
       const type = String(res.headers.get('content-type') || '').split(';')[0];
-      if (!res.ok || !/^(image\/(png|jpeg|gif|webp)|video\/(mp4|webm))$/.test(type)) return { ok: false, message: 'That link isn\'t a picture or video.' };
-      const buf = Buffer.from(await res.arrayBuffer());
-      if (buf.length > 25 * 1024 * 1024) return { ok: false, message: 'Too big (over 25 MB).' };
-      const ext = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'video/mp4': 'mp4', 'video/webm': 'webm' }[type];
-      return { ok: true, item: media.storeBuffer(root, String(chatId), `${(u.pathname.split('/').pop() || 'web').replace(/\.[^.]*$/, '').slice(0, 40) || 'web'}.${ext}`, buf) };
-    } catch { return { ok: false, message: 'Couldn\'t download it.' }; }
+      const ext = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'image/avif': 'avif', 'video/mp4': 'mp4', 'video/webm': 'webm', 'audio/mpeg': 'mp3', 'audio/ogg': 'ogg', 'audio/wav': 'wav', 'audio/mp4': 'm4a' }[type];
+      if (!res.ok || !ext || !res.body) return { ok: false, message: 'That link isn\'t a picture, video or sound.' };
+      const len = Number(res.headers.get('content-length')) || null;
+      const name = `${(u.pathname.split('/').pop() || 'web').replace(/\.[^.]*$/, '').replace(/[^A-Za-z0-9._ -]+/g, '_').slice(0, 40) || 'web'}.${ext}`;
+      // The 30 s limit is for the answer to start; a big download may take longer (Cancel stops it).
+      const r = await big.streamToFile(Readable.fromWeb(res.body), path.join(root, e.id), name, { expected: len, signal: ctl.signal, onProgress: (p) => send('media:progress', { chatId: e.id, name, done: p.done, total: p.total ?? len, finished: p.finished === true, fetch: true }) });
+      if (!r.ok) return { ok: false, message: r.code === 'too-big' ? `Too big: ${r.message.replace(/^it is too large /, '')}.` : r.message };
+      return { ok: true, item: media.describe(path.join(root, e.id), { kind: media.kindOf(name), name, file: r.file, size: r.size, mime: media.mimeOf(name), url: media.urlFor(e.id, r.file) }) };
+    } catch { return { ok: false, message: ctl.signal.aborted ? 'Download stopped.' : 'Couldn\'t download it.' }; } finally { if (fetches.get(e.id) === ctl) fetches.delete(e.id); send('media:progress', { chatId: e.id, fetch: true, finished: true }); }
   });
+  handle('media:cancelFetch', (chatId) => { fetches.get(String(chatId))?.abort(); return true; });
   // A file the app makes for the owner (a deep research report, an export of a canvas).
   handle('media:saveText', (chatId, name, text) => { entryOf(chatId); const item = media.storeBuffer(root, String(chatId), media.safeName(name), Buffer.from(String(text || '').slice(0, 5e6), 'utf8')); return item ? { ok: true, item } : { ok: false }; });
 
@@ -277,11 +306,16 @@ function register(d) {
     const base = media.safeName(e.title || 'chat').replace(/\s+/g, '-');
     const s = await dialog.showSaveDialog(getWindow(), { title: 'Export this chat', defaultPath: path.join(os.homedir(), 'Downloads', `${base}.${fmt}`) });
     if (s.canceled || !s.filePath) return { ok: false, cancelled: true };
-    const MEDIA_URL = /hearth-media:\/\/c\/[A-Za-z0-9-]+\/[^\s"')<>]+/g;
+    // Thumbnails (t) and screen-sized copies (v) export as their original picture.
+    const MEDIA_URL = /hearth-media:\/\/[ctv]\/[A-Za-z0-9-]+\/[^\s"')<>]+/g;
+    const orig = (u) => u.replace(/^hearth-media:\/\/[tv]\//, 'hearth-media://c/');
+    // Big files are copied next to the export instead of being put inside it.
+    const filesDir = `${s.filePath.replace(/\.(md|html|pdf)$/i, '')}_files`;
+    const copyOut = (r) => { fs.mkdirSync(filesDir, { recursive: true }); const dest = path.join(filesDir, r.name); if (!fs.existsSync(dest)) fs.copyFileSync(r.file, dest); return `${path.basename(filesDir)}/${encodeURIComponent(r.name)}`; };
     if (fmt === 'md') {
-      const dir = `${s.filePath.replace(/\.md$/i, '')}_files`;
+      const dir = filesDir;
       const md = String(payload.markdown || '').replace(MEDIA_URL, (u) => {
-        const r = media.resolve(u, root);
+        const r = media.resolve(orig(u), root);
         if (!r.ok) return u;
         fs.mkdirSync(dir, { recursive: true });
         fs.copyFileSync(r.file, path.join(dir, r.name));
@@ -290,7 +324,7 @@ function register(d) {
       fs.writeFileSync(s.filePath, md, { mode: 0o644 });
       return { ok: true, file: s.filePath };
     }
-    const html = String(payload.html || '').replace(MEDIA_URL, (u) => media.dataUri(u, root) || '');
+    const html = String(payload.html || '').replace(MEDIA_URL, (u) => { const r = media.resolve(orig(u), root); if (!r.ok) return ''; return media.dataUri(orig(u), root) || (fmt === 'html' ? copyOut(r) : ''); });
     if (fmt === 'html') { fs.writeFileSync(s.filePath, html, { mode: 0o644 }); return { ok: true, file: s.filePath }; }
     // PDF: the same page printed by a hidden window with no scripts and no network.
     const tmp = path.join(os.tmpdir(), `hearth-export-${uid()}.html`);

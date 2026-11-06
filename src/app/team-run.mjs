@@ -242,7 +242,10 @@ export function createTeamRunner(ctx) {
     if (ctx.afterReply) raw = ctx.afterReply(R, agent, raw);
     const { text: noPreview, previews: fenced } = extractPreviews(raw);
     const { text: noTools, tools, followUps } = parseTools(noPreview, { agent });
-    const previews = [...(r.previews || []), ...fenced].map((p) => ({ id: uid(), name: p.name, kind: p.kind || kindOf(p.name), content: p.content }));
+    // A big preview (over 1 MB) is a file in the chat's media folder: no content in the chat file.
+    const previews = [...(r.previews || []), ...fenced].map((p) => (p.file || p.tooBig || p.original
+      ? { id: uid(), name: p.name, kind: p.kind || kindOf(p.name), size: p.size || 0, ...(p.file ? { file: p.file } : {}), ...(p.original ? { original: p.original } : {}), ...(p.extracted ? { extracted: p.extracted } : {}), ...(p.tooBig ? { tooBig: { reason: String(p.tooBig.reason || ''), limit: p.tooBig.limit || null } } : {}) }
+      : { id: uid(), name: p.name, kind: p.kind || kindOf(p.name), content: p.content }));
     const { acts, refused } = parseActs(noTools, { agent, enabled: ctx.settings().actForMe === true });
     const shown = noTools.split('\n').filter((l) => !/^\s*ACT FOR OWNER:/i.test(l.replace(/[*`]/g, ''))).join('\n').trim();
     const fields = {

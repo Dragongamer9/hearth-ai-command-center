@@ -41,3 +41,33 @@ Characters chats already had a **Picture** button (a portrait or a scene from Ve
 AppImage: update from inside the app (Settings → App updates → Check for updates).
 
 .deb installs update from inside the app too (asks for your computer password once per update).
+
+## Big pictures, videos and previews in chat
+
+Big things the AIs make now show up, or tell you clearly why they can't. Nothing just fails to appear any more.
+
+- **Why previews over about 1 MB used to fail:** a preview file over 1 MB was skipped without a word. A preview written straight into a reply was cut off at 1 MB, which broke the page. The 2.8 MB report with a picture inside fell into the first case.
+- **Big live previews work now:**
+  - A preview over 1 MB is saved as a file with the chat and shown from disk, not squeezed into the chat window.
+  - Pictures, videos and sounds built into the page are taken out into their own files first, because they are usually most of its size. Your 2.8 MB page shrinks to a few KB of page plus its picture, and opens at once.
+  - The page that's left can be up to **2 MB**. That limit was measured: at 2 MB the window keeps responding, at 5 MB it froze for over a second, and at 10 MB for almost 3 seconds. A 10 GB web page can't be drawn in any app window.
+  - Bigger pages get a card with **Open in browser**, **Show in folder** and **Save as…**.
+  - Previews up to 1 MB work as before, including the canvas.
+- **The clear card:** anything over a limit shows a card with its name, its size, the limit, why, and what you can do (Open in browser, Open, Show in folder, Save as…). That covers previews, pictures, videos, sounds and files.
+- **Files up to 10 GB each:** pictures, videos, sounds and files the AIs post, downloads, and files you pick with the **+** button can each be up to **10 GB**.
+  - They are copied to disk in pieces, never loaded into memory whole.
+  - A bar at the bottom shows the progress, with **Stop**.
+  - Free disk space is checked first. If there isn't enough room, you get a clear message and nothing half-copied is left behind.
+  - Pasted or dragged-in files stay at 200 MB, because they go through the window's memory. Use the **+** button for anything bigger.
+- **Pictures load from disk:** pictures are files kept with the chat and streamed from there, never stored inside the chat file. Videos and sounds can be skipped through (sounds now play right in the chat: mp3, wav, ogg, m4a, flac). AVIF pictures work too.
+- **Huge pictures:**
+  - Very big pictures (over 4096 pixels wide or 12 MB) show a screen-sized copy, made once and kept.
+  - A picture over 100 megapixels can't be opened in the app at all, because there isn't enough memory to open it. Its card says so and offers to open the original in your picture viewer.
+- **Gallery:**
+  - A message with 5 or more pictures shows them as small thumbnails. The thumbnails are made once and kept on disk.
+  - **Gallery** at the top shows every picture in the chat.
+  - The viewer shows one picture at a time, with ← → to move, + and − to zoom, **Save as…** and **Show in folder**.
+  - It works with a controller: D-pad or LB/RB to move, A to zoom, B to close.
+  - It stays quick with hundreds of pictures.
+- **Your files stay with the chat:** pictures, videos and big previews go in the chat's own media folder and are included when you export it (big files are copied next to the export). When a deleted chat leaves the bin, its media goes too.
+- **Safe as before:** the app only shows files from that chat's media folder. Tricks like `../` are refused, nothing comes from the internet, and previews still can't reach the app or your files.

@@ -15,6 +15,7 @@ import { autoTitle, moveInGroup, dropInGroup } from './chats.mjs';
 import { groupChats, repoHint, greeting, fmtBytes, ago } from './app/groups.mjs';
 import { groupSteps } from './app/steps.mjs';
 import { previewDoc, frameHtml } from './app/previews.mjs';
+import { SAFE_MEDIA, GALLERY_MIN, thumbUrl, shownUrl, tooBigCard, previewTooBig, problemCard, hugePictureCard, galleryItems, galleryGrid, galleryViewer, galleryKey, padActions, galleryStep, progressLine } from './app/bigmedia.mjs';
 import { esc } from './app/text.mjs';
 import { rich, sourcesOf, plainText, hostOf } from './app/rich.mjs';
 import { parseDiff } from './app/diff.mjs';
@@ -347,8 +348,12 @@ async function chooseRepo(repo, branch) {
 }
 
 // ---------- attachments ----------
+// Pasted or dropped files come as bytes through the window, so they're capped at 200 MB;
+// the + button picks bigger ones (up to 10 GB), copied from disk with progress.
+const PASTE_MAX = 200 * 1024 * 1024;
 async function addFiles(fileList) {
   for (const f of [...fileList].slice(0, 10)) {
+    if (f.size > PASTE_MAX) { toast(`${f.name} is ${fmtBytes(f.size)}. Pasted or dropped files can be up to 200 MB; use the + button to pick it (up to 10 GB, copied from disk).`); continue; }
     const buf = await f.arrayBuffer();
     const r = await call('attachSaveAny', f.name || 'pasted.png', buf);
     if (r?.ok) S.attach.push(r.att); else toast(r?.message || `Couldn't attach ${f.name}.`);
@@ -789,6 +794,17 @@ function previewOf(msgId, pid, R = cur()) {
 async function openPane(msgId, pid, tab = 'preview') {
   const p = previewOf(msgId, pid);
   if (!p) return;
+  // Too big for the panel: the card in the chat says why and offers "Open in browser".
+  if (p.tooBig) { if (tab !== 'preview') toast('That preview is too big to edit here. Use Save as… and edit it in your editor.'); return; }
+  // Over 1 MB: kept as a file in the chat's media folder and shown from disk (no srcdoc).
+  if (p.file) {
+    S.pane = { msgId, pid, tab: 'preview', url: null, big: true };
+    const r = await call('previewServeFile', S.open, p.file, p.kind);
+    if (r?.ok) S.pane.url = r.url; else { S.pane = null; toast(r?.message || 'That preview couldn\'t be opened.'); }
+    renderPane(true);
+    renderMain();
+    return;
+  }
   S.pane = { msgId, pid, tab, url: null };
   const html = p.kind === 'code' ? `<!doctype html><meta charset="utf-8"><style>body{margin:0;background:#0d1117;color:#c9d1d9;font:13px/1.55 ui-monospace,monospace}pre{margin:0;padding:16px;white-space:pre-wrap}</style><pre>${esc(p.content)}</pre>` : previewDoc({ kind: p.kind, content: p.content, name: p.name, dark: document.documentElement.dataset.mode !== 'light', allowNet: S.settings.previewNetwork === true });
   if (api?.previewServe) { const r = await call('previewServe', html); if (r?.ok) S.pane.url = r.url; }
@@ -821,15 +837,55 @@ async function codeToCanvas(btn) {
 }
 
 // ---------- pictures, videos and files in chat ----------
-const SAFE_MEDIA = /^(hearth-media:\/\/c\/[A-Za-z0-9-]+\/[A-Za-z0-9%._ -]+|data:(image|video)\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+|blob:[a-z0-9:/.-]+)$/i;
 function mediaHtml(m) {
   const items = (m.media || []).filter((x) => x && SAFE_MEDIA.test(String(x.url || '')));
   if (!items.length) return '';
+  // Pictures are files streamed from disk; very big ones show a screen-sized copy, ones too big
+  // to decode get the clear card, and five or more become a gallery of small thumbnails.
+  const huge = items.filter((x) => x.kind === 'image' && x.huge).map((x) => hugePictureCard(x, icon)).join('');
+  const picItems = items.filter((x) => x.kind === 'image' && !x.huge);
+  const gallery = picItems.length >= GALLERY_MIN ? `<div class="galwrap"><div class="mh">${icon('eye', 'sm')}${picItems.length} pictures <button class="mini" data-a="gallery" data-m="${esc(m.id)}" data-i="0">Open gallery</button></div>${galleryGrid(picItems, { msg: m.id, limit: 60 })}</div>` : '';
+  const auds = items.filter((x) => x.kind === 'audio').map((x) => `<figure class="media aud"><audio controls preload="metadata" src="${esc(x.url)}"></audio><figcaption><span>${esc(x.name)}</span><span class="faint">${fmtBytes(x.size)}</span><span class="grow"></span><button class="mini" data-a="media-save" data-f="${esc(x.file || '')}" data-n="${esc(x.name)}">${icon('dl', 'sm')}Save as…</button><button class="mini" data-a="media-reveal" data-f="${esc(x.file || '')}">Show in folder</button></figcaption></figure>`).join('');
   const btns = (x) => `<button class="mini" data-a="media-save" data-f="${esc(x.file || '')}" data-n="${esc(x.name)}">${icon('dl', 'sm')}Download</button><button class="mini" data-a="media-repo" data-f="${esc(x.file || '')}" data-n="${esc(x.name)}">${icon('gh', 'sm')}Save to repo…</button>`;
-  const pics = items.filter((x) => x.kind === 'image').map((x) => `<figure class="media"><img src="${esc(x.url)}" alt="${esc(x.name)}" data-a="lightbox" data-src="${esc(x.url)}" data-f="${esc(x.file || '')}" data-n="${esc(x.name)}" loading="lazy"><figcaption><span>${esc(x.name)}</span><span class="grow"></span>${btns(x)}</figcaption></figure>`).join('');
+  const pics = gallery ? '' : picItems.map((x, i) => `<figure class="media"><img src="${esc(shownUrl(x))}" alt="${esc(x.name)}" data-a="gallery" data-m="${esc(m.id)}" data-i="${i}" loading="lazy" decoding="async"${x.width ? ` width="${Number(x.width)}" height="${Number(x.height)}"` : ''}><figcaption><span>${esc(x.name)}</span>${x.view ? `<span class="faint" title="The original is ${esc(fmtBytes(x.size))}${x.width ? `, ${x.width}×${x.height}` : ''}">screen-sized copy</span>` : ''}<span class="grow"></span>${btns(x)}</figcaption></figure>`).join('');
   const vids = items.filter((x) => x.kind === 'video').map((x) => `<figure class="media vid"><video controls preload="metadata" src="${esc(x.url)}"${x.poster && SAFE_MEDIA.test(x.poster) ? ` poster="${esc(x.poster)}"` : ''}></video><figcaption><span>${esc(x.name)}</span><span class="faint">${fmtBytes(x.size)}</span><span class="grow"></span>${btns(x)}</figcaption></figure>`).join('');
   const files = items.filter((x) => x.kind === 'file').map((x) => `<div class="card filec"><div class="hd">${icon('doc')}<div class="fn"><b>${esc(x.name)}</b><span class="faint">${fmtBytes(x.size)} · ${esc(String(x.name).split('.').pop().toUpperCase())}</span></div><span class="grow"></span><button class="btn" data-a="media-open" data-f="${esc(x.file || '')}">Open</button><button class="btn" data-a="media-save" data-f="${esc(x.file || '')}" data-n="${esc(x.name)}">${icon('dl', 'sm')}Save</button><button class="btn ghost" data-a="media-repo" data-f="${esc(x.file || '')}" data-n="${esc(x.name)}">${icon('gh', 'sm')}To repo…</button></div></div>`).join('');
-  return `${pics ? `<div class="pics">${pics}</div>` : ''}${vids}${files}`;
+  return `${gallery}${pics ? `<div class="pics">${pics}</div>` : ''}${huge}${vids}${auds}${files}`;
+}
+
+// Big files being copied or downloaded into a chat: one line at the bottom with Stop.
+// Drawn straight into its own element (the chat isn't re-rendered for every update).
+function showCopy(p) {
+  let el = document.getElementById('copybar');
+  if (!p || p.finished) { S.copying = null; el?.remove(); return; }
+  S.copying = p;
+  if (!el) { el = document.createElement('div'); el.id = 'copybar'; el.className = 'copybar'; el.setAttribute('role', 'status'); document.body.appendChild(el); }
+  const pct = p.total ? Math.min(100, Math.round((p.done / p.total) * 100)) : null;
+  el.innerHTML = `<span>${esc(progressLine(p))}</span>${pct != null ? `<span class="bar"><i style="width:${pct}%"></i></span>` : ''}<button class="mini" data-a="copy-cancel">${icon('x', 'sm')}Stop</button>`;
+}
+
+// The gallery viewer: keys, controller and zoom. Only the shown picture is loaded.
+function galleryDo(actName) {
+  const g = S.modal;
+  if (g?.kind !== 'gallery') return;
+  if (actName === 'close') { S.modal = null; renderOverlay(); return; }
+  S.modal = galleryStep(g, actName);
+  renderOverlay();
+  galleryFocus();
+}
+let padPrev = [];
+function galleryFocus() {
+  document.getElementById('gviewer')?.focus({ preventScroll: true });
+  // A controller (Steam Deck, ROG Ally, Xbox pad): polled only while the gallery is open.
+  if (galleryFocus.polling || !navigator.getGamepads) return;
+  galleryFocus.polling = true;
+  const poll = () => {
+    if (S.modal?.kind !== 'gallery') { galleryFocus.polling = false; padPrev = []; return; }
+    const pad = [...(navigator.getGamepads() || [])].find(Boolean);
+    if (pad) { const now = pad.buttons.map((b) => b.pressed); for (const x of padActions(now, padPrev)) galleryDo(x); padPrev = now; }
+    requestAnimationFrame(poll);
+  };
+  requestAnimationFrame(poll);
 }
 
 // Mermaid diagrams: drawn in a sandboxed frame with the bundled library (never in this window).
@@ -926,9 +982,9 @@ async function exportChat(id, fmt) {
   const c = entry(id);
   const who = (m) => (m.who === 'owner' ? ownerName() : m.who === 'system' ? 'App' : aiName(m.who));
   const msgs = R.msgs.filter((m) => !m.local && !m.deleted);
-  const md = [`# ${c?.title || 'Chat'}`, '', ...msgs.flatMap((m) => [`**${who(m)}** · ${String(m.at || '').slice(0, 16).replace('T', ' ')}`, '', String(m.text || ''), ...(m.media || []).map((x) => (x.kind === 'image' ? `![${x.name}](${x.url})` : `[${x.name}](${x.url})`)), ''])].join('\n');
+  const md = [`# ${c?.title || 'Chat'}`, '', ...msgs.flatMap((m) => [`**${who(m)}** · ${String(m.at || '').slice(0, 16).replace('T', ' ')}`, '', String(m.text || ''), ...(m.media || []).map((x) => (x.kind === 'image' ? `![${x.name}](${x.url})` : `[${x.name}](${x.url})`)), ...(m.previews || []).filter((p) => p.original).map((p) => `[${p.name}](hearth-media://c/${id}/${encodeURIComponent(p.original)})`), ''])].join('\n');
   const body = msgs.map((m) => `<section class="${m.who === 'owner' ? 'u' : 'a'}"><h4>${esc(who(m))} <small>${esc(String(m.at || '').slice(0, 16).replace('T', ' '))}</small></h4>${rich(m.text)}${(m.media || []).filter((x) => x.kind === 'image').map((x) => `<img src="${esc(x.url)}" alt="${esc(x.name)}">`).join('')}${(m.media || []).filter((x) => x.kind !== 'image').map((x) => `<p class="f">${esc(x.kind === 'video' ? 'Video' : 'File')}: ${esc(x.name)}</p>`).join('')}</section>`).join('');
-  const html = `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'"><title>${esc(c?.title || 'Chat')}</title><style>body{font:15px/1.6 system-ui,sans-serif;max-width:820px;margin:32px auto;padding:0 24px;color:#2d2822}h1{font-family:Georgia,serif}section{margin:0 0 22px}section.u{background:#f4efe7;border-radius:12px;padding:10px 16px}h4{margin:0 0 4px;font-size:13px}small{color:#9a9083;font-weight:400}img{max-width:100%;border-radius:10px;margin:6px 0}pre{background:#0d1117;color:#c9d1d9;padding:12px;border-radius:8px;overflow:auto;white-space:pre-wrap}table{border-collapse:collapse}td,th{border:1px solid #ddd;padding:4px 8px}.cb-hd button{display:none}.f{color:#71685c}</style></head><body><h1>${esc(c?.title || 'Chat')}</h1>${body}</body></html>`;
+  const html = `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: file:; media-src data: file:; style-src 'unsafe-inline'"><title>${esc(c?.title || 'Chat')}</title><style>body{font:15px/1.6 system-ui,sans-serif;max-width:820px;margin:32px auto;padding:0 24px;color:#2d2822}h1{font-family:Georgia,serif}section{margin:0 0 22px}section.u{background:#f4efe7;border-radius:12px;padding:10px 16px}h4{margin:0 0 4px;font-size:13px}small{color:#9a9083;font-weight:400}img{max-width:100%;border-radius:10px;margin:6px 0}pre{background:#0d1117;color:#c9d1d9;padding:12px;border-radius:8px;overflow:auto;white-space:pre-wrap}table{border-collapse:collapse}td,th{border:1px solid #ddd;padding:4px 8px}.cb-hd button{display:none}.f{color:#71685c}</style></head><body><h1>${esc(c?.title || 'Chat')}</h1>${body}</body></html>`;
   const r = await call('chatExport', id, fmt, { markdown: md, html });
   if (r?.ok) toast(`Exported to ${r.file}.`); else if (!r?.cancelled) toast(r?.message || 'Not exported.');
 }
@@ -1039,6 +1095,7 @@ function topbar() {
   if (S.view === 'habitat') return `<span class="ttl">Habitat</span><span class="faint hab-sub">${S.lastChat && entry(S.lastChat) ? `the team of “${esc(entry(S.lastChat).title)}”` : 'your AI team'}</span><span class="grow"></span>`;
   return `<span class="ttl">${esc(title)}</span>${chip}${temp}<span class="grow"></span>${know}
     <button class="tb" data-a="team-pop" title="Who's in this chat">${icon('users', 'sm')}Team</button>
+    ${S.view === 'chat' && S.msgs.some((m) => (m.media || []).some((x) => x.kind === 'image')) ? `<button class="tb" data-a="gallery" data-m="" data-i="0" title="Every picture in this chat">${icon('eye', 'sm')}Gallery</button>` : ''}
     <button class="tb" data-a="toggle-pane" title="Live preview and canvas panel" ${S.view !== 'chat' ? 'disabled' : ''}>${icon('panel', 'sm')}</button>`;
 }
 
@@ -1104,7 +1161,7 @@ function composer(placeholder) {
   const conn = c ? (c.repo ? { repo: c.repo, branch: c.branch } : c.repoDir ? { repo: c.repoDir } : null) : S.conn;
   const t = team();
   const teamLabel = S.mode === 'team' ? `Team <span class="faint">(${esc(aiName(t.lead))} ★ leads)</span>` : esc(aiName(S.mode));
-  const thumbs = S.attach.map((a, i) => a.kind === 'image' ? `<div class="th" style="background-image:url('${esc(a.url || '')}')" title="${esc(a.name)}"><button class="x" data-a="unattach" data-i="${i}" aria-label="Remove">${icon('x', 'sm')}</button></div>` : `<div class="th f" title="${esc(a.name)}"><span>${esc(a.name)}</span><button class="x" data-a="unattach" data-i="${i}" aria-label="Remove">${icon('x', 'sm')}</button></div>`).join('');
+  const thumbs = S.attach.map((a, i) => a.kind === 'image' && !a.huge ? `<div class="th" style="background-image:url('${esc(a.url || '')}')" title="${esc(a.name)}"><button class="x" data-a="unattach" data-i="${i}" aria-label="Remove">${icon('x', 'sm')}</button></div>` : `<div class="th f" title="${esc(a.name)}"><span>${esc(a.name)}</span><button class="x" data-a="unattach" data-i="${i}" aria-label="Remove">${icon('x', 'sm')}</button></div>`).join('');
   const busy = Boolean(S.busy) || S.working;
   const models = c ? (cur()?.sessions?._models || {}) : S.homeModels;
   const picked = Object.entries(models).filter(([, v]) => v && v !== 'default').length;
@@ -1203,7 +1260,7 @@ function message(m, latestChanges, last = false) {
   if (m.char) return rpMessage(m);
   if (m.block) return `<div class="msg-s block">${icon('shield', 'sm')} ${esc(m.text)}</div>`;
   if (m.who === 'owner') {
-    const atts = (m.attachments || []).map((a) => a.kind === 'image' ? `<img class="att" src="${esc(a.url || '')}" alt="${esc(a.name)}">` : `<span class="att-f">${icon('doc', 'sm')}${esc(a.name)}</span>`).join('');
+    const atts = (m.attachments || []).map((a) => a.kind === 'image' && !a.huge ? `<img class="att" src="${esc(a.url || '')}" alt="${esc(a.name)}" loading="lazy" decoding="async">` : `<span class="att-f" ${a.huge ? `title="${esc(a.huge)}"` : ''}>${icon('doc', 'sm')}${esc(a.name)}${a.size > 50 * 1024 * 1024 ? ` <span class="faint">${fmtBytes(a.size)}</span>` : ''}</span>`).join('');
     if (S.editing === m.id) return `<div class="msg-u editing" data-msg="${esc(m.id)}"><textarea id="edit-text" rows="3">${esc(m.text)}</textarea><div class="mft"><button class="btn ghost" data-a="edit-cancel">Cancel</button><button class="btn p" data-a="edit-send" data-m="${esc(m.id)}">Save and send</button></div></div>`;
     return `<div class="uwrap" data-msg="${esc(m.id)}"><div class="msg-u">${atts ? `<div class="atts">${atts}</div>` : ''}${rich(m.text)}${m.to ? `<div class="fine">only for ${esc(m.to.map(aiName).join(', '))}: not shown to your other AIs</div>` : ''}</div>${controlsHtml(m, true)}</div>`;
   }
@@ -1218,7 +1275,7 @@ function message(m, latestChanges, last = false) {
     ${m.err && m.rawError ? `<details class="raw"><summary class="fine">Details (the tool's own words)</summary><pre class="mono">${esc(m.rawError)}</pre></details>` : ''}
     ${m.err && m.retryable !== false && AGENTS[m.who] && !cur()?.round ? `<div class="mft left"><button class="mini" data-a="turn-retry" data-v="${esc(m.who)}">Retry ${esc(aiName(m.who))}</button></div>` : ''}
     ${mediaHtml(m)}
-    ${(m.mediaProblems || []).map((p) => `<div class="media-why">${icon('eye', 'sm')}<span>Can't show <b class="mono">${esc(p.path)}</b>: ${esc(p.reason)}.</span></div>`).join('')}
+    ${(m.mediaProblems || []).map((p) => p.tooBig || p.noSpace ? problemCard(p, icon) : `<div class="media-why">${icon('eye', 'sm')}<span>Can't show <b class="mono">${esc(p.path)}</b>: ${esc(p.reason)}.</span></div>`).join('')}
     ${(m.previews || []).map((p) => previewCard(m, p)).join('')}
     ${sourcesHtml(m)}
     ${m.changes ? changesCard(m, latestChanges) : ''}
@@ -1232,6 +1289,9 @@ function message(m, latestChanges, last = false) {
 }
 
 function previewCard(m, p) {
+  if (p.tooBig) return previewTooBig(p, icon);
+  if (p.file) return `<div class="card pv"><div class="hd">${icon('eye', 'sm')}<b>${esc(p.name)}</b><span class="faint">${fmtBytes(p.size)}${p.extracted ? ` · ${p.extracted} picture${p.extracted > 1 ? 's' : ''} loaded from disk` : ''}</span><span class="grow"></span><span class="chip">Live preview</span></div>
+    <div class="ft"><button class="btn p" data-a="open-preview" data-m="${esc(m.id)}" data-p="${esc(p.id)}">Open</button><button class="btn" data-a="media-browser" data-f="${esc(p.original || p.file)}">${icon('globe', 'sm')}Open in browser</button><button class="btn" data-a="media-save" data-f="${esc(p.original || p.file)}" data-n="${esc(p.name)}">${icon('dl', 'sm')}Save as…</button><button class="btn" data-a="media-reveal" data-f="${esc(p.original || p.file)}">Show in folder</button></div></div>`;
   return `<div class="card pv"><div class="hd">${icon(p.kind === 'code' ? 'code' : 'eye', 'sm')}<b>${esc(p.name)}</b><span class="grow"></span><span class="chip">${p.kind === 'code' ? 'Canvas' : 'Live preview'}</span></div>
     <div class="ft"><button class="btn p" data-a="open-preview" data-m="${esc(m.id)}" data-p="${esc(p.id)}">Open</button><button class="btn" data-a="open-canvas" data-m="${esc(m.id)}" data-p="${esc(p.id)}">${icon('pencil', 'sm')}Edit in canvas</button><button class="btn" data-a="download-preview" data-m="${esc(m.id)}" data-p="${esc(p.id)}">${icon('dl', 'sm')}Download</button><button class="btn" data-a="save-preview" data-m="${esc(m.id)}" data-p="${esc(p.id)}">${icon('gh', 'sm')}Save to repo…</button></div></div>`;
 }
@@ -1375,10 +1435,10 @@ function renderPane(force = false) {
   if (!force && key === paneKey) return;
   paneKey = key;
   const tab = (t, label) => `<button class="${S.pane.tab === t ? 'on' : ''}" data-a="pane-tab" data-t="${t}">${label}</button>`;
-  const body = S.pane.tab === 'code' ? `<pre class="code-view"><code>${esc(p.content)}</code></pre>`
+  const body = p.file ? (S.pane.url ? frameHtml({ url: S.pane.url, title: p.name }) : '<div class="pfoot">Loading…</div>') : S.pane.tab === 'code' ? `<pre class="code-view"><code>${esc(p.content)}</code></pre>`
     : S.pane.tab === 'canvas' ? `<div class="canvas-wrap"><textarea id="canvas-text" class="canvas" spellcheck="false" aria-label="Canvas">${esc(p.content)}</textarea></div>`
       : frameHtml({ url: S.pane.url, srcdoc: S.pane.url ? null : S.pane.srcdoc, title: p.name });
-  el.innerHTML = `<div class="ph2"><b>${esc(p.name)}</b><div class="tabs">${p.kind !== 'code' ? tab('preview', 'Preview') : ''}${tab('code', 'Code')}${tab('canvas', 'Canvas')}</div><span class="grow"></span><button class="tb" data-a="pane-reload" title="Reload">${icon('refresh', 'sm')}</button><button class="tb" data-a="pane-close" title="Close">${icon('x', 'sm')}</button></div>
+  el.innerHTML = `<div class="ph2"><b>${esc(p.name)}</b><div class="tabs">${p.kind !== 'code' ? tab('preview', 'Preview') : ''}${p.file ? '' : `${tab('code', 'Code')}${tab('canvas', 'Canvas')}`}</div><span class="grow"></span><button class="tb" data-a="pane-reload" title="Reload">${icon('refresh', 'sm')}</button><button class="tb" data-a="pane-close" title="Close">${icon('x', 'sm')}</button></div>
     <div class="frame-wrap">${body}</div>
     ${S.pane.tab === 'canvas' ? `<div class="canvas-bar"><button class="btn" data-a="canvas-save">${icon('check', 'sm')}Save version</button><button class="btn p" data-a="canvas-ask">${icon('users', 'sm')}Ask the team to change it</button><button class="btn ghost" data-a="download-preview" data-m="${esc(S.pane.msgId)}" data-p="${esc(S.pane.pid)}">${icon('dl', 'sm')}Download</button><span class="fine">${p.versions?.length ? `${p.versions.length} earlier version${p.versions.length === 1 ? '' : 's'} kept` : 'Your edits stay in this chat'}</span></div>` : ''}
     <div class="pfoot">${S.settings.previewNetwork ? 'Previews may load from the internet (Settings › Tools).' : 'Sandboxed: no internet, no access to the app or your files.'}</div>`;
@@ -1472,6 +1532,7 @@ function modalHtml() {
       <label class="field">Path in the repo<input id="saveto-path" value="${esc(m.path)}"></label>
       <div class="mft"><button class="btn p" data-a="saveto-do">Save</button><button class="btn ghost" data-a="close-modal">Cancel</button></div></div>`;
   }
+  if (m.kind === 'gallery') return galleryViewer(m, icon);
   if (m.kind === 'lightbox') {
     return `<div class="scrim dark lb" data-a="close-modal"></div><div class="lightbox"><img src="${esc(m.src)}" alt="${esc(m.name || '')}"><div class="lb-bar"><span>${esc(m.name || '')}</span><span class="grow"></span>${m.file ? `<button class="btn" data-a="media-save" data-f="${esc(m.file)}" data-n="${esc(m.name)}">${icon('dl', 'sm')}Download</button><button class="btn" data-a="media-repo" data-f="${esc(m.file)}" data-n="${esc(m.name)}">${icon('gh', 'sm')}Save to repo…</button>` : ''}<button class="btn ghost" data-a="close-modal">${icon('x', 'sm')}Close</button></div></div>`;
   }
@@ -2145,6 +2206,13 @@ document.addEventListener('click', async (ev) => {
     case 'code-canvas': return codeToCanvas(a);
     // pictures, videos, files
     case 'lightbox': S.modal = { kind: 'lightbox', src: d.src, file: d.f || null, name: d.n || '', chatId: S.open }; return renderOverlay();
+    // The gallery: one full picture at a time (a message's pictures, or the whole chat's).
+    case 'gallery': { const msg = d.m ? msgById(d.m) : null; const items = galleryItems(msg ? [msg] : S.msgs); if (!items.length) return toast('No pictures in this chat yet.'); S.modal = { kind: 'gallery', items, i: Math.min(items.length - 1, Number(d.i) || 0), zoom: 1, chatId: S.open }; renderOverlay(); galleryFocus(); return; }
+    case 'gal-prev': case 'gal-next': case 'gal-zoom': case 'gal-zoom-toggle': { if (S.modal?.kind !== 'gallery') return; galleryDo(k === 'gal-prev' ? 'prev' : k === 'gal-next' ? 'next' : k === 'gal-zoom' ? (d.d === '1' ? 'in' : 'out') : 'toggle'); return; }
+    case 'media-browser': { const r = await call('mediaOpenBrowser', mediaChat(a), d.f); if (r && !r.ok) toast(r.message || 'Couldn\'t open it.'); return; }
+    case 'media-reveal': { const r = await call('mediaReveal', mediaChat(a), d.f); if (r && !r.ok) toast(r.message || 'Couldn\'t show it.'); return; }
+    case 'media-reveal-src': { const r = await call('mediaRevealSource', mediaChat(a), d.src); if (r && !r.ok) toast(r.message || 'Couldn\'t show it.'); return; }
+    case 'copy-cancel': { const p = S.copying; if (!p) return; if (p.attach) await call('attachCancel'); else if (p.fetch) await call('mediaCancelFetch', p.chatId); else await call('chatCancel', p.chatId); return; }
     case 'media-save': { const r = await call('mediaSave', mediaChat(a), d.f, d.n); if (r?.ok) toast(`Saved ${r.file}.`); else if (r && !r.cancelled) toast(r.message || 'Not saved.'); return; }
     case 'media-open': { const r = await call('mediaOpen', mediaChat(a), d.f); if (r && !r.ok) toast(r.message || 'Couldn\'t open it.'); return; }
     case 'media-repo': { const c = entry(mediaChat(a)); if (!c?.repo && !c?.repoDir) return toast('Connect this chat to a repo first (the repo chip above the box).'); S.modal = { kind: 'mediarepo', chatId: c.id, file: d.f, name: d.n, path: `assets/${d.n}` }; return renderOverlay(); }
@@ -2305,6 +2373,7 @@ document.addEventListener('keydown', (ev) => {
   if (t.id === 'composer' && ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); send(); return; }
   if (t.id === 'edit-text' && ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); resendEdited(S.editing, t.value); return; }
   if (t.id === 'rename-input') { if (ev.key === 'Enter') { ev.preventDefault(); finishRename(true); } if (ev.key === 'Escape') finishRename(false); return; }
+  if (S.modal?.kind === 'gallery' && !ev.ctrlKey && !ev.metaKey && !ev.altKey) { const g = galleryKey(ev.key); if (g) { ev.preventDefault(); galleryDo(g); return; } }
   if (ev.key === 'Escape' && voice.isOpen() && !S.modal && !S.pop) { voice.closeView(); return; }
   if (ev.key === 'Escape') { if (S.modal) { S.modal = null; renderOverlay(); } else if (S.pop) { S.pop = null; renderOverlay(); } else if (S.editing) { S.editing = null; render(); } }
 });
@@ -2387,6 +2456,7 @@ async function boot() {
     api.onUpdaterStatus?.((s) => { const prev = S.upd.status?.state; S.upd.status = s; if (s.state === 'available' && prev !== 'available') toast(`Update ${s.version} is available — see Settings › App updates.`); if (S.view === 'settings') render(); });
     // Steps carry their chat: only that chat's runtime gets them, open or not.
     api.onChatStep?.((e) => runner.onStep(e));
+    api.onMediaProgress?.((p) => showCopy(p));
     api.onCardsFound?.(async (r) => {
       S.found = [{ ...(r || {}), key: uid() }, ...(S.found || [])].slice(0, 6);
       toast(r?.ok && r.card ? `Imported ${r.card.name}.` : r?.ok && r.lorebook ? `Imported the lorebook ${r.lorebook.name}.` : r?.message || 'Not imported.');

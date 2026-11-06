@@ -204,7 +204,7 @@ test('pre-push guard: main, base branch and tags refused; with the chat branch, 
 });
 
 // ---------- 7. pictures ----------
-test('pictures: ATTACH in a list, relative and absolute links inside the folder work; others get a plain reason', () => {
+test('pictures: ATTACH in a list, relative and absolute links inside the folder work; others get a plain reason', async () => {
   const cwd = fs.mkdtempSync(path.join(tmp, 'chat-'));
   const root = path.join(tmp, 'media');
   fs.mkdirSync(path.join(cwd, '.hearth-ai', 'assets', 'google'), { recursive: true });
@@ -217,7 +217,7 @@ test('pictures: ATTACH in a list, relative and absolute links inside the folder 
   fs.writeFileSync(path.join(cwd, 'huge.png'), '');
   fs.truncateSync(path.join(cwd, 'huge.png'), media.MAX_FILE + 1);
   const text = ['- ATTACH: `.hearth-ai/assets/google/a.png`.', 'ATTACH: .hearth-media/b.png', `![shot](${path.join(cwd, 'shot.png')})`, 'ATTACH: missing.png', 'ATTACH: ../outside.png', '![x](/etc/hostname.png)', 'ATTACH: pic.bmp', 'ATTACH: huge.png'].join('\n');
-  const r = media.collectAll({ cwd, sinceMs: Date.now() + 60000, text, chatId: 'c0000000001', root });
+  const r = await media.collectAll({ cwd, sinceMs: Date.now() + 60000, text, chatId: 'c0000000001', root });
   assert.equal(r.items.length, 1, 'the same picture is stored once');
   assert.deepEqual([r.items[0].from, ...(r.items[0].alsoFrom || [])].sort(), ['.hearth-ai/assets/google/a.png', '.hearth-media/b.png', path.join(cwd, 'shot.png')].sort(), 'every link that named it points at it');
   const why = Object.fromEntries(r.problems.map((p) => [p.path, p.reason]));
@@ -226,6 +226,10 @@ test('pictures: ATTACH in a list, relative and absolute links inside the folder 
   assert.match(why['/etc/hostname.png'], /outside/);
   assert.match(why['pic.bmp'], /isn't a type/);
   assert.match(why['huge.png'], /too large/);
+  const huge = r.problems.find((p) => p.path === 'huge.png');
+  assert.equal(huge.tooBig, true, 'a file over the limit gets the too-big card');
+  assert.equal(huge.size, media.MAX_FILE + 1);
+  assert.equal(huge.limit, media.MAX_FILE);
 });
 
 // ---------- 8/9. permissions table and team test ----------

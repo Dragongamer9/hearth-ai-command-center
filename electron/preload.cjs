@@ -45,6 +45,17 @@ contextBridge.exposeInMainWorld('hearth', {
   ghRepos: () => ipcRenderer.invoke('gh:repos'),
   ghBranches: (repo) => ipcRenderer.invoke('gh:branches', repo),
   previewServe: (html, o) => ipcRenderer.invoke('preview:serve', html, o || {}),
+  previewServeFile: (chatId, file, kind) => ipcRenderer.invoke('preview:serveFile', chatId, file, kind),
+  mediaOpenBrowser: (chatId, file) => ipcRenderer.invoke('media:openBrowser', chatId, file),
+  mediaReveal: (chatId, file) => ipcRenderer.invoke('media:reveal', chatId, file),
+  mediaRevealSource: (chatId, rel) => ipcRenderer.invoke('media:revealSource', chatId, rel),
+  mediaCancelFetch: (chatId) => ipcRenderer.invoke('media:cancelFetch', chatId),
+  attachCancel: () => ipcRenderer.invoke('attach:cancel'),
+  onMediaProgress: (cb) => {
+    const listener = (_e, a) => cb(a);
+    ipcRenderer.on('media:progress', listener);
+    return () => ipcRenderer.removeListener('media:progress', listener);
+  },
   previewDownload: (name, content) => ipcRenderer.invoke('preview:download', name, content),
   savedBoards: () => ipcRenderer.invoke('saved:boards'),
   savedOpenData: () => ipcRenderer.invoke('saved:openData'),

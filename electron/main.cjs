@@ -787,6 +787,8 @@ function registerIpc() {
   const withFrames = async (r) => {
     if (!r.ok) return r;
     const att = { ...r.att, url: pathToFileURL(r.att.path).href, ...(r.att.kind === 'image' && opsApi ? opsApi.imageInfo(r.att.path) : {}) };
+    // A picture too big to decode is never put in an <img> in the window (it shows as a file).
+    if (att.kind === 'image') { const fit = require('./bigfiles.cjs').pictureFit(att); if (!fit.decode) att.huge = fit.reason; }
     if (att.kind === 'video') {
       const f = await attachments.extractFrames(att.path, { ffmpeg: gitops.find('ffmpeg'), count: 4 });
       Object.assign(att, { frames: f.frames, duration: f.duration, note: f.note, ...(f.width ? { width: f.width, height: f.height } : {}) });
@@ -794,11 +796,21 @@ function registerIpc() {
     return { ok: true, att };
   };
   handle('attach:save', (name, data) => withFrames(attachments.saveBuffer(worktreeRoot(), String(name || ''), Buffer.from(data instanceof ArrayBuffer ? new Uint8Array(data) : data || []))));
+  // Picked files are streamed from disk (up to 10 GB each) with progress; attach:cancel stops it.
+  let picking = null;
+  const pickedCopy = async (f) => {
+    picking = picking && !picking.signal.aborted ? picking : new AbortController();
+    const name = path.basename(f);
+    return withFrames(await attachments.saveFromPathStreamed(worktreeRoot(), f, { signal: picking.signal, onProgress: (p) => send('media:progress', { chatId: null, attach: true, name, done: p.done, total: p.total ?? null, finished: p.finished === true }) }));
+  };
+  handle('attach:cancel', () => { picking?.abort(); return true; });
   handle('attach:pick', async () => {
     const r = await dialog.showOpenDialog(mainWindow, { title: 'Attach images or videos', properties: ['openFile', 'multiSelections'], filters: [{ name: 'Images and videos', extensions: Object.keys(attachments.TYPES) }] });
     if (r.canceled) return [];
     const out = [];
-    for (const f of r.filePaths.slice(0, 10)) out.push(await withFrames(attachments.saveFromPath(worktreeRoot(), f)));
+    for (const f of r.filePaths.slice(0, 10)) out.push(await pickedCopy(f));
+    picking = null;
+    send('media:progress', { chatId: null, attach: true, finished: true });
     return out;
   });
   // An AI's ATTACH line: relative to its workspace; only files inside the project,
@@ -1036,10 +1048,16 @@ function registerIpc() {
     if (r.canceled) return [];
     const out = [];
     for (const f of r.filePaths.slice(0, 10)) {
-      if (attachments.kindOf(f)) out.push(await withFrames(attachments.saveFromPath(worktreeRoot(), f)));
-      else if (/\.pdf$/i.test(f)) out.push(await savePdf(path.basename(f), fs.readFileSync(f)));
+      if (attachments.kindOf(f)) { out.push(await pickedCopy(f)); continue; }
+      // PDFs and text files are read whole (their text goes to the AIs), so their size is checked first.
+      let size = 0;
+      try { size = fs.statSync(f).size; } catch { out.push({ ok: false, message: `File not found: ${path.basename(f)}` }); continue; }
+      if (/\.pdf$/i.test(f)) out.push(size > 100 * 1024 * 1024 ? { ok: false, message: `${path.basename(f)} is ${Math.round(size / 1048576)} MB; PDFs can be up to 100 MB.` } : await savePdf(path.basename(f), fs.readFileSync(f)));
+      else if (size > attachments.TEXT_MAX) out.push({ ok: false, message: `${path.basename(f)} is ${Math.round(size / 1048576)} MB; text files can be up to ${Math.round(attachments.TEXT_MAX / 1048576)} MB (the AIs read them as text).` });
       else { const t = attachments.saveText(worktreeRoot(), path.basename(f), fs.readFileSync(f)); out.push(t.ok ? { ok: true, att: { ...t.att, url: null } } : t); }
     }
+    picking = null;
+    send('media:progress', { chatId: null, attach: true, finished: true });
     return out;
   });
 
@@ -1143,7 +1161,7 @@ app.whenReady().then(async () => {
   // The active project's board (the data from before projects is the default project, in the same file).
   store = createStore(ops.stateFile(dataDir(), readSettings().project, readSettings().projects));
   binding.setActive(ops.activeProjectId());
-  chats = createChats(dataDir());
+  chats = createChats(dataDir(), { onPurge: (id) => require('./media.cjs').removeChat(require('./media.cjs').mediaRoot(dataDir()), id) });
   history = createHistory(historyFile());
   openWeb = web.createWebWindows({ BrowserWindow, shell, iconPath: path.join(__dirname, '..', 'dist', 'icon.png') });
   theme.watchTheme((t) => send('theme:changed', t));
