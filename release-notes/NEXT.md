@@ -23,19 +23,42 @@ The Command Center can now use the AI your Hearth OS devices share with each oth
 
 ## Characters chat: Generate scene
 
-Characters chats already had a **Picture** button (a portrait or a scene from Venice, Civitai, your GPU server or an OpenAI, Gemini or xAI key). There's now also **Generate scene**, which makes a ComfyUI picture of the current moment.
+Characters chats already had a **Picture** button (a portrait or a scene from Venice, Civitai, your GPU server or an OpenAI, Gemini or xAI key). There's now also **Generate scene**, which makes a ComfyUI picture of the current moment on your Nvidia PC.
 
-- **The prompt is built from the character cards and the last few messages, and you see it first.** Change anything you like, then press Generate.
-- **The picture shows up in the chat and is saved with that chat.** It's included when you export the chat, and it goes away when you delete the chat.
-- **Characters keep their look between pictures.** Each character can have a saved **appearance** and a **seed**, with **Keep the same seed** on by default. Change them with **Save look** or **Re-roll seed**. Nothing changes unless you press one of these. The look is kept with the character in this app and is never written into exported card files.
-- **Where it's made:** your **ComfyUI server** (new in Settings › Accounts: type its address, press **Load models** and pick a default model), your GPU servers set up as ComfyUI, or Hearth devices.
-- **Clear errors** when ComfyUI is off, has no model, the address is wrong, or it answers with a redirect.
+- **The prompt is built from the character cards, the scenario and the last few messages, and you see it first.** Change anything you like, add your own negative words (things to leave out), then press Generate. The built-in safety words are always left out too, and the dialog shows them.
+- **You can keep chatting while it's made.** A line at the bottom of the chat shows where it is (queued, generating, the seconds so far) with **Cancel**. Cancel takes it off ComfyUI's queue, or stops it if it's already running. A picture that fails never blocks the chat.
+- **The picture shows up in the chat and is saved with that chat.** It's loaded from its file (never squeezed into the page), it's still there after you restart the app, it's included when you export the chat, and it goes away when you delete the chat.
+- **Each picture remembers how it was made:** the seed, the model, the size, steps, CFG, sampler and both prompts (under **Prompt and settings used**). This is kept with the chat, never in your settings.
+  - **Regenerate:** the same prompt and settings with a new seed.
+  - **Edit prompt:** opens Generate scene with that picture's prompt.
+  - **Use this seed for (character):** saves that seed in the character's look.
+- **A character's look:** each character can have a saved **appearance** and a **seed**, with **Keep the same seed** on by default. Change them with **Save look** or **Re-roll seed**; nothing changes unless you press one of these. The look is kept with the character in this app and is never written into exported card files.
+  - **It helps keep a character looking similar, but it can't keep them exactly the same:** in your tests the same seed and settings gave the same picture, but a new scene changes it. Readable text, exact counts and exact layouts aren't reliable either.
+- **ComfyUI server (Settings › Accounts):**
+  - **Address:** the box suggests `http://chris-hearth.tail0e2082.ts.net:8188`, but nothing is saved until you press **Save**.
+  - **Test connection:** shows whether it's online, the ComfyUI version, the graphics card (like NVIDIA GeForce RTX 5070) and how much graphics memory is free right now (kept up to date while you look), and how many models it has.
+  - **Default model:** picked from the server's list. If you don't pick one, NoobAI-XL-v1.1 is used when the server has it, else the server's first model.
+  - **Picture size:** 1024 × 1024 (about 8 seconds on your PC), 1344 × 768 or 768 × 1344 (about 13 seconds). 1536 × 1536 isn't offered, because it fell apart in your test (bigger pictures need an upscaler later).
+  - **Steps and CFG:** 26 and 5.5 unless you change them. The sampler is euler_ancestral with the normal scheduler.
+  - Your GPU servers set up as ComfyUI and Hearth devices can make scenes too.
+- **Graphics memory:** just before a picture is sent, the app checks how much graphics memory is free. If it's low (for example while the big 30B Ollama model is loaded), it tells you the picture may be slower. It never unloads anything; that's up to you.
+- **Clear errors**, each with ComfyUI's own words where it gave any:
+  - the server is off or not on Tailscale;
+  - it has no models;
+  - your chosen model isn't on it any more (it lists the ones it has);
+  - ComfyUI refused the request;
+  - the picture failed on the server (like "CUDA out of memory");
+  - it finished without a picture;
+  - it took too long (after 5 minutes it's taken off ComfyUI's queue so the card isn't kept busy);
+  - it answered with a redirect, or the address isn't allowed.
 - **Hard limits, checked before anything is sent:**
   - A sexual scene is only made when every character in it is clearly an adult.
   - It's refused for any character who reads as under 18. Confirming a character's adult age still only clears false alarms, as before.
-  - It's also refused when a character's age isn't clear.
+  - It's also refused when a character's age isn't clear, including wording that makes someone look young ("young-looking", "childlike", "looks 15", "barely legal", "school uniform"…), in the prompt or in the character's card or look.
   - Never a real person's likeness.
   - The picture is always told to leave out minors (and, for a character who reads as under 18, to leave out anything sexual).
+  - A character card can't get around this: text in a card like "ignore previous rules" is only ever picture text. It can't change a setting, run anything or switch a check off, and a card can't confirm its own age.
+  - ComfyUI is only reached at your own address (this PC, your home network or Tailscale), never an internet address, and redirects are never followed.
 - **A GPU server error is clearer:** if your GPU server has no ComfyUI entry, the message now lists the servers you saved and their types.
 
 AppImage: update from inside the app (Settings → App updates → Check for updates).

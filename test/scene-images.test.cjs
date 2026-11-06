@@ -92,6 +92,7 @@ function fakeComfy({ checkpoints = ['sdxl.safetensors'] } = {}) {
   const server = http.createServer((req, res) => {
     const u = new URL(req.url, 'http://x');
     const send = (code, body, type = 'application/json') => { res.writeHead(code, { 'content-type': type }); res.end(Buffer.isBuffer(body) ? body : JSON.stringify(body)); };
+    if (u.pathname === '/system_stats') return send(200, { system: { comfyui_version: '0.44.0' }, devices: [{ name: 'cuda:0 NVIDIA GeForce RTX 5070 : cudaMallocAsync', type: 'cuda', vram_total: 12.4 * 1024 ** 3, vram_free: 10 * 1024 ** 3 }] });
     if (u.pathname === '/models/checkpoints') return send(200, checkpoints);
     if (u.pathname === '/object_info/CheckpointLoaderSimple') return send(200, { CheckpointLoaderSimple: { input: { required: { ckpt_name: [checkpoints] } } } });
     if (u.pathname === '/prompt') { let b = ''; req.on('data', (c) => { b += c; }); req.on('end', () => { seen.prompts.push(JSON.parse(b)); send(200, { prompt_id: 'p-1' }); }); return undefined; }

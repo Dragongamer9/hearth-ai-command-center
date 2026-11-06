@@ -265,10 +265,12 @@ function createHearthDevices({ settings, secrets, fetchImpl = (...a) => fetch(..
   }
 
   // ---------- pictures (ComfyUI) ----------
-  async function image({ prompt, negative, seed, signal } = {}) {
+  // size, steps, cfg and onProgress are optional (Characters chat scenes pass his settings).
+  async function image({ prompt, negative, seed, signal, width, height, steps, cfg, onProgress } = {}) {
+    const opt = Object.fromEntries(Object.entries({ width, height, steps, cfg, onProgress }).filter(([, v]) => v !== undefined));
     return route('image', async (d, svc) => {
       const pick = conf().checkpoints[d.device];
-      const r = await comfy.generate({ base: svc.url, allow: allowFor(conf()), headers: shareHeaders(), checkpoint: pick, checkpoints: svc.models.length ? svc.models : null, prompt, negative, seed, fetchImpl, signal, name: d.device, ...(sleep ? { sleep } : {}), ...(maxPolls ? { maxPolls } : {}) });
+      const r = await comfy.generate({ base: svc.url, allow: allowFor(conf()), headers: shareHeaders(), checkpoint: pick, checkpoints: svc.models.length ? svc.models : null, prompt, negative, seed, fetchImpl, signal, name: d.device, ...opt, ...(sleep ? { sleep } : {}), ...(maxPolls ? { maxPolls } : {}) });
       return r.ok ? { ...r, via: `Made on ${d.device} · ComfyUI · ${r.checkpoint}` } : r;
     }, { label: 'make pictures' });
   }

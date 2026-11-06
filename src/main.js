@@ -1212,7 +1212,7 @@ function chatView() {
   const c = entry();
   if (c?.rp && R?.vn) return `<div class="col vncol">${vnStage(R, c)}</div>`;
   const rpEmpty = c?.rp && !msgs.length && !b ? `<div class="chat-empty"><p>The story starts with your first line.</p></div>` : '';
-  return `<div class="col">${c?.rp ? rpEmpty : empty}${items}${working}${c?.rp ? '' : turnStrip(R)}</div>`;
+  return `<div class="col">${c?.rp ? rpEmpty : empty}${items}${working}${c?.rp ? sceneJobsHtml(R) : ''}${c?.rp ? '' : turnStrip(R)}</div>`;
 }
 
 // Who is in this turn: waiting, working, blocked, failed or done, with a plain reason and Retry.
@@ -1259,6 +1259,8 @@ function controlsHtml(m, owner = false) {
 function message(m, latestChanges, last = false) {
   if (m.char) return rpMessage(m);
   if (m.block) return `<div class="msg-s block">${icon('shield', 'sm')} ${esc(m.text)}</div>`;
+  if (m.who === 'system' && m.scene) return sceneMsg(m);
+  if (m.who === 'system' && m.sceneFailed) return `<div class="msg-s" data-msg="${esc(m.id)}">${rich(m.text)}${S.readOnly ? '' : `<div class="mft left"><button class="mini" data-a="scene-edit" data-m="${esc(m.id)}">${icon('pencil', 'sm')}Try again</button></div>`}</div>`;
   if (m.who === 'owner') {
     const atts = (m.attachments || []).map((a) => a.kind === 'image' && !a.huge ? `<img class="att" src="${esc(a.url || '')}" alt="${esc(a.name)}" loading="lazy" decoding="async">` : `<span class="att-f" ${a.huge ? `title="${esc(a.huge)}"` : ''}>${icon('doc', 'sm')}${esc(a.name)}${a.size > 50 * 1024 * 1024 ? ` <span class="faint">${fmtBytes(a.size)}</span>` : ''}</span>`).join('');
     if (S.editing === m.id) return `<div class="msg-u editing" data-msg="${esc(m.id)}"><textarea id="edit-text" rows="3">${esc(m.text)}</textarea><div class="mft"><button class="btn ghost" data-a="edit-cancel">Cancel</button><button class="btn p" data-a="edit-send" data-m="${esc(m.id)}">Save and send</button></div></div>`;
@@ -1562,14 +1564,21 @@ function modalHtml() {
     const c = entry(m.chatId);
     const all = rpCards(c);
     const sel = all.filter((x) => m.ids.includes(x.id));
-    const lookRow = (x) => { const L = x.ownerLook || {}; return `<div class="srow sub rs-look"><b>${esc(x.name)}</b><textarea id="rs-look-${esc(x.id)}" rows="2" style="flex:1;min-width:16em" placeholder="Appearance (kept the same in every picture): hair, eyes, clothes…" aria-label="${esc(x.name)}'s appearance">${esc(L.appearance || '')}</textarea><label class="day"><input type="checkbox" id="rs-keep-${esc(x.id)}" ${L.keepSeed !== false ? 'checked' : ''}>Keep the same seed</label><span class="d">${Number.isInteger(L.seed) ? `saved seed ${L.seed}` : 'no saved seed'}</span><button class="mini" data-a="rs-look-save" data-id="${esc(x.id)}">Save look</button><button class="mini" data-a="rs-reroll" data-id="${esc(x.id)}">Re-roll seed</button></div>`; };
+    const lookRow = (x) => { const L = x.ownerLook || {}; return `<div class="srow sub rs-look"><b>${esc(x.name)}</b><textarea id="rs-look-${esc(x.id)}" rows="2" style="flex:1;min-width:16em" placeholder="Appearance: hair, eyes, clothes… (helps keep the look similar; the scene still changes it)" aria-label="${esc(x.name)}'s appearance">${esc(L.appearance || '')}</textarea><label class="day"><input type="checkbox" id="rs-keep-${esc(x.id)}" ${L.keepSeed !== false ? 'checked' : ''}>Keep the same seed</label><span class="d">${Number.isInteger(L.seed) ? `saved seed ${L.seed}` : 'no saved seed'}</span><button class="mini" data-a="rs-look-save" data-id="${esc(x.id)}">Save look</button><button class="mini" data-a="rs-reroll" data-id="${esc(x.id)}">Re-roll seed</button></div>`; };
+    const st = m.settings || {};
+    const fromComfy = m.source === 'comfy' || (m.source || '').startsWith('gpu:');
     return `<div class="scrim dark" data-a="close-modal"></div><div class="modal wide"><div class="mhd"><b>Generate scene</b></div>
-      <p>A ComfyUI picture of this moment, built from the characters and the last messages. Check or change the prompt, then generate. The built-in limits are checked before anything is sent: nothing sexual unless every character is clearly an adult, and never a real person's likeness.</p>
+      <p>A ComfyUI picture of this moment, built from the characters and the last messages. Check or change the prompts, then generate. The built-in limits are checked before anything is sent: nothing sexual unless every character is clearly an adult (never anyone who looks under 18), and never a real person's likeness.</p>
       <div class="srow">Characters${all.map((x) => `<label class="day"><input type="checkbox" class="rsc" value="${esc(x.id)}" ${m.ids.includes(x.id) ? 'checked' : ''} data-a="rs-chars">${esc(x.name)}</label>`).join('')}</div>
       ${sel.map(lookRow).join('')}
+      ${sel.length ? '<p class="fine">A saved appearance and seed help keep a character looking similar between pictures, but each new scene still changes the picture, so the look won\'t be exactly the same every time.</p>' : ''}
       <label class="field">Prompt<textarea id="rs-prompt" rows="6">${esc(m.prompt || '')}</textarea></label>
+      <label class="field">Negative prompt <span class="d">(your words, added after the built-in ones)</span><textarea id="rs-neg" rows="2" placeholder="What to leave out, like: hats, rain">${esc(m.negative || '')}</textarea></label>
+      ${m.negativeBase ? `<div class="fine">Always left out: <span class="mono">${esc(m.negativeBase)}</span></div>` : ''}
       <div class="srow"><button class="mini" data-a="rs-rebuild">Rebuild from the chat</button><span class="grow"></span>Seed<input id="rs-seed" class="mono" value="${esc(String(m.seed ?? ''))}" inputmode="numeric" aria-label="Seed" style="width:9em"><span class="d">${m.seedSaved ? 'the saved seed' : 'not saved (Save look keeps it)'}</span></div>
-      <div class="srow">Made on<select id="rs-src">${(m.sources || []).map((x) => `<option value="${esc(x.id)}" ${m.source === x.id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></div>
+      <div class="srow">Made on<select id="rs-src" data-a="rs-src">${(m.sources || []).map((x) => `<option value="${esc(x.id)}" ${m.source === x.id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></div>
+      ${st.width ? `<div class="fine" id="rs-settings">${st.width} × ${st.height} · ${st.steps} steps · CFG ${st.cfg} · ${esc(st.sampler)} / ${esc(st.scheduler)}${m.source === 'comfy' ? ` · ${esc(st.checkpoint || 'suggested model')}` : ''} <span class="faint">(change these in Settings › Accounts › ComfyUI server)</span></div>` : ''}
+      ${fromComfy && m.vram?.note ? `<div class="note warn" id="rs-vram">${esc(m.vram.note)}</div>` : fromComfy && m.vram?.ok ? `<div class="fine" id="rs-vram">${esc(vramLine(m.vram))}</div>` : ''}
       ${(m.sources || []).length ? '' : '<div class="note bad">No ComfyUI is set up. Add your ComfyUI server (or Hearth devices) in Settings › Accounts.</div>'}
       ${m.error ? `<div class="note bad">${esc(m.error)}</div>` : ''}
       <div class="mft"><button class="btn p" data-a="rs-go" ${(m.sources || []).length ? '' : 'disabled'}>Generate</button><button class="btn ghost" data-a="close-modal">Cancel</button></div></div>`;
@@ -1836,33 +1845,89 @@ async function loadSection(t) {
 // ---------- Characters chat: Generate scene (ComfyUI; electron/scene.cjs) ----------
 // The last messages as plain text for the prompt (built in the main process, shown to edit).
 const sceneMsgs = (chatId) => (rt(chatId)?.msgs || []).filter((x) => !x.deleted && x.who !== 'system').slice(-12).map((x) => ({ who: x.who, text: String(x.text || '').slice(0, 2000), err: x.err === true }));
-async function openScene(chatId) {
+const GB = 1024 ** 3;
+const vramLine = (v) => (v?.vramTotal ? `${v.gpu || 'GPU'}: ${(v.vramFree / GB).toFixed(1)} GB of ${(v.vramTotal / GB).toFixed(1)} GB graphics memory free` : v?.gpu || '');
+async function openScene(chatId, preset = null) {
   const c = entry(chatId);
   if (!S.cards) await loadCards();
-  const ids = rpCards(c).map((x) => x.id);
+  const ids = preset?.cardIds?.length ? preset.cardIds : rpCards(c).map((x) => x.id);
   const [sources, pr] = await Promise.all([call('rpSceneSources'), call('rpScenePrompt', ids, sceneMsgs(chatId))]);
   const L = cardById(ids[0])?.ownerLook || {};
   const kept = L.keepSeed !== false && Number.isInteger(L.seed);
-  S.modal = { kind: 'rpscene', chatId, ids, prompt: pr?.prompt || '', sources: Array.isArray(sources) ? sources : [], source: (Array.isArray(sources) && sources[0]?.id) || '', seed: kept ? L.seed : Math.floor(Math.random() * 2 ** 31), seedSaved: kept };
+  const list = Array.isArray(sources) ? sources : [];
+  const source = preset?.source && list.some((x) => x.id === preset.source) ? preset.source : list[0]?.id || '';
+  S.modal = { kind: 'rpscene', chatId, ids, prompt: preset?.positive || pr?.prompt || '', negative: preset?.ownNegative || '', negativeBase: pr?.negativeBase || '', settings: pr?.settings || null, sources: list, source, seed: kept ? L.seed : Math.floor(Math.random() * 2 ** 31), seedSaved: kept };
   renderOverlay();
+  sceneVram();
+}
+// Free graphics memory on his ComfyUI server, read live when the dialog opens (never unloads anything).
+async function sceneVram() {
+  const m = S.modal;
+  if (m?.kind !== 'rpscene' || m.source !== 'comfy') return;
+  const v = await call('comfyStats');
+  if (S.modal !== m) return;
+  m.vram = v?.ok ? v : null;
+  renderOverlay();
+}
+// Scene pictures being made now, per chat (shown at the bottom of the chat with Cancel). The chat
+// keeps working meanwhile: nothing here blocks sending or other messages.
+function sceneJobsHtml(R) {
+  const jobs = R?.scenes || [];
+  if (!jobs.length) return '';
+  const phase = { checking: 'Checking the server', queued: 'Queued on ComfyUI', generating: 'Generating', downloading: 'Downloading the picture', cancelling: 'Cancelling' };
+  return jobs.map((j) => `<div class="msg-s scenejob" data-job="${esc(j.job)}">${icon('eye', 'sm')} <b>Scene picture</b> · <span class="sj-phase">${esc(phase[j.phase] || 'Sending')}</span> · <span class="sj-time">${Number(j.elapsed) || 0} s</span> <span class="faint">· ${esc(j.where || 'ComfyUI')}</span>${j.note ? `<div class="note warn">${esc(j.note)}</div>` : ''} <button class="mini" data-a="rs-cancel" data-job="${esc(j.job)}" ${j.phase === 'cancelling' ? 'disabled' : ''}>${icon('x', 'sm')}Cancel</button></div>`).join('');
+}
+function onSceneProgress(p) {
+  const R = rt(p?.chatId);
+  const j = R?.scenes?.find((x) => x.job === p.job);
+  if (!j) return;
+  if (p.phase && p.phase !== 'tick' && j.phase !== 'cancelling') j.phase = p.phase;
+  j.elapsed = Math.max(Number(p.elapsed) || 0, Math.round((Date.now() - j.started) / 1000));
+  if (p.note) j.note = p.note;
+  // Drawn straight into its row (the chat isn't re-rendered for every second).
+  const el = document.querySelector(`.scenejob[data-job="${CSS.escape(j.job)}"]`);
+  if (el && !p.note) { const ph = el.querySelector('.sj-phase'); const tm = el.querySelector('.sj-time'); if (ph) ph.textContent = ({ checking: 'Checking the server', queued: 'Queued on ComfyUI', generating: 'Generating', downloading: 'Downloading the picture', cancelling: 'Cancelling' })[j.phase] || 'Sending'; if (tm) tm.textContent = `${j.elapsed} s`; } else if (R === cur()) renderMain();
 }
 async function makeSceneNow() {
   const m = S.modal;
   if (m?.kind !== 'rpscene') return;
   const prompt = document.getElementById('rs-prompt')?.value || '';
+  const negative = document.getElementById('rs-neg')?.value || '';
   const seed = (document.getElementById('rs-seed')?.value || '').trim();
   const source = document.getElementById('rs-src')?.value || m.source;
   const ids = [...document.querySelectorAll('.rsc:checked')].map((x) => x.value);
-  const R = rt(m.chatId);
   S.modal = null; renderOverlay();
-  R.busy = { agent: source === 'hearth' ? 'hearth' : 'gpu', role: 'member', runId: `scn${uid()}`, steps: [{ kind: 'image', label: 'Making a scene picture', detail: (m.sources.find((x) => x.id === source) || {}).name || 'ComfyUI' }], startedAt: Date.now() };
+  return runScene(m.chatId, { cardIds: ids, prompt, negative, seed: seed === '' ? null : Number(seed), source }, (m.sources.find((x) => x.id === source) || {}).name);
+}
+// Make one scene picture in the background of this chat, then post it (or a clear message).
+async function runScene(chatId, o, where) {
+  const R = rt(chatId);
+  if (!R) return;
+  const job = `s${uid().replace(/[^A-Za-z0-9]/g, '').slice(0, 20)}`;
+  R.scenes = [...(R.scenes || []), { job, phase: 'checking', elapsed: 0, started: Date.now(), where: where || 'ComfyUI' }];
   render();
-  const r = await call('rpScene', m.chatId, { cardIds: ids, prompt, seed: seed === '' ? null : Number(seed), source });
-  R.busy = null;
-  // Shown and saved with this chat (its media folder); the prompt stays out of the text the other AIs read.
-  runner.post(R, r?.ok ? { who: 'system', text: `Scene picture · ${r.via}`, media: r.items || [], scene: { seed: r.seed, checkpoint: r.checkpoint } } : { who: 'system', block: ['minor', 'real', 'age'].includes(r?.error?.kind), text: r?.error?.message || r?.message || 'No picture came back.' });
+  const r = await call('rpScene', chatId, { ...o, job });
+  R.scenes = (R.scenes || []).filter((x) => x.job !== job);
+  // Shown and saved with this chat (its media folder); the prompt and settings used stay with
+  // the message (never in settings) and out of the text the other AIs read.
+  const meta = r?.meta || { seed: r?.seed, checkpoint: r?.checkpoint };
+  const dims = meta.width ? ` · ${meta.width}×${meta.height}` : '';
+  if (r?.ok) runner.post(R, { who: 'system', text: `Scene picture · ${r.via}${dims}`, media: r.items || [], scene: meta, ...(r.vramNote ? { sceneNote: r.vramNote } : {}) });
+  else if (r?.error?.kind === 'cancelled') runner.post(R, { who: 'system', text: r.error.message || 'Cancelled.' });
+  else runner.post(R, { who: 'system', block: ['minor', 'real', 'age'].includes(r?.error?.kind), sceneFailed: { ...o, seed: o.seed ?? null }, text: `Scene picture: ${r?.error?.message || r?.message || 'no picture came back.'}` });
   await saveRt(R);
   return render();
+}
+// A scene picture's message: the picture (from its file), what was used, Regenerate (new seed),
+// Use this seed for the character, Edit prompt.
+function sceneMsg(m) {
+  const sc = m.scene || {};
+  const used = [sc.seed != null ? `seed ${sc.seed}` : '', sc.checkpoint || '', sc.width ? `${sc.width}×${sc.height}` : '', sc.steps ? `${sc.steps} steps` : '', sc.cfg ? `CFG ${sc.cfg}` : '', sc.sampler ? `${sc.sampler}${sc.scheduler ? ` / ${sc.scheduler}` : ''}` : ''].filter(Boolean).join(' · ');
+  const first = (sc.cardIds || []).map(cardById).find(Boolean);
+  const ro = S.readOnly;
+  return `<div class="msg-s scene" data-msg="${esc(m.id)}">${rich(m.text)}${mediaHtml(m)}${m.sceneNote ? `<div class="fine">${esc(m.sceneNote)}</div>` : ''}
+    ${sc.positive ? `<details class="raw"><summary class="fine">Prompt and settings used</summary><div class="fine mono">${esc(used)}</div><div class="fine"><b>Prompt:</b> ${esc(sc.positive)}</div>${sc.negative ? `<div class="fine"><b>Negative:</b> ${esc(sc.negative)}</div>` : ''}</details>` : used ? `<div class="fine mono">${esc(used)}</div>` : ''}
+    ${ro ? '' : `<div class="mft left">${sc.positive ? `<button class="mini" data-a="scene-regen" data-m="${esc(m.id)}" title="The same prompt and settings with a new seed">${icon('refresh', 'sm')}Regenerate</button>` : ''}<button class="mini" data-a="scene-edit" data-m="${esc(m.id)}">${icon('pencil', 'sm')}Edit prompt</button>${first && Number.isInteger(sc.seed) ? `<button class="mini" data-a="scene-seed" data-m="${esc(m.id)}" title="Save this seed in ${esc(first.name)}'s look">Use this seed for ${esc(first.name)}</button>` : ''}</div>`}</div>`;
 }
 
 // ---------- Hearth devices and the ComfyUI server (Settings › Accounts) ----------
@@ -1897,14 +1962,41 @@ function hearthBox() {
     ${rows ? `<div class="srow"><b>Order</b><span class="d">tried top to bottom${st.order?.length ? '' : ' (your Nvidia PC first by default)'}</span></div>${rows}` : st.url && !hd.error ? '<div class="note">Press Test to list your devices.</div>' : ''}
     <div class="note">Turn on “Hearth devices” in Settings › AI team to chat with it. Pictures: pick Hearth devices as the picture maker. Voices and speech to text: Settings › Voice.</div></div>`;
 }
+// The ComfyUI server box. The suggested address and model are only placeholders: nothing is
+// saved until he presses Save or picks something.
+const COMFY_SUGGEST = { url: 'http://chris-hearth.tail0e2082.ts.net:8188', checkpoint: 'NoobAI-XL-v1.1.safetensors' };
+const COMFY_SIZES = [['1024x1024', '1024 × 1024 (square, about 8 s)'], ['1344x768', '1344 × 768 (wide, about 13 s)'], ['768x1344', '768 × 1344 (tall, about 13 s)']];
 function comfyBox() {
   const c = S.settings.comfy || {};
-  const list = S.comfyCkpts?.url === c.url ? S.comfyCkpts.list : null;
+  const t = S.comfyTest?.url === c.url ? S.comfyTest : null;
+  const list = S.comfyCkpts?.url === c.url ? S.comfyCkpts.list : t?.checkpoints?.length ? t.checkpoints : null;
   const opts = [...new Set([...(list || []), ...(c.checkpoint ? [c.checkpoint] : [])])];
-  return `<div class="box" id="comfy-server"><h3>${icon('eye', 'sm')}ComfyUI server</h3><p class="fine">Scene pictures in Characters chats (Generate scene). On this PC, your home network or Tailscale only. Your GPU servers set up as ComfyUI and Hearth devices can make scenes too.</p>
-    <div class="srow">Address<span class="grow"></span><input id="comfy-url" class="mono" value="${esc(c.url || '')}" placeholder="http://100.72.99.97:8188" aria-label="ComfyUI address"><button class="mini" data-a="comfy-url">Save</button><button class="mini" data-a="comfy-list" ${c.url ? '' : 'disabled'}>Load models</button></div>
-    <div class="srow">Default model<span class="d">${list ? `${list.length} checkpoint${list.length === 1 ? '' : 's'} on the server` : c.url ? 'press Load models to see the server\'s checkpoints' : 'save the address first'}</span><span class="grow"></span><select data-a="comfy-ckpt" aria-label="Default model" ${opts.length ? '' : 'disabled'}><option value="">the server's first checkpoint</option>${opts.map((m) => `<option ${c.checkpoint === m ? 'selected' : ''}>${esc(m)}</option>`).join('')}</select></div>
+  const missing = c.checkpoint && list && !list.includes(c.checkpoint);
+  const status = t ? (t.ok || t.gpu ? `<div class="note ${t.ok ? '' : 'warn'}" id="comfy-status">${icon(t.ok ? 'check' : 'flag', 'sm')}Online${t.version ? ` · ComfyUI ${esc(t.version)}` : ''}${t.gpu ? ` · ${esc(t.gpu)}` : ''}${t.vramTotal ? ` · <span id="comfy-vram">${((t.vramFree || 0) / GB).toFixed(1)} GB of ${(t.vramTotal / GB).toFixed(1)} GB graphics memory free</span>` : ''}${t.ok ? ` · ${t.checkpoints.length} model${t.checkpoints.length === 1 ? '' : 's'}` : ''}${t.message ? `<br>${esc(t.message)}` : ''}${t.low ? '<br>Graphics memory is low (another model may be loaded), so pictures may be slower. Nothing is unloaded unless you do it.' : ''}</div>` : `<div class="note bad" id="comfy-status">${icon('x', 'sm')}${esc(t.message || 'Not reachable.')}</div>`) : '';
+  return `<div class="box" id="comfy-server"><h3>${icon('eye', 'sm')}ComfyUI server</h3><p class="fine">Scene pictures in Characters chats (Generate scene). On this PC, your home network or Tailscale only, never the internet. Your GPU servers set up as ComfyUI and Hearth devices can make scenes too.</p>
+    <div class="srow">Address<span class="grow"></span><input id="comfy-url" class="mono" value="${esc(c.url || '')}" placeholder="${esc(COMFY_SUGGEST.url)}" aria-label="ComfyUI address"><button class="mini" data-a="comfy-url">Save</button><button class="mini" data-a="comfy-test" ${c.url ? '' : 'disabled'}>Test connection</button><button class="mini" data-a="comfy-list" ${c.url ? '' : 'disabled'}>Load models</button></div>
+    ${status}
+    <div class="srow">Default model<span class="d">${list ? `${list.length} checkpoint${list.length === 1 ? '' : 's'} on the server` : c.url ? 'press Test connection or Load models to see the server\'s checkpoints' : 'save the address first'}</span><span class="grow"></span><select data-a="comfy-ckpt" aria-label="Default model" ${opts.length ? '' : 'disabled'}><option value="">suggested: ${esc(COMFY_SUGGEST.checkpoint)} if the server has it, else its first</option>${opts.map((m) => `<option ${c.checkpoint === m ? 'selected' : ''}>${esc(m)}</option>`).join('')}</select></div>
+    ${missing ? `<div class="note warn">Your default model ${esc(c.checkpoint)} isn't on the server any more. Pick another one, or scenes will stop with "model missing".</div>` : ''}
+    <div class="srow">Picture size<span class="d">bigger sizes fall apart without an upscaler, so they aren't offered</span><span class="grow"></span><select data-a="comfy-size" aria-label="Picture size"><option value="" ${c.size ? '' : 'selected'}>default: 1024 × 1024</option>${COMFY_SIZES.map(([id, label]) => `<option value="${id}" ${c.size === id ? 'selected' : ''}>${label}</option>`).join('')}</select></div>
+    <div class="srow">Steps and CFG<span class="d">sampler euler_ancestral, scheduler normal</span><span class="grow"></span><input id="comfy-steps" class="mono" inputmode="numeric" style="width:5em" value="${esc(c.steps ?? '')}" placeholder="26" aria-label="Steps"><input id="comfy-cfg" class="mono" inputmode="decimal" style="width:5em" value="${esc(c.cfg ?? '')}" placeholder="5.5" aria-label="CFG"><button class="mini" data-a="comfy-tune">Save</button></div>
     ${S.comfyCkpts?.error && S.comfyCkpts.url === c.url ? `<div class="note warn">${esc(S.comfyCkpts.error)}</div>` : ''}</div>`;
+}
+// Test connection, and the free graphics memory kept live (every 5 s) while the box is shown.
+async function comfyTest() {
+  const url = S.settings.comfy?.url;
+  const r = await call('comfyTest');
+  S.comfyTest = { url, ...(r || { ok: false, message: 'No answer.' }) };
+  if (r?.ok) S.comfyCkpts = { url, list: r.checkpoints, error: null };
+  render();
+  clearInterval(comfyTest.t);
+  if (!r?.vramTotal) return;
+  comfyTest.t = setInterval(async () => {
+    const el = document.getElementById('comfy-vram');
+    if (!el || S.comfyTest?.url !== S.settings.comfy?.url) { clearInterval(comfyTest.t); return; }
+    const v = await call('comfyStats');
+    if (v?.ok && v.vramTotal) { Object.assign(S.comfyTest, { vramFree: v.vramFree, vramTotal: v.vramTotal, low: v.low }); el.textContent = `${(v.vramFree / GB).toFixed(1)} GB of ${(v.vramTotal / GB).toFixed(1)} GB graphics memory free`; }
+  }, 5000);
 }
 // After he changed a Hearth devices setting (setSettings is called only from his clicks).
 function hdAfter(r) {
@@ -2291,6 +2383,12 @@ document.addEventListener('click', async (ev) => {
     case 'hd-hosts': { hdAfter(await setSettings({ hearthDevices: { allowHosts: document.getElementById('hd-hosts')?.value || '' } })); return render(); }
     case 'hd-move': { const o = hdOrder().slice(); const i = o.indexOf(d.v); const j = i + Number(d.d); if (i < 0 || j < 0 || j >= o.length) return; [o[i], o[j]] = [o[j], o[i]]; hdAfter(await setSettings({ hearthDevices: { order: o } })); S.hd = { ...(S.hd || {}), order: o }; return render(); }
     case 'comfy-url': { const r = await setSettings({ comfy: { url: document.getElementById('comfy-url')?.value || '' } }); if (r && !r.message && r.comfy?.url) { const l = await call('comfyCheckpoints'); S.comfyCkpts = { url: r.comfy.url, list: l?.ok ? l.checkpoints : null, error: l?.ok ? null : l?.message }; } return render(); }
+    case 'comfy-test': return comfyTest();
+    case 'comfy-tune': { const st = (document.getElementById('comfy-steps')?.value || '').trim(); const cf = (document.getElementById('comfy-cfg')?.value || '').trim(); await setSettings({ comfy: { steps: st === '' ? null : Number(st), cfg: cf === '' ? null : Number(cf) } }); return; }
+    case 'rs-cancel': { for (const R of runner.runtimes.values()) { const j = (R.scenes || []).find((x) => x.job === d.job); if (j) j.phase = 'cancelling'; } await call('rpSceneCancel', d.job); return render(); }
+    case 'scene-regen': { const m = msgById(d.m); const sc = m?.scene; if (!sc?.positive || !S.open) return; return runScene(S.open, { cardIds: sc.cardIds || [], prompt: sc.positive, negative: sc.ownNegative || '', seed: Math.floor(Math.random() * 2 ** 31), source: sc.source || 'comfy', width: sc.width, height: sc.height, steps: sc.steps, cfg: sc.cfg, checkpoint: sc.source === 'comfy' ? sc.checkpoint : undefined }, 'Regenerating with a new seed'); }
+    case 'scene-edit': { const m = msgById(d.m); if (!m || !S.open) return; const sc = m.scene || m.sceneFailed || {}; return openScene(S.open, { cardIds: sc.cardIds, positive: sc.positive || sc.prompt, ownNegative: sc.ownNegative || sc.negative || '', source: sc.source }); }
+    case 'scene-seed': { const m = msgById(d.m); const sc = m?.scene; const id = (sc?.cardIds || []).find((x) => cardById(x)); if (!id || !Number.isInteger(sc.seed)) return; const r = await call('cardsSetLook', id, { seed: sc.seed, keepSeed: true }); if (r?.ok === false || r?.message) { toast(r.message || 'Not saved.'); return; } await loadCards(); toast(`Saved seed ${sc.seed} in ${r.name}'s look.`); return render(); }
     case 'comfy-list': { const l = await call('comfyCheckpoints'); S.comfyCkpts = { url: S.settings.comfy?.url, list: l?.ok ? l.checkpoints : null, error: l?.ok ? null : l?.message }; return render(); }
     case 'mem-add': { const v = document.getElementById('mem-new')?.value || ''; const r = await call('memoryAdd', v); if (r?.ok === false || r?.message) toast(r.message || 'Not saved.'); S.memory = await call('memoryList'); return render(); }
     case 'mem-edit': S.memEdit = d.id; return render();
@@ -2336,6 +2434,8 @@ document.addEventListener('change', (ev) => {
   if (t.matches?.('[data-a="civitai-engine"]')) setSettings({ teammates: { civitai: { engine: t.value } } });
   if (t.matches?.('[data-a="hd-pick"]')) setSettings({ hearthDevices: { [t.dataset.k]: { [t.dataset.v]: t.value || null } } }).then(hdAfter);
   if (t.matches?.('[data-a="comfy-ckpt"]')) setSettings({ comfy: { checkpoint: t.value } });
+  if (t.matches?.('[data-a="comfy-size"]')) setSettings({ comfy: { size: t.value || null } });
+  if (t.matches?.('[data-a="rs-src"]') && S.modal?.kind === 'rpscene') { S.modal.source = t.value; S.modal.vram = null; S.modal.prompt = document.getElementById('rs-prompt')?.value ?? S.modal.prompt; S.modal.negative = document.getElementById('rs-neg')?.value ?? S.modal.negative; renderOverlay(); sceneVram(); }
   if (t.matches?.('[data-a="pick-model"]')) {
     // A model per AI for this chat: kept with the chat's own data, never in settings.
     const R = S.view === 'chat' ? cur() : null;
@@ -2457,6 +2557,7 @@ async function boot() {
     // Steps carry their chat: only that chat's runtime gets them, open or not.
     api.onChatStep?.((e) => runner.onStep(e));
     api.onMediaProgress?.((p) => showCopy(p));
+    api.onSceneProgress?.((p) => onSceneProgress(p));
     api.onCardsFound?.(async (r) => {
       S.found = [{ ...(r || {}), key: uid() }, ...(S.found || [])].slice(0, 6);
       toast(r?.ok && r.card ? `Imported ${r.card.name}.` : r?.ok && r.lorebook ? `Imported the lorebook ${r.lorebook.name}.` : r?.message || 'Not imported.');

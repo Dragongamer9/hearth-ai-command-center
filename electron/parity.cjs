@@ -448,50 +448,97 @@ function register(d) {
   handle('rp:scenePrompt', (ids, messages) => {
     const list = cardsOf(ids);
     const msgs = (Array.isArray(messages) ? messages : []).slice(-20).map((m) => ({ who: String(m?.who || ''), text: String(m?.text || '').slice(0, 4000), err: m?.err === true }));
-    return { prompt: scene.buildScenePrompt({ cards: list, messages: msgs, persona: cards.persona() }), looks: list.map((c) => ({ id: c.id, name: c.name, look: c.ownerLook || null })) };
+    return { prompt: scene.buildScenePrompt({ cards: list, messages: msgs, persona: cards.persona() }), negativeBase: scene.negativeFor(list), settings: comfy.effective(readSettings().comfy), looks: list.map((c) => ({ id: c.id, name: c.name, look: c.ownerLook || null })) };
   });
   // The checkpoints on his ComfyUI server (its address from his settings only).
+  const comfyConn = (c) => ({ base: c.url, allow: comfy.allowOnly(c.url), fetchImpl: d.fetchImpl || ((...a) => fetch(...a)), name: 'Your ComfyUI server' });
   handle('comfy:checkpoints', async () => {
     const c = readSettings().comfy || {};
     if (!c.url) return hnet.fail('Type your ComfyUI server\'s address first.', 'not_set');
-    return comfy.listCheckpoints({ base: c.url, allow: comfy.allowOnly(c.url), fetchImpl: d.fetchImpl || ((...a) => fetch(...a)), name: 'Your ComfyUI server' });
+    return comfy.listCheckpoints(comfyConn(c));
   });
-  async function makeScene(o = {}) {
+  // Test Connection: online, the GPU and its free/total graphics memory (GET /system_stats),
+  // and the model list. Reads only; nothing is saved.
+  handle('comfy:test', async () => {
+    const c = readSettings().comfy || {};
+    if (!c.url) return hnet.fail(`Type your ComfyUI server's address first (like ${comfy.DEFAULTS.url}).`, 'not_set');
+    const r = await comfy.testConnection(comfyConn(c));
+    if (r.ok && c.checkpoint && !r.checkpoints.includes(c.checkpoint)) return { ...r, missing: c.checkpoint, warning: `Your default model ${c.checkpoint} isn't on the server any more. Pick another one.` };
+    return r;
+  });
+  // Live free graphics memory (for the note in Generate scene). Reads only.
+  handle('comfy:stats', async () => {
+    const c = readSettings().comfy || {};
+    if (!c.url) return hnet.fail('No ComfyUI server set up.', 'not_set');
+    return comfy.systemStats(comfyConn(c));
+  });
+
+  // Scene jobs running now (so Cancel can reach one): job id -> AbortController.
+  const sceneJobs = new Map();
+  const JOB_RE = /^[A-Za-z0-9_-]{4,40}$/;
+  async function makeScene(o = {}, { signal, onProgress } = {}) {
+    // Every check here runs in the main process before any request. Card text only ever becomes
+    // prompt text: nothing in a card can change a setting or skip a check.
     const list = cardsOf(o.cardIds);
     const prompt = String(o.prompt || '').trim().slice(0, 2500);
     const chk = scene.checkScene({ cards: list, prompt });
     if (!chk.ok) return { ok: false, error: { kind: chk.kind, message: chk.message } };
+    // His own negative words go after the built-in safety terms (they can only take things out).
+    const mine = scene.ownNegative(o.negative);
+    if (mine) chk.negative = `${chk.negative}, ${mine}`;
     // The seed: the one he typed or kept for the first character, else a new one (not saved).
     const look = list[0]?.ownerLook || {};
-    const typed = Number(o.seed);
+    const typed = o.seed === null || o.seed === '' || o.seed === undefined ? NaN : Number(o.seed);
     const seed = Number.isInteger(typed) && typed >= 0 && typed < 2 ** 48 ? typed : look.keepSeed !== false && Number.isInteger(look.seed) ? look.seed : null;
+    // Size, steps and cfg: his settings (defaults filled in at read time), or the values of the
+    // picture being regenerated (checked the same way).
+    const eff = comfy.effective(readSettings().comfy);
+    const size = comfy.SIZE_CHOICES.find((x) => x.width === Number(o.width) && x.height === Number(o.height));
+    const steps = Number.isInteger(Number(o.steps)) && Number(o.steps) >= 4 && Number(o.steps) <= 60 ? Number(o.steps) : eff.steps;
+    const cfg = Number.isFinite(Number(o.cfg)) && o.cfg !== null && o.cfg !== '' && Number(o.cfg) >= 1 && Number(o.cfg) <= 15 ? Number(o.cfg) : eff.cfg;
+    const look2 = { width: size ? size.width : eff.width, height: size ? size.height : eff.height, steps, cfg, sampler: eff.sampler, scheduler: eff.scheduler };
     const src = String(o.source || '');
     const fetchImpl = d.fetchImpl || ((...a) => fetch(...a));
-    const extra = d.sleep ? { sleep: d.sleep } : {};
-    if (src === 'hearth') return hearth.image({ prompt, negative: chk.negative, seed });
+    const extra = { ...(d.sleep ? { sleep: d.sleep } : {}), ...(d.maxPolls ? { maxPolls: d.maxPolls } : {}), signal, onProgress };
+    if (src === 'hearth') { const r = await hearth.image({ prompt, negative: chk.negative, seed, signal, onProgress, width: look2.width, height: look2.height, steps, cfg }); return r.ok ? { ...r, safe: chk.safe } : r; }
     if (src === 'comfy') {
       const c = readSettings().comfy || {};
       if (!c.url) return hnet.fail('Add your ComfyUI server in Settings › Accounts first.', 'not_set');
-      const r = await comfy.generate({ base: c.url, allow: comfy.allowOnly(c.url), checkpoint: c.checkpoint || null, prompt, negative: chk.negative, seed, fetchImpl, name: 'Your ComfyUI server', ...extra });
-      return r.ok ? { ...r, via: `Your ComfyUI server · ${r.checkpoint} · seed ${r.seed}` } : r;
+      // A model he picked must still be on the server (else a clear "model missing").
+      const ckpt = typeof o.checkpoint === 'string' && o.checkpoint ? o.checkpoint : c.checkpoint || null;
+      const r = await comfy.generate({ ...comfyConn(c), checkpoint: ckpt, strictCheckpoint: Boolean(ckpt), prompt, negative: chk.negative, seed, ...look2, checkVram: true, ...extra });
+      return r.ok ? { ...r, safe: chk.safe, via: `Your ComfyUI server · ${r.checkpoint} · seed ${r.seed}` } : r;
     }
     const m = src.match(/^gpu:([a-f0-9]{8})$/);
     const s = m ? teammates.list().find((x) => x.id === m[1] && x.type === 'comfy') : null;
     if (!s) return hnet.fail('Pick where to make the scene (add a ComfyUI server in Settings › Accounts).', 'not_set');
     const key = secrets.get(`server.${s.id}`);
     const h = hnet.hostOf(s.url);
-    const r = await comfy.generate({ base: s.url, allow: (host) => host === h, headers: key ? { authorization: `Bearer ${key}` } : {}, checkpoint: s.model || null, prompt, negative: chk.negative, seed, fetchImpl, name: s.name, ...extra });
-    return r.ok ? { ...r, via: `${s.name} · ComfyUI · ${r.checkpoint} · seed ${r.seed}` } : r;
+    const r = await comfy.generate({ base: s.url, allow: (host) => host === h, headers: key ? { authorization: `Bearer ${key}` } : {}, checkpoint: s.model || null, prompt, negative: chk.negative, seed, ...look2, checkVram: true, fetchImpl, name: s.name, ...extra });
+    return r.ok ? { ...r, safe: chk.safe, via: `${s.name} · ComfyUI · ${r.checkpoint} · seed ${r.seed}` } : r;
   }
-  // A scene picture: checked against the hard limits here, then saved with the chat (its media folder).
+  // A scene picture: checked against the hard limits here, then saved with the chat (its media
+  // folder). Progress goes to the window as rp:sceneProgress; rp:sceneCancel stops it. The
+  // result carries what was used (seed, model, size, steps, cfg, sampler, both prompts) for the
+  // message: it's kept with the chat, never in his settings.
   handle('rp:scene', async (chatId, o = {}) => {
     entryOf(chatId);
-    const r = await makeScene(o);
-    if (!r.ok) return r.error ? r : { ok: false, error: { kind: r.kind, message: r.message } };
+    const job = JOB_RE.test(String(o.job || '')) ? String(o.job) : `j${Date.now().toString(36)}`;
+    const ac = new AbortController();
+    sceneJobs.set(job, ac);
+    let r;
+    try {
+      r = await makeScene(o, { signal: ac.signal, onProgress: (p) => { try { send('rp:sceneProgress', { chatId: String(chatId), job, ...p }); } catch {} } });
+    } catch (e) {
+      r = hnet.fail(`The picture failed: ${e?.message || e}`);
+    } finally { sceneJobs.delete(job); }
+    if (!r.ok) return r.error ? { ...r, job } : { ok: false, job, error: { kind: r.kind, message: r.message } };
     const items = r.images.map((im, i) => media.storeBuffer(root, String(chatId), `scene-${Date.now()}-${i + 1}.${/jpeg/.test(im.mime) ? 'jpg' : /webp/.test(im.mime) ? 'webp' : 'png'}`, im.buf)).filter(Boolean);
-    if (!items.length) return { ok: false, error: { kind: 'failed', message: 'The picture couldn\'t be saved with the chat.' } };
-    return { ok: true, items, via: r.via || `seed ${r.seed}`, seed: r.seed, checkpoint: r.checkpoint };
+    if (!items.length) return { ok: false, job, error: { kind: 'failed', message: 'The picture couldn\'t be saved with the chat.' } };
+    const meta = { seed: r.seed, checkpoint: r.checkpoint || null, width: r.width || null, height: r.height || null, steps: r.steps || null, cfg: r.cfg || null, sampler: r.sampler || null, scheduler: r.scheduler || null, positive: r.positive || String(o.prompt || '').slice(0, 2500), negative: r.negative || '', ownNegative: scene.ownNegative(o.negative), source: String(o.source || ''), cardIds: cardsOf(o.cardIds).map((c) => c.id) };
+    return { ok: true, job, items, via: r.via || `seed ${r.seed}`, seed: r.seed, checkpoint: r.checkpoint, meta, vramNote: r.vram?.note || null };
   });
+  handle('rp:sceneCancel', (job) => { const ac = sceneJobs.get(String(job || '')); if (!ac) return { ok: false }; ac.abort(); return { ok: true }; });
 
   // Roleplay turns are checked against the hard limits before and after the AI writes.
   function rpGuard(agent, rp, phase, text) {

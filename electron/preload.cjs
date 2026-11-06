@@ -153,6 +153,14 @@ contextBridge.exposeInMainWorld('hearth', {
   rpScene: (chatId, o) => ipcRenderer.invoke('rp:scene', chatId, o || {}),
   cardsSetLook: (id, patch) => ipcRenderer.invoke('cards:setLook', id, patch || {}),
   comfyCheckpoints: () => ipcRenderer.invoke('comfy:checkpoints'),
+  comfyTest: () => ipcRenderer.invoke('comfy:test'),
+  comfyStats: () => ipcRenderer.invoke('comfy:stats'),
+  rpSceneCancel: (job) => ipcRenderer.invoke('rp:sceneCancel', job),
+  onSceneProgress: (cb) => {
+    const listener = (_e, a) => cb(a);
+    ipcRenderer.on('rp:sceneProgress', listener);
+    return () => ipcRenderer.removeListener('rp:sceneProgress', listener);
+  },
   // Hearth devices (Settings › Accounts): status and test, and the share code (encrypted).
   hearthStatus: (o) => ipcRenderer.invoke('hearth:status', o || {}),
   hearthShareCode: (code) => ipcRenderer.invoke('hearth:shareCode', code),
