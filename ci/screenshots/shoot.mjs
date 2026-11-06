@@ -109,7 +109,9 @@ function stub(opts) {
   msgs.c0000000015 = [{ id: 'h1', who: 'owner', text: 'Tobin, what do you think? Ash, keep watch.', at: ago(6) }, { id: 'h2', who: 'anthropic', char: 'a000000002', text: '*Tobin scratches his beard.* "I think we wait for dawn. Roads are no place at night."', at: ago(5) }, { id: 'h3', who: 'openai', char: 'a000000003', text: '*Ash climbs the rock and scans the dark.* "Nothing moves. Yet."', at: ago(4) }, { id: 'h4', who: 'venice', char: 'a000000001', text: '"Dawn it is," *Mira agrees, handing out bowls.*', at: ago(3) }];
   msgs.c0000000016 = [{ id: 'l1', who: 'anthropic', char: 'a000000004', greeting: true, text: '"Hi! Want to help me find my lost kite?"', at: ago(5) }, { id: 'l2', who: 'owner', text: 'something sexual', at: ago(4) }, { id: 'l3', who: 'system', block: true, text: 'Blocked: Lena reads as under 18 (it says the character is 12), so no sexual roleplay with this character. The card can still be used for non-sexual stories.', at: ago(4) }];
   const card = (id, name, pic, extra = {}) => ({ id, name, description: `${name} is a traveller of the north woods.`, personality: 'calm', scenario: 'A campfire on the road to Emberfall.', first_mes: `Hello, {{user}}. I'm ${name}.`, alternate_greetings: ['Evening.'], tags: ['fantasy', 'adventure'], creator: 'Dragongamer9', creator_notes: `A ${name.toLowerCase()} for long stories.`, avatarUrl: pic, spriteUrls: {}, limits: { minor: false, real: false }, lorebooks: [], ...extra });
-  const CARDS = [card('a000000001', 'Mira', P.mira, { backgroundUrl: P.scene, character_book: { entries: [{}, {}] }, ownerVoice: { elevenlabs: { id: 'VoiceAria0001', name: 'Aria' }, speed: 1.05 } }), card('a000000002', 'Tobin', P.tobin, { ownerVoice: { elevenlabs: { id: 'VoiceRoger0002', name: 'Roger' } } }), card('a000000003', 'Ash', P.ash), card('a000000004', 'Lena', null, { description: 'Lena is 12 years old.', tags: ['slice of life'], limits: { minor: true, minorWhy: 'it says the character is 12' } })];
+  const CARDS = [card('a000000001', 'Mira', P.mira, { backgroundUrl: P.scene, character_book: { entries: [{}, {}] }, ownerVoice: { elevenlabs: { id: 'VoiceAria0001', name: 'Aria' }, speed: 1.05 } }), card('a000000002', 'Tobin', P.tobin, { ownerVoice: { elevenlabs: { id: 'VoiceRoger0002', name: 'Roger' } } }), card('a000000003', 'Ash', P.ash), card('a000000004', 'Lena', null, { description: 'Lena is 12 years old.', tags: ['slice of life'], limits: { minor: true, hard: false, minorWhy: 'its description mentions the age 12 (“12 years old”)', reasons: [{ kind: 'soft', field: 'description', label: 'description', words: '12 years old', why: 'its description mentions the age 12 (“12 years old”)' }] } })];
+  const COLLS = [{ id: 'f00000000a', name: 'Favourites', cardIds: ['a000000001', 'a000000002', 'a000000003'] }, { id: 'e00000000b', name: 'North road', cardIds: ['a000000001'] }];
+  const coll = (id) => COLLS.find((x) => x.id === id);
   const BOOKS = [{ id: 'b000000001', name: 'The North', scan_depth: 4, token_budget: 1024, entries: [{ name: 'Emberfall', keys: ['Emberfall', 'old capital'], content: 'Emberfall was the capital before the long winter.', insertion_order: 10, enabled: true }, { name: 'Winter', keys: [], content: 'Winter never ends in the north.', constant: true, insertion_order: 5, enabled: true }] }];
   const listeners = { step: [] };
   const ok = (v) => Promise.resolve(v);
@@ -201,6 +203,11 @@ function stub(opts) {
     skillsList: () => ok([{ name: 'release-notes', description: 'Draft plain-language release notes', where: 'yours (~/.claude/skills)' }]),
     habitatGet: () => ok({ store: null }),
     cardsList: () => ok({ list: CARDS }),
+    cardsCollections: () => ok(COLLS.map((x) => ({ ...x, cardIds: [...x.cardIds] }))),
+    cardsCollectionNew: (name) => { const c = { id: `d0000000${COLLS.length}0`.slice(0, 10), name, cardIds: [] }; COLLS.push(c); return ok(c); },
+    cardsCollectionAdd: (id, ids) => { const c = coll(id); for (const i of ids) if (!c.cardIds.includes(i)) c.cardIds.push(i); return ok({ added: ids, collection: c }); },
+    cardsCollectionRemove: (id, ids) => { const c = coll(id); const before = [...c.cardIds]; c.cardIds = before.filter((x) => !ids.includes(x)); return ok({ removed: before.filter((x) => ids.includes(x)), before, collection: c }); },
+    cardsCollectionRestore: (id, ids, before) => { const c = coll(id); c.cardIds = before.filter((x) => c.cardIds.includes(x) || ids.includes(x)); return ok({ restored: ids, collection: c }); },
     loreList: () => ok(BOOKS),
     rpPersona: () => ok({ name: 'Drake', description: 'A wandering cartographer.', avatarUrl: P.persona }),
     cardsImport: (name) => { const c = card('a00000000' + (CARDS.length + 1), 'Seren', P.ash, { tags: ['imported', 'v3'] }); CARDS.push(c); return ok({ card: c }); },
@@ -269,6 +276,17 @@ const SHOTS = [
   { file: '57-characters-scene-saved.png', opts: { open: 'c0000000019' }, wait: 400, expect: ['Scene picture', 'seed 184467', '1344×768', 'Regenerate', 'Edit prompt', 'Use this seed for Mira', 'CUDA out of memory', 'Try again', 'We go over the top'], selector: ['.msg-s.scene img', '[data-a="scene-regen"]', '[data-a="scene-seed"]'] },
   { file: '58-characters-scene-progress.png', opts: { open: 'c0000000019' }, click: '[data-a="scene-regen"]', wait: 1200, expect: ['Scene picture', 'Cancel', 'Regenerating with a new seed'], selector: ['.scenejob', '[data-a="rs-cancel"]', '#composer'] },
   { file: '59-characters-generate-scene-vram.png', opts: { open: 'c0000000014' }, click: '[data-a="rp-scene"]', wait: 700, expect: ['Negative prompt', 'Always left out', '1024 × 1024 · 26 steps · CFG 5.5', 'may be slower', 'helps keep the look similar', "won't be exactly the same"], selector: ['#rs-neg', '#rs-vram'] },
+  // 2.2: dialogs that fit small screens, Find in the character editor, flags, search, collections
+  { file: '60-generate-scene-1280x720.png', viewport: { width: 1280, height: 720 }, opts: { open: 'c0000000014' }, click: '[data-a="rp-scene"]', wait: 600, expect: ['Generate scene', 'Prompt', 'look in Appearance for better pictures'], selector: ['#rs-prompt', '.rs-hint'], inView: ['.modal .mft [data-a="rs-go"]', '.modal .mft'] },
+  { file: '61-generate-scene-1280x800.png', viewport: { width: 1280, height: 800 }, opts: { open: 'c0000000014' }, click: '[data-a="rp-scene"]', wait: 600, expect: ['Generate scene'], inView: ['.modal .mft [data-a="rs-go"]', '.modal .mft'] },
+  { file: '62-picture-dialog-1280x720.png', viewport: { width: 1280, height: 720 }, opts: { open: 'c0000000014' }, click: '[data-a="rp-picture"]', wait: 300, expect: ['A picture for this story', 'Make it'], inView: ['.modal .mft [data-a="rp-pic-do"]'] },
+  { file: '63-start-roleplay-1280x720.png', viewport: { width: 1280, height: 720 }, opts: {}, click: '[data-a="characters"]', then: '[data-a="card-chat"][data-id="a000000001"]', wait: 300, expect: ['Start a roleplay chat', 'Start'], inView: ['.modal .mft [data-a="rp-start-do"]'] },
+  { file: '64-persona-1280x720.png', viewport: { width: 1280, height: 720 }, opts: {}, click: '[data-a="characters"]', then: '[data-a="persona-edit"]', wait: 300, expect: ['Your persona', 'Save'], inView: ['.modal .mft [data-a="persona-save"]'] },
+  { file: '65-character-find.png', opts: {}, click: '[data-a="characters"]', then: '[data-a="card-edit"][data-id="a000000001"]', run: 'find', wait: 300, expect: ['Find in this card', '1 of 1 match', 'Match case', 'Whole word', 'Replace all', 'Description', 'Scenario', 'System prompt', 'Post-history instructions', 'Appearance'], selector: ['#card-find', '.cf-hit mark', '.field.has-match', '#cf-rep'] },
+  { file: '66-character-find-replaced.png', opts: {}, click: '[data-a="characters"]', then: '[data-a="card-edit"][data-id="a000000001"]', run: 'replace', wait: 300, expect: ['Replaced 1 in 1 field', 'Nothing is saved until you press Save'], selector: ['#card-find'], value: ['[data-cf="description"]', 'east woods'] },
+  { file: '67-character-flags-age.png', opts: {}, click: '[data-a="characters"]', then: '[data-a="card-edit"][data-id="a000000004"]', then2: '[data-a="flag-jump"]', wait: 400, expect: ["Why it's flagged", 'soft', '12 years old', 'Set age (18+)', 'Setting an adult age (18+) below clears them', 'Find in this card'], selector: ['#card-flags', '[data-cf="ownerAge"]', '#card-find', '.cf-hit mark'] },
+  { file: '68-characters-search.png', opts: {}, click: '[data-a="characters"]', run: 'cardsearch', wait: 300, expect: ['3 of 4 characters match', 'found in description', 'Mira', 'Tobin', 'Ash'], selector: ['#card-count'] },
+  { file: '69-collection-remove-undo.png', opts: {}, click: '[data-a="characters"]', then: '[data-a="coll-view"][data-id="f00000000a"]', run: 'collremove', wait: 300, expect: ['Favourites', 'Remove from collection', 'Remove selected from collection', 'Removed 2 characters from “Favourites”', 'They stay in All characters', 'Undo', 'All characters'], selector: ['[data-a="coll-remove-one"]', '[data-a="undo"]', '#coll-bar'] },
   { file: '53-settings-voice-hearth.png', opts: {}, click: '[data-a="settings"]', then: '[data-a="tab"][data-t="voice"]', wait: 500, expect: ['Hearth devices', 'Kokoro on your Hearth devices', 'a Hearth device'], selector: ['[data-v="hearth"]'] },
   // 1.8
   { file: '31-teammates-failed-with-retry.png', opts: { open: 'c0000000005', allCli: true }, send: '@ChatGPT @Gemini @Grok @Mistral ideas for the weekend?', expect: ['This turn', 'failed', 'done', 'Retry', 'internal error', 'Grok: two ideas', 'Mistral: two ideas', "can't commit or push"], selector: ['#turn-strip', '#no-push-note', '[data-a="turn-retry"]'] },
@@ -290,7 +308,7 @@ let failed = 0;
 const ONLY = process.env.ONLY ? new RegExp(process.env.ONLY) : null;
 for (const s of SHOTS) {
   if (ONLY && !ONLY.test(s.file)) continue;
-  const page = await browser.newPage({ viewport: { width: 1600, height: 1000 }, bypassCSP: Boolean(s.bypassCSP) });
+  const page = await browser.newPage({ viewport: s.viewport || { width: 1600, height: 1000 }, bypassCSP: Boolean(s.bypassCSP) });
   const errors = [];
   page.on('pageerror', (e) => errors.push(String(e.message || e)));
   await page.addInitScript(stub, { ...s.opts, pics: PICS });
@@ -341,6 +359,28 @@ for (const s of SHOTS) {
     await page.selectOption('#vsrv-api', 'chatterbox-api'); await page.waitForTimeout(300);
     await page.evaluate(() => document.querySelector('#vsrv-form')?.scrollIntoView());
   }
+  if (s.run === 'find') {
+    // Ctrl+F in the editor, a word, Enter twice (next match), Shift+Enter (previous).
+    await page.keyboard.press('Control+f'); await page.waitForTimeout(200);
+    await page.keyboard.type('north'); await page.waitForTimeout(200);
+    await page.keyboard.press('Enter'); await page.waitForTimeout(150);
+    await page.keyboard.press('Enter'); await page.waitForTimeout(150);
+    await page.keyboard.press('Shift+Enter'); await page.waitForTimeout(150);
+    const sel = await page.evaluate(() => { const a = document.activeElement; return a && typeof a.selectionStart === 'number' ? a.value.slice(a.selectionStart, a.selectionEnd) : ''; });
+    if (sel.toLowerCase() !== 'north') s.err = `the match isn't selected in its field (got "${sel}")`;
+    await page.keyboard.press('Escape'); await page.waitForTimeout(100);
+  }
+  if (s.run === 'replace') {
+    await page.click('[data-a="cf-open"]'); await page.waitForTimeout(200);
+    await page.fill('#cf-q', 'north'); await page.fill('#cf-rep', 'east'); await page.waitForTimeout(100);
+    await page.click('[data-a="cf-repall"]'); await page.waitForTimeout(300);
+  }
+  if (s.run === 'cardsearch') { await page.fill('#card-q', 'north woods'); await page.waitForTimeout(300); }
+  if (s.run === 'collremove') {
+    await page.check('[data-a="coll-sel"][data-id="a000000002"]'); await page.waitForTimeout(150);
+    await page.check('[data-a="coll-sel"][data-id="a000000003"]'); await page.waitForTimeout(150);
+    await page.click('[data-a="coll-remove-sel"]'); await page.waitForTimeout(400);
+  }
   if (s.run === 'import') {
     await page.evaluate(() => { const ev = new Event('drop', { bubbles: true }); ev.dataTransfer = { files: [new File(['x'], 'seren.png', { type: 'image/png' })], types: ['Files'] }; document.dispatchEvent(ev); });
     await page.waitForTimeout(800);
@@ -356,6 +396,13 @@ for (const s of SHOTS) {
   const text = (await page.evaluate(() => `${document.body.innerText}\n${[...document.querySelectorAll('[placeholder]')].map((e) => e.placeholder).join('\n')}`)).toLowerCase();
   const missing = (s.expect || []).filter((t) => !text.includes(t.toLowerCase()));
   for (const q of s.selector || []) if (!(await page.$(q))) missing.push(`element ${q}`);
+  if (s.err) missing.push(s.err);
+  if (s.value) { const v = await page.inputValue(s.value[0]).catch(() => ''); if (!v.includes(s.value[1])) missing.push(`value ${s.value[0]} has no "${s.value[1]}"`); }
+  // Fully on screen and not covered (the dialog buttons at small window sizes).
+  for (const q of s.inView || []) {
+    const box = await page.evaluate((sel) => { const e = document.querySelector(sel); if (!e) return null; const r = e.getBoundingClientRect(); const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return { top: r.top, bottom: r.bottom, left: r.left, right: r.right, vh: innerHeight, vw: innerWidth, top_ok: Boolean(hit && (hit === e || e.contains(hit) || hit.contains(e))) }; }, q);
+    if (!box || box.top < 0 || box.left < 0 || box.bottom > box.vh || box.right > box.vw || !box.top_ok) missing.push(`in view ${q} ${JSON.stringify(box)}`);
+  }
   if (s.canvas && !(await page.$(s.canvas))) missing.push(`canvas ${s.canvas}`);
   if (s.frame) {
     const sandbox = await page.getAttribute('.pv-frame', 'sandbox');

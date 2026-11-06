@@ -13,6 +13,8 @@
 // Errors and refusals come back as plain sentences; nothing here hides them.
 const crypto = require('node:crypto');
 const { createJsonFile } = require('./jsonfile.cjs');
+const comfy = require('./comfy.cjs');
+const hnet = require('./hearth-net.cjs');
 
 const VENICE = 'https://api.venice.ai/api/v1';
 const CIVITAI = 'https://orchestration.civitai.com/v2/consumer/recipes/imageGen';
@@ -166,11 +168,31 @@ function createTeammates({ secrets, file, settings = () => ({}), fetchImpl = (..
     const headers = { 'content-type': 'application/json', ...(key ? { authorization: `Bearer ${key}` } : {}) };
     let wf = DEFAULT_WORKFLOW;
     if (s.workflow) { try { wf = JSON.parse(s.workflow); } catch { return fail('Your ComfyUI workflow isn\'t valid JSON.'); } }
-    const graph = fillWorkflow(wf, { prompt, negative: 'blurry, low quality', seed: crypto.randomInt(1, 2 ** 31), ckpt: s.model || 'sd_xl_base_1.0.safetensors' });
-    let res;
-    try { res = await fetchImpl(`${s.url}/prompt`, { method: 'POST', signal: signal || AbortSignal.timeout(60000), headers, body: JSON.stringify({ prompt: graph, client_id: `hearth-${crypto.randomBytes(4).toString('hex')}` }) }); } catch { return fail(`Couldn't reach ${s.name}.`, 'outage'); }
-    const j = await json(res);
-    if (!res.ok || !j?.prompt_id) return fail(`${s.name}: ${j?.error?.message || j?.error || msgOf(j, res)}`, 'failed', res.status);
+    // The model must be one the server has (a missing one made ComfyUI refuse with "Prompt outputs
+    // failed validation"): ask the server for its checkpoints first, through the same checks as
+    // scene pictures (only this server's own host, redirects never followed).
+    const h = hnet.hostOf(s.url);
+    const conn = { base: s.url, allow: (host) => Boolean(h) && host === h, headers: key ? { authorization: `Bearer ${key}` } : {}, fetchImpl, name: s.name, signal };
+    const l = await comfy.listCheckpoints(conn);
+    if (!l.ok) return fail(l.message, ['unreachable', 'timeout'].includes(l.kind) ? 'outage' : l.kind || 'failed');
+    let ckpt;
+    if (s.model) {
+      if (!l.checkpoints.includes(s.model)) return fail(`${s.name} doesn't have the model ${s.model}. The models on it are: ${l.checkpoints.slice(0, 8).join(', ')}${l.checkpoints.length > 8 ? '…' : ''}. Change the model of ${s.name} in Settings › Accounts › Your GPU servers.`, 'model_missing');
+      ckpt = s.model;
+    } else {
+      const pick = comfy.pickCheckpoint(l.checkpoints, null, { name: s.name });
+      if (!pick.ok) return fail(pick.message, pick.kind);
+      ckpt = pick.checkpoint;
+    }
+    const graph = fillWorkflow(wf, { prompt, negative: 'blurry, low quality', seed: crypto.randomInt(1, 2 ** 31), ckpt });
+    const sent = await hnet.safeFetch(`${s.url}/prompt`, { allow: conn.allow, fetchImpl, name: s.name, signal, timeoutMs: 60000, init: { method: 'POST', headers, body: JSON.stringify({ prompt: graph, client_id: `hearth-${crypto.randomBytes(4).toString('hex')}` }) } });
+    if (!sent.ok) return fail(sent.message, ['unreachable', 'timeout'].includes(sent.kind) ? 'outage' : sent.kind);
+    const res = sent.res;
+    const body = await hnet.readCapped(res, 64 * 1024).catch(() => null) || Buffer.alloc(0);
+    let j = null;
+    try { j = JSON.parse(body.toString('utf8')); } catch {}
+    if (!res.ok) return fail(`${s.name} refused the picture: ${comfy.promptErrorText(res.status, body)}`, 'failed', res.status);
+    if (!j?.prompt_id) return fail(`${s.name}: ${msgOf(j, res)}`, 'failed', res.status);
     const id = String(j.prompt_id);
     if (!/^[A-Za-z0-9-]{1,80}$/.test(id)) return fail('Unexpected answer from ComfyUI.');
     for (let i = 0; i < maxPolls; i++) {

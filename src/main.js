@@ -32,6 +32,7 @@ import { activateLore, nextSpeakers, rpPrompt, addSwipe, moveSwipe, isSexual, fi
 import { createVoice } from './voice.mjs';
 import { creditsHtml } from './app/credits.mjs';
 import { voiceSettings, routeFor, isServer, serverIdOf, idOf } from './app/voice-logic.mjs';
+import { FIND_FIELDS, searchFields, stepIndex, replaceAllFields, snippet, cardMatches, matchedIn } from './app/card-find.mjs';
 
 const api = window.hearth || null;
 const TEAM_IDS = ['anthropic', 'openai', 'google', 'xai', 'mistral', 'qwen', 'perplexity', 'deepseek', 'ollama', ...TEAMMATE_IDS];
@@ -65,7 +66,7 @@ const S = {
   mates: { ready: {}, keys: {}, servers: [], imagesOnly: {}, conf: { venice: {}, civitai: {} }, models: { venice: [], veniceImage: [], civitaiEngines: [] } },
   mkeys: { keys: {} }, memory: null, memPrompt: '', schedules: null, connectors: null, skills: null, habitat: null,
   copies: null, boards: null, phone: null, idle: [], rec: null,
-  cards: null, books: null, persona: null, cardEdit: null, loreEdit: null, cardQuery: '',
+  cards: null, books: null, persona: null, cardEdit: null, loreEdit: null, cardQuery: '', cardFind: null, cardColl: '', collSel: [], colls: [],
   // Quick checks whose tool is missing on this PC, the Permissions table, Gemini's allow-list,
   // the last team test and the settings change log.
   missing: [], permsT: null, agy: null, teamTest: null, testing: false, slog: null, findSites: null, found: [],
@@ -599,9 +600,11 @@ async function onTools(R, msg, tools, agent) {
 const cardById = (id) => (S.cards || []).find((c) => c.id === id) || null;
 const rpCards = (c) => (c?.rp?.characters || []).map(cardById).filter(Boolean);
 const playerOf = (c, cardId) => c?.rp?.players?.[cardId] || team().lead;
+async function loadColls() { const cl = await call('cardsCollections'); S.colls = Array.isArray(cl) ? cl : []; }
 async function loadCards() {
   const r = await call('cardsList');
   S.cards = r?.list || [];
+  await loadColls();
   S.books = (await call('loreList')) || [];
   S.persona = (await call('rpPersona')) || { name: '', description: '' };
 }
@@ -1109,7 +1112,7 @@ function renderMain(scroll = false) {
   if (S.view === 'settings') { html = settingsView(); dock = ''; }
   else if (S.view === 'habitat') { html = `<div class="habwrap">${viewHabitat()}</div>`; dock = ''; }
   else if (S.view === 'characters') { html = charactersView(); dock = ''; }
-  else if (S.view === 'card') { html = cardEditView(); dock = ''; }
+  else if (S.view === 'card') { html = cardEditView(); dock = ''; queueMicrotask(() => cfRun(false)); }
   else if (S.view === 'lorebooks') { html = lorebooksView(); dock = ''; }
   else if (S.view === 'chat') { html = chatView(); dock = composer(entry()?.rp ? `Your line as ${S.persona?.name || 'you'}…` : cur()?.canvas ? 'Ask for changes to the canvas…' : S.open && S.msgs.some((m) => m.previews?.length) && S.pane ? 'Ask for changes to the preview…' : 'Reply to the team…') + `<div class="hint">${esc(hintLine())}</div>`; }
   else { html = homeView(); dock = ''; }
@@ -1339,12 +1342,6 @@ function memoCard(m, p) {
 const avatarHtml = (card, cls = '') => (card?.avatarUrl ? `<img class="cav ${cls}" src="${esc(card.avatarUrl)}" alt="">` : `<span class="cav ${cls} none">${esc((card?.name || '?')[0])}</span>`);
 // A false "under 18" alarm (only a word or age somewhere in the text) can be cleared by the owner
 // confirming the character's adult age. Not offered when the card itself says minor.
-const adultBox = (c) => {
-  if (!c?.id) return '';
-  if (c.limits?.adultConfirmed) return `<div class="adult-ok fine">Confirmed adult by you (age ${esc(c.limits.adultConfirmed.age)}). <button class="link" data-a="card-adult-undo">Undo</button></div>`;
-  if (!c.limits?.canConfirmAdult) return c.limits?.hard ? `<div class="fine">The card itself says this character is under 18 (${esc(c.limits.minorWhy)}), so it stays stories only.</div>` : '';
-  return `<div class="adult-box"><div class="fine">Flagged because ${esc(c.limits.minorWhy)}. If the character is actually an adult, confirm the age:</div><div class="row"><input type="number" id="adult-age" min="18" max="999" value="${esc(Number(c.age) >= 18 ? c.age : 18)}" aria-label="Character's age"><button class="mini" data-a="card-adult">This character is an adult</button></div></div>`;
-};
 // No keyring on this PC: keys can't be encrypted. Say so plainly, and offer basic protection
 // only as the owner's own choice (it is weak: the key file is protected only by file permissions).
 const keyringNote = () => {
@@ -1352,33 +1349,79 @@ const keyringNote = () => {
   if (S.prov?.weakEncryption) return `<div class="note warn">${icon('shield', 'sm')}<div><b>Keys use basic protection.</b><div class="fine">This PC has no keyring, so saved keys are protected only by your user account's file permissions. To use real encryption, unlock or install GNOME Keyring or KWallet, then turn basic protection off and add your keys again.</div></div>${S.settings.secretsBasic ? '<button class="mini" data-a="secrets-basic" data-v="off">Turn off</button>' : ''}</div>`;
   return `<div class="note warn">${icon('shield', 'sm')}<div><b>Keys can't be saved yet: this PC has no keyring.</b><div class="fine">The app encrypts keys with your desktop's keyring (GNOME Keyring, KWallet or the Secret portal), and none answered. Unlock or install one and press Re-check, or use basic protection: keys are then protected only by your user account's file permissions, which is weaker.</div></div><button class="mini" data-a="secrets-recheck">Re-check</button><button class="mini" data-a="secrets-basic" data-v="on">Use basic protection</button></div>`;
 };
-const limitBadge = (c) => (c.limits?.minor ? `<span class="chip b" title="${esc(c.limits.minorWhy)}">stories only · reads as under 18</span>` : c.limits?.real ? `<span class="chip b" title="${esc(c.limits.realWhy)}">real person · nothing sexual</span>` : '');
+// Flag explanations: which field and words, hard (never cleared) or soft (cleared by an adult age).
+const flagWord = (r) => (r.kind === 'hard' ? 'hard: can\'t be cleared' : 'soft: an adult age clears it');
+const reasonsTitle = (c) => (c.limits?.reasons || []).map((r) => `${r.label} “${r.words}” (${flagWord(r)})`).join('\n');
+const limitBadge = (c) => (c.limits?.minor ? `<button class="chip b flagb" data-a="flag-why" data-id="${esc(c.id || '')}" title="${esc(`Reads as under 18 because ${c.limits.minorWhy}.\n${reasonsTitle(c)}\nClick to see it in the editor.`)}">stories only · reads as under 18 · ${c.limits.hard ? 'hard' : 'soft'}</button>` : c.limits?.real ? `<span class="chip b" title="${esc(c.limits.realWhy)}">real person · nothing sexual</span>` : '');
+function flagList(c) {
+  const R = c.limits?.reasons || [];
+  if (!R.length) return '';
+  const hard = R.some((r) => r.kind === 'hard');
+  const soft = R.some((r) => r.kind === 'soft');
+  return `<div class="flags" id="card-flags"><div class="fine"><b>Why it's flagged</b> (as last saved; click one to find it)</div>
+    ${R.slice(0, 20).map((r) => `<button class="flag ${r.kind}" data-a="flag-jump" data-f="${esc(r.field)}" data-w="${esc(r.words)}" ${r.field === 'age' ? 'disabled title="The card file\'s own age field"' : ''}><span class="chip ${r.kind === 'hard' ? 'b' : ''}">${r.kind}</span><span>${esc(r.label)}: “${esc(r.words)}”</span></button>`).join('')}
+    ${hard ? '<div class="fine">Hard flags come from the card itself (an age under 18, a minor tag, words like loli or underage). They can never be cleared: no age, confirmation or setting changes them, and the character stays stories only.</div>' : ''}
+    ${soft && !hard ? '<div class="fine">Soft flags are words that may be about someone else or the past. Setting an adult age (18+) below clears them.</div>' : ''}</div>`;
+}
+const ownerAgeOf = (c) => (c.ownerAgeEdit !== undefined ? c.ownerAgeEdit : c.ownerAdult?.age ? String(c.ownerAdult.age) : '');
+function ageBox(c) {
+  const hard = Boolean(c.limits?.hard);
+  return `<label class="field" id="card-age">Set age (18+)<input type="number" data-cf="ownerAge" min="18" max="999" step="1" inputmode="numeric" value="${esc(hard ? '' : ownerAgeOf(c))}" placeholder="${hard ? 'can\'t be set: hard flag' : 'for example 25'}" ${hard ? 'disabled' : ''} aria-label="The character's age, 18 or more"></label>
+    <div class="fine">${hard ? 'This card has a hard flag, so no age can clear it.' : 'Saved when you press Save, kept in this app only (never in exported card files). An adult age clears soft flags. Leave it empty to remove it.'}</div>`;
+}
 function charactersView() {
   if (S.cards === null) return '<div class="col"><div class="fine">Loading…</div></div>';
-  const q = S.cardQuery.toLowerCase();
-  const list = S.cards.filter((c) => !q || `${c.name} ${(c.tags || []).join(' ')}`.toLowerCase().includes(q));
+  const colls = S.colls || [];
+  const cc = colls.find((x) => x.id === S.cardColl) || null;
+  if (!cc) S.cardColl = '';
+  const has = (id) => S.cards.some((c) => c.id === id);
+  const base = cc ? cc.cardIds.map((id) => S.cards.find((c) => c.id === id)).filter(Boolean) : S.cards;
+  const list = base.filter((c) => cardMatches(c, S.cardQuery));
+  const sel = (S.collSel || []).filter((id) => cc?.cardIds.includes(id));
   const p = S.persona || {};
+  const q = S.cardQuery.trim();
+  const tabs = `<div class="colls" id="card-colls" role="tablist" aria-label="Collections"><button role="tab" class="chip ${cc ? '' : 'on'}" aria-selected="${!cc}" data-a="coll-view" data-id="">All characters <span class="faint">${S.cards.length}</span></button>${colls.map((x) => `<button role="tab" class="chip ${cc?.id === x.id ? 'on' : ''}" aria-selected="${cc?.id === x.id}" data-a="coll-view" data-id="${esc(x.id)}">${icon('doc', 'sm')}${esc(x.name)} <span class="faint">${x.cardIds.filter(has).length}</span></button>`).join('')}<span class="grow"></span><input id="coll-new" class="coll-new" placeholder="New collection" maxlength="80" aria-label="New collection name"><button class="mini" data-a="coll-new">${icon('plus', 'sm')}New collection</button></div>`;
+  const bar = cc ? `<div class="srow coll-bar" id="coll-bar"><b>${esc(cc.name)}</b><span class="fine">Removing a card from this collection keeps it in All characters, in any other collection, and keeps its chats.</span><span class="grow"></span><button class="mini" data-a="coll-sel-all">${sel.length && sel.length === list.length ? 'Select none' : 'Select all'}</button><button class="btn" data-a="coll-remove-sel" ${sel.length ? '' : 'disabled'}>Remove selected from collection${sel.length ? ` (${sel.length})` : ''}</button></div>` : '';
+  const addTo = (c) => (colls.length && !cc ? `<select class="coll-add" data-a="coll-addto" data-id="${esc(c.id)}" aria-label="Add ${esc(c.name)} to a collection"><option value="">Add to collection…</option>${colls.map((x) => `<option value="${esc(x.id)}" ${x.cardIds.includes(c.id) ? 'disabled' : ''}>${esc(x.name)}${x.cardIds.includes(c.id) ? ' (in it)' : ''}</option>`).join('')}</select>` : '');
+  const where = (c) => { if (!q) return ''; const w = matchedIn(c, q); return w.length ? `<span class="fine found-in">found in ${esc(w.join(', '))}</span>` : ''; };
   return `<div class="lib" id="drop-cards">
-    <div class="lib-hd"><h1>Characters</h1><span class="grow"></span><label class="search in">${icon('search', 'sm')}<input id="card-q" placeholder="Search characters" value="${esc(S.cardQuery)}"></label><button class="btn p" data-a="find-chars">${icon('search', 'sm')}Find characters</button><button class="btn" data-a="card-import">${icon('dl', 'sm')}Import</button><button class="btn" data-a="card-new">${icon('plus', 'sm')}Create</button><button class="btn" data-a="lorebooks">${icon('doc', 'sm')}Lorebooks</button></div>
+    <div class="lib-hd"><h1>Characters</h1><span class="grow"></span><label class="search in">${icon('search', 'sm')}<input id="card-q" placeholder="Search names, tags and descriptions" aria-label="Search characters" value="${esc(S.cardQuery)}"></label><button class="btn p" data-a="find-chars">${icon('search', 'sm')}Find characters</button><button class="btn" data-a="card-import">${icon('dl', 'sm')}Import</button><button class="btn" data-a="card-new">${icon('plus', 'sm')}Create</button><button class="btn" data-a="lorebooks">${icon('doc', 'sm')}Lorebooks</button></div>
     <div class="persona">${p.avatarUrl ? `<img class="cav" src="${esc(p.avatarUrl)}" alt="">` : `<span class="cav none">${esc((p.name || 'Y')[0])}</span>`}<div><b>Your persona: ${esc(p.name || 'not set')}</b><span class="fine">${esc(String(p.description || 'Who you are in the stories. The characters call you by this name.').slice(0, 160))}</span></div><span class="grow"></span><button class="mini" data-a="persona-edit">Edit</button></div>
     ${foundHtml()}
     <p class="fine">Drop a character card here (PNG or JSON, Character Card V1, V2 or V3) or a lorebook JSON. Cards are kept on this PC with a backup. Built-in limits: no minors, no real people in anything sexual, nothing illegal.</p>
-    <div class="cgrid">${list.map((c) => `<div class="ccard" data-card="${esc(c.id)}">${c.avatarUrl ? `<img src="${esc(c.avatarUrl)}" alt="">` : `<div class="noimg">${esc(c.name[0])}</div>`}<div class="cbody"><b>${esc(c.name)}</b><span class="fine">${esc((c.tags || []).slice(0, 4).join(' · ') || c.creator || '')}</span>${limitBadge(c)}<p>${esc(String(c.creator_notes || c.description || '').slice(0, 120))}</p></div><div class="cft"><button class="btn p" data-a="card-chat" data-id="${esc(c.id)}">Start chat</button><button class="mini" data-a="card-edit" data-id="${esc(c.id)}">Edit</button><button class="mini" data-a="card-export" data-id="${esc(c.id)}" data-f="png">PNG</button><button class="mini" data-a="card-export" data-id="${esc(c.id)}" data-f="json">JSON</button></div></div>`).join('') || '<div class="empty-list">No characters yet. Import a card or create one.</div>'}</div></div>`;
+    ${tabs}${bar}
+    ${q ? `<div class="fine" id="card-count">${list.length} of ${base.length} character${base.length === 1 ? '' : 's'} match “${esc(q)}”</div>` : ''}
+    <div class="cgrid">${list.map((c) => `<div class="ccard ${sel.includes(c.id) ? 'picked' : ''}" data-card="${esc(c.id)}">${cc ? `<label class="coll-pick"><input type="checkbox" data-a="coll-sel" data-id="${esc(c.id)}" ${sel.includes(c.id) ? 'checked' : ''} aria-label="Select ${esc(c.name)}"></label>` : ''}${c.avatarUrl ? `<img src="${esc(c.avatarUrl)}" alt="">` : `<div class="noimg">${esc(c.name[0])}</div>`}<div class="cbody"><b>${esc(c.name)}</b><span class="fine">${esc((c.tags || []).slice(0, 4).join(' · ') || c.creator || '')}</span>${limitBadge(c)}${where(c)}<p>${esc(String(c.creator_notes || c.description || '').slice(0, 120))}</p></div><div class="cft"><button class="btn p" data-a="card-chat" data-id="${esc(c.id)}">Start chat</button><button class="mini" data-a="card-edit" data-id="${esc(c.id)}">Edit</button>${cc ? `<button class="mini" data-a="coll-remove-one" data-id="${esc(c.id)}" title="Keeps the card in All characters (Delete key)">${icon('x', 'sm')}Remove from collection</button>` : `<button class="mini" data-a="card-export" data-id="${esc(c.id)}" data-f="png">PNG</button><button class="mini" data-a="card-export" data-id="${esc(c.id)}" data-f="json">JSON</button>${addTo(c)}`}</div></div>`).join('') || (q ? '<div class="empty-list">No character matches that search.</div>' : cc ? '<div class="empty-list">This collection is empty. Add characters from All characters with "Add to collection…".</div>' : '<div class="empty-list">No characters yet. Import a card or create one.</div>')}</div></div>`;
+}
+// The Find box in the character editor (Ctrl+F): find and replace in the unsaved edit only.
+function findBarHtml() {
+  const F = S.cardFind;
+  return `<div class="cfind" id="card-find" role="search" aria-label="Find in this card">
+    <div class="row"><label class="search in">${icon('search', 'sm')}<input id="cf-q" value="${esc(F.q)}" placeholder="Find in this card" aria-label="Find in this card" autocomplete="off" spellcheck="false"></label>
+      <span class="cf-count" id="cf-count" aria-live="polite"></span>
+      <button class="mini" data-a="cf-prev" title="Previous match (Shift+Enter, Shift+F3)" aria-label="Previous match">↑</button><button class="mini" data-a="cf-next" title="Next match (Enter, F3)" aria-label="Next match">↓</button>
+      <label class="day"><input type="checkbox" id="cf-case" ${F.matchCase ? 'checked' : ''}>Match case</label><label class="day"><input type="checkbox" id="cf-word" ${F.wholeWord ? 'checked' : ''}>Whole word</label>
+      <span class="grow"></span><button class="tb" data-a="cf-close" aria-label="Close find (Escape)">${icon('x', 'sm')}</button></div>
+    <div class="row"><input id="cf-rep" class="cf-rep" value="${esc(F.rep || '')}" placeholder="Replace with" aria-label="Replace with" autocomplete="off" spellcheck="false"><button class="mini" data-a="cf-rep1">Replace</button><button class="mini" data-a="cf-repall">Replace all</button><span class="fine">Only this card's unsaved edit changes; nothing is saved until you press Save.</span></div>
+    <div class="cf-fields" id="cf-fields"></div></div>`;
 }
 function cardEditView() {
   const c = S.cardEdit;
   if (!c) return '';
-  const f = (k, label, rows = 3, ph = '') => `<label class="field">${label}<textarea data-cf="${k}" rows="${rows}" placeholder="${esc(ph)}">${esc(c[k] || '')}</textarea></label>`;
-  return `<div class="lib edit"><div class="lib-hd"><button class="tb" data-a="characters">${icon('chevr', 'sm')}Characters</button><h1>${esc(c.id ? `Edit ${c.name}` : 'New character')}</h1><span class="grow"></span><button class="btn ghost" data-a="characters">Cancel</button><button class="btn p" data-a="card-save">Save</button></div>
-    <div class="cedit"><div class="cleft">${c.avatarUrl ? `<img class="big" src="${esc(c.avatarUrl)}" alt="">` : '<div class="big noimg">?</div>'}<button class="mini" data-a="card-pic">Change picture</button>${c.limits ? limitBadge(c) : ''}${adultBox(c)}
+  const f = (k, label, rows = 3, ph = '') => `<label class="field" data-ff="${k}">${label}<textarea data-cf="${k}" rows="${rows}" placeholder="${esc(ph)}">${esc(c[k] || '')}</textarea></label>`;
+  const look = c.appearanceEdit !== undefined ? c.appearanceEdit : c.ownerLook?.appearance || '';
+  return `<div class="lib edit"><div class="lib-hd"><button class="tb" data-a="characters">${icon('chevr', 'sm')}Characters</button><h1>${esc(c.id ? `Edit ${c.name}` : 'New character')}</h1><span class="grow"></span><button class="btn" data-a="cf-open" title="Find in this card (Ctrl+F)">${icon('search', 'sm')}Find</button><button class="btn ghost" data-a="characters">Cancel</button><button class="btn p" data-a="card-save">Save</button></div>
+    ${S.cardFind?.open ? findBarHtml() : ''}
+    <div class="cedit"><div class="cleft">${c.avatarUrl ? `<img class="big" src="${esc(c.avatarUrl)}" alt="">` : '<div class="big noimg">?</div>'}<button class="mini" data-a="card-pic">Change picture</button>${c.limits ? limitBadge(c) : ''}${flagList(c)}${ageBox(c)}
       ${voice.cardHtml(c)}
       <label class="field">Lorebooks<select data-cf="lorebooks" multiple size="4">${(S.books || []).map((b) => `<option value="${esc(b.id)}" ${(c.lorebooks || []).includes(b.id) ? 'selected' : ''}>${esc(b.name)}</option>`).join('')}</select></label>
       ${c.character_book ? `<div class="fine">Embedded lorebook: ${c.character_book.entries?.length || 0} entries <button class="mini" data-a="lore-from-card" data-id="${esc(c.id || '')}">Copy to Lorebooks</button></div>` : ''}</div>
-    <div class="cright"><label class="field">Name<input data-cf="name" value="${esc(c.name || '')}" maxlength="120"></label>
+    <div class="cright"><label class="field" data-ff="name">Name<input data-cf="name" value="${esc(c.name || '')}" maxlength="120"></label>
       ${f('description', 'Description', 5, 'Who {{char}} is, what they look like…')}${f('personality', 'Personality', 2)}${f('scenario', 'Scenario', 2)}${f('first_mes', 'First message (greeting)', 4)}
-      <label class="field">Alternate greetings (one per block, separated by a line with ---)<textarea data-cf="alternate_greetings" rows="3">${esc((c.alternate_greetings || []).join('\n---\n'))}</textarea></label>
-      ${f('mes_example', 'Example dialogue', 4, '<START>\n{{user}}: Hi\n{{char}}: *waves* "Hello!"')}${f('creator_notes', 'Creator notes', 2)}
-      <label class="field">Tags (comma separated)<input data-cf="tags" value="${esc((c.tags || []).join(', '))}"></label>
+      <label class="field" data-ff="alternate_greetings">Alternate greetings (one per block, separated by a line with ---)<textarea data-cf="alternate_greetings" rows="3">${esc((c.alternate_greetings || []).join('\n---\n'))}</textarea></label>
+      ${f('mes_example', 'Example dialogue', 4, '<START>\n{{user}}: Hi\n{{char}}: *waves* "Hello!"')}${f('system_prompt', 'System prompt', 2)}${f('post_history_instructions', 'Post-history instructions', 2)}${f('creator_notes', 'Creator notes', 2)}
+      <label class="field" data-ff="appearance">Appearance (for pictures: hair, eyes, clothes; kept in this app only)<textarea data-cf="appearance" rows="2" placeholder="For example: long silver hair, violet eyes, silver elven armour">${esc(look)}</textarea></label>
+      <label class="field" data-ff="tags">Tags (comma separated)<input data-cf="tags" value="${esc((c.tags || []).join(', '))}"></label>
       <label class="field">Creator<input data-cf="creator" value="${esc(c.creator || '')}"></label></div></div></div>`;
 }
 function lorebooksView() {
@@ -1564,7 +1607,7 @@ function modalHtml() {
     const c = entry(m.chatId);
     const all = rpCards(c);
     const sel = all.filter((x) => m.ids.includes(x.id));
-    const lookRow = (x) => { const L = x.ownerLook || {}; return `<div class="srow sub rs-look"><b>${esc(x.name)}</b><textarea id="rs-look-${esc(x.id)}" rows="2" style="flex:1;min-width:16em" placeholder="Appearance: hair, eyes, clothes… (helps keep the look similar; the scene still changes it)" aria-label="${esc(x.name)}'s appearance">${esc(L.appearance || '')}</textarea><label class="day"><input type="checkbox" id="rs-keep-${esc(x.id)}" ${L.keepSeed !== false ? 'checked' : ''}>Keep the same seed</label><span class="d">${Number.isInteger(L.seed) ? `saved seed ${L.seed}` : 'no saved seed'}</span><button class="mini" data-a="rs-look-save" data-id="${esc(x.id)}">Save look</button><button class="mini" data-a="rs-reroll" data-id="${esc(x.id)}">Re-roll seed</button></div>`; };
+    const lookRow = (x) => { const L = x.ownerLook || {}; return `<div class="srow sub rs-look"><b>${esc(x.name)}</b><textarea id="rs-look-${esc(x.id)}" rows="2" style="flex:1;min-width:16em" placeholder="Appearance: hair, eyes, clothes… (helps keep the look similar; the scene still changes it)" aria-label="${esc(x.name)}'s appearance">${esc(L.appearance || '')}</textarea><label class="day"><input type="checkbox" id="rs-keep-${esc(x.id)}" ${L.keepSeed !== false ? 'checked' : ''}>Keep the same seed</label><span class="d">${Number.isInteger(L.seed) ? `saved seed ${L.seed}` : 'no saved seed'}</span><button class="mini" data-a="rs-look-save" data-id="${esc(x.id)}">Save look</button><button class="mini" data-a="rs-reroll" data-id="${esc(x.id)}">Re-roll seed</button></div>${(L.appearance || '').trim() ? '' : `<div class="fine rs-hint" id="rs-hint-${esc(x.id)}">${icon('eye', 'sm')} Add ${pronounOf(x)} look in Appearance for better pictures (the box above, then Save look). Without it, only the looks in ${esc(x.name)}'s card text are used.</div>`}`; };
     const st = m.settings || {};
     const fromComfy = m.source === 'comfy' || (m.source || '').startsWith('gpu:');
     return `<div class="scrim dark" data-a="close-modal"></div><div class="modal wide"><div class="mhd"><b>Generate scene</b></div>
@@ -1846,6 +1889,8 @@ async function loadSection(t) {
 // The last messages as plain text for the prompt (built in the main process, shown to edit).
 const sceneMsgs = (chatId) => (rt(chatId)?.msgs || []).filter((x) => !x.deleted && x.who !== 'system').slice(-12).map((x) => ({ who: x.who, text: String(x.text || '').slice(0, 2000), err: x.err === true }));
 const GB = 1024 ** 3;
+// "her" / "his" / "their", from the card's own words (the Generate scene hint).
+const pronounOf = (c) => { const t = `${c?.description || ''} ${c?.personality || ''}`; const she = (t.match(/\b(?:she|her|hers|herself)\b/gi) || []).length; const he = (t.match(/\b(?:he|him|his|himself)\b/gi) || []).length; return she > he ? 'her' : he > she ? 'his' : 'their'; };
 const vramLine = (v) => (v?.vramTotal ? `${v.gpu || 'GPU'}: ${(v.vramFree / GB).toFixed(1)} GB of ${(v.vramTotal / GB).toFixed(1)} GB graphics memory free` : v?.gpu || '');
 async function openScene(chatId, preset = null) {
   const c = entry(chatId);
@@ -2054,6 +2099,8 @@ function readCardForm() {
     if (k === 'tags') c.tags = el.value.split(',').map((x) => x.trim()).filter(Boolean);
     else if (k === 'alternate_greetings') c.alternate_greetings = el.value.split(/\n-{3,}\n/).map((x) => x.trim()).filter(Boolean);
     else if (k === 'lorebooks') c.lorebooks = [...el.selectedOptions].map((o) => o.value);
+    else if (k === 'appearance') c.appearanceEdit = el.value;
+    else if (k === 'ownerAge') { if (!el.disabled) c.ownerAgeEdit = el.value.trim(); }
     else c[k] = el.value;
   }
 }
@@ -2119,8 +2166,8 @@ document.addEventListener('click', async (ev) => {
     case 'characters': S.view = 'characters'; S.cardEdit = null; S.loreEdit = null; S.pane = null; render(true); await loadCards(); return render();
     case 'lorebooks': S.view = 'lorebooks'; S.loreEdit = null; render(true); S.books = (await call('loreList')) || []; return render();
     case 'card-import': { const r = await call('cardsPick'); return afterImport(r || []); }
-    case 'card-new': S.cardEdit = { name: '', tags: [], alternate_greetings: [], lorebooks: [] }; S.view = 'card'; return render(true);
-    case 'card-edit': S.cardEdit = JSON.parse(JSON.stringify(cardById(d.id) || {})); S.view = 'card'; render(true); await voice.loadLists(); return render();
+    case 'card-new': S.cardFind = null; S.cardEdit = { name: '', tags: [], alternate_greetings: [], lorebooks: [] }; S.view = 'card'; return render(true);
+    case 'card-edit': S.cardFind = null; S.cardEdit = JSON.parse(JSON.stringify(cardById(d.id) || {})); S.view = 'card'; render(true); await voice.loadLists(); return render();
     case 'card-pic': { readCardForm(); const f = await pickFile('image/png,image/jpeg,image/webp'); if (f) { const url = await fileUrl(f); S.cardEdit.avatarData = url; S.cardEdit.avatarUrl = url; } return render(); }
     case 'card-adult': case 'card-adult-undo': {
       const c = S.cardEdit; if (!c?.id) return;
@@ -2133,7 +2180,45 @@ document.addEventListener('click', async (ev) => {
       toast(d.a === 'card-adult' ? `${r.name} is confirmed as an adult (age ${r.limits?.adultConfirmed?.age}).` : `Adult confirmation removed from ${r.name}.`);
       await loadCards(); return render();
     }
-    case 'card-save': { readCardForm(); const c = S.cardEdit; if (!String(c.name || '').trim()) return toast('Give the character a name.'); const r = await call('cardsSave', c); if (r?.ok === false || r?.message) return toast(r.message || 'Not saved.'); if (c.voiceChanged && r?.id) { const vr = await call('cardsSetVoice', r.id, c.ownerVoice || null); if (vr?.message) toast(vr.message); } toast(`Saved ${r.name}.`); await loadCards(); S.cardEdit = null; S.view = 'characters'; return render(true); }
+    case 'card-save': {
+      readCardForm(); const c = S.cardEdit; if (!String(c.name || '').trim()) return toast('Give the character a name.');
+      // The age (18+) and the appearance are saved only now, with the card.
+      const ageWas = c.ownerAdult?.age ? String(c.ownerAdult.age) : '';
+      const age = c.ownerAgeEdit;
+      if (age !== undefined && age !== '' && !(/^\d{1,3}$/.test(age) && Number(age) >= 18 && Number(age) <= 999)) return toast('Set an age from 18 to 999, or leave it empty.');
+      const { appearanceEdit, ownerAgeEdit, ...patch } = c;
+      const r = await call('cardsSave', patch); if (r?.ok === false || r?.message) return toast(r.message || 'Not saved.');
+      const notes = [];
+      if (c.voiceChanged && r?.id) { const vr = await call('cardsSetVoice', r.id, c.ownerVoice || null); if (vr?.message) notes.push(vr.message); }
+      if (r?.id && appearanceEdit !== undefined && appearanceEdit !== (c.ownerLook?.appearance || '')) { const lr = await call('cardsSetLook', r.id, { appearance: appearanceEdit }); if (lr?.message) notes.push(lr.message); }
+      if (r?.id && ownerAgeEdit !== undefined && ownerAgeEdit !== ageWas) { const ar = ownerAgeEdit === '' ? await call('cardsConfirmAdult', r.id, 0, false) : await call('cardsConfirmAdult', r.id, Number(ownerAgeEdit), true); if (ar?.message) notes.push(ar.message); }
+      toast([`Saved ${r.name}.`, ...notes].join(' ')); await loadCards(); S.cardEdit = null; S.cardFind = null; S.view = 'characters'; return render(true);
+    }
+    case 'cf-open': return cfOpen();
+    case 'cf-close': return cfClose();
+    case 'cf-next': return cfStep(1);
+    case 'cf-prev': return cfStep(-1);
+    case 'cf-goto': { const F = S.cardFind; if (!F) return; cfRun(false); const i = F.flat.findIndex((m) => m.key === d.f); if (i >= 0) { F.i = i; cfRun(true); } return; }
+    case 'cf-rep1': return cfReplaceOne();
+    case 'cf-repall': return cfReplaceAll();
+    case 'flag-jump': return flagJump(d.f, d.w);
+    case 'flag-why': {
+      const c = d.id ? cardById(d.id) : S.cardEdit;
+      const r0 = (c?.limits?.reasons || []).find((x) => x.field !== 'age');
+      if (d.id && S.view !== 'card') { S.cardEdit = JSON.parse(JSON.stringify(c || {})); S.cardFind = null; S.view = 'card'; render(true); }
+      if (r0) flagJump(r0.field, r0.words); else toast(c?.limits?.minorWhy ? `Flagged because ${c.limits.minorWhy}.` : 'Nothing to show.');
+      return;
+    }
+    case 'coll-view': S.cardColl = d.id || ''; S.collSel = []; return renderMain();
+    case 'coll-new': {
+      const el = document.getElementById('coll-new'); const name = String(el?.value || '').trim();
+      if (!name) { el?.focus(); return toast('Type a name for the collection first.'); }
+      const r = await call('cardsCollectionNew', name); if (!r || r.ok === false || r.message) return toast(r?.message || 'Not made.');
+      await loadColls(); toast(`Made the collection “${r.name}”. Add characters with “Add to collection…” on each card.`); return renderMain();
+    }
+    case 'coll-sel-all': { const cc = (S.colls || []).find((x) => x.id === S.cardColl); if (!cc) return; const shown = cc.cardIds.filter((id) => { const c = cardById(id); return c && cardMatches(c, S.cardQuery); }); S.collSel = S.collSel.length && S.collSel.length === shown.length ? [] : shown; return renderMain(); }
+    case 'coll-remove-one': return collRemove([d.id]);
+    case 'coll-remove-sel': return collRemove(S.collSel);
     case 'card-export': { const r = await call('cardsExport', d.id, d.f); if (r?.ok) toast(`Exported to ${r.file}.`); else if (r && !r.cancelled) toast(r.message || 'Not exported.'); return; }
     case 'find-chars': S.findSites = (await call('cardsFindSites')) || S.findSites; S.modal = { kind: 'find' }; return renderOverlay();
     case 'find-open': { const r = await call('cardsFindOpen', d.v); if (r?.ok === false) toast(r.message || 'Couldn\'t open it.'); return; }
@@ -2180,7 +2265,7 @@ document.addEventListener('click', async (ev) => {
     case 'toggle-trash': S.showTrash = !S.showTrash; return renderSide();
     case 'unhide': await call('chatsUpdate', d.id, { hidden: false }); await loadChats(); return render();
     case 'restore': { const r = await call('chatsRestore', d.id); if (r?.ok === false || r?.message) toast(r.message || 'Not restored.'); await loadChats(); return render(); }
-    case 'undo': { const u = S.toast?.undo; S.toast = null; if (u?.kind === 'restore') { await call('chatsRestore', u.trashId); await loadChats(); render(); toast('Restored.'); } return renderOverlay(); }
+    case 'undo': { const u = S.toast?.undo; S.toast = null; if (u?.kind === 'coll-restore') { const r = await call('cardsCollectionRestore', u.coll, u.ids, u.before); await loadColls(); renderMain(); toast(r?.message ? r.message : `Put back in “${u.name}”.`); return renderOverlay(); } if (u?.kind === 'restore') { await call('chatsRestore', u.trashId); await loadChats(); render(); toast('Restored.'); } return renderOverlay(); }
     case 'repo-pop': S.pick = null; S.repoQuery = ''; S.pickRepo = null; S.pickBranch = null; popAt(a, 'repo', { chatId: S.view === 'chat' ? S.open : null }); renderOverlay(); await loadRepos(); { const c = S.view === 'chat' ? entry() : null; const cr = c?.repo || S.conn?.repo || S.repos?.[0]?.full; if (cr) loadBranches(cr); } return;
     case 'pick-repo': S.pickRepo = d.r; S.pickBranch = null; S.pop.noFocus = true; renderOverlay(); await loadBranches(d.r); return;
     case 'connect-repo': { const c = S.pop?.chatId ? entry(S.pop.chatId) : S.view === 'chat' ? entry() : null; const sel = S.pickRepo || c?.repo || S.conn?.repo || (S.repos || [])[0]?.full; const b = document.getElementById('branch-sel')?.value || null; S.pickRepo = null; return chooseRepo(sel, b); }
@@ -2443,6 +2528,9 @@ document.addEventListener('change', (ev) => {
     renderMain();
   }
   if (t.id === 'branch-sel') S.pickBranch = t.value;
+  if (t.matches?.('[data-a="coll-addto"]') && t.value) { const coll = t.value; const id = t.dataset.id; call('cardsCollectionAdd', coll, [id]).then(async (r) => { if (!r || r.ok === false || r.message) toast(r?.message || 'Not added.'); else toast(`Added ${cardById(id)?.name || 'the character'} to “${r.collection?.name}”.`); await loadColls(); renderMain(); }); }
+  if (t.matches?.('[data-a="coll-sel"]')) { const id = t.dataset.id; S.collSel = t.checked ? [...new Set([...S.collSel, id])] : S.collSel.filter((x) => x !== id); renderMain(); document.querySelector(`[data-a="coll-sel"][data-id="${CSS.escape(id)}"]`)?.focus(); }
+  if ((t.id === 'cf-case' || t.id === 'cf-word') && S.cardFind) { S.cardFind[t.id === 'cf-case' ? 'matchCase' : 'wholeWord'] = t.checked; S.cardFind.i = -1; cfRun(false); }
   if (S.modal?.kind === 'rpstart') {
     const m = S.modal;
     if (t.matches('[data-a="rp-toggle"]')) { const id = t.dataset.id; if (t.checked) { m.chars.push(id); m.players[id] = defaultPlayer(cardById(id)); } else m.chars = m.chars.filter((x) => x !== id); renderOverlay(); }
@@ -2464,12 +2552,18 @@ document.addEventListener('input', (ev) => {
     searchTimer = setTimeout(async () => { const r = await call('chatsSearch', S.search); S.hits = Array.isArray(r) ? new Set([...r.map((x) => x.id), ...S.chats.filter((c) => `${c.title} ${c.repo || ''}`.toLowerCase().includes(S.search.toLowerCase())).map((c) => c.id)]) : null; renderSide(); }, 250);
     return;
   }
+  if (t.id === 'cf-q' && S.cardFind) { S.cardFind.q = t.value; S.cardFind.i = -1; cfRun(false); return; }
+  if (t.id === 'cf-rep' && S.cardFind) { S.cardFind.rep = t.value; return; }
+  if (t.dataset?.cf && S.cardFind?.open) { S.cardFind.nav = null; cfRun(false); }
   if (t.id === 'card-q') { S.cardQuery = t.value; const el = t; const pos = el.selectionStart; renderMain(); const n = document.getElementById('card-q'); if (n) { n.focus(); n.setSelectionRange(pos, pos); } return; }
   if (t.id === 'repo-q') { S.repoQuery = t.value; S.pop.noFocus = false; renderOverlay(); }
 });
 
 document.addEventListener('keydown', (ev) => {
   const t = ev.target;
+  if (S.view === 'card' && !S.modal && cardFindKey(ev)) return;
+  // In a collection: Delete removes the selected cards, else the focused card (Undo puts them back).
+  if (S.view === 'characters' && S.cardColl && ev.key === 'Delete' && !/^(TEXTAREA|SELECT)$/.test(t.tagName || '') && !(t.tagName === 'INPUT' && t.type !== 'checkbox') && t.closest?.('.ccard')) { ev.preventDefault(); collRemove(S.collSel.length ? S.collSel : [t.closest('.ccard').dataset.card]); return; }
   if (t.id === 'composer' && ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); send(); return; }
   if (t.id === 'edit-text' && ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); resendEdited(S.editing, t.value); return; }
   if (t.id === 'rename-input') { if (ev.key === 'Enter') { ev.preventDefault(); finishRename(true); } if (ev.key === 'Escape') finishRename(false); return; }
@@ -2526,6 +2620,146 @@ new MutationObserver(() => {
 }).observe(document.documentElement, { childList: true, subtree: true });
 
 window.addEventListener('resize', () => { fitComposer(); });
+
+// ---------- character editor: Find and replace (src/app/card-find.mjs) ----------
+// Everything works on the editor's own fields (the unsaved edit); Save is still the only save.
+function cfEls() { return FIND_FIELDS.map(([key, label]) => ({ key, label, el: document.querySelector(`.cedit [data-cf="${key}"]`) })).filter((x) => x.el); }
+function cfRun(jump = false) {
+  const F = S.cardFind;
+  if (!F?.open || S.view !== 'card') return;
+  const els = cfEls();
+  const r = searchFields(els.map((x) => ({ key: x.key, label: x.label, text: x.el.value })), F.q, F);
+  F.flat = r.flat;
+  if (F.i >= r.flat.length) F.i = r.flat.length ? 0 : -1;
+  const cur = F.flat[F.i];
+  const cnt = document.getElementById('cf-count');
+  if (cnt) cnt.textContent = !F.q ? '' : r.total ? `${F.i >= 0 ? `${F.i + 1} of ` : ''}${r.total} match${r.total === 1 ? '' : 'es'}` : 'No matches';
+  for (const lab of document.querySelectorAll('.cedit [data-ff]')) { const fr = r.fields.find((x) => x.key === lab.dataset.ff); lab.classList.toggle('has-match', Boolean(fr?.count)); lab.dataset.count = fr?.count ? `${fr.count}` : ''; }
+  const box = document.getElementById('cf-fields');
+  if (box) {
+    box.innerHTML = r.fields.filter((x) => x.count).map((x) => { const el = els.find((e) => e.key === x.key).el; const m = cur?.key === x.key ? cur : x.matches[0]; const sn = snippet(el.value, m); return `<button class="cf-hit ${cur?.key === x.key ? 'on' : ''}" data-a="cf-goto" data-f="${esc(x.key)}"><b>${esc(x.label)}</b><span class="chip">${x.count}</span><span class="sn">${esc(sn.before)}<mark>${esc(sn.hit)}</mark>${esc(sn.after)}</span></button>`; }).join('')
+      || `<span class="fine">${F.q ? 'No matches in this card.' : 'Searches the name, description, personality, scenario, greetings, example dialogue, system prompt, post-history instructions, creator notes, appearance and tags.'}</span>`;
+  }
+  if (jump && cur) cfSelect(cur);
+}
+function cfSelect(m) {
+  const el = document.querySelector(`.cedit [data-cf="${m.key}"]`);
+  if (!el) return;
+  el.closest('.field')?.scrollIntoView({ block: 'center' });
+  if (el.tagName === 'TEXTAREA') { const lines = el.value.slice(0, m.start).split('\n').length - 1; const lh = parseFloat(getComputedStyle(el).lineHeight) || 18; el.scrollTop = Math.max(0, lines * lh - el.clientHeight / 2); }
+  el.focus({ preventScroll: true });
+  el.setSelectionRange(m.start, m.end);
+  S.cardFind.nav = { key: m.key, start: m.start, end: m.end };
+}
+function cfOpen(q = null) {
+  readCardForm();
+  const a = document.activeElement;
+  const picked = a?.dataset?.cf && typeof a.selectionStart === 'number' ? a.value.slice(a.selectionStart, a.selectionEnd) : '';
+  const F0 = S.cardFind || {};
+  S.cardFind = { open: true, q: q ?? (picked && picked.length < 80 && !picked.includes('\n') ? picked : F0.q || ''), matchCase: Boolean(F0.matchCase), wholeWord: Boolean(F0.wholeWord), rep: F0.rep || '', i: -1, flat: [], nav: null };
+  renderMain();
+  cfRun(false);
+  const qi = document.getElementById('cf-q');
+  if (qi) { qi.focus(); qi.select(); }
+}
+function cfClose() { readCardForm(); if (S.cardFind) S.cardFind.open = false; renderMain(); }
+function cfStep(dir) {
+  const F = S.cardFind;
+  if (!F?.open) return cfOpen();
+  cfRun(false);
+  if (!F.flat.length) return;
+  F.i = stepIndex(F.i, F.flat.length, dir);
+  cfRun(true);
+}
+// Put text in a field the way typing would (so Ctrl+Z still works), else set it directly.
+function cfInsert(el, start, end, text) {
+  el.focus({ preventScroll: true });
+  el.setSelectionRange(start, end);
+  let ok = false;
+  try { ok = document.execCommand('insertText', false, text); } catch {}
+  if (!ok || el.value.slice(start, start + text.length) !== text) { el.setRangeText(text, start, end, 'end'); el.dispatchEvent(new Event('input', { bubbles: true })); }
+}
+function cfReplaceOne() {
+  const F = S.cardFind;
+  if (!F?.open || !F.q) return;
+  cfRun(false);
+  if (!F.flat.length) return toast('No matches to replace.');
+  if (F.i < 0) { F.i = 0; return cfRun(true); }
+  const m = F.flat[F.i];
+  const el = document.querySelector(`.cedit [data-cf="${m.key}"]`);
+  if (!el) return;
+  const rep = F.rep || '';
+  cfInsert(el, m.start, m.end, rep);
+  const order = FIND_FIELDS.map(([k]) => k);
+  cfRun(false);
+  const after = F.flat.findIndex((x) => order.indexOf(x.key) > order.indexOf(m.key) || (x.key === m.key && x.start >= m.start + rep.length));
+  F.i = after >= 0 ? after : F.flat.length ? 0 : -1;
+  cfRun(true);
+}
+function cfReplaceAll() {
+  const F = S.cardFind;
+  if (!F?.open || !F.q) return;
+  const els = cfEls();
+  const res = replaceAllFields(els.map((x) => ({ key: x.key, text: x.el.value })), F.q, F.rep || '', F);
+  if (!res.count) return toast('No matches to replace.');
+  for (const f of res.fields) { if (!f.count) continue; const el = els.find((x) => x.key === f.key).el; cfInsert(el, 0, el.value.length, f.text); }
+  F.i = -1;
+  cfRun(false);
+  document.getElementById('cf-q')?.focus();
+  toast(`Replaced ${res.count} in ${res.changed.length} field${res.changed.length === 1 ? '' : 's'}. Nothing is saved until you press Save.`);
+}
+// A flag reason: open Find with its words and jump to them in that field.
+function flagJump(field, words) {
+  if (S.view !== 'card' || !words) return;
+  cfOpen(words);
+  const F = S.cardFind;
+  F.matchCase = false; F.wholeWord = false;
+  const wc = document.getElementById('cf-case'); if (wc) wc.checked = false;
+  const ww = document.getElementById('cf-word'); if (ww) ww.checked = false;
+  cfRun(false);
+  const i = F.flat.findIndex((m) => m.key === field);
+  F.i = i >= 0 ? i : F.flat.length ? 0 : -1;
+  cfRun(true);
+}
+// Keys while editing a card: Ctrl+F opens Find; F3 / Shift+F3 next and previous; in the Find box
+// Enter / Shift+Enter and Escape; right after a jump, Enter in the field goes to the next match.
+function cardFindKey(ev) {
+  const t = ev.target;
+  const F = S.cardFind;
+  if ((ev.ctrlKey || ev.metaKey) && !ev.altKey && ev.key.toLowerCase() === 'f') { ev.preventDefault(); cfOpen(); return true; }
+  if (ev.key === 'F3') { ev.preventDefault(); cfStep(ev.shiftKey ? -1 : 1); return true; }
+  if (!F?.open) return false;
+  if (t.id === 'cf-q') {
+    if (ev.key === 'Enter' && !ev.isComposing) { ev.preventDefault(); cfStep(ev.shiftKey ? -1 : 1); return true; }
+    if (ev.key === 'Escape') { ev.preventDefault(); cfClose(); return true; }
+  }
+  if (t.id === 'cf-rep') {
+    if (ev.key === 'Enter' && !ev.isComposing) { ev.preventDefault(); if (ev.ctrlKey) cfReplaceAll(); else cfReplaceOne(); return true; }
+    if (ev.key === 'Escape') { ev.preventDefault(); cfClose(); return true; }
+  }
+  const nav = F.nav;
+  if (t.dataset?.cf && nav && t.dataset.cf === nav.key && t.selectionStart === nav.start && t.selectionEnd === nav.end) {
+    if (ev.key === 'Enter' && !ev.isComposing) { ev.preventDefault(); cfStep(ev.shiftKey ? -1 : 1); return true; }
+    if (ev.key === 'Escape') { ev.preventDefault(); F.nav = null; document.getElementById('cf-q')?.focus(); return true; }
+  }
+  return false;
+}
+// ---------- Characters: collections ----------
+// Removing a card from a collection only changes that collection: the card stays in All
+// characters and in its other collections, and its chats are untouched. Undo puts it back.
+async function collRemove(ids) {
+  const cc = (S.colls || []).find((x) => x.id === S.cardColl);
+  const list = (ids || []).filter((id) => cc?.cardIds.includes(id));
+  if (!cc || !list.length) return;
+  const r = await call('cardsCollectionRemove', cc.id, list);
+  if (!r || r.ok === false || r.message) return toast(r?.message || 'Not removed.');
+  S.collSel = S.collSel.filter((x) => !list.includes(x));
+  await loadColls();
+  renderMain();
+  const names = (r.removed || []).map((id) => cardById(id)?.name).filter(Boolean);
+  const what = names.length === 1 ? names[0] : `${names.length} characters`;
+  toast(`Removed ${what} from “${cc.name}”. ${names.length === 1 ? 'It stays' : 'They stay'} in All characters.`, { kind: 'coll-restore', coll: cc.id, name: cc.name, ids: r.removed || [], before: r.before || [] });
+}
 
 // ---------- boot ----------
 async function refreshAgents() {

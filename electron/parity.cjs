@@ -372,6 +372,13 @@ function register(d) {
   handle('cards:findSites', () => ({ sites: Object.entries(finder.SITES).map(([id, x]) => ({ id, ...x })), notListed: finder.NOT_LISTED, maxMb: finder.MAX_CARD / 1048576 }));
   handle('cards:findOpen', (id) => (openSite ? openSite(String(id)) : { ok: false, message: 'Not available here.' }));
   handle('cards:remove', (id) => cards.remove(String(id)));
+  // Collections (the owner's own groups): a card leaves only the collection he removes it from.
+  handle('cards:collections', () => cards.collections());
+  handle('cards:collectionNew', (name) => cards.addCollection(name));
+  handle('cards:collectionDelete', (id) => cards.removeCollection(String(id)));
+  handle('cards:collectionAdd', (id, ids) => cards.addToCollection(String(id), ids));
+  handle('cards:collectionRemove', (id, ids) => cards.removeFromCollection(String(id), ids));
+  handle('cards:collectionRestore', (id, ids, before) => cards.restoreToCollection(String(id), ids, before));
   // Owner only: clears a false "under 18" alarm by confirming the character's adult age.
   handle('cards:confirmAdult', (id, age, on) => {
     const c = cards.confirmAdult(String(id), age, on !== false);
@@ -407,8 +414,12 @@ function register(d) {
     entryOf(chatId);
     const list = cardsOf(o.cardIds);
     const note = String(o.note || '').slice(0, 1500);
-    const looks = list.map((c) => `${c.name}: ${String(c.description || c.personality || '').replace(/\{\{char\}\}/gi, c.name).slice(0, 600)}`).join('\n');
-    const prompt = (o.kind === 'scene' ? `A scene${note ? `: ${note}` : ''}. Characters:\n${looks}${list[0]?.scenario ? `\nSetting: ${list[0].scenario.slice(0, 400)}` : ''}` : `A portrait of ${looks}${note ? `\n${note}` : ''}`).slice(0, 3000);
+    // Each character's look: the saved appearance, else only the visual details of the card
+    // (no roleplay instructions, backstory or dialogue; card text stays untrusted prompt text).
+    const user = cards.persona()?.name || 'the user';
+    const looks = list.map((c) => { const l = scene.lookOf(c, user); return l ? `${c.name}: ${l}` : c.name; }).join('\n');
+    const setting = list[0]?.scenario ? scene.visualOrPlace(list[0].scenario, list[0], user) : '';
+    const prompt = (o.kind === 'scene' ? `A scene${note ? `: ${note}` : ''}. Characters:\n${looks}${setting ? `\nSetting: ${setting}` : ''}` : `A portrait of ${looks}${note ? `\n${note}` : ''}`).slice(0, 3000);
     const chk = cardsLib.checkRequest({ cards: list, text: `${prompt}\n${note}`, image: true });
     if (!chk.ok) return { ok: false, error: { kind: chk.kind, message: chk.message } };
     const provider = String(o.provider || '');
