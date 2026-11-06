@@ -209,7 +209,7 @@ function fakeFetch(routes) {
   const f = async (url, o = {}) => {
     seen.push({ url: String(url), method: o.method || 'GET', headers: o.headers || {}, body: o.body ? (typeof o.body === 'string' ? JSON.parse(o.body) : o.body) : null });
     const r = routes(String(url), o);
-    return { ok: r.status < 400, status: r.status, headers: { get: (k) => (k.toLowerCase() === 'content-type' ? r.type || 'application/json' : null) }, json: async () => r.json, arrayBuffer: async () => (r.bin || Buffer.from('img')).buffer };
+    return { ok: r.status < 400, status: r.status, headers: { get: (k) => (k.toLowerCase() === 'content-type' ? r.type || 'application/json' : null) }, json: async () => r.json, arrayBuffer: async () => Uint8Array.from(r.bin || (r.json !== undefined ? Buffer.from(JSON.stringify(r.json)) : Buffer.from('img'))).buffer };
   };
   f.seen = seen;
   return f;
@@ -261,6 +261,7 @@ test('OWN GPU SERVER: OpenAI-compatible chat and ComfyUI /prompt â†’ /history â†
   await sec.set('venice', 'VENICE-NOT-FOR-SERVER');
   const fetchImpl = fakeFetch((u) => {
     if (u.endsWith('/chat/completions')) return { status: 200, json: { choices: [{ message: { content: 'gpu says hi' } }] } };
+    if (u.endsWith('/object_info/CheckpointLoaderSimple')) return { status: 200, json: { CheckpointLoaderSimple: { input: { required: { ckpt_name: [['sdxl.safetensors']] } } } } };
     if (u.endsWith('/prompt')) return { status: 200, json: { prompt_id: 'abc-1' } };
     if (u.includes('/history/abc-1')) return { status: 200, json: { 'abc-1': { outputs: { 9: { images: [{ filename: 'h_1.png', subfolder: '', type: 'output' }] } }, status: { completed: true } } } };
     if (u.includes('/view?')) return { status: 200, type: 'image/png' };
@@ -278,8 +279,9 @@ test('OWN GPU SERVER: OpenAI-compatible chat and ComfyUI /prompt â†’ /history â†
   assert.equal(fetchImpl.seen[0].headers.authorization, 'Bearer POD-KEY');
   const i = await tm.image('gpu', { prompt: 'a lighthouse' });
   assert.equal(i.ok, true, i.error?.message);
-  assert.deepEqual(fetchImpl.seen.slice(1).map((x) => x.url.replace(/\?.*/, '')), ['http://192.168.1.20:8188/prompt', 'http://192.168.1.20:8188/history/abc-1', 'http://192.168.1.20:8188/view']);
-  assert.equal(fetchImpl.seen[1].body.prompt[6].inputs.text, 'a lighthouse', 'the prompt goes into the workflow');
+  assert.deepEqual(fetchImpl.seen.slice(1).map((x) => x.url.replace(/\?.*/, '')), ['http://192.168.1.20:8188/object_info/CheckpointLoaderSimple', 'http://192.168.1.20:8188/prompt', 'http://192.168.1.20:8188/history/abc-1', 'http://192.168.1.20:8188/view']);
+  assert.equal(fetchImpl.seen[2].body.prompt[6].inputs.text, 'a lighthouse', 'the prompt goes into the workflow');
+  assert.equal(fetchImpl.seen[2].body.prompt[4].inputs.ckpt_name, 'sdxl.safetensors', 'a model the server has');
   assert.ok(!JSON.stringify(fetchImpl.seen).includes('VENICE-NOT-FOR-SERVER'), 'never the owner\'s other keys');
   assert.equal(typeof fillWorkflow(DEFAULT_WORKFLOW, { seed: 5 })[3].inputs.seed, 'number');
   await assert.rejects(tm.addServer({ name: 'x', url: 'ftp://nope' }), /server address/);
