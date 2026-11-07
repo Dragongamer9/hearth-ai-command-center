@@ -244,6 +244,98 @@ async function generate({ base, allow, headers = {}, checkpoint, checkpoints = n
   return hnet.fail(`${name}: no picture after ${Math.max(1, Math.round((maxPolls * pollMs) / 60000))} minute${maxPolls * pollMs >= 120000 ? 's' : ''}, so it was stopped. The PC may be busy (a game or a big model on the GPU); try again or pick a smaller size.`, 'gen_timeout', { promptId: id });
 }
 
+// ---------- any workflow (Images & Videos: Wan 2.2 video, picture-to-video) ----------
+const MAX_VIDEO = 400 * 1024 * 1024;
+// The choices one input of one node has on this server: GET /object_info/<class>.
+// { ok, list } (list may be empty), or kind 'no_node' when the server doesn't have that node
+// (a custom node like ComfyUI-GGUF that isn't installed), or a network failure.
+async function objectOptions({ base, allow, headers = {}, fetchImpl, name = 'ComfyUI', signal }, nodeClass, input) {
+  const r = await hnet.fetchJson(`${base}/object_info/${encodeURIComponent(nodeClass)}`, { allow, fetchImpl, name, signal, timeoutMs: 10000, max: MAX_JSON, init: { headers: { accept: 'application/json', ...headers } } });
+  if (!r.ok) return NETWORK.includes(r.kind) ? r : hnet.fail(`${name}: couldn't read its ${nodeClass} node (${r.message}).`, 'no_node');
+  const node = r.json?.[nodeClass];
+  if (!node || typeof node !== 'object') return hnet.fail(`${name} doesn't have the ${nodeClass} node.`, 'no_node');
+  const c = node.input?.required?.[input] || node.input?.optional?.[input];
+  const list = Array.isArray(c?.[0]) ? c[0] : Array.isArray(c?.[1]?.options) ? c[1].options : [];
+  return { ok: true, list: [...new Set(list.filter((x) => typeof x === 'string' && CKPT_RE.test(x)))].slice(0, 1000) };
+}
+// A picture for LoadImage: POST /upload/image (multipart, field "image") -> { name, subfolder, type }.
+async function uploadImage({ base, allow, headers = {}, fetchImpl, name = 'ComfyUI', signal }, { buf, filename = 'hearth-start.png', mime = 'image/png' }) {
+  if (!buf?.length || buf.length > MAX_IMAGE) return hnet.fail('That picture is empty or too big (30 MB at most).');
+  const fd = new FormData();
+  fd.append('image', new Blob([buf], { type: mime }), String(filename).replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 80) || 'hearth-start.png');
+  fd.append('overwrite', 'true');
+  const sent = await hnet.safeFetch(`${base}/upload/image`, { allow, fetchImpl, name, signal, timeoutMs: 60000, init: { method: 'POST', headers: { accept: 'application/json', ...headers }, body: fd } });
+  if (!sent.ok) return sent;
+  if (!sent.res.ok) { const b = await hnet.readCapped(sent.res, 16 * 1024).catch(() => null) || Buffer.alloc(0); return hnet.fail(`${name} refused the picture: ${promptErrorText(sent.res.status, b)}`, 'failed'); }
+  const j = await hnet.readJson(sent.res, MAX_JSON);
+  const n = j.ok && typeof j.json?.name === 'string' ? j.json.name : '';
+  if (!n || !CKPT_RE.test(n)) return hnet.fail(`${name} gave an unexpected answer to the picture upload.`);
+  const sub = typeof j.json.subfolder === 'string' && j.json.subfolder ? `${j.json.subfolder}/` : '';
+  return { ok: true, name: `${sub}${n}` };
+}
+// The files a finished run saved: every { filename, subfolder, type } in any output list
+// (pictures are under "images"; videos under "images" with animated, "videos" or "gifs").
+function outputFiles(entry) {
+  const out = [];
+  for (const o of Object.values(entry?.outputs || {})) {
+    if (!o || typeof o !== 'object') continue;
+    for (const v of Object.values(o)) for (const f of (Array.isArray(v) ? v : [])) if (f && typeof f === 'object' && typeof f.filename === 'string') out.push(f);
+  }
+  return out;
+}
+// Submit any API-format graph and wait for its files. { ok, files: [{ buf, mime, filename }],
+// promptId } or the same plain failures as generate(). kinds: which content types to keep.
+async function runWorkflow({ base, allow, headers = {}, graph, kinds = ['image'], fetchImpl, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), now = () => Date.now(), maxPolls = 1800, pollMs = 1000, signal, onProgress = () => {}, name = 'ComfyUI', what = 'video' }) {
+  const t0 = now();
+  const tell = (phase, extra = {}) => { try { onProgress({ phase, elapsed: Math.round((now() - t0) / 1000), ...extra }); } catch {} };
+  const jh = { 'content-type': 'application/json', accept: 'application/json', ...headers };
+  if (signal?.aborted) return hnet.fail('Stopped before it was sent.', 'cancelled');
+  const sent = await hnet.safeFetch(`${base}/prompt`, { allow, fetchImpl, name, timeoutMs: 30000, init: { method: 'POST', headers: jh, body: JSON.stringify({ prompt: graph, client_id: crypto.randomUUID() }) } });
+  if (!sent.ok) return sent;
+  if (!sent.res.ok) { const b = await hnet.readCapped(sent.res, 64 * 1024).catch(() => null) || Buffer.alloc(0); return hnet.fail(`${name} refused the ${what}: ${promptErrorText(sent.res.status, b)}`, 'failed', { status: sent.res.status }); }
+  const pj = await hnet.readJson(sent.res, MAX_JSON);
+  const id = String(pj.ok ? pj.json?.prompt_id || '' : '');
+  if (!ID_RE.test(id)) return hnet.fail(`${name} gave an unexpected answer to the ${what} request.`);
+  const stop = async () => { const how = await cancelJob({ base, allow, headers, fetchImpl, name, id }).catch(() => 'gone'); return hnet.fail(how === 'removed' ? 'Stopped: taken out of ComfyUI\'s queue.' : how === 'interrupted' ? `Stopped: ComfyUI stopped the ${what}.` : 'Stopped.', 'cancelled', { promptId: id }); };
+  tell('queued', { promptId: id });
+  const want = (type) => kinds.some((k) => (k === 'image' ? /^image\/(png|jpeg|webp|gif)$/.test(type) : k === 'video' ? /^video\/(mp4|webm)$/.test(type) || type === 'image/webp' || type === 'image/gif' : false));
+  for (let i = 0; i < maxPolls; i++) {
+    if (signal?.aborted) return stop();
+    await abortableSleep(sleep, pollMs, signal);
+    if (signal?.aborted) return stop();
+    const h = await hnet.fetchJson(`${base}/history/${id}`, { allow, fetchImpl, name, max: MAX_JSON, timeoutMs: 15000, init: { headers: jh } });
+    if (!h.ok) { if (['redirect', 'blocked'].includes(h.kind)) return h; continue; }
+    const entry = h.json?.[id];
+    if (!entry || typeof entry !== 'object') {
+      if (i % 3 === 0) { const st = await queueState({ base, allow, headers, fetchImpl, name, id }); tell(st === 'pending' ? 'queued' : 'generating', { promptId: id }); } else tell('tick', { promptId: id });
+      continue;
+    }
+    if (entry.status?.status_str === 'error') { const why = runErrorText(entry.status); return hnet.fail(`${name}: the ${what} failed on the server${why ? `: ${why}` : '.'}`, 'gen_failed', { promptId: id }); }
+    const files = outputFiles(entry);
+    if (!files.length) {
+      if (entry.status?.completed || entry.status?.status_str === 'success') return hnet.fail(`${name} finished without a ${what} (the workflow saved nothing).`, 'no_images', { promptId: id });
+      tell('generating', { promptId: id });
+      continue;
+    }
+    tell('downloading', { promptId: id });
+    const out = [];
+    for (const f of files.slice(0, 4)) {
+      const q = new URLSearchParams({ filename: String(f.filename).slice(0, 300), subfolder: String(f.subfolder || '').slice(0, 300), type: ['output', 'temp'].includes(f.type) ? f.type : 'output' });
+      const v = await hnet.safeFetch(`${base}/view?${q}`, { allow, fetchImpl, name, signal, timeoutMs: 120000, init: { headers } });
+      if (!v.ok) { if (v.kind === 'redirect') return v; if (v.kind === 'cancelled') return stop(); continue; }
+      if (!v.res.ok) continue;
+      let type = String(v.res.headers?.get?.('content-type') || '').split(';')[0].toLowerCase();
+      if (!type || type === 'application/octet-stream') type = /\.mp4$/i.test(f.filename) ? 'video/mp4' : /\.webm$/i.test(f.filename) ? 'video/webm' : /\.png$/i.test(f.filename) ? 'image/png' : type;
+      if (!want(type)) continue;
+      const buf = await hnet.readCapped(v.res, /^video\//.test(type) ? MAX_VIDEO : MAX_IMAGE).catch(() => null);
+      if (buf?.length) out.push({ buf, mime: type, filename: String(f.filename).slice(0, 200) });
+    }
+    return out.length ? { ok: true, files: out, promptId: id, secs: Math.round((now() - t0) / 1000) } : hnet.fail(`${name}: couldn't download the ${what}.`, 'failed', { promptId: id });
+  }
+  await cancelJob({ base, allow, headers, fetchImpl, name, id }).catch(() => {});
+  return hnet.fail(`${name}: no ${what} after ${Math.max(1, Math.round((maxPolls * pollMs) / 60000))} minutes, so it was stopped. The PC may be busy (a game or a big model on the GPU); try again.`, 'gen_timeout', { promptId: id });
+}
+
 // ---------- the ComfyUI server in Settings › Accounts (read-time defaults; saved only by him) ----------
 // Saved: { url: '' (none), checkpoint: '' (none picked) } plus, only once he picks them,
 // size ('1024x1024' | '1344x768' | '768x1344'), steps and cfg. Nothing is filled in here: the
@@ -298,4 +390,4 @@ function effective(saved) {
 // Only the configured server's own host may be reached.
 const allowOnly = (base) => { const h = hnet.hostOf(base); return (host) => Boolean(h) && host === h && hnet.isPrivateHost(host); };
 
-module.exports = { cleanSettings, mergeSettings, effective, allowOnly, listCheckpoints, checkpointNames, systemStats, testConnection, pickCheckpoint, buildWorkflow, generate, cancelJob, promptErrorText, runErrorText, DEFAULTS, SIZE_CHOICES, SIZES, MAX_IMAGE, MAX_JSON, CKPT_RE, LOW_VRAM };
+module.exports = { objectOptions, uploadImage, runWorkflow, outputFiles, MAX_VIDEO, cleanSettings, mergeSettings, effective, allowOnly, listCheckpoints, checkpointNames, systemStats, testConnection, pickCheckpoint, buildWorkflow, generate, cancelJob, promptErrorText, runErrorText, DEFAULTS, SIZE_CHOICES, SIZES, MAX_IMAGE, MAX_JSON, CKPT_RE, LOW_VRAM };

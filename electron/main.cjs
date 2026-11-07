@@ -34,6 +34,7 @@ const voiceChat = require('./voice-chat.cjs');
 const voicePerms = require('./voice-perms.cjs');
 const hearthDevices = require('./hearth-devices.cjs');
 const comfy = require('./comfy.cjs');
+const studioLib = require('./studio.cjs');
 
 // No Hearth OS version pin: the app never changes, bumps, publishes or deploys
 // Hearth OS versions (the owner picks every number). It only shows which Hearth
@@ -174,6 +175,9 @@ function normalSettings(s) {
     hearthDevices: hearthDevices.cleanSettings(s.hearthDevices),
     // His ComfyUI server for Characters chat scene pictures (address and default checkpoint).
     comfy: comfy.cleanSettings(s.comfy),
+    // Uncensored mode (2.2.1, electron/studio.cjs): off until the owner turns it on; the hard
+    // limits stay on either way.
+    uncensored: studioLib.cleanUncensored(s.uncensored),
   };
 }
 const MODEL_OK = /^[A-Za-z0-9._:\-/]{1,100}$/;
@@ -523,6 +527,16 @@ function registerIpc() {
     if ('voice' in patch) s.voice = voiceChat.mergeSettings(s.voice, patch.voice);
     if ('hearthDevices' in patch) s.hearthDevices = hearthDevices.mergeSettings(s.hearthDevices, patch.hearthDevices);
     if ('comfy' in patch) s.comfy = comfy.mergeSettings(s.comfy, patch.comfy);
+    if ('uncensored' in patch) {
+      const next = studioLib.mergeUncensored(s.uncensored, patch.uncensored);
+      // Turning it on asks once (the first time), in a native box the window can't answer for him.
+      if (next.on && !s.uncensored.on && !s.uncensored.confirmedAt) {
+        const c = dialog.showMessageBoxSync(mainWindow, { type: 'warning', message: 'Turn on Uncensored mode (18+)?', detail: 'Pictures and videos from your PC can then be adult content, and local chat uses your 18+ model. For adults only.\n\nThe hard limits never change: nothing sexual with minors or anyone who looks under 18, and no real people. Claude, ChatGPT and Gemini keep their own rules.', buttons: ['I\'m 18 or older: turn on', 'Cancel'], defaultId: 1, cancelId: 1 });
+        if (c !== 0) return { ...readSettings(), message: 'Cancelled: Uncensored mode stays off.' };
+        next.confirmedAt = new Date().toISOString();
+      }
+      s.uncensored = next;
+    }
     if ('teammates' in patch) {
       const t = cleanTeammates(patch.teammates);
       if (t.civitai?.fields) { try { JSON.parse(t.civitai.fields); } catch { throw new Error('The Civitai request fields must be JSON, like {"prompt": "{prompt}"}.'); } }
@@ -804,6 +818,19 @@ function registerIpc() {
     return withFrames(await attachments.saveFromPathStreamed(worktreeRoot(), f, { signal: picking.signal, onProgress: (p) => send('media:progress', { chatId: null, attach: true, name, done: p.done, total: p.total ?? null, finished: p.finished === true }) }));
   };
   handle('attach:cancel', () => { picking?.abort(); return true; });
+  // Images & Videos › Send to a chat: the picture or video goes into the message box. 18+ ones
+  // stay in Images & Videos (never sent to Claude, ChatGPT or Gemini).
+  handle('studio:toAttach', async (id) => {
+    const it = parityApi?.studio.list().items.find((x) => x.id === String(id));
+    if (!it) return { ok: false, message: 'That one isn\'t there any more.' };
+    if (it.adult) return { ok: false, message: 'Pictures and videos made in Uncensored mode stay in Images & Videos: they\'re never sent to Claude, ChatGPT or Gemini.' };
+    const f = parityApi.studio.itemFile(it.id);
+    if (!f) return { ok: false, message: 'The file isn\'t there any more.' };
+    const r = await pickedCopy(f);
+    picking = null;
+    send('media:progress', { chatId: null, attach: true, finished: true });
+    return r;
+  });
   handle('attach:pick', async () => {
     const r = await dialog.showOpenDialog(mainWindow, { title: 'Attach images or videos', properties: ['openFile', 'multiSelections'], filters: [{ name: 'Images and videos', extensions: Object.keys(attachments.TYPES) }] });
     if (r.canceled) return [];
@@ -1112,6 +1139,8 @@ function registerV2() {
     rpGuard: (...a) => (parityApi ? parityApi.rpGuard(...a) : { ok: true }),
     assetsEnv: (agent, cwd) => (opsApi ? opsApi.assetsEnv(agent, cwd) : undefined),
     validateProvider, validatePrompt, validateModel,
+    // Uncensored mode: local chat (Ollama, Hearth devices) uses his 18+ model; hard limits stay.
+    uncensoredFor: (agent, prompt) => studioLib.chatUncensored(readSettings(), agent, prompt),
     projects: () => ops.projectsList(),
     stateFileFor: (id) => ops.projectStateFile(id),
     extraAgents: TEAMMATES,

@@ -24,6 +24,7 @@ const { createHearthDevices } = require('./hearth-devices.cjs');
 const comfy = require('./comfy.cjs');
 const scene = require('./scene.cjs');
 const hnet = require('./hearth-net.cjs');
+const { createStudio } = require('./studio.cjs');
 
 // elevenlabs: voice chat's most realistic voices (electron/voice-chat.cjs).
 const KEY_NAMES = ['google', 'openai', 'xai', 'mistral', 'elevenlabs'];
@@ -549,6 +550,19 @@ function register(d) {
     const meta = { seed: r.seed, checkpoint: r.checkpoint || null, width: r.width || null, height: r.height || null, steps: r.steps || null, cfg: r.cfg || null, sampler: r.sampler || null, scheduler: r.scheduler || null, positive: r.positive || String(o.prompt || '').slice(0, 2500), negative: r.negative || '', ownNegative: scene.ownNegative(o.negative), source: String(o.source || ''), cardIds: cardsOf(o.cardIds).map((c) => c.id) };
     return { ok: true, job, items, via: r.via || `seed ${r.seed}`, seed: r.seed, checkpoint: r.checkpoint, meta, vramNote: r.vram?.note || null };
   });
+  // ---- Images & Videos (2.2.1; electron/studio.cjs): ComfyUI pictures and Wan 2.2 videos ----
+  const studio = createStudio({ dataDir, readSettings, send, fetchImpl: d.fetchImpl || ((...x) => fetch(...x)) });
+  handle('studio:list', () => studio.list());
+  handle('studio:status', () => studio.status());
+  handle('studio:add', (req) => studio.add(req && typeof req === 'object' ? req : {}));
+  handle('studio:cancel', (id) => studio.cancel(id));
+  handle('studio:remove', (id) => studio.remove(id));
+  handle('studio:again', (id) => studio.again(id));
+  handle('studio:pickImage', async () => {
+    const r = await dialog.showOpenDialog(getWindow(), { title: 'Pick a picture to animate', properties: ['openFile'], filters: [{ name: 'Pictures', extensions: ['png', 'jpg', 'jpeg', 'webp'] }] });
+    if (r.canceled || !r.filePaths[0]) return { ok: false, cancelled: true };
+    return studio.pickToken(r.filePaths[0]);
+  });
   handle('rp:sceneCancel', (job) => { const ac = sceneJobs.get(String(job || '')); if (!ac) return { ok: false }; ac.abort(); return { ok: true }; });
 
   // Roleplay turns are checked against the hard limits before and after the AI writes.
@@ -594,7 +608,7 @@ function register(d) {
   // CosyVoice2 voice clips (his, with consent) live in voice-clips/<server id>/, never in settings.
   const voice = voiceChat.register({ handle, secrets, readSettings, send, which: makers.which, media, mediaRoot: root, dialog, getWindow, clipsDir: path.join(dataDir(), 'voice-clips'), hearth });
 
-  return { memory, scheduler, connectors, teammates, hearth, makeScene, cards, rpGuard, docText, mcpForRun: (dir) => connectors.forRun(dir), stop() { scheduler.stop(); makers.stopSpeaking(); voice.stop(); } };
+  return { studio, memory, scheduler, connectors, teammates, hearth, makeScene, cards, rpGuard, docText, mcpForRun: (dir) => connectors.forRun(dir), stop() { scheduler.stop(); makers.stopSpeaking(); voice.stop(); } };
 }
 
 module.exports = { register, transcriptOf, shieldLine, KEY_NAMES, UNFILTERED };
