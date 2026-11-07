@@ -152,11 +152,11 @@ export function buildCastle({ world, L, agents = {}, labelTex, night = false }) 
   refs.towerRoof = put(root, new THREE.ConeGeometry(Math.hypot(cw, cd) * 0.6, 5, 4), toon('#5b7cfa'), tw.x, top + ch + 2.5, tw.z, { ry: Math.PI / 4, ink: true });
   flag(root, tw.x, top + ch + 5, tw.z, '#ec7552');
   // the King's Chambers' own furnishings, outside the 6×4 floor he decorates: a canopy bed
-  // along the west wall, banners and a tall window on the back wall, a carpet under it all
+  // along the east wall (the wall screen is on the west), banners and a tall window on the back wall, a carpet under it all
   const kc = new THREE.Group(); kc.name = 'kings-chambers'; root.add(kc);
   put(kc, new THREE.BoxGeometry(cw - 0.6, 0.04, cd - 0.6), toon('#b03a48'), tw.x, top + 0.02, tw.z, { cast: false });
   put(kc, new THREE.BoxGeometry(cw - 1.4, 0.05, cd - 1.4), toon('#e8c35a'), tw.x, top + 0.03, tw.z, { cast: false });
-  const bx = tw.x - cw / 2 + 1.1; const bz = tw.z - cd / 2 + 1.6;
+  const bx = tw.x + cw / 2 - 1.1; const bz = tw.z - cd / 2 + 1.6;
   put(kc, new THREE.BoxGeometry(1.6, 0.5, 2.4), toon('#8a5634'), bx, top + 0.25, bz, { ink: true });
   put(kc, new THREE.BoxGeometry(1.5, 0.22, 2.3), toon('#f4f1ea'), bx, top + 0.6, bz, { ink: true });
   put(kc, new THREE.BoxGeometry(1.5, 0.12, 1.4), toon('#5b7cfa'), bx, top + 0.74, bz + 0.45, { ink: true });
