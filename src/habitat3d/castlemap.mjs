@@ -216,6 +216,7 @@ export function folkSpots(L, houses) {
     ...houses.slice(0, 18).map((h) => ({ kind: 'home', x: h.door.x, z: h.door.z })),
   ];
 }
+export const MARKET_STALLS = 6;
 export const FOLK_KINDS = ['merchant', 'child', 'baker', 'farmer', 'chatter', 'walker', 'cat'];
 // counts: off -> none; Lighter 3D -> a few; reduced motion keeps them but still.
 export function folkCount({ on = true, lighter = false } = {}) { return on ? (lighter ? 12 : 34) : 0; }
@@ -224,13 +225,17 @@ export function guardCount({ on = true, lighter = false } = {}) { return on ? (l
 export function townsfolk(L, houses, n, seed = 24) {
   const r = rng(seed); const spots = folkSpots(L, houses); const out = [];
   for (let i = 0; i < n; i++) {
-    const kind = i < 3 ? 'merchant' : i < 5 ? 'cat' : FOLK_KINDS[1 + Math.floor(r() * (FOLK_KINDS.length - 2))];
+    const nm = n >= 20 ? 6 : 3; // a merchant at each stall (MARKET_STALLS), fewer in Lighter 3D
+    const kind = i < nm ? 'merchant' : i < nm + 2 ? 'cat' : FOLK_KINDS[1 + Math.floor(r() * (FOLK_KINDS.length - 2))];
     const home = houses.length ? houses[Math.floor(r() * houses.length)].door : { x: L.market.x, z: L.market.z + 6 };
     let path;
-    if (kind === 'merchant') { const a = (i / 3) * Math.PI * 2; path = [{ x: L.market.x + Math.cos(a) * 6, z: L.market.z + Math.sin(a) * 6 }]; }
+    if (kind === 'merchant') { const a = (i / nm) * Math.PI * 2; path = [{ x: L.market.x + Math.cos(a) * 5.6, z: L.market.z + Math.sin(a) * 5.6 }]; }
     else if (kind === 'child' || kind === 'cat') { const c = spots[1]; const rad = kind === 'cat' ? 3 : 2.2; path = Array.from({ length: 6 }, (_, k) => ({ x: c.x + Math.cos(k + i) * rad, z: c.z + Math.sin(k * 1.3 + i) * rad })); }
     else if (kind === 'farmer') path = [home, { x: 0, z: L.street.z }, { x: 0, z: L.gate.z - 2 }, { x: 0, z: L.gate.z + 14 }, { x: -18, z: L.gate.z + 22 }];
-    else { const a = spots[Math.floor(r() * spots.length)]; const b = spots[Math.floor(r() * spots.length)]; path = [home, { x: a.x, z: a.z }, { x: b.x, z: b.z }]; }
+    else if (r() < 0.55) { // browsing the market: a slow loop between the stalls
+      const a0 = r() * Math.PI * 2; const rad = 3.2 + r() * 2.2;
+      path = Array.from({ length: 4 }, (_, k) => ({ x: L.market.x + Math.cos(a0 + k * 1.4) * rad, z: L.market.z + Math.sin(a0 + k * 1.4) * rad }));
+    } else { const a = spots[Math.floor(r() * spots.length)]; const b = spots[Math.floor(r() * spots.length)]; path = [home, { x: a.x, z: a.z }, { x: b.x, z: b.z }]; }
     out.push({ i, kind, look: randomChar(seed * 97 + i * 13), home, path, speed: kind === 'cat' ? 1.1 : kind === 'child' ? 1.6 : 1.2, offset: r() * 1000, nightOut: r() < 0.22, small: kind === 'child', cat: kind === 'cat' });
   }
   return out;

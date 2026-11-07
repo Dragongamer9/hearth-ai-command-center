@@ -4,7 +4,7 @@
 // forest, river and fields outside. Built once per world; cel-shaded and inked.
 import * as THREE from '../vendor/three/three.module.min.js';
 import { toon, inked, PASTEL } from './toon.mjs';
-import { cityTowers, keepTowers, townHouses, roomZoneRect, CHAMBERS_Y, WALL_TOP } from './castlemap.mjs';
+import { cityTowers, keepTowers, townHouses, roomZoneRect, CHAMBERS_Y, WALL_TOP, MARKET_STALLS } from './castlemap.mjs';
 
 function rng(seed) { let s = seed; return () => { s = (s * 16807) % 2147483647; return (s - 1) / 2147483646; }; }
 function put(parent, geo, mat, x, y, z, o = {}) {
@@ -77,6 +77,35 @@ function aiHouse(g, H, room, color, name, labelTex, windowMat) {
   return { group: hg, roof, w, d };
 }
 
+// The market: stalls with striped awnings in a ring (a merchant stands at each, see
+// townsfolk()), crates, barrels and produce, lantern posts, a cobbled ring and trees.
+function buildMarket(root, L, r, stone) {
+  const M0 = L.market; const N = MARKET_STALLS;
+  const ring = put(root, new THREE.CylinderGeometry(M0.r + 2.2, M0.r + 2.2, 0.1, 32), toon('#cbbfa8'), M0.x, 0.06, M0.z, { cast: false }); void ring;
+  for (let i = 0; i < 40; i++) { const a = (i / 40) * Math.PI * 2; put(root, geo('cob', () => new THREE.CylinderGeometry(0.32, 0.36, 0.08, 6)), toon(i % 2 ? '#b9ab92' : '#d8ccb5'), M0.x + Math.cos(a) * (M0.r + 1.5), 0.13, M0.z + Math.sin(a) * (M0.r + 1.5), { cast: false }); }
+  const goods = ['#ec7552', '#f2c14e', '#7ccf8a', '#e0607e', '#9a7cff', '#ffb347'];
+  for (let i = 0; i < N; i++) {
+    const a = (i / N) * Math.PI * 2; const g = new THREE.Group(); g.position.set(M0.x + Math.cos(a) * 7.4, 0, M0.z + Math.sin(a) * 7.4); g.rotation.y = -a - Math.PI / 2; root.add(g);
+    put(g, geo('stall-c', () => new THREE.BoxGeometry(2.8, 1.0, 1.2)), toon(PASTEL.wood), 0, 0.5, 0, { ink: true });
+    for (const sx of [-1.3, 1.3]) for (const sz of [-0.5, 0.5]) put(g, geo('stall-p', () => new THREE.CylinderGeometry(0.06, 0.06, 2.4, 6)), toon(PASTEL.woodDark), sx, 1.2, sz, { cast: false });
+    const c1 = PASTEL.roofs[i % PASTEL.roofs.length];
+    for (let k = 0; k < 5; k++) put(g, geo('awn-s', () => new THREE.BoxGeometry(0.62, 0.06, 1.7)), toon(k % 2 ? '#fbf3e4' : c1), -1.24 + k * 0.62, 2.45, 0.1, { rx: 0.28, cast: k === 2, ink: k === 0 || k === 4 ? 1.06 : false });
+    for (let k = 0; k < 4; k++) put(g, geo('fruit', () => new THREE.SphereGeometry(0.16, 8, 6)), toon(goods[(i + k) % goods.length]), -0.9 + k * 0.6, 1.12, 0.1, { cast: false });
+    put(g, geo('crate', () => new THREE.BoxGeometry(0.7, 0.6, 0.7)), toon('#b07a4a'), 1.9, 0.3, 0.3, { ry: 0.3, ink: true });
+    put(g, geo('barrel', () => new THREE.CylinderGeometry(0.34, 0.3, 0.8, 10)), toon('#8a5634'), -1.9, 0.4, 0.4, { ink: true });
+  }
+  // the well, with a little roof
+  const wx = M0.x + 0.2; const wz = M0.z;
+  put(root, new THREE.CylinderGeometry(1.2, 1.3, 0.9, 14), stone, wx, 0.45, wz, { ink: true });
+  put(root, new THREE.CylinderGeometry(0.95, 0.95, 0.05, 14), toon('#5aa9e0'), wx, 0.86, wz, { cast: false });
+  for (const sx of [-1, 1]) put(root, geo('well-p', () => new THREE.CylinderGeometry(0.08, 0.08, 2.2, 6)), toon(PASTEL.woodDark), wx + sx * 1.0, 1.4, wz, {});
+  put(root, new THREE.ConeGeometry(1.7, 1.0, 4), toon('#c0563f'), wx, 2.9, wz, { ry: Math.PI / 4, ink: true });
+  // lantern posts and trees around the square
+  for (let i = 0; i < 4; i++) { const a = (i / 4) * Math.PI * 2 + 0.4; const x = M0.x + Math.cos(a) * (M0.r + 3.4); const z = M0.z + Math.sin(a) * (M0.r + 3.4);
+    put(root, geo('lp', () => new THREE.CylinderGeometry(0.08, 0.1, 3.2, 6)), toon('#2a2230'), x, 1.6, z, { cast: false });
+    put(root, geo('lb', () => new THREE.SphereGeometry(0.3, 8, 6)), new THREE.MeshBasicMaterial({ color: '#ffd27a' }), x, 3.3, z, { cast: false }); }
+  for (let i = 0; i < 5; i++) { const a = (i / 5) * Math.PI * 2 + 1.1; tree(root, M0.x + Math.cos(a) * (M0.r + 6.5), M0.z + Math.sin(a) * (M0.r + 6.5), 0.7 + r() * 0.3, r); }
+}
 export function buildCastle({ world, L, agents = {}, labelTex, night = false }) {
   const root = new THREE.Group(); root.name = 'castle';
   const refs = { houseRoofs: {}, towerRoof: null, windowMat: null, torches: [], houses: [], hallShell: null };
@@ -106,8 +135,7 @@ export function buildCastle({ world, L, agents = {}, labelTex, night = false }) 
   refs.gateFront = { x: L.gate.x, z: L.gate.z + 5 };
   // market square and well
   put(root, new THREE.CylinderGeometry(L.market.r, L.market.r, 0.12, 28), toon(PASTEL.paving), L.market.x, 0.07, L.market.z, { cast: false });
-  put(root, new THREE.CylinderGeometry(1.3, 1.3, 1.2, 14), stone, L.market.x + 4, 0.6, L.market.z - 3, { ink: true });
-  for (let i = 0; i < 3; i++) { const a = (i / 3) * Math.PI * 2; const sx = L.market.x + Math.cos(a) * 6.8; const sz = L.market.z + Math.sin(a) * 6.8; put(root, geo('stall', () => new THREE.BoxGeometry(2.6, 1.3, 1.5)), toon(PASTEL.wood), sx, 0.65, sz, { ry: -a, ink: true }); put(root, geo('awn', () => new THREE.ConeGeometry(2.1, 1.1, 4)), toon(PASTEL.roofs[i]), sx, 2.1, sz, { ry: -a + Math.PI / 4, ink: true }); }
+  buildMarket(root, L, r, stone);
   // the town's houses
   const houses = townHouses(L);
   for (const h of houses) townHouse(root, h, windowMat);
