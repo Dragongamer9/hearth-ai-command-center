@@ -1,6 +1,7 @@
 // The Habitat page: a cozy top-down pixel world where each AI has its own room
 // and a desk in the shared workroom. Rendering only; the world logic lives in
 // ./habitat/world.mjs (pure, unit tested). All art is original and drawn in code.
+import { addRaidWins } from './habitat3d/castlemap.mjs';
 import { TILE, T, buildWorld, behaviourOf, newActor, stepActor, closedDoors, walkFrame, deskOf, roomOf, newPet, stepPet, kitchenSpot } from './habitat/world.mjs';
 import { undoLast, setLock, freeOwnerProps, clearBoard, clearJournal, isLocked, relDay } from './habitat/actions.mjs';
 import { SPRITES, SLEEP, ICONS, ICONS2, PET, glyph, textWidth } from './habitat/sprites.mjs';
@@ -836,7 +837,7 @@ function tipHtml(hit) {
     const a = H.agents[hit.id]; const ai = st.ai[hit.id];
     const ach = ACHIEVEMENTS.filter((x) => ai?.ach?.[x.id]).map((x) => x.label);
     const done = ai?.done || 0; const next = (unlockedCount(done) + 1) * UNLOCK_EVERY;
-    return `<b class="hab-name"><i style="background:${esc(a?.color)}"></i>${esc(a?.name)}’s room</b><div>${done} task${done === 1 ? '' : 's'} done${ach.length ? ` · ${esc(ach.join(', '))}` : ''}</div>${isLocked(st, hit.id) ? '<div>Locked: the AI can’t rearrange it</div>' : ''}${(st.journal[hit.id] || []).length ? `<div class="faint">Latest: ${esc(st.journal[hit.id].slice(-1)[0].text)}</div>` : ''}<div class="faint">${unlockedCount(done) < 8 ? `Next prop at ${next} tasks · ` : ''}Click for its journal, to rearrange or lock</div>`;
+    return `<b class="hab-name"><i style="background:${esc(a?.color)}"></i>${esc(a?.name)}’s room</b><div>${done} task${done === 1 ? '' : 's'} done${ach.length ? ` · ${esc(ach.join(', '))}` : ''}</div>${st.raids?.[hit.id] ? `<div>Raiders defeated: ${st.raids[hit.id]}</div>` : ''}${isLocked(st, hit.id) ? '<div>Locked: the AI can’t rearrange it</div>' : ''}${(st.journal[hit.id] || []).length ? `<div class="faint">Latest: ${esc(st.journal[hit.id].slice(-1)[0].text)}</div>` : ''}<div class="faint">${unlockedCount(done) < 8 ? `Next prop at ${next} tasks · ` : ''}Click for its journal, to rearrange or lock</div>`;
   }
   const a = H.agents[hit.id]; const beh = H.behs[hit.id];
   if (!a || !beh) return '';
@@ -845,6 +846,7 @@ function tipHtml(hit) {
   if (hit.kind === 'desk' && !beh.monitor) lines.push(`${esc(a.name)}’s desk · empty`);
   if (hit.kind === 'desk' && H.lights[hit.id]) lines.push(`Status light: ${LIGHT_TEXT[H.lights[hit.id]]}`);
   if (beh.mode === 'sleep') lines.push('Out of usage, sleeping');
+  if (st.raids?.[hit.id]) lines.push(`Raiders defeated: ${st.raids[hit.id]}`);
   if (beh.mode === 'locked') lines.push(a.status === 'hold' ? 'Sign-in hold: door locked' : 'Signed out: door locked');
   if (a.task) lines.push(`Working on <b>T-${esc(a.task.id)}</b> ${esc(a.task.title)}`);
   if (a.reviewing) lines.push(`Reviewing <b>T-${esc(a.reviewing.id)}</b> ${esc(a.reviewing.title)}`);
@@ -1031,6 +1033,8 @@ export function habitatEngine() {
     tip: (hit) => tipHtml(hit),
     click: (hit) => onClick(null, hit),
     clock: () => clock(),
+    // 2.4: the 3D raid credits defenders when it ends (saved with the rest of the Habitat).
+    addRaidWins: (credit) => { if (!H.store) return; H.store.raids = addRaidWins(H.store.raids, credit); saveStore(); },
     setClock: (ms) => { H.clockAt = ms; poll(); },
   };
 }

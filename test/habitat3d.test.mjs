@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { buildWorld, behaviourOf, findPath, restSpot, newActor, stepActor, roomOf, deskOf, T, MAX_AIS } from '../src/habitat/world.mjs';
 import { walkableTiles, emptyStore } from '../src/habitat/life.mjs';
 import { applyHabitatLines, habitatSection, describeRoom, OWNER_ROOM_LINE } from '../src/habitat/actions.mjs';
-import { tileTo3D, toTile, lodgeBounds, inBounds, wallKind, visualFor, doorClosed, lampLit, normPrefs, withPref, pickView, motionFor, pixelRatio, PIXEL_RATIO_CAP, lightRig, presets, facingOf, sceneKey, OWNER_NOTES_MAX } from '../src/habitat3d/map.mjs';
+import { tileTo3D, hallTo3D, cityBounds, toTile, lodgeBounds, inBounds, wallKind, visualFor, doorClosed, lampLit, normPrefs, withPref, pickView, motionFor, pixelRatio, PIXEL_RATIO_CAP, lightRig, presets, facingOf, sceneKey, OWNER_NOTES_MAX } from '../src/habitat3d/map.mjs';
 import { STUDY, STUDY_DOOR, NOOK, inStudy, inNook, ownerFree, aiCanStand, moveAvatar, AVATAR_R, inputFrom, stepDelta, camBob, snapTurn, nearestTarget, noticers, ownerPool, ownerEdit, canPlaceOwner, OWNER_ITEMS, studyGlobal } from '../src/habitat3d/walk.mjs';
 import { AGENT_IDS } from '../src/registry.mjs';
 
@@ -18,16 +18,17 @@ const ownerTiles = () => {
   return [...out, STUDY_DOOR, ...NOOK.opening];
 };
 
-test('2D grid -> 3D: every tile maps inside the lodge, for 1 to 12 AIs', () => {
+test('2D grid -> 3D: every tile maps inside the castle city, for 1 to 12 AIs', () => {
   for (let n = 1; n <= MAX_AIS; n++) {
     const w = buildWorld(IDS.slice(0, n));
-    const b = lodgeBounds(w);
+    const b = lodgeBounds(w); const city = cityBounds(w);
     assert.ok(b.maxX - b.minX === w.w && b.maxZ - b.minZ === w.h);
     for (let y = 0; y < w.h; y++) for (let x = 0; x < w.w; x++) {
       const p = tileTo3D(w, x, y);
-      assert.ok(inBounds(b, p), `tile ${x},${y} inside for ${n}`);
-      assert.ok(p.x - 0.5 >= b.minX - 1e-9 && p.x + 0.5 <= b.maxX + 1e-9 && p.z - 0.5 >= b.minZ - 1e-9 && p.z + 0.5 <= b.maxZ + 1e-9, 'whole tile inside');
-      assert.deepEqual(toTile(w, p.x, p.z), { x, y }, 'round trip');
+      assert.ok(inBounds(city, p), `tile ${x},${y} inside the city for ${n}`);
+      const h = hallTo3D(w, x, y);
+      assert.ok(inBounds(b, h), 'hall mapping inside the hall');
+      assert.deepEqual(toTile(w, h.x, h.z), { x, y }, 'round trip');
     }
   }
 });
@@ -158,7 +159,7 @@ test('camera presets aim inside the lodge; the scene key tracks saved looks', ()
     const w = buildWorld(IDS.slice(0, n));
     const ps = presets(w, {});
     assert.equal(ps.filter((p) => p.id.startsWith('room:')).length, n);
-    for (const p of ps) assert.ok(inBounds(lodgeBounds(w), p.target, 0.01), p.id);
+    for (const p of ps) assert.ok(inBounds(cityBounds(w), p.target, 0.01), p.id);
     assert.ok(ps.some((p) => p.id === 'lodge') && ps.some((p) => p.id === 'great'));
   }
   const w = buildWorld(IDS.slice(0, 3));

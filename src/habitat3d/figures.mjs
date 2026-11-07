@@ -7,6 +7,8 @@ import * as THREE from '../vendor/three/three.module.min.js';
 import { blobTex, fabricTex } from './textures.mjs';
 import { hashStr } from '../habitat/life.mjs';
 import { HAIR_STYLES } from './map.mjs';
+import { toonRamp, inked } from './toon.mjs';
+import { outfitColors } from './castlemap.mjs';
 
 const SKIN = ['#f3d2b3', '#e9bf98', '#d6a27a', '#b9805a', '#8f5f3f', '#f6dcc4'];
 const HAIR = ['#3b2a20', '#6b4127', '#a8662f', '#d9b36a', '#1f1a1c', '#8a3b25', '#c9c3bd'];
@@ -15,7 +17,8 @@ export const ACCENTS = ['scarf', 'glasses', 'headphones', 'beanie', 'bowtie', 'b
 const mats = new Map();
 function mat(color, { rough = 0.75, metal = 0, emissive = null, ei = 0, map = null, transparent = false, opacity = 1 } = {}) {
   const k = [color, rough, metal, emissive, ei, map?.uuid, transparent, opacity].join('|');
-  if (!mats.has(k)) mats.set(k, new THREE.MeshStandardMaterial({ color, roughness: rough, metalness: metal, emissive: emissive || '#000000', emissiveIntensity: ei, map, transparent, opacity }));
+  // 2.4: cel-shaded, like an anime
+  if (!mats.has(k)) mats.set(k, new THREE.MeshToonMaterial({ color, gradientMap: toonRamp(), emissive: emissive || '#000000', emissiveIntensity: ei, map, transparent, opacity }));
   return mats.get(k);
 }
 export function disposeFigureMats() { for (const m of mats.values()) m.dispose(); mats.clear(); }
@@ -49,19 +52,25 @@ function limb(len, r, m) {
   return pivot;
 }
 
-// opts: { color, id, skin?, hair?, hairStyle?, accent?, owner? }
+// opts: { color, id, skin?, hair?, hairStyle?, accent?, owner?, char? }
+// 2.4: char is the anime character picked on the Characters page (castlemap normChar):
+// hair style and colour, eyes, skin, outfit and trim, an accessory, an expression.
 export function buildFigure(opts) {
   const h = hashStr(opts.id || 'x');
-  const color = opts.color || '#888888';
-  const skinC = opts.skin || SKIN[h % SKIN.length];
-  const hairC = opts.hairColor || HAIR[(h >>> 4) % HAIR.length];
-  const style = opts.hairStyle ?? HAIR_STYLES[(h >>> 8) % 4];
-  const accent = opts.accent ?? (opts.owner ? 'flame' : ACCENTS[(h >>> 12) % ACCENTS.length]);
-  const cloth = mat(color, { rough: 0.85, map: fabricTex('#ffffff') });
+  const ch = opts.char || null;
+  const oc = ch ? outfitColors(ch) : null;
+  const color = oc ? oc.outfit : opts.color || '#888888';
+  const skinC = ch?.skin || opts.skin || SKIN[h % SKIN.length];
+  const hairC = ch?.hairColor || opts.hairColor || HAIR[(h >>> 4) % HAIR.length];
+  const style = ch ? ({ soft: 'short', bob: 'bob', long: 'long', twin: 'twin', pony: 'pony', spiky: 'spiky' }[ch.hair] || 'short') : opts.hairStyle ?? HAIR_STYLES[(h >>> 8) % 4];
+  const accent = ch ? ({ none: opts.owner ? 'crown' : 'none', glasses: 'glasses', catears: 'catears', headphones: 'headphones', ribbon: 'ribbon' }[ch.accessory] || 'none') : opts.accent ?? (opts.owner ? 'flame' : ACCENTS[(h >>> 12) % ACCENTS.length]);
+  const irisC = ch?.eyes || '#2a1d18';
+  const cloth = mat(color, { rough: 0.85 });
   const clothDark = mat(shade(color, -0.14), { rough: 0.85 });
   const skin = mat(skinC, { rough: 0.6 });
   const hair = mat(hairC, { rough: 0.55 });
-  const pants = mat(opts.owner ? '#3b2c24' : shade(color, -0.32), { rough: 0.9 });
+  const pants = mat(opts.owner && !ch ? '#3b2c24' : shade(color, -0.32), { rough: 0.9 });
+  const iris = mat(irisC, { rough: 0.4 });
   const shoe = mat('#3a2a20', { rough: 0.7 });
   const white = mat('#ffffff', { rough: 0.3 });
   const ink = mat('#2a1d18', { rough: 0.4 });
@@ -81,7 +90,7 @@ export function buildFigure(opts) {
   }
   // torso
   const spine = new THREE.Group(); spine.position.y = 0.04; hips.add(spine);
-  const chest = mesh(capsule(0.115, 0.14), cloth, { y: 0.14, sz: 0.85 }); spine.add(chest);
+  const chest = mesh(capsule(0.115, 0.14), cloth, { y: 0.14, sz: 0.85 }); spine.add(chest); inked(chest, 1.07);
   spine.add(mesh(cyl(0.125, 0.13, 0.05, 18), clothDark, { y: 0.03, sz: 0.85 })); // belt / hem
   // arms
   const arms = [];
@@ -96,8 +105,9 @@ export function buildFigure(opts) {
   // head
   const neck = new THREE.Group(); neck.position.y = 0.31; spine.add(neck);
   neck.add(mesh(cyl(0.035, 0.04, 0.06), skin, { y: 0.02 }));
-  const head = new THREE.Group(); head.position.y = 0.17; neck.add(head);
-  head.add(mesh(sphere(), skin, { sx: 0.165, sy: 0.155, sz: 0.15 }));
+  // chibi proportions: a big head
+  const head = new THREE.Group(); head.position.y = 0.2; head.scale.setScalar(1.42); neck.add(head);
+  head.add(inked(mesh(sphere(), skin, { sx: 0.165, sy: 0.155, sz: 0.15 }), 1.05));
   for (const sx of [-1, 1]) head.add(mesh(sphere(), skin, { sx: 0.03, sy: 0.04, sz: 0.02, x: sx * 0.16, y: -0.01 })); // ears
   // face
   const face = new THREE.Group(); face.position.set(0, -0.01, 0.135); head.add(face);
@@ -105,9 +115,11 @@ export function buildFigure(opts) {
   const lids = new THREE.Group(); face.add(lids); lids.visible = false;
   const closed = new THREE.Group(); face.add(closed); closed.visible = false;
   for (const sx of [-1, 1]) {
-    eyes.add(mesh(sphere(), white, { sx: 0.03, sy: 0.036, sz: 0.015, x: sx * 0.058, y: 0.012, shadow: false }));
-    const pupil = mesh(sphere(), ink, { sx: 0.019, sy: 0.025, sz: 0.012, x: sx * 0.058, y: 0.008, z: 0.01, shadow: false }); eyes.add(pupil);
-    eyes.add(mesh(sphere(), white, { sx: 0.006, sy: 0.006, sz: 0.004, x: sx * 0.058 + 0.007, y: 0.02, z: 0.02, shadow: false }));
+    // big anime eyes: dark outline, a coloured iris, two highlights
+    eyes.add(mesh(sphere(), ink, { sx: 0.036, sy: 0.05, sz: 0.015, x: sx * 0.058, y: 0.004, shadow: false }));
+    const pupil = mesh(sphere(), iris, { sx: 0.027, sy: 0.04, sz: 0.012, x: sx * 0.058, y: 0.0, z: 0.008, shadow: false }); eyes.add(pupil);
+    eyes.add(mesh(sphere(), white, { sx: 0.011, sy: 0.011, sz: 0.004, x: sx * 0.058 - 0.01, y: 0.02, z: 0.02, shadow: false }));
+    eyes.add(mesh(sphere(), white, { sx: 0.005, sy: 0.005, sz: 0.004, x: sx * 0.058 + 0.012, y: -0.016, z: 0.02, shadow: false }));
     lids.add(mesh(sphere(), skin, { sx: 0.034, sy: 0.02, sz: 0.018, x: sx * 0.058, y: 0.03, z: 0.004, shadow: false }));
     closed.add(mesh(torusArc(Math.PI), ink, { sx: 0.022, sy: 0.016, sz: 0.01, x: sx * 0.058, y: 0.0, z: 0.012, rz: Math.PI, shadow: false }));
     face.add(mesh(box(), hair, { sx: 0.045, sy: 0.009, sz: 0.01, x: sx * 0.06, y: 0.062, z: 0.0, rz: -sx * 0.12, shadow: false }));
@@ -129,8 +141,12 @@ export function buildFigure(opts) {
     head.add(mesh(sphere(), hair, { sx: 0.12, sy: 0.04, sz: 0.04, y: 0.1, z: 0.14 })); // fringe
     for (const sx of [-1, 1]) head.add(mesh(sphere(), cloth, { sx: 0.045, sy: 0.06, sz: 0.04, x: sx * 0.11, y: 0.17, z: -0.02, rz: -sx * 0.4 })); // little hood ears, like the 2D critters
   } else {
-    head.add(mesh(sphere(), hair, { sx: 0.172, sy: 0.15, sz: 0.158, y: 0.035, z: -0.012 }));
-    head.add(mesh(sphere(), hair, { sx: 0.14, sy: 0.05, sz: 0.06, y: 0.1, z: 0.1, rx: 0.3 })); // fringe
+    head.add(inked(mesh(sphere(), hair, { sx: 0.178, sy: 0.155, sz: 0.165, y: 0.04, z: -0.014 }), 1.04));
+    head.add(mesh(sphere(), hair, { sx: 0.15, sy: 0.055, sz: 0.065, y: 0.1, z: 0.1, rx: 0.3 })); // fringe
+    if (style === 'bob') for (const sx of [-1, 1]) head.add(inked(mesh(sphere(), hair, { sx: 0.06, sy: 0.12, sz: 0.1, x: sx * 0.15, y: -0.04, z: -0.01 }), 1.06));
+    if (style === 'twin') for (const sx of [-1, 1]) head.add(inked(mesh(capsule(0.05, 0.16), hair, { x: sx * 0.2, y: -0.06, z: -0.04, rz: sx * 0.3 }), 1.08));
+    if (style === 'pony') head.add(inked(mesh(capsule(0.055, 0.2), hair, { y: -0.02, z: -0.2, rx: 0.5 }), 1.08));
+    if (style === 'spiky') for (let i = -2; i <= 2; i++) head.add(inked(mesh(new THREE.ConeGeometry(0.045, 0.13, 6), hair, { x: i * 0.06, y: 0.18, z: -0.02, rz: -i * 0.28 }), 1.08));
     if (style === 'curly') for (let i = 0; i < 7; i++) { const a = (i / 7) * Math.PI * 2; head.add(mesh(sphere(), hair, { sx: 0.05, sy: 0.05, sz: 0.05, x: Math.cos(a) * 0.14, y: 0.1 + Math.sin(a * 2) * 0.02, z: Math.sin(a) * 0.12 - 0.02 })); }
     if (style === 'bun') head.add(mesh(sphere(), hair, { sx: 0.07, sy: 0.065, sz: 0.07, y: 0.17, z: -0.06 }));
     if (style === 'long') head.add(mesh(capsule(0.12, 0.12), hair, { y: -0.08, z: -0.07, sx: 1.25, sz: 0.6 }));
@@ -144,6 +160,9 @@ export function buildFigure(opts) {
   if (accent === 'glasses') for (const sx of [-1, 1]) face.add(mesh(new THREE.TorusGeometry(0.03, 0.006, 6, 16), ink, { x: sx * 0.058, y: 0.012, z: 0.02, shadow: false }));
   if (accent === 'headphones') { head.add(mesh(new THREE.TorusGeometry(0.17, 0.014, 6, 24, Math.PI), mat('#3a3a42'), { y: 0.02 })); for (const sx of [-1, 1]) head.add(mesh(cyl(0.045, 0.045, 0.03), mat(accentC), { x: sx * 0.17, rz: Math.PI / 2 })); }
   if (accent === 'beanie') { head.add(mesh(sphere(), mat(accentC, { map: fabricTex(accentC) }), { sx: 0.178, sy: 0.12, sz: 0.168, y: 0.07, z: -0.01 })); head.add(mesh(sphere(), mat(shade(accentC, 0.2)), { sx: 0.045, sy: 0.045, sz: 0.045, y: 0.2 })); }
+  if (accent === 'catears') for (const sx of [-1, 1]) head.add(inked(mesh(new THREE.ConeGeometry(0.05, 0.1, 4), hair, { x: sx * 0.1, y: 0.18, z: -0.01, rz: -sx * 0.3 }), 1.08));
+  if (accent === 'ribbon') for (const sx of [-1, 1]) head.add(mesh(sphere(), mat(oc?.trim || '#ec7552'), { sx: 0.05, sy: 0.035, sz: 0.02, x: 0.1 + sx * 0.04, y: 0.15, z: -0.06 }));
+  if (accent === 'crown') { const cr = new THREE.Group(); cr.position.y = 0.17; head.add(cr); cr.add(inked(mesh(cyl(0.085, 0.09, 0.05, 12), mat('#f2c14e', { emissive: '#7a5a10', ei: 0.3 }), {}), 1.08)); for (let i = 0; i < 5; i++) { const a = (i / 5) * Math.PI * 2; cr.add(mesh(new THREE.ConeGeometry(0.02, 0.05, 4), mat('#f2c14e'), { x: Math.cos(a) * 0.08, y: 0.045, z: Math.sin(a) * 0.08 })); } }
   if (accent === 'flame') { // the owner's flame badge
     const fl = new THREE.Group(); fl.position.set(0.06, 0.2, 0.105);
     fl.add(mesh(new THREE.ConeGeometry(0.03, 0.07, 10), mat('#ff8a2a', { emissive: '#ff6a00', ei: 1.4 }), { y: 0.01 }));

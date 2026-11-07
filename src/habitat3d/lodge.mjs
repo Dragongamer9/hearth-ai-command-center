@@ -8,12 +8,15 @@ import { T } from '../habitat/world.mjs';
 import { TROPHIES, gardenState, GARDEN_STAGES, RUG_STYLES } from '../habitat/life.mjs';
 import { tileTo3D, wallKind, wallHeight, isOutdoor, lodgeBounds } from './map.mjs';
 import { STUDY, STUDY_DOOR, NOOK, studyGlobal } from './walk.mjs';
+import { toonRamp } from './toon.mjs';
+import { CHAMBERS_Y } from './castlemap.mjs';
 import { woodTex, planksTex, stoneTex, knitTex, grassTex, soilTex, fabricTex, glowTex, blobTex, labelTex, roofTex, artTex } from './textures.mjs';
 
 const mats = new Map();
 export function M(color, o = {}) {
   const k = JSON.stringify([color, o.rough, o.metal, o.emissive, o.ei, o.map?.uuid, o.transparent, o.opacity, o.vc, o.side]);
-  if (!mats.has(k)) mats.set(k, new THREE.MeshStandardMaterial({ color, roughness: o.rough ?? 0.8, metalness: o.metal ?? 0, emissive: o.emissive || '#000000', emissiveIntensity: o.ei ?? 0, map: o.map || null, transparent: Boolean(o.transparent), opacity: o.opacity ?? 1, vertexColors: Boolean(o.vc), side: o.side ?? THREE.FrontSide }));
+  // 2.4: cel-shaded (the anime look), same inputs as before
+  if (!mats.has(k)) mats.set(k, new THREE.MeshToonMaterial({ color, gradientMap: toonRamp(), emissive: o.emissive || '#000000', emissiveIntensity: o.ei ?? 0, map: o.map || null, transparent: Boolean(o.transparent), opacity: o.opacity ?? 1, vertexColors: Boolean(o.vc), side: o.side ?? THREE.FrontSide }));
   return mats.get(k);
 }
 export function disposeLodgeMats() { for (const m of mats.values()) m.dispose(); mats.clear(); for (const t of reps.values()) t.dispose(); reps.clear(); }
@@ -201,30 +204,14 @@ export function buildLodge({ world, agents = {}, store = {}, notes = [], prefs =
   const b = refs.bounds;
   const W = world.w; const Hh = world.h;
 
-  // Hill and meadow
-  const span = Math.max(b.maxX - b.minX + 14, b.maxZ - b.minZ + 14);
-  const hill = add(root, new THREE.CylinderGeometry(span * 0.62, span * 0.82, 3.2, 64, 1), M('#ffffff', { map: texRepeat(grassTex(), 10, 10), rough: 1 }), { y: -1.9, cast: false });
-  hill.position.x = -2;
-  plane(root, span * 6, span * 6, 0, -3.5, 0, M('#ffffff', { map: texRepeat(grassTex(), 40, 40), rough: 1 }));
+  // 2.4: the land, the trees and the town come from castle.mjs; the keep's hall stands on its paving.
+  const span = Math.max(b.maxX - b.minX + 14, b.maxZ - b.minZ + 14); void span;
   // Foundation stone under the lodge, the study and the nook.
   box(root, W + 0.4, 0.4, Hh + 0.4, (b.minX + b.maxX) / 2, -0.4, (b.minZ + b.maxZ) / 2, M('#ffffff', { map: texRepeat(stoneTex('warm'), W / 2, 1) }));
   const sA = P(STUDY.x0 - 1, STUDY.y0 - 1); const sB = P(STUDY.x0 + STUDY.w, STUDY.y0 + STUDY.h);
   box(root, sB.x - sA.x + 1.4, 0.4, sB.z - sA.z + 1.4, (sA.x + sB.x) / 2, -0.4, (sA.z + sB.z) / 2, M('#ffffff', { map: texRepeat(stoneTex('warm'), 3, 1) }));
   const nA = P(NOOK.fire.x, NOOK.y0 - 1); const nB = P(0, NOOK.y0 + NOOK.h);
   box(root, nB.x - nA.x + 1.4, 0.4, nB.z - nA.z + 1.4, (nA.x + nB.x) / 2, -0.4, (nA.z + nB.z) / 2, STONE());
-  // Trees around the hill (original low-poly pines and round trees).
-  const rngT = (i) => ((Math.sin(i * 127.1) * 43758.5453) % 1 + 1) % 1;
-  for (let i = 0; i < 22; i++) {
-    const a = (i / 22) * Math.PI * 2 + rngT(i) * 0.2; const r = span * (0.5 + rngT(i + 3) * 0.12);
-    const x = Math.cos(a) * r - 2; const z = Math.sin(a) * r * 0.75;
-    if (z > b.maxZ + 2 && Math.abs(x) < span * 0.35) continue; // keep the front view open
-    const t = new THREE.Group(); t.position.set(x, -0.35 - rngT(i + 9) * 0.3, z);
-    cyl(t, 0.12, 0.18, 0.9, 0, 0, 0, M('#5b3b26'));
-    if (i % 3) { for (let k = 0; k < 3; k++) add(t, new THREE.ConeGeometry(1.0 - k * 0.25, 1.2, 8), M(['#2f5a3a', '#376a42', '#2b5034'][k]), { y: 1.2 + k * 0.6 }); }
-    else leafCluster(t, 0, 1.5, 0, 0.8, '#5e8f3e', 8);
-    root.add(t);
-  }
-
   // Floors
   const floors = new THREE.Group(); root.add(floors);
   const rectFloor = (x0, y0, w, h, mat, hit = null, rep = 0.5) => {
@@ -624,6 +611,11 @@ export function buildLodge({ world, agents = {}, store = {}, notes = [], prefs =
     const sl = new THREE.PointLight('#ffc78a', lampsOn ? 1.2 : 0.3, 6, 1.8); sl.position.set(rc.x + 0.5, 2.0, rc.z + 0.5); root.add(sl); refs.studyLight = sl;
     refs.studyCenter = P(STUDY.x0 + 2.5, STUDY.y0 + 1.5);
   }
+  // 2.4: the study is the King's Chambers on top of the keep: lift what stands there.
+  const cA = P(STUDY.x0 - 1, STUDY.y0 - 1); const cB = P(STUDY.x0 + STUDY.w, STUDY.y0 + STUDY.h);
+  const inCh = (x, z) => x >= Math.min(cA.x, cB.x) - 0.8 && x <= Math.max(cA.x, cB.x) + 0.8 && z >= Math.min(cA.z, cB.z) - 0.8 && z <= Math.max(cA.z, cB.z) + 0.8;
+  for (const o of [...root.children]) { if (o === floors) continue; if (inCh(o.position.x, o.position.z)) o.position.y += CHAMBERS_Y; }
+  for (const o of [...floors.children]) if (inCh(o.position.x, o.position.z)) o.position.y += CHAMBERS_Y;
   mergeStatic(root, refs);
   return { root, refs };
 }

@@ -4,6 +4,7 @@
 // ../habitat/life.mjs) stays the single source of truth; 3D only draws it.
 
 import { T } from '../habitat/world.mjs';
+import { place3D, castleLayout, normCharacters, withCharacter, TIMES, normRaids, CHAMBERS_Y } from './castlemap.mjs';
 
 // One tile is one metre-ish unit in 3D. The lodge floor sits at y = 0.
 export const UNIT = 1;
@@ -11,11 +12,17 @@ export const FLOOR_Y = 0;
 export const WALL_H = { outer: 1.5, back: 2.5, inner: 1.15 }; // dollhouse: low walls toward the viewer
 export const PIXEL_RATIO_CAP = 2;
 
-// Tile (x, y) of the 2D grid -> centre of that tile on the 3D floor (x, z).
-// The lodge is centred on the origin; +z is "down" in 2D (toward the viewer).
+// Tile (x, y) of the 2D grid -> where it stands in the castle (x, z, and the floor
+// height y). 2.4: the keep's great hall is centred on the origin; each AI's room is
+// its house on the street and the owner's study is the King's Chambers (castlemap.mjs).
+const layouts = new WeakMap();
+export function layoutOf(world) { if (!world) return castleLayout(null); let L = layouts.get(world); if (!L) { L = castleLayout(world); layouts.set(world, L); } return L; }
 export function tileTo3D(world, x, y) {
-  return { x: (x - world.w / 2 + 0.5) * UNIT, z: (y - world.h / 2 + 0.5) * UNIT };
+  const p = place3D(world, x, y, layoutOf(world));
+  return { x: p.x * UNIT, y: p.y, z: p.z * UNIT };
 }
+// The great hall alone (the old lodge mapping), for things that stay in the hall.
+export function hallTo3D(world, x, y) { return { x: (x - world.w / 2 + 0.5) * UNIT, y: 0, z: (y - world.h / 2 + 0.5) * UNIT }; }
 // The reverse, for picking a floor point.
 export function toTile(world, X, Z) {
   return { x: Math.floor(X / UNIT + world.w / 2), y: Math.floor(Z / UNIT + world.h / 2) };
@@ -24,6 +31,8 @@ export function toTile(world, X, Z) {
 export function lodgeBounds(world) {
   return { minX: (-world.w / 2) * UNIT, maxX: (world.w / 2) * UNIT, minZ: (-world.h / 2) * UNIT, maxZ: (world.h / 2) * UNIT };
 }
+// The whole city, for the camera and the weather.
+export function cityBounds(world) { const L = layoutOf(world); const r = L.city.r + 8; return { minX: L.city.cx - r, maxX: L.city.cx + r, minZ: L.city.cz - r, maxZ: L.city.cz + r }; }
 export const inBounds = (b, p, pad = 0) => p.x >= b.minX - pad && p.x <= b.maxX + pad && p.z >= b.minZ - pad && p.z <= b.maxZ + pad;
 
 // Which way a figure faces for the 2D directions (rotation about y, 0 = toward +z).
@@ -76,6 +85,8 @@ export const lampLit = (store, id, light) => Boolean(light?.lamps) && store?.ai?
 // presses the switch; nothing here ever changes them on its own.
 export const HAIR_STYLES = ['short', 'curly', 'bun', 'long', 'hood'];
 export const OUTFITS = ['#e8833a', '#c9542e', '#d9a441', '#7a4a2e', '#3f6e8c', '#5d7f4a'];
+// Raids keep 'on' only when he set it, so the Lighter 3D / reduced-motion default stays a default.
+const raidPref = (raw) => { const r = normRaids(raw); return r.explicit ? { on: r.on, freq: r.freq } : { freq: r.freq }; };
 export function normPrefs(raw) {
   const o = raw && typeof raw === 'object' ? raw : {};
   const av = o.avatar && typeof o.avatar === 'object' ? o.avatar : {};
@@ -85,6 +96,10 @@ export function normPrefs(raw) {
     walkView: o.walkView === 'first' ? 'first' : 'third',
     avatar: { hair: Number.isInteger(av.hair) && av.hair >= 0 && av.hair < HAIR_STYLES.length ? av.hair : 0, outfit: OUTFITS.includes(av.outfit) ? av.outfit : OUTFITS[0] },
     room: normOwnerRoom(o.room),
+    characters: normCharacters(o.characters),
+    time: TIMES.includes(o.time) ? o.time : 'auto',
+    folk: o.folk !== false,
+    raids: raidPref(o.raids),
     notes: Array.isArray(o.notes) ? o.notes.filter((n) => n && typeof n.text === 'string' && n.text.trim()).slice(-OWNER_NOTES_MAX).map((n) => ({ text: cleanNote(n.text), at: typeof n.at === 'string' ? n.at : new Date(0).toISOString() })) : [],
   };
 }
@@ -99,6 +114,10 @@ export function withPref(prefs, key, value) {
   if (key === 'room') p.room = normOwnerRoom(value);
   if (key === 'note') { const t = cleanNote(value); if (t) p.notes = [...p.notes, { text: t, at: new Date().toISOString() }].slice(-OWNER_NOTES_MAX); }
   if (key === 'clearNotes') p.notes = [];
+  if (key === 'character') p.characters = withCharacter(p.characters, value?.who, value?.spec);
+  if (key === 'time') p.time = TIMES.includes(value) ? value : 'auto';
+  if (key === 'folk') p.folk = value === true;
+  if (key === 'raids') p.raids = raidPref({ ...p.raids, ...(value && typeof value === 'object' ? value : {}) });
   return p;
 }
 // The owner's room is decorated by him only (see ./walk.mjs); this just keeps the saved shape valid.
@@ -147,16 +166,19 @@ export function lightRig(phase = 'day') {
   return R[phase] || R.day;
 }
 
-// Camera presets: the whole lodge, the great room, the kitchen, the garden and each AI's room.
+// Camera presets (2.4): the whole castle, the great hall, the King's Chambers, the
+// garden, the market, the gate, and each AI's house.
 export function presets(world, names = {}) {
-  const b = lodgeBounds(world);
-  const span = Math.max(b.maxX - b.minX, (b.maxZ - b.minZ) * 1.6);
-  const out = [{ id: 'lodge', label: 'Whole lodge', target: { x: 0, y: 0, z: 1 }, dist: span * 0.8, phi: 0.92, theta: 0.3 }];
-  const rect = (x0, y0, w, h) => { const a = tileTo3D(world, x0, y0); const c = tileTo3D(world, x0 + w - 1, y0 + h - 1); return { x: (a.x + c.x) / 2, y: 0, z: (a.z + c.z) / 2 }; };
-  out.push({ id: 'great', label: 'Great room', target: rect(1, 6, world.w - 2, 8), dist: Math.max(14, world.w * 0.55), phi: 0.85, theta: 0.18 });
-  if (world.kitchen) { const k = world.kitchen; out.push({ id: 'kitchen', label: 'Kitchen nook', target: rect(k.x0, k.y0, k.w, k.h), dist: 9, phi: 0.8, theta: 0.3 }); }
-  if (world.courtyard) { const c = world.courtyard; out.push({ id: 'garden', label: 'Garden', target: rect(c.x0, c.y0, c.w, c.h), dist: 9, phi: 0.75, theta: -0.2 }); }
-  for (const r of world.rooms) out.push({ id: `room:${r.id}`, label: `${names[r.id] || r.id}’s room`, target: rect(r.x0, r.y0, r.w, r.h), dist: 7.5, phi: 0.78, theta: r.side === 'top' ? 0.15 : 0.15 });
+  const L = layoutOf(world);
+  const out = [{ id: 'lodge', label: 'Whole castle', target: { x: 0, y: 0, z: L.city.cz * 0.7 }, dist: L.city.r * 2.15, phi: 0.95, theta: 0.32 }];
+  const rect = (x0, y0, w, h) => { const a = tileTo3D(world, x0, y0); const c = tileTo3D(world, x0 + w - 1, y0 + h - 1); return { x: (a.x + c.x) / 2, y: a.y, z: (a.z + c.z) / 2 }; };
+  out.push({ id: 'great', label: 'Great hall', target: rect(1, 6, world.w - 2, 8), dist: Math.max(16, world.w * 0.6), phi: 0.85, theta: 0.18 });
+  out.push({ id: 'keep', label: 'The keep', target: { x: 0, y: 4, z: -2 }, dist: L.keep.rx * 2.4, phi: 0.78, theta: 0.5 });
+  out.push({ id: 'chambers', label: 'King’s Chambers', target: { x: L.tower.x, y: CHAMBERS_Y, z: L.tower.z }, dist: 9, phi: 0.82, theta: 0.15 });
+  if (world.courtyard) { const c = world.courtyard; out.push({ id: 'garden', label: 'Keep garden', target: rect(c.x0, c.y0, c.w, c.h), dist: 10, phi: 0.75, theta: -0.2 }); }
+  out.push({ id: 'market', label: 'Market', target: { x: L.market.x, y: 0, z: L.market.z }, dist: 26, phi: 0.8, theta: 0.4 });
+  out.push({ id: 'gate', label: 'City gate', target: { x: L.gate.x, y: 2, z: L.gate.z + 4 }, dist: 34, phi: 0.72, theta: 0.0 });
+  for (const r of world.rooms) { const H = L.houses[r.id]; if (H) out.push({ id: `room:${r.id}`, label: `${names[r.id] || r.id}’s house`, target: { x: H.x, y: 0, z: H.z }, dist: 9.5, phi: 0.82, theta: H.side === 'north' ? 0.12 : Math.PI - 0.12 }); }
   return out;
 }
 

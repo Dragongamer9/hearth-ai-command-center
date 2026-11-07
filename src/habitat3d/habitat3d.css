@@ -33,3 +33,29 @@
 .hab3d-knob { position: absolute; left: 35px; top: 35px; width: 40px; height: 40px; border-radius: 50%; background: rgba(255,200,140,.75); }
 .hab3d-hud[hidden], .hab3d-bubble[hidden], .hab3d-panel[hidden], .hab3d-stick[hidden] { display: none; }
 @media (prefers-reduced-motion: reduce) { .hab3d-knob { transition: none; } }
+/* 2.4: raid toast and the Characters page */
+.hab3d-toast, .hab3d-chars { position: absolute; z-index: 8; background: color-mix(in srgb, var(--panel, #231a16) 96%, transparent); color: var(--text); border: 1px solid var(--line-2, var(--line)); border-radius: var(--r, 6px); box-shadow: var(--shadow); }
+.hab3d-toast { left: 50%; top: 12px; transform: translateX(-50%); padding: 8px 12px; display: flex; gap: 8px; align-items: center; font-size: 13px; }
+.hab3d-chars { inset: 10px; overflow: auto; padding: 12px 14px; font-size: 13px; }
+.hab3d-toast[hidden], .hab3d-chars[hidden] { display: none; }
+.hab3d-charpage header { display: flex; align-items: center; gap: 10px; }
+.hab3d-charpage header h3 { margin: 0; flex: 1 0 auto; }
+.hab3d-charpage nav { display: flex; gap: 4px; }
+.hab3d-roster { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 10px; margin: 10px 0; }
+.hab3d-card { margin: 0; background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--r, 6px); padding: 8px; display: flex; flex-direction: column; align-items: center; gap: 4px; text-align: center; }
+.hab3d-card figcaption { display: flex; flex-direction: column; gap: 3px; width: 100%; }
+.hab3d-card small, .hab3d-cast small { color: var(--muted, #b9a58f); }
+.hab3d-give, .hab3d-cform select, .hab3d-cform input { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: var(--r, 6px); padding: 3px 6px; font: inherit; }
+.hab3d-cast { list-style: none; padding: 0; margin: 0; display: grid; gap: 4px; }
+.hab3d-cast li { display: flex; align-items: center; gap: 8px; }
+.hab3d-mini svg { display: block; }
+.hab3d-creator { display: grid; grid-template-columns: minmax(180px, 240px) 1fr; gap: 16px; margin-top: 10px; }
+@media (max-width: 640px) { .hab3d-creator { grid-template-columns: 1fr; } }
+.hab3d-preview { display: grid; place-items: center; background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--r, 6px); padding: 10px; }
+.hab3d-cform { display: grid; gap: 8px; align-content: start; }
+.hab3d-cform label { display: flex; align-items: center; gap: 8px; }
+.hab3d-flabel { font-size: 12px; color: var(--muted, #b9a58f); }
+.hab3d-sw { display: flex; flex-wrap: wrap; gap: 5px; }
+.hab3d-swb { width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--line); cursor: pointer; padding: 0; }
+.hab3d-swb.on { outline: 2px solid #ffd166; outline-offset: 1px; }
+.hab3d-cact { display: flex; gap: 8px; }

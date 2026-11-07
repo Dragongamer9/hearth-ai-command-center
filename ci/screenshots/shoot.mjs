@@ -118,7 +118,7 @@ function stub(opts) {
   // Speech servers (opts.servers): Kokoro-FastAPI and Dia on the home server over Tailscale.
   const SRV = [{ id: 'abc123def456', name: 'Kokoro on my Nvidia PC', url: 'http://100.64.0.5:8880', api: 'kokoro-fastapi', engine: 'kokoro' }, { id: 'fff000aaa111', name: 'Dia (home server)', url: 'http://100.64.0.5:8003', api: 'dia-server', engine: 'dia' }, { id: 'ccc222ddd333', name: 'CosyVoice2', url: 'http://100.64.0.5:50000', api: 'cosyvoice-fastapi', engine: 'cosyvoice' }];
   const PRESETS = { apis: [['openai', 'OpenAI-compatible speech API', null, null, false], ['kokoro-fastapi', 'Kokoro-FastAPI', 'kokoro', 8880, false], ['chatterbox-api', 'chatterbox-tts-api', 'chatterbox', 4123, true, ['exaggeration', 'cfgWeight', 'temperature']], ['chatterbox-server', 'Chatterbox-TTS-Server', 'chatterbox', 8004, false, ['exaggeration', 'cfgWeight', 'temperature']], ['dia-server', 'Dia-TTS-Server', 'dia', 8003, false], ['orpheus-fastapi', 'Orpheus-FastAPI', 'orpheus', 5005, false], ['sesame-openai', 'sesame_csm_openai', 'sesame', 8000, true, ['temperature']], ['cosyvoice-fastapi', 'CosyVoice FastAPI server', 'cosyvoice', 50000, true, ['sampleRate']]].map(([id, label, engine, port, clone, extras]) => ({ id, label, engine, port, clone, cloneNeedsText: id === 'cosyvoice-fastapi', extras: extras || [], fixed: [] })), engines: [['kokoro', 'Kokoro'], ['chatterbox', 'Chatterbox'], ['sesame', 'Sesame CSM'], ['dia', 'Dia'], ['cosyvoice', 'CosyVoice2'], ['orpheus', 'Orpheus'], ['other', 'Another engine']].map(([id, name]) => ({ id, name })), hints: { dia: 'Dia speaks dialogue: [S1] and [S2] mark two speakers (pick the "dialogue" voice for a two-person scene), and cues like (laughs), (sighs), (coughs), (gasps) or (clears throat) are performed, not read out.', kokoro: 'Kokoro is fast and light. On Kokoro-FastAPI voices can be mixed: type af_bella(2)+af_sky(1) as an extra voice.', cosyvoice: 'CosyVoice2 speaks in a voice it hears in a short clip: add a voice below with the clip and the words said in it.' } };
-  const settings = { uncensored: { on: Boolean(opts.unc), chatModel: opts.unc ? 'huihui_ai/qwen3-abliterated:14b' : '', pictureModel: '', confirmedAt: null }, hearthDevices: { url: 'http://nvidia-pc:8189', order: [], skipGaming: true, skipBattery: true, tailscale: true, allowHosts: [], models: { 'nvidia-pc': 'qwen2.5:32b' }, checkpoints: {} }, comfy: { url: 'http://100.72.99.97:8188', checkpoint: 'sd_xl_base_1.0.safetensors' }, voice: { ...(opts.servers ? { servers: SRV } : {}), tts: opts.servers ? 'server:abc123def456' : 'elevenlabs', turn: opts.ptt ? 'ptt' : 'auto', bargeIn: true, narration: opts.narrator ? 'narrator' : 'same', voices: { anthropic: { elevenlabs: { id: 'VoiceGeorg0006', name: 'George' } }, narrator: { elevenlabs: { id: 'VoiceLaura0004', name: 'Laura' } } } }, notify: true, autoRead: false, maxChats: 3, customInstructions: { about: 'I build Hearth OS. My laptop has Intel graphics and 8 GB of RAM.', style: 'Plain language, short answers.' }, teammates: {}, theme: opts.light ? 'light' : 'dark', textSize: 100, connection: {}, bins: {}, extraDirs: [], access: 'standard', autoPush: true, actForMe: true, previewNetwork: false, copyIdleHours: 24, tools: { web: true, build: true, quickChecks: ['node --check', 'node --test', 'python3 -m py_compile', 'bash -n'] }, team: opts.allCli ? { lead: 'anthropic', reviewer: 'openai', members: ['anthropic', 'openai', 'google', 'xai', 'mistral', 'venice'] } : null, leadMerge: true, leadRelease: true, leadTag: true, ownerIdentity: { name: 'Dragongamer9', email: 'Dragongamer9@users.noreply.github.com', emails: ['Dragongamer9@users.noreply.github.com'] } };
+  const settings = { view3d: opts.view3d || null, uncensored: { on: Boolean(opts.unc), chatModel: opts.unc ? 'huihui_ai/qwen3-abliterated:14b' : '', pictureModel: '', confirmedAt: null }, hearthDevices: { url: 'http://nvidia-pc:8189', order: [], skipGaming: true, skipBattery: true, tailscale: true, allowHosts: [], models: { 'nvidia-pc': 'qwen2.5:32b' }, checkpoints: {} }, comfy: { url: 'http://100.72.99.97:8188', checkpoint: 'sd_xl_base_1.0.safetensors' }, voice: { ...(opts.servers ? { servers: SRV } : {}), tts: opts.servers ? 'server:abc123def456' : 'elevenlabs', turn: opts.ptt ? 'ptt' : 'auto', bargeIn: true, narration: opts.narrator ? 'narrator' : 'same', voices: { anthropic: { elevenlabs: { id: 'VoiceGeorg0006', name: 'George' } }, narrator: { elevenlabs: { id: 'VoiceLaura0004', name: 'Laura' } } } }, notify: true, autoRead: false, maxChats: 3, customInstructions: { about: 'I build Hearth OS. My laptop has Intel graphics and 8 GB of RAM.', style: 'Plain language, short answers.' }, teammates: {}, theme: opts.light ? 'light' : 'dark', textSize: 100, connection: {}, bins: {}, extraDirs: [], access: 'standard', autoPush: true, actForMe: true, previewNetwork: false, copyIdleHours: 24, tools: { web: true, build: true, quickChecks: ['node --check', 'node --test', 'python3 -m py_compile', 'bash -n'] }, team: opts.allCli ? { lead: 'anthropic', reviewer: 'openai', members: ['anthropic', 'openai', 'google', 'xai', 'mistral', 'venice'] } : null, leadMerge: true, leadRelease: true, leadTag: true, ownerIdentity: { name: 'Dragongamer9', email: 'Dragongamer9@users.noreply.github.com', emails: ['Dragongamer9@users.noreply.github.com'] } };
   window.__calls = [];
   window.hearth = new Proxy({
     appInfo: () => ok({ appVersion: '1.5.0', dataPath: '/home/you/.config/Hearth AI Command Center', electron: '45', packaged: true }),
@@ -234,6 +234,8 @@ function stub(opts) {
   try { localStorage.setItem('hearth.v2.open', opts.open || ''); if (!opts.open) localStorage.removeItem('hearth.v2.open'); } catch {}
 }
 
+const C3D = { open: 'c0000000001', view3d: { mode: '3d', raids: { on: false }, time: 'day' } };
+const C3D6 = { ...C3D, allCli: true }; // six AIs, for the busy great hall
 const SHOTS = [
   { file: '01-home.png', opts: {}, expect: ['Good ', 'What should the team work on?', 'Fix a bug in a repo', 'Prepare a release', 'Pinned', 'Today', 'Yesterday', 'Earlier'] },
   { file: '02-chat-working-on-a-repo.png', opts: { open: 'c0000000001' }, expect: ['Searched the repo', 'Read', 'Edited 2 files', 'committed as you', '2 files changed', 'Open pull request', 'Show changes', 'Merge into main', 'Ran the tests', 'in GitHub Actions', 'reviewer'] },
@@ -248,6 +250,16 @@ const SHOTS = [
   { file: '11-send-and-steps.png', opts: { open: 'c0000000002' }, send: 'Refresh the drive list when a card is inserted', expect: ['Done: the drive list now refreshes.', 'drives.html', 'Live preview'] },
   // 2.x parity
   { file: '12-habitat-in-sidebar.png', opts: { open: 'c0000000001' }, click: '[data-a="habitat"]', wait: 1500, expect: ['Habitat', 'Fix Wi-Fi list after resume'], canvas: '#habitat canvas' },
+  // 2.4: the castle city, the townsfolk and guards, a raid, and the Characters page
+  { file: '40-castle-day.png', opts: C3D, click: '[data-a="habitat"]', h3d: [['preset', 'lodge']], h3dMin: { folk: 10, guards: 8, castle: true }, expect: ['Walk the castle', 'Townsfolk and guards'] },
+  { file: '41-castle-night.png', opts: C3D, click: '[data-a="habitat"]', h3d: [['time', 'night'], ['wait', 600], ['preset', 'lodge']], h3dMin: { guards: 8 } },
+  { file: '42-great-hall.png', opts: C3D6, click: '[data-a="habitat"]', h3d: [['stage', { figs: [{ i: 0, at: 'desk' }, { i: 1, at: 'desk' }, { i: 2, at: 'tea', k: 0 }, { i: 3, at: 'tea', k: 1 }] }], ['look', -7, 0.8, -0.8, 15, 0.3, 0.88]] },
+  { file: '43-kings-chambers.png', opts: C3D, click: '[data-a="habitat"]', h3d: [['stage', { owner: { x: -3, y: 6, rot: 0.4 } }], ['preset', 'chambers']], h3dMin: { avatar: true } },
+  { file: '44-ai-house.png', opts: C3D, click: '[data-a="habitat"]', h3d: [['stage', { figs: [{ i: 0, at: 'door' }] }], ['lookAt', 'door', 9, null, 0.78]] },
+  { file: '45-townsfolk-market.png', opts: C3D, click: '[data-a="habitat"]', h3d: [['lookAt', 'market', 24, 0.35, 0.8]], h3dMin: { folk: 10 } },
+  { file: '46-raid-at-the-gate.png', opts: C3D, click: '[data-a="habitat"]', h3d: [['raid'], ['raidBest'], ['lookAt', 'gate', 17, 0.3, 1.0]], h3dWait: 1200, h3dMin: { raid: 4 }, expect: ['Raiders at the gate!', 'Watch'] },
+  { file: '47-characters.png', opts: C3D, click: '[data-a="habitat"]', h3d: [['characters']], h3dWait: 600, expect: ['Characters', 'Ren', 'Kaede', 'Pip', 'Give to…', 'Who plays whom'] },
+  { file: '48-character-creator.png', opts: C3D, click: '[data-a="habitat"]', h3d: [['characters'], ['click', '[data-ct="creator"]']], h3dWait: 600, expect: ['Surprise me', 'Save', 'Hair', 'Accessory', 'Expression'] },
   { file: '13-picture-video-file-in-chat.png', opts: { open: 'c0000000011' }, expect: ['image-fox.png', 'video-fox.mp4', 'report-red-fox.md', 'Download', 'Save to repo', 'Open', 'Sources'], selector: ['.media img', '.media video', '.filec'] },
   { file: '14-rich-answer.png', opts: { open: 'c0000000012' }, bypassCSP: true, wait: 2500, expect: ['ROG Ally', 'Intel Iris Xe', 'def', 'Copy', 'Rescans per day'], selector: ['.tbl-wrap table', '.hljs-keyword', '.katex', '.dg-frame', '.chart-svg'] },
   { file: '15-controls-sources-followups.png', opts: { open: 'c0000000011' }, click: '.sources summary', expect: ['2/2', 'Sources', 'wikipedia.org', 'Make it a painting', 'Turn it into a wallpaper'], selector: ['[data-a="msg-retry"]', '[data-a="msg-edit"]', '[data-a="follow"]'] },
@@ -316,7 +328,7 @@ const SHOTS = [
 ];
 
 // A fake microphone and sound that plays without a click, for the Talk view.
-const browser = await chromium.launch({ args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', '--autoplay-policy=no-user-gesture-required'] });
+const browser = await chromium.launch({ args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', '--autoplay-policy=no-user-gesture-required'] });
 let failed = 0;
 const ONLY = process.env.ONLY ? new RegExp(process.env.ONLY) : null;
 for (const s of SHOTS) {
@@ -405,6 +417,22 @@ for (const s of SHOTS) {
   if (s.scrollTo) { await page.evaluate((q) => document.querySelector(q)?.scrollIntoView(), s.scrollTo); await page.waitForTimeout(200); }
   if (s.scrollBottom) { await page.evaluate(() => { const b = document.getElementById('body'); b.scrollTop = b.scrollHeight; }); await page.waitForTimeout(200); }
   if (s.wait) await page.waitForTimeout(s.wait);
+  // 2.4: the 3D castle. Steps run against the canvas's test hooks (canvas.habitat3d).
+  if (s.h3d) {
+    const ok3 = await page.waitForFunction(() => document.querySelector('canvas.hab3d-canvas')?.habitat3d?.ready, null, { timeout: 45000 }).then(() => true).catch(() => false);
+    if (!ok3) errors.push('the 3D castle never got ready');
+    else {
+      for (const [k, ...v] of s.h3d) {
+        if (k === 'click') await page.click(v[0]);
+        else if (k === 'wait') await page.waitForTimeout(v[0]);
+        else await page.evaluate(([fn, args]) => document.querySelector('canvas.hab3d-canvas').habitat3d[fn](...args), [k, v]);
+      }
+      await page.waitForTimeout(s.h3dWait || 2500);
+      const st = await page.evaluate(() => document.querySelector('canvas.hab3d-canvas').habitat3d.stats?.());
+      console.log(`::notice::${s.file}: ${JSON.stringify({ folk: st?.folk, guards: st?.guards, raid: st?.raid, castle: st?.castle })}`);
+      for (const [key, min] of Object.entries(s.h3dMin || {})) if (!(st?.[key] >= min)) errors.push(`3D ${key} is ${st?.[key]}, expected at least ${min}`);
+    }
+  }
   if (s.send) { await page.fill('#composer', s.send); await page.keyboard.press('Enter'); await page.waitForTimeout(2200); }
   const text = (await page.evaluate(() => `${document.body.innerText}\n${[...document.querySelectorAll('[placeholder]')].map((e) => e.placeholder).join('\n')}`)).toLowerCase();
   const missing = (s.expect || []).filter((t) => !text.includes(t.toLowerCase()));
