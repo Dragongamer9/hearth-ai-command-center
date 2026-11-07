@@ -2350,7 +2350,7 @@ document.addEventListener('click', async (ev) => {
     case 'st-animate': { stSync(); const it = (S.studio.data?.items || []).find((x) => x.id === d.id); if (!it) return; Object.assign(S.studio.f, { kind: 'video', size: '', start: `item:${it.id}`, startName: it.prompt.slice(0, 60) }); render(); document.getElementById('st-prompt')?.focus(); return; }
     case 'st-make': {
       stSync();
-      const req = requestFrom(S.studio.f);
+      const req = requestFrom(S.studio.f, document);
       if (!req.prompt) { toast(`Say what the ${req.kind === 'video' ? 'video' : 'picture'} should show.`); return; }
       const r = await call('studioAdd', req);
       if (!r?.ok) { toast(r?.message || r?.error?.message || 'Not started.'); return; }

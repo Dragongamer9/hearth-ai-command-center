@@ -81,7 +81,13 @@ export function studioView({ f = {}, data = {}, st = null, filter = 'all', model
 
 // The request the window sends (the main process checks everything again).
 export function requestFrom(f = {}, doc = null) {
-  const val = (id) => (doc ? doc.getElementById(id)?.value ?? '' : f[id] ?? '');
+  // From the page when there is one; otherwise from the form object, by element id ('st-prompt') or by its own name
+  // ('prompt'): the window keeps what was typed as f.prompt, f.size... (2.2.1 sent an empty prompt from there).
+  const NAMES = { 'st-neg': 'negative' };
+  const val = (id) => {
+    if (doc) { const e = doc.getElementById(id); if (e) return e.value ?? ''; }
+    return f[id] ?? f[NAMES[id] || id.replace(/^st-/, '')] ?? '';
+  };
   const kind = f.kind === 'video' ? 'video' : 'image';
   return {
     kind,
