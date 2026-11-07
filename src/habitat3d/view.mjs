@@ -361,14 +361,16 @@ function update(eng, t, dt, reduced) {
       if (tr.d >= tr.len) V.transit.delete(id);
       else { const q = alongPath(tr.pts, tr.d); p = { x: q.x, y: 0, z: q.z }; rot = q.yaw; vis.pose = 'walk'; vis.icon = null; }
     } else if (defending) { p = want; rot = Math.PI; vis.pose = 'stand'; vis.gesture = 'cheer'; vis.icon = null; }
+    const sg = V.stage?.[id]; let seatY = a.mode === 'desk' ? 0.3 : 0.06;
+    if (sg) { V.transit.delete(id); p = { x: sg.x, y: sg.y || 0, z: sg.z }; rot = sg.rot; vis.pose = sg.pose; vis.hold = sg.hold || null; vis.icon = null; vis.gesture = sg.gesture || null; seatY = sg.seatY ?? seatY; }
     f.position.set(p.x, p.y || 0, p.z + (vis.pose === 'type' ? -0.28 : 0));
-    if (reduced || vis.pose === 'sleep') f.rotation.y = rot; else f.rotation.y += angDiff(rot, f.rotation.y) * Math.min(1, dt * 10);
+    if (reduced || vis.pose === 'sleep' || sg) f.rotation.y = rot; else f.rotation.y += angDiff(rot, f.rotation.y) * Math.min(1, dt * 10);
     if (f.userData.sword) f.userData.sword.visible = defending;
     let lookYaw = null;
     if (owner && near.has(id)) { const want = Math.atan2(owner.x - a.x, owner.y - a.y); lookYaw = angDiff(want, f.rotation.y); }
-    animateFigure(f, vis, t, dt, { reduced, lookYaw, seatY: a.mode === 'desk' ? 0.3 : 0.06, bedZ });
+    animateFigure(f, vis, t, dt, { reduced, lookYaw, seatY, bedZ });
     const ic = figIcons(f);
-    const top = 0.2 + (vis.pose === 'sleep' ? 0.95 : vis.pose === 'type' || vis.pose === 'sit' ? (a.mode === 'desk' ? 1.2 : 0.95) : 1.25);
+    const top = 0.2 + (vis.pose === 'sleep' ? 0.95 : vis.pose === 'type' || vis.pose === 'sit' ? (a.mode === 'desk' || sg ? 1.2 : 0.95) : 1.25);
     setIcon(ic.icon, vis.icon, top);
     ic.icon.position.z = vis.pose === 'sleep' ? (bedZ - 0.9) : 0;
     setIcon(ic.star, vis.star ? 'star' : null, top + (vis.icon ? 0.36 : 0.02));
@@ -413,6 +415,9 @@ function update(eng, t, dt, reduced) {
     refs.fire.light.intensity = base * (reduced ? 1 : 0.9 + Math.sin(t * 7) * 0.06 + Math.sin(t * 17) * 0.04);
     refs.fire.glow.material.opacity = 0.65 + (reduced ? 0 : Math.sin(t * 11) * 0.08);
   }
+  const hf = V.castle?.refs.hallFire;
+  if (hf && !reduced) { hf.flames.scale.y = 0.9 + Math.sin(t * 9) * 0.1 + Math.sin(t * 21) * 0.05; hf.glow.material.opacity = 0.3 + Math.sin(t * 11) * 0.05; }
+  if (!V.walk.on && V.stageOwner && V.avatar) { const so = V.stageOwner; V.avatar.visible = true; V.avatar.position.set(so.x, so.y || 0, so.z); V.avatar.rotation.y = so.rot; animateFigure(V.avatar, { pose: so.pose || 'stand', hold: so.hold || null, gesture: so.gesture || null, face: 'smile', speed: 1 }, t, dt, { reduced, seatY: so.seatY ?? 0.42 }); }
   // the owner's screens: a live Overview, refreshed every few seconds
   if (tms - V.lastScreen > 3000 || !V.screenTex) { V.lastScreen = tms; overviewScreen(eng, refs); }
   effects(eng, t, reduced);
@@ -489,7 +494,7 @@ function startRaid(t0Ms, eng) {
     const pf = poof(); pf.visible = false; obj.add(pf); pf.position.y = 0.8;
     V.raidGroup.add(obj); V.raid.objs.push({ obj, bar, stars, pf });
   }
-  for (let k = 0; k < 3; k++) { const a = arrow(k === 1); a.visible = false; V.raidGroup.add(a); V.raid.arrows.push(a); }
+  for (let k = 0; k < 3; k++) { const a = arrow(k === 1); a.scale.setScalar(1.8); a.visible = false; V.raidGroup.add(a); V.raid.arrows.push(a); }
   for (const id of plan.defenders) { const f = V.figs.get(id); if (f && !f.userData.sword) { const sw = new THREE.Mesh(new THREE.BoxGeometry(0.035, 0.42, 0.02), new THREE.MeshToonMaterial({ color: '#dfe6f2' })); sw.position.set(0, -0.3, 0.05); f.userData.fig.arms[1].elbow.add(sw); f.userData.sword = sw; } }
   toast('Raiders at the gate!', 'Watch', () => preset('gate'));
 }
@@ -506,7 +511,7 @@ function updateRaid(eng, t, dt, reduced) {
     if (st && st !== V.raidSeen) { V.raidSeen = st; startRaid(st, eng); }
   }
   if (!V.raid) return;
-  const s = (performance.now() - V.raid.t0) / 1000;
+  const s = V.raidFreeze ?? (performance.now() - V.raid.t0) / 1000;
   const st = raidState(V.raid.plan, s);
   // work is never interrupted: an AI that starts a task leaves the gate at once
   for (const id of [...V.defend]) if (eng.behs[id]?.mode !== 'idle') V.defend.delete(id);
@@ -757,6 +762,12 @@ function enterWalk() {
   // 2.4: he starts in the King's Chambers, at the top of the keep
   if (!w.placed || !ownerFree(eng.world, V.prefs.room)(Math.round(w.pos.x), Math.round(w.pos.y))) { const fr = ownerFree(eng.world, V.prefs.room); const start = [[-3, 6], [-4, 6], [-2, 7], [-1, 7]].find(([x, y]) => fr(x, y)) || [-1, 7]; w.pos = { x: start[0], y: start[1] }; w.yaw = 0; w.placed = true; }
   void k;
+  ensureAvatar(); V.stageOwner = null;
+  V.avatar.visible = true;
+  V.gl.canvas.focus({ preventScroll: true });
+  hud(); stick();
+}
+function ensureAvatar() {
   const och = charFor(V.prefs.characters, 'owner');
   if (!V.avatar || V.avatar.userData.key !== JSON.stringify(och)) {
     if (V.avatar) V.gl.dyn.remove(V.avatar);
@@ -764,9 +775,25 @@ function enterWalk() {
     V.avatar.userData.key = JSON.stringify(och);
     V.gl.dyn.add(V.avatar);
   }
-  V.avatar.visible = true;
-  V.gl.canvas.focus({ preventScroll: true });
-  hud(); stick();
+  return V.avatar;
+}
+// Screenshot and test staging: put AIs and the owner in set places and poses. Only the
+// test hooks call this; nothing is saved.
+function buildStage(spec = {}) {
+  const eng = habitatEngine(); const world = eng?.world; if (!world || !V.castle) return;
+  const R = V.castle.refs; const out = {};
+  for (const s of spec.figs || []) {
+    const id = world.ids[s.i]; if (!id) continue;
+    if (s.at === 'desk') { const d = world.desks.find((q) => q.id === id); if (!d) continue; const p = tileTo3D(world, d.seat.x, d.seat.y); out[id] = { x: p.x, y: p.y, z: p.z, rot: facingOf(d.monitor.y < d.seat.y ? 'up' : 'down'), pose: 'type', seatY: 0.3 }; }
+    if (s.at === 'tea' && R.hallTea?.[s.k || 0]) { const q = R.hallTea[s.k || 0]; out[id] = { x: q.x, y: 0, z: q.z, rot: q.rot, pose: 'stand', hold: 'mug' }; }
+    if (s.at === 'door' && R.houseDoors?.[id]) { const q = R.houseDoors[id]; out[id] = { x: q.x, y: 0, z: q.z, rot: q.rot, pose: 'stand', gesture: 'wave' }; }
+  }
+  V.stage = out;
+  if (spec.owner) {
+    ensureAvatar();
+    const o = spec.owner; const p = tileTo3D(world, o.x, o.y);
+    V.stageOwner = { x: p.x + (o.dx || 0), y: p.y, z: p.z + (o.dz || 0), rot: o.rot ?? 0, pose: o.pose || 'stand' };
+  } else { V.stageOwner = null; if (V.avatar && !V.walk.on) V.avatar.visible = false; }
 }
 function exitWalk() {
   const w = V.walk; w.on = false; V.keys.clear();
@@ -958,6 +985,15 @@ function api() {
     characters: () => openCharacters(),
     roomPreset: (i = 0) => preset(`room:${habitatEngine().world.ids[i]}`, true),
     walkStart: () => enterWalk(),
+    stage: (spec) => buildStage(spec),
+    look: (x, y, z, dist, theta, phi) => { V.goal = { target: new THREE.Vector3(x, y, z), dist, theta, phi }; V.cam = { ...V.goal, target: V.goal.target.clone() }; },
+    lookAt: (what, dist, theta, phi) => { const R = V.castle?.refs; const L = layoutOf(habitatEngine().world); const id = habitatEngine().world.ids[0];
+      const at = what === 'gate' ? { x: L.gate.x, y: 1.4, z: L.gate.z + 7 } : what === 'market' ? { x: L.market.x, y: 0.8, z: L.market.z } : what === 'door' ? { x: R.houseDoors[id].x, y: 1.2, z: R.houseDoors[id].z - (R.houseDoors[id].rot ? -1.2 : 1.2) } : what === 'hall' ? { x: 0, y: 0.8, z: 0 } : { x: 0, y: 0, z: 0 };
+      const th = theta ?? (what === 'door' && R.houseDoors[id].rot ? Math.PI - 0.35 : 0.35);
+      V.goal = { target: new THREE.Vector3(at.x, at.y, at.z), dist, theta: th, phi }; V.cam = { ...V.goal, target: V.goal.target.clone() }; },
+    // jump the raid to a moment with arrows in flight, a fight at the gate and a dizzy raider, and hold it there
+    raidBest: () => { if (!V.raid) return null; for (let s = 4; s < RAID_LEN; s += 0.25) { const st = raidState(V.raid.plan, s); const vis = st.raiders.filter((x) => x.visible).length; if (st.arrows.length >= 2 && vis >= 4 && st.raiders.some((x) => x.mode === 'dizzy') && st.raiders.some((x) => x.mode === 'fight')) { V.raidFreeze = s; return s; } } V.raidFreeze = 40; return null; },
+    raidFreeze: (s) => { V.raidFreeze = s ?? null; },
     stats: () => ({ figures: [...V.figs.values()].filter((f) => f.visible).length, pet: Boolean(V.pet?.visible), fire: Boolean(V.lodge?.refs.fire), lampsLit: (V.lodge?.refs.lamps || []).filter((l) => l.halo?.visible).length, windows: V.lodge?.refs.windowMat.emissiveIntensity || 0, weather: V.weather, phase: V.phase, walking: V.walk.on, avatar: Boolean(V.avatar?.visible), prefs: { ...V.prefs }, folk: V.npcs.filter((n) => n.kind === 'folk' && n.obj.visible).length, guards: V.npcs.filter((n) => n.kind === 'guard').length, raid: V.raid ? V.raid.plan.raiders.length : 0, castle: Boolean(V.castle) }),
   };
 }

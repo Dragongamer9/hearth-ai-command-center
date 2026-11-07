@@ -235,6 +235,7 @@ function stub(opts) {
 }
 
 const C3D = { open: 'c0000000001', view3d: { mode: '3d', raids: { on: false }, time: 'day' } };
+const C3D6 = { ...C3D, allCli: true }; // six AIs, for the busy great hall
 const SHOTS = [
   { file: '01-home.png', opts: {}, expect: ['Good ', 'What should the team work on?', 'Fix a bug in a repo', 'Prepare a release', 'Pinned', 'Today', 'Yesterday', 'Earlier'] },
   { file: '02-chat-working-on-a-repo.png', opts: { open: 'c0000000001' }, expect: ['Searched the repo', 'Read', 'Edited 2 files', 'committed as you', '2 files changed', 'Open pull request', 'Show changes', 'Merge into main', 'Ran the tests', 'in GitHub Actions', 'reviewer'] },
@@ -252,11 +253,11 @@ const SHOTS = [
   // 2.4: the castle city, the townsfolk and guards, a raid, and the Characters page
   { file: '40-castle-day.png', opts: C3D, click: '[data-a="habitat"]', h3d: [['preset', 'lodge']], h3dMin: { folk: 10, guards: 8, castle: true }, expect: ['Walk the castle', 'Townsfolk and guards'] },
   { file: '41-castle-night.png', opts: C3D, click: '[data-a="habitat"]', h3d: [['time', 'night'], ['wait', 600], ['preset', 'lodge']], h3dMin: { guards: 8 } },
-  { file: '42-great-hall.png', opts: C3D, click: '[data-a="habitat"]', h3d: [['preset', 'great']] },
-  { file: '43-kings-chambers.png', opts: C3D, click: '[data-a="habitat"]', h3d: [['preset', 'chambers']] },
-  { file: '44-ai-house.png', opts: C3D, click: '[data-a="habitat"]', h3d: [['roomPreset', 0]] },
-  { file: '45-townsfolk-market.png', opts: C3D, click: '[data-a="habitat"]', h3d: [['preset', 'market']], h3dMin: { folk: 10 } },
-  { file: '46-raid-at-the-gate.png', opts: C3D, click: '[data-a="habitat"]', h3d: [['raid'], ['raidAt', 42], ['preset', 'gate']], h3dWait: 1200, h3dMin: { raid: 4 }, expect: ['Raiders at the gate!', 'Watch'] },
+  { file: '42-great-hall.png', opts: C3D6, click: '[data-a="habitat"]', h3d: [['stage', { figs: [{ i: 0, at: 'desk' }, { i: 1, at: 'desk' }, { i: 2, at: 'tea', k: 0 }, { i: 3, at: 'tea', k: 1 }] }], ['look', -7, 0.8, -0.8, 15, 0.3, 0.88]] },
+  { file: '43-kings-chambers.png', opts: C3D, click: '[data-a="habitat"]', h3d: [['stage', { owner: { x: -3, y: 6, rot: 0.4 } }], ['preset', 'chambers']], h3dMin: { avatar: true } },
+  { file: '44-ai-house.png', opts: C3D, click: '[data-a="habitat"]', h3d: [['stage', { figs: [{ i: 0, at: 'door' }] }], ['lookAt', 'door', 9, null, 0.78]] },
+  { file: '45-townsfolk-market.png', opts: C3D, click: '[data-a="habitat"]', h3d: [['lookAt', 'market', 24, 0.35, 0.8]], h3dMin: { folk: 10 } },
+  { file: '46-raid-at-the-gate.png', opts: C3D, click: '[data-a="habitat"]', h3d: [['raid'], ['raidBest'], ['lookAt', 'gate', 17, 0.3, 1.0]], h3dWait: 1200, h3dMin: { raid: 4 }, expect: ['Raiders at the gate!', 'Watch'] },
   { file: '47-characters.png', opts: C3D, click: '[data-a="habitat"]', h3d: [['characters']], h3dWait: 600, expect: ['Characters', 'Ren', 'Kaede', 'Pip', 'Give to…', 'Who plays whom'] },
   { file: '48-character-creator.png', opts: C3D, click: '[data-a="habitat"]', h3d: [['characters'], ['click', '[data-ct="creator"]']], h3dWait: 600, expect: ['Surprise me', 'Save', 'Hair', 'Accessory', 'Expression'] },
   { file: '13-picture-video-file-in-chat.png', opts: { open: 'c0000000011' }, expect: ['image-fox.png', 'video-fox.mp4', 'report-red-fox.md', 'Download', 'Save to repo', 'Open', 'Sources'], selector: ['.media img', '.media video', '.filec'] },

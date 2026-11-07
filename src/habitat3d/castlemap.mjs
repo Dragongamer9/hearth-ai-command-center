@@ -255,6 +255,7 @@ export function folkAt(f, t, phase = 'day', { still = false } = {}) {
 export function guards(L, n, seed = 5) {
   const r = rng(seed); const T = cityTowers(L); const out = [];
   const posts = [{ x: L.gate.x - 3, z: L.gate.z - 4 }, { x: L.gate.x + 3, z: L.gate.z - 4 }, { x: L.keepGate.x - 2.5, z: L.keepGate.z + 2 }, { x: L.keepGate.x + 2.5, z: L.keepGate.z + 2 }];
+  if (n >= 8) posts.push({ x: L.market.x + L.market.r + 1.2, z: L.market.z - 2 }, { x: L.market.x - 2, z: L.market.z + L.market.r + 1.2 }); // two keep an eye on the market
   for (let i = 0; i < n; i++) {
     if (i < posts.length) { out.push({ i, kind: 'post', path: [posts[i]], wall: false, offset: 0, speed: 0 }); continue; }
     const k = Math.floor(r() * T.length); const a = T[k]; const b = T[(k + 1) % T.length];

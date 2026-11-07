@@ -4,6 +4,7 @@
 // forest, river and fields outside. Built once per world; cel-shaded and inked.
 import * as THREE from '../vendor/three/three.module.min.js';
 import { toon, inked, PASTEL } from './toon.mjs';
+import { stoneTex } from './textures.mjs';
 import { cityTowers, keepTowers, townHouses, roomZoneRect, CHAMBERS_Y, WALL_TOP, MARKET_STALLS } from './castlemap.mjs';
 
 function rng(seed) { let s = seed; return () => { s = (s * 16807) % 2147483647; return (s - 1) / 2147483646; }; }
@@ -59,7 +60,7 @@ function aiHouse(g, H, room, color, name, labelTex, windowMat) {
   const hg = new THREE.Group(); hg.position.set(H.x, 0, H.z); g.add(hg);
   const wallH = 2.7; const front = H.side === 'north' ? 1 : -1; // +1: the door wall faces +z (south)
   const stone = toon(PASTEL.walls[H.i % PASTEL.walls.length]);
-  put(hg, new THREE.BoxGeometry(w, 0.3, d), toon(PASTEL.paving), 0, -0.14, 0, { cast: false });
+  put(hg, new THREE.BoxGeometry(w, 0.3, d), toon(PASTEL.paving), 0, -0.17, 0, { cast: false }); // top just under the room's own floor
   put(hg, new THREE.BoxGeometry(w, wallH, 0.35), stone, 0, wallH / 2, -front * d / 2, { ink: true });                 // back wall
   for (const sx of [-1, 1]) put(hg, new THREE.BoxGeometry(0.35, wallH * 0.7, d), stone, sx * w / 2, wallH * 0.35, 0, { ink: true });
   // the front wall, low (cut away toward the street) with a gap at the door
@@ -74,7 +75,96 @@ function aiHouse(g, H, room, color, name, labelTex, windowMat) {
   // a hanging sign with the AI's name, beside the door
   const sign = new THREE.Mesh(geo('sign', () => new THREE.PlaneGeometry(2.4, 0.8)), new THREE.MeshBasicMaterial({ map: labelTex(name, color), transparent: true }));
   sign.position.set(doorX + 1.9, 1.6, front * (d / 2 + 0.25)); if (front < 0) sign.rotation.y = Math.PI; hg.add(sign);
-  return { group: hg, roof, w, d };
+  // a little porch lantern and a doormat
+  put(hg, geo('mat', () => new THREE.BoxGeometry(1.2, 0.03, 0.7)), toon('#c0563f'), doorX, 0.02, front * (d / 2 + 0.6), { cast: false });
+  put(hg, geo('plamp', () => new THREE.SphereGeometry(0.16, 8, 6)), new THREE.MeshBasicMaterial({ color: '#ffd27a' }), doorX - 1.0, 2.1, front * (d / 2 + 0.3), { cast: false });
+  const door = { x: H.x + doorX, z: H.z + front * (d / 2 + 1.0), rot: front > 0 ? 0 : Math.PI };
+  return { group: hg, roof, w, d, door };
+}
+
+const HALL_WALL = 4.2;
+// Coloured stone blocks with dark mortar lines for the great hall's walls.
+function hallStoneMat() {
+  if (typeof document === 'undefined') return toon('#c9b8a2');
+  const t = stoneTex('warm').clone(); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(0.5, HALL_WALL / 2); t.needsUpdate = true;
+  return toon('#e9d6bd', { map: t });
+}
+// The great hall's life: a red runner down the middle, arched windows and banners on
+// the back wall, a big fireplace with a glow, long work tables with screens, benches,
+// chandeliers. Positions come from the world (desks, doors), so it fits 1 to 12 AIs.
+function hallDecor(hall, world, L, refs, windowMat) {
+  const X = (tx) => tx - L.w / 2 + 0.5; const Z = (ty) => ty - L.h / 2 + 0.5;
+  const zBack = Z(5) + 0.24; const g = hall;
+  const top = world.rooms.filter((q) => q.side !== 'bottom');
+  const doors = new Set(top.map((q) => q.door.x));
+  const minX = top.length ? Math.min(...top.map((q) => roomZoneRect(q).x0)) : 1; const maxX = top.length ? Math.max(...top.map((q) => roomZoneRect(q).x1)) : 6;
+  // runner rug on rows 9-10
+  put(g, new THREE.BoxGeometry(L.w - 4, 0.03, 1.7), toon('#a8323e'), 0, 0.015, (Z(9) + Z(10)) / 2, { cast: false });
+  put(g, new THREE.BoxGeometry(L.w - 4.6, 0.035, 1.2), toon('#e8c35a'), 0, 0.02, (Z(9) + Z(10)) / 2, { cast: false });
+  put(g, new THREE.BoxGeometry(L.w - 5, 0.04, 0.9), toon('#a8323e'), 0, 0.025, (Z(9) + Z(10)) / 2, { cast: false });
+  // back-wall slots: the fireplace in the widest run without doors, windows and banners elsewhere
+  const cols = []; for (let x = minX; x <= maxX; x++) cols.push(x);
+  const free = (x) => !doors.has(x) && !doors.has(x - 1) && !doors.has(x + 1);
+  let best = null; let run = [];
+  for (const x of [...cols, 9999]) { if (x !== 9999 && !doors.has(x)) run.push(x); else { if (run.length >= 3 && (!best || Math.abs(run[run.length >> 1] - (minX + maxX) / 2) < Math.abs(best[best.length >> 1] - (minX + maxX) / 2))) best = run; run = []; } }
+  const fx = best ? best[best.length >> 1] : null;
+  if (fx !== null) {
+    const f = new THREE.Group(); f.position.set(X(fx), 0, zBack + 0.25); g.add(f);
+    const fs = toon('#9a8a7c');
+    put(f, new THREE.BoxGeometry(2.8, 2.2, 0.7), fs, 0, 1.1, 0, { ink: true });
+    put(f, new THREE.BoxGeometry(1.7, 1.3, 0.72), toon('#2a1a18'), 0, 0.65, 0.02, { cast: false });
+    put(f, new THREE.BoxGeometry(3.2, 0.24, 0.9), toon('#6d4128'), 0, 2.3, 0.05, { ink: true });
+    put(f, new THREE.BoxGeometry(1.8, HALL_WALL - 2.4, 0.5), fs, 0, 2.4 + (HALL_WALL - 2.4) / 2, -0.08, { ink: true });
+    const flames = new THREE.Group(); flames.position.set(0, 0.1, 0.25); f.add(flames);
+    for (const [x, h, c] of [[-0.3, 0.7, '#ff8a3d'], [0.25, 0.8, '#ff8a3d'], [0, 1.0, '#ffb347'], [-0.08, 0.55, '#ffe08a'], [0.12, 0.6, '#ffe08a']]) put(flames, new THREE.ConeGeometry(0.2, h, 6), new THREE.MeshBasicMaterial({ color: c }), x, h / 2, 0, { cast: false });
+    for (const x of [-0.35, 0, 0.35]) put(f, geo('log', () => new THREE.CylinderGeometry(0.09, 0.09, 0.9, 6)), toon('#6d4128'), x, 0.1, 0.25, { rx: Math.PI / 2, rz: 0.3 * x, cast: false });
+    const glow = new THREE.Mesh(new THREE.CircleGeometry(2.4, 24), new THREE.MeshBasicMaterial({ color: '#ffb35a', transparent: true, opacity: 0.32, depthWrite: false, blending: THREE.AdditiveBlending }));
+    glow.rotation.x = -Math.PI / 2; glow.position.set(0, 0.05, 1.2); f.add(glow);
+    refs.hallFire = { flames, glow, x: X(fx), z: zBack + 0.25 };
+    refs.hallTea = [{ x: X(fx) - 1.2, z: zBack + 2.0, rot: Math.PI * 0.75 }, { x: X(fx) + 1.2, z: zBack + 2.0, rot: -Math.PI * 0.75 }];
+  }
+  const busy = new Set(fx !== null ? [fx - 2, fx - 1, fx, fx + 1, fx + 2] : []);
+  let k = 0;
+  for (const x of cols) {
+    if (!free(x) || busy.has(x)) continue;
+    if (k % 2 === 0) { // tall arched window
+      put(g, geo('hwin', () => new THREE.BoxGeometry(0.8, 1.8, 0.08)), windowMat, X(x), 2.0, zBack, { cast: false });
+      const arch = put(g, geo('harch', () => new THREE.CylinderGeometry(0.4, 0.4, 0.08, 14, 1, false, 0, Math.PI)), windowMat, X(x), 2.9, zBack, { cast: false }); arch.rotation.set(Math.PI / 2, 0, Math.PI / 2);
+      put(g, geo('hsill', () => new THREE.BoxGeometry(1.0, 0.12, 0.2)), toon('#6d4128'), X(x), 1.05, zBack + 0.05, { cast: false });
+    } else { // banner with a crest
+      const c = PASTEL.roofs[(k >> 1) % PASTEL.roofs.length];
+      put(g, geo('hrod', () => new THREE.CylinderGeometry(0.04, 0.04, 1.1, 6)), toon('#e8c35a'), X(x), 3.75, zBack + 0.06, { rz: Math.PI / 2, cast: false });
+      put(g, geo('hban', () => new THREE.BoxGeometry(0.85, 2.1, 0.04)), toon(c), X(x), 2.65, zBack + 0.06, { cast: false });
+      put(g, geo('htip', () => new THREE.ConeGeometry(0.42, 0.4, 3)), toon(c), X(x), 1.45, zBack + 0.06, { rx: Math.PI, cast: false });
+      put(g, geo('hcrest', () => new THREE.CircleGeometry(0.24, 16)), toon('#ffd27a'), X(x), 2.9, zBack + 0.09, { cast: false });
+    }
+    k++;
+  }
+  // long work tables with screens and benches, in the hall's free stretch east of the desks
+  const deskMax = world.desks.length ? Math.max(...world.desks.flatMap((d) => d.tiles.map((t) => t.x))) : 0;
+  const tx0 = deskMax + 2; const tx1 = Math.min(world.w - 9, tx0 + 7); // clear of the kitchen door
+  if (tx1 - tx0 >= 3) {
+    for (const row of [8, 11]) {
+      const cx = (X(tx0) + X(tx1)) / 2; const len = X(tx1) - X(tx0) + 1; const z = Z(row);
+      put(g, new THREE.BoxGeometry(len, 0.12, 1.1), toon('#8a5634'), cx, 0.78, z, { ink: true });
+      for (const sx of [-1, 1]) for (const sz of [-1, 1]) put(g, geo('tleg', () => new THREE.BoxGeometry(0.12, 0.74, 0.12)), toon('#6d4128'), cx + sx * (len / 2 - 0.3), 0.37, z + sz * 0.42, { cast: false });
+      for (const sz of [-1, 1]) put(g, new THREE.BoxGeometry(len - 0.4, 0.1, 0.36), toon('#6d4128'), cx, 0.44, z + sz * 0.95, { ink: true });
+      for (let i = 0; i < Math.floor(len / 1.6); i++) {
+        const x = X(tx0) + 0.5 + i * 1.6;
+        put(g, geo('tscr', () => new THREE.BoxGeometry(0.62, 0.42, 0.05)), toon('#2a2230'), x, 1.1, z - 0.18, { ink: 1.06 });
+        put(g, geo('tscr2', () => new THREE.PlaneGeometry(0.54, 0.34)), new THREE.MeshBasicMaterial({ color: i % 2 ? '#7fd3ff' : '#9fe3b0' }), x, 1.1, z - 0.15, { cast: false });
+        put(g, geo('tkb', () => new THREE.BoxGeometry(0.42, 0.03, 0.16)), toon('#e3dcef'), x, 0.86, z + 0.12, { cast: false });
+      }
+    }
+  }
+  // chandeliers: a gold ring of candles on a chain
+  const n = Math.max(2, Math.round(L.w / 10));
+  for (let i = 0; i < n; i++) {
+    const x = -L.w / 2 + (L.w * (i + 0.5)) / n; const z = (Z(9) + Z(10)) / 2;
+    put(g, geo('chain', () => new THREE.CylinderGeometry(0.03, 0.03, 1.6, 4)), toon('#2a2230'), x, 4.6, z, { cast: false });
+    put(g, geo('cring', () => new THREE.TorusGeometry(0.7, 0.06, 6, 20)), toon('#e8c35a'), x, 3.8, z, { rx: Math.PI / 2, ink: 1.08, cast: false });
+    for (let j = 0; j < 6; j++) { const a = (j / 6) * Math.PI * 2; put(g, geo('cand', () => new THREE.CylinderGeometry(0.04, 0.04, 0.2, 6)), toon('#fbf3e4'), x + Math.cos(a) * 0.7, 3.95, z + Math.sin(a) * 0.7, { cast: false }); put(g, geo('cfl', () => new THREE.SphereGeometry(0.06, 6, 4)), new THREE.MeshBasicMaterial({ color: '#ffd27a' }), x + Math.cos(a) * 0.7, 4.1, z + Math.sin(a) * 0.7, { cast: false }); }
+  }
 }
 
 // The market: stalls with striped awnings in a ring (a merchant stands at each, see
@@ -108,7 +198,7 @@ function buildMarket(root, L, r, stone) {
 }
 export function buildCastle({ world, L, agents = {}, labelTex, night = false }) {
   const root = new THREE.Group(); root.name = 'castle';
-  const refs = { houseRoofs: {}, towerRoof: null, windowMat: null, torches: [], houses: [], hallShell: null };
+  const refs = { houseRoofs: {}, houseDoors: {}, towerRoof: null, windowMat: null, torches: [], houses: [], hallShell: null, hallTea: [], hallFire: null };
   const r = rng(7);
   const stone = toon(PASTEL.stone); const stone2 = toon(PASTEL.stone2);
   const windowMat = new THREE.MeshToonMaterial({ color: '#9fe3f0', emissive: new THREE.Color('#ffc36b'), emissiveIntensity: 0 }); refs.windowMat = windowMat;
@@ -145,11 +235,11 @@ export function buildCastle({ world, L, agents = {}, labelTex, night = false }) 
     const H = L.houses[room.id]; if (!H) continue;
     const a = agents[room.id];
     const built = aiHouse(root, H, room, a?.color || PASTEL.roofs[H.i % 8], a?.name || room.id, labelTex, windowMat);
-    refs.houseRoofs[room.id] = built.roof;
+    refs.houseRoofs[room.id] = built.roof; refs.houseDoors[room.id] = built.door;
   }
   // the keep's own ring: paving, walls with a gate, towers
-  put(root, new THREE.CylinderGeometry(1, 1, 0.5, 40), toon('#86c978'), 0, -0.2, 0, { cast: false }).scale.set(L.keep.rx + 3, 1, L.keep.rz + 3);
-  put(root, new THREE.CylinderGeometry(1, 1, 0.12, 40), toon(PASTEL.paving), 0, 0.02, 0, { cast: false }).scale.set(L.keep.rx - 1.5, 1, L.keep.rz - 1.5);
+  put(root, new THREE.CylinderGeometry(1, 1, 0.5, 40), toon('#86c978'), 0, -0.3, 0, { cast: false }).scale.set(L.keep.rx + 3, 1, L.keep.rz + 3);
+  put(root, new THREE.CylinderGeometry(1, 1, 0.12, 40), toon(PASTEL.paving), 0, -0.09, 0, { cast: false }) /* top under the hall's floor */.scale.set(L.keep.rx - 1.5, 1, L.keep.rz - 1.5);
   const KT = keepTowers(L);
   for (let i = 0; i < KT.length; i++) {
     const a = KT[i]; const b = KT[(i + 1) % KT.length];
@@ -166,7 +256,7 @@ export function buildCastle({ world, L, agents = {}, labelTex, night = false }) 
   const tw = L.tower;
   put(root, new THREE.BoxGeometry(tw.w, CHAMBERS_Y, tw.d), stone2, tw.x, CHAMBERS_Y / 2, tw.z, { ink: true });
   // the chambers' floor slab: its top is exactly CHAMBERS_Y, where the study's floor, props and people stand
-  put(root, new THREE.BoxGeometry(tw.w + 0.8, 0.4, tw.d + 0.8), stone, tw.x, CHAMBERS_Y - 0.21, tw.z, { cast: false });
+  put(root, new THREE.BoxGeometry(tw.w + 0.8, 0.4, tw.d + 0.8), stone, tw.x, CHAMBERS_Y - 0.23, tw.z, { cast: false });
   for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
     const cx = tw.x + sx * (tw.w / 2 + 0.6); const cz = tw.z + sz * (tw.d / 2 + 0.6);
     put(root, geo('kt', () => new THREE.CylinderGeometry(1.6, 1.7, CHAMBERS_Y + 6, 12)), stone, cx, (CHAMBERS_Y + 6) / 2, cz, { ink: true });
@@ -195,10 +285,22 @@ export function buildCastle({ world, L, agents = {}, labelTex, night = false }) 
     put(kc, geo('kc-crest', () => new THREE.CircleGeometry(0.22, 16)), toon('#ffd27a'), tw.x + sx * 2.2, top + 1.6, tw.z - cd / 2 + 0.25, { cast: false });
   }
   put(kc, new THREE.BoxGeometry(1.2, 1.5, 0.06), windowMat || toon('#8fd3ff'), tw.x, top + 1.5, tw.z - cd / 2 + 0.2, { cast: false });
+  // a throne-like armchair by the west wall, facing into the room, on a little dais
+  { const tx = tw.x - cw / 2 + 1.0; const tz = tw.z + 0.6; const th = new THREE.Group(); th.position.set(tx, top, tz); th.rotation.y = Math.PI / 2; kc.add(th);
+    put(th, new THREE.BoxGeometry(1.5, 0.16, 1.4), toon('#cdc3df'), 0, 0.08, 0, { ink: true });
+    put(th, new THREE.BoxGeometry(0.9, 0.45, 0.8), toon('#b03a48'), 0, 0.38, 0.05, { ink: true });
+    put(th, new THREE.BoxGeometry(0.9, 1.5, 0.18), toon('#b03a48'), 0, 1.0, -0.38, { ink: true });
+    put(th, new THREE.BoxGeometry(1.06, 0.2, 0.26), toon('#e8c35a'), 0, 1.8, -0.38, { ink: true });
+    for (const sx of [-1, 1]) { put(th, new THREE.BoxGeometry(0.14, 0.5, 0.8), toon('#e8c35a'), sx * 0.52, 0.55, 0.05, { ink: true }); put(th, geo('th-ball', () => new THREE.SphereGeometry(0.1, 8, 6)), toon('#e8c35a'), sx * 0.45, 1.95, -0.38, { cast: false }); } }
+  // two candle stands for warm light
+  for (const sx of [-1, 1]) { const x = tw.x + sx * (cw / 2 - 0.5); const z = tw.z + cd / 2 - 0.7;
+    put(kc, geo('cs', () => new THREE.CylinderGeometry(0.05, 0.12, 1.3, 6)), toon('#e8c35a'), x, top + 0.65, z, { cast: false });
+    put(kc, geo('cf', () => new THREE.SphereGeometry(0.09, 8, 6)), new THREE.MeshBasicMaterial({ color: '#ffd27a' }), x, top + 1.38, z, { cast: false }); }
   refs.kingsChambers = kc;
   // the great hall's own walls: the band between where the rooms used to be (their
   // walls went with them to their houses), with an opening at each room door
   const hall = new THREE.Group(); hall.name = 'hall-shell'; root.add(hall); refs.hallShell = hall;
+  const hallStone = hallStoneMat();
   const x0 = -L.w / 2; const x1 = L.w / 2;
   const doorXs = { top: new Set(world.rooms.filter((q) => q.side !== 'bottom').map((q) => q.door.x)), bottom: new Set(world.rooms.filter((q) => q.side === 'bottom').map((q) => q.door.x)) };
   const edge = (row, zLine, tall) => {
@@ -207,11 +309,12 @@ export function buildCastle({ world, L, agents = {}, labelTex, night = false }) 
     const minX = Math.min(...span.map((q) => roomZoneRect(q).x0)); const maxX = Math.max(...span.map((q) => roomZoneRect(q).x1));
     for (let x = minX; x <= maxX; x++) {
       if (doorXs[row].has(x)) continue;
-      put(hall, geo(`hw:${tall}`, () => new THREE.BoxGeometry(1.02, tall, 0.36)), stone, x - L.w / 2 + 0.5, tall / 2, zLine, { ink: 1.02, cast: tall > 1 });
+      put(hall, geo(`hw:${tall}`, () => new THREE.BoxGeometry(1.02, tall, 0.36)), hallStone, x - L.w / 2 + 0.5, tall / 2, zLine, { ink: 1.02, cast: tall > 1 });
     }
   };
-  edge('top', 5 - L.h / 2 + 0.5, 2.4);
+  edge('top', 5 - L.h / 2 + 0.5, HALL_WALL);
   edge('bottom', 14 - L.h / 2 + 0.5, 0.9);
+  hallDecor(hall, world, L, refs, windowMat);
   void x0; void x1;
   return { root, refs, houses };
 }

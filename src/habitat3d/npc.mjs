@@ -71,25 +71,27 @@ export function setGear(root, name) { const g = root.userData.npc?.gear; if (!g)
 
 // A floating health bar (always faces the camera).
 export function healthBar() {
+  // big enough to read from the gate camera: a white outline, a dark track, a coloured fill
   const g = new THREE.Group();
-  const bg = new THREE.Mesh(geo('hbbg', () => new THREE.PlaneGeometry(0.9, 0.14)), new THREE.MeshBasicMaterial({ color: '#2a2230', depthTest: false, transparent: true, opacity: 0.85 }));
-  const fill = new THREE.Mesh(geo('hbf', () => new THREE.PlaneGeometry(0.84, 0.09)), new THREE.MeshBasicMaterial({ color: '#7fdc8b', depthTest: false }));
-  fill.position.z = 0.001; bg.renderOrder = 20; fill.renderOrder = 21; g.add(bg); g.add(fill); g.userData.fill = fill;
+  const edge = new THREE.Mesh(geo('hbe', () => new THREE.PlaneGeometry(1.5, 0.3)), new THREE.MeshBasicMaterial({ color: '#ffffff', depthTest: false }));
+  const bg = new THREE.Mesh(geo('hbbg', () => new THREE.PlaneGeometry(1.4, 0.2)), new THREE.MeshBasicMaterial({ color: '#2a2230', depthTest: false }));
+  const fill = new THREE.Mesh(geo('hbf', () => new THREE.PlaneGeometry(1.32, 0.13)), new THREE.MeshBasicMaterial({ color: '#7fdc8b', depthTest: false }));
+  bg.position.z = 0.001; fill.position.z = 0.002; edge.renderOrder = 20; bg.renderOrder = 21; fill.renderOrder = 22; g.add(edge); g.add(bg); g.add(fill); g.userData.fill = fill;
   return g;
 }
 export function setHealth(bar, hp, camera) {
   const f = bar.userData.fill; const k = Math.max(0, Math.min(1, hp / 100));
-  f.scale.x = Math.max(0.001, k); f.position.x = -0.42 * (1 - k);
+  f.scale.x = Math.max(0.001, k); f.position.x = -0.66 * (1 - k);
   f.material.color.set(k > 0.5 ? '#7fdc8b' : k > 0.25 ? '#ffd27a' : '#ff8a6a');
   if (camera) bar.quaternion.copy(camera.quaternion);
   bar.visible = hp > 0;
 }
 export function dizzyStars() {
   const g = new THREE.Group();
-  for (let i = 0; i < 3; i++) { const s = new THREE.Mesh(geo('star', () => new THREE.OctahedronGeometry(0.09)), new THREE.MeshBasicMaterial({ color: '#ffe27a' })); s.userData.a = (i / 3) * Math.PI * 2; g.add(s); }
+  for (let i = 0; i < 3; i++) { const s = new THREE.Mesh(geo('star', () => new THREE.OctahedronGeometry(0.14)), new THREE.MeshBasicMaterial({ color: '#ffe27a' })); s.userData.a = (i / 3) * Math.PI * 2; g.add(s); }
   return g;
 }
-export function spinStars(g, t) { g.children.forEach((s) => { const a = s.userData.a + t * 5; s.position.set(Math.cos(a) * 0.35, 0, Math.sin(a) * 0.35); }); }
+export function spinStars(g, t) { g.children.forEach((s) => { const a = s.userData.a + t * 5; s.position.set(Math.cos(a) * 0.45, 0, Math.sin(a) * 0.45); }); }
 export function poof() { return new THREE.Mesh(geo('poof', () => new THREE.SphereGeometry(0.6, 10, 8)), new THREE.MeshBasicMaterial({ color: '#ffffff', transparent: true, opacity: 0.8, depthWrite: false })); }
 export function arrow(bolt = false) {
   const g = new THREE.Group();
