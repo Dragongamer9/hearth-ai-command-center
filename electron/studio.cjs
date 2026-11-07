@@ -10,8 +10,9 @@
 // - The hard limits are always on, Uncensored or not, and checked here before anything is sent:
 //   never anything sexual with minors or anyone who looks under 18 (cards.cjs MINOR_WORDS,
 //   HARD_WORDS, ages under 18; scene.cjs AMBIGUOUS and "looks 15"), never a real person's
-//   likeness (cards.cjs REAL_TAGS, scene.cjs LIKENESS), and never a sexual video made from a
-//   photo added from outside the app (it could be a real person). Minors are kept out of every
+//   likeness (cards.cjs REAL_TAGS, scene.cjs LIKENESS). A picture file added from outside the
+//   app is used for a video in Uncensored mode only after the owner confirms, each time, that it
+//   isn't a real person (and everyone in it is an adult): NOT_REAL_TEXT. Minors are kept out of every
 //   picture and video by the negative prompt. A blocked request never reaches ComfyUI.
 // - The gallery is saved in <data>/studio.json (atomic, .bak, never written over when broken);
 //   the files in <data>/media/studio/ (served by the hearth-media: scheme). Nothing here writes
@@ -39,11 +40,13 @@ const VIDEO_SIZES = Object.freeze([
 const FRAMES = 81; // about 5 seconds at 16 frames a second
 const FPS = 16;
 const ID_RE = /^[0-9a-f]{12}$/;
+// Asked each time a picture file from outside the app starts a video in Uncensored mode (never remembered).
+const NOT_REAL_TEXT = 'This picture is not a real person — it\'s AI-made, drawn or a 3D render, and everyone in it is an adult.';
+const NOT_REAL_REFUSED = 'Not made: a picture file you add can only start a video in Uncensored mode after you confirm it isn\'t a real person (AI-made, drawn or a 3D render) and everyone in it is an adult.';
 
 // ---------- the hard limits (pure) ----------
-// { ok, sexual } or { ok: false, kind, message }. uncensored: the owner's switch; outside: a
-// picture-to-video request whose start picture was added from outside the app.
-function checkPrompt({ prompt = '', uncensored = false, outside = false, what = 'picture' } = {}) {
+// { ok, sexual } or { ok: false, kind, message }. uncensored: the owner's switch.
+function checkPrompt({ prompt = '', uncensored = false, what = 'picture' } = {}) {
   const p = String(prompt || '');
   if (!p.trim()) return { ok: false, kind: 'empty', message: `Say what the ${what} should show.` };
   const real = p.match(cards.REAL_TAGS) || p.match(scene.LIKENESS);
@@ -56,7 +59,6 @@ function checkPrompt({ prompt = '', uncensored = false, outside = false, what = 
   const amb = p.match(scene.AMBIGUOUS);
   const look = scene.lookAges(p)[0];
   if (amb || look !== undefined) return { ok: false, kind: 'minor', message: `Blocked: the prompt says ${amb ? `"${amb[0]}"` : `someone looks ${look}`}, which makes the age unclear, so it can't be sexual. Nothing sexual is ever made with anyone who looks under 18.` };
-  if (outside) return { ok: false, kind: 'real', message: 'Blocked: a sexual video can only start from a picture made here in Images & Videos, never from a photo you add (it could be a real person).' };
   if (!uncensored) return { ok: false, kind: 'uncensored_off', message: 'That prompt is 18+. Turn on Uncensored mode in Settings › Uncensored mode to make it (adults only).' };
   return { ok: true, sexual: true };
 }
@@ -233,8 +235,11 @@ function createStudio({ dataDir, readSettings, send = () => {}, fetchImpl = (...
       else return hnet.fail('Pick the picture to animate again.');
     }
     const u = unc();
-    const chk = checkPrompt({ prompt, uncensored: u.on, outside: start?.outside === true, what: kind === 'video' ? 'video' : 'picture' });
+    const chk = checkPrompt({ prompt, uncensored: u.on, what: kind === 'video' ? 'video' : 'picture' });
     if (!chk.ok) return { ok: false, kind: chk.kind, message: chk.message };
+    // An outside picture in Uncensored mode: only with his confirmation for this request.
+    if (start?.outside && u.on && req.notReal !== true) return { ok: false, kind: 'confirm', message: NOT_REAL_REFUSED };
+    if (start?.outside) start.notReal = req.notReal === true;
     const count = kind === 'image' ? [1, 2, 4].includes(Number(req.count)) ? Number(req.count) : 1 : 1;
     if (jobs.length + count > MAX_JOBS) return hnet.fail(`${MAX_JOBS} are already waiting. Let some finish first.`);
     const size = kind === 'video' ? VIDEO_SIZES.find((x) => x.id === req.size) || VIDEO_SIZES[0] : comfy.SIZE_CHOICES.find((x) => x.id === req.size) || null;
@@ -274,8 +279,9 @@ function createStudio({ dataDir, readSettings, send = () => {}, fetchImpl = (...
     if (!c) return hnet.fail('No ComfyUI address saved.', 'not_set');
     const u = unc();
     // Checked again when it starts: the switch may have changed while it waited.
-    const chk = checkPrompt({ prompt: j.prompt, uncensored: u.on, outside: j.start?.outside === true, what: j.kind === 'video' ? 'video' : 'picture' });
+    const chk = checkPrompt({ prompt: j.prompt, uncensored: u.on, what: j.kind === 'video' ? 'video' : 'picture' });
     if (!chk.ok) return { ok: false, kind: chk.kind, message: chk.message };
+    if (j.start?.outside && u.on && j.start.notReal !== true) return { ok: false, kind: 'confirm', message: NOT_REAL_REFUSED };
     const negative = negativeFor({ kind: j.kind, uncensored: u.on, own: j.own });
     if (j.kind === 'image') {
       const eff = comfy.effective(readSettings().comfy);
@@ -343,7 +349,7 @@ function createStudio({ dataDir, readSettings, send = () => {}, fetchImpl = (...
     changed();
     return { ok: true };
   }
-  // A picture he picks from outside the app, to animate (sexual prompts are refused for these).
+  // A picture he picks from outside the app, to animate (in Uncensored mode only after he confirms NOT_REAL_TEXT).
   function pickToken(file) {
     if (!/\.(png|jpe?g|webp)$/i.test(String(file || ''))) return hnet.fail('Pick a PNG, JPG or WebP picture.');
     let st;
@@ -369,4 +375,4 @@ function createStudio({ dataDir, readSettings, send = () => {}, fetchImpl = (...
   return { add, cancel, remove, again, pickToken, itemFile, list: snapshot, status, jobs: () => jobs.map(jobView), FOLDER };
 }
 
-module.exports = { createStudio, checkPrompt, negativeFor, chatUncensored, cleanUncensored, mergeUncensored, pickWan, pickLoras, videoSetup, buildVideoWorkflow, VIDEO_SIZES, FRAMES, FPS, SCRIPT, FOLDER, ID_RE };
+module.exports = { NOT_REAL_TEXT, NOT_REAL_REFUSED, createStudio, checkPrompt, negativeFor, chatUncensored, cleanUncensored, mergeUncensored, pickWan, pickLoras, videoSetup, buildVideoWorkflow, VIDEO_SIZES, FRAMES, FPS, SCRIPT, FOLDER, ID_RE };

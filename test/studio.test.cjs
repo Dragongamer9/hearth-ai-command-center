@@ -29,15 +29,11 @@ test('hard limits: real people are blocked, sexual or not, in every mode', () =>
     }
   }
 });
-test('18+ prompts need Uncensored mode; adults are fine with it on; outside photos never become sexual videos', () => {
+test('18+ prompts need Uncensored mode; adults are fine with it on', () => {
   const p = 'nude elf queen, adult woman, in a moonlit bath house';
   assert.equal(studio.checkPrompt({ prompt: p, uncensored: false }).kind, 'uncensored_off');
   assert.deepEqual(studio.checkPrompt({ prompt: p, uncensored: true }), { ok: true, sexual: true });
-  const out = studio.checkPrompt({ prompt: p, uncensored: true, outside: true, what: 'video' });
-  assert.equal(out.ok, false);
-  assert.equal(out.kind, 'real');
   assert.deepEqual(studio.checkPrompt({ prompt: 'a steam locomotive on a snowy viaduct', uncensored: false }), { ok: true, sexual: false });
-  assert.deepEqual(studio.checkPrompt({ prompt: 'a steam train', uncensored: false, outside: true }), { ok: true, sexual: false });
   assert.equal(studio.checkPrompt({ prompt: '   ' }).kind, 'empty');
 });
 test('negative prompt: minors always left out; nudity only while Uncensored mode is off; his words only add', () => {
@@ -149,7 +145,7 @@ test('studio: a blocked request never reaches ComfyUI', async () => {
     const r = st.add({ kind: 'image', prompt: p });
     assert.equal(r.ok, false, p);
   }
-  assert.equal(st.add({ kind: 'video', prompt: 'nude woman, adult', start: 'pick:nope' }).ok, false);
+  assert.equal(st.add({ kind: 'video', prompt: 'nude teen', start: 'pick:nope' }).ok, false);
   assert.equal(calls, 0);
   assert.equal(st.list().jobs.length, 0);
 });
@@ -200,6 +196,42 @@ test('studio: picture to video uploads the gallery picture; pictures keep the no
   const vid = st.list().items.find((x) => x.kind === 'video');
   assert.equal(vid.from, pic.id);
   assert.equal(vid.mode, 'i2v');
+});
+test('outside picture files: in Uncensored mode only with the owner\'s confirmation for that request; Made so far needs none', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'studio-'));
+  const pic = path.join(dir, 'drawn.png');
+  fs.writeFileSync(pic, Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]));
+  const prompts = [];
+  const uploads = [];
+  const st = studio.createStudio({ dataDir: () => dir, readSettings: () => ({ comfy: { url: 'http://100.72.99.97:8188' }, uncensored: { on: true } }), fetchImpl: fakeComfy({ prompts, uploads }), sleep: async () => {}, pollMs: 1 });
+  const t = st.pickToken(pic);
+  assert.equal(t.ok, true);
+  const no = st.add({ kind: 'video', prompt: 'nude elf queen, adult, dancing', start: t.token });
+  assert.equal(no.ok, false);
+  assert.equal(no.kind, 'confirm');
+  assert.equal(prompts.length, 0, 'nothing is sent without the confirmation');
+  // The hard limits still apply after confirming.
+  assert.equal(st.add({ kind: 'video', prompt: 'nude teen', start: t.token, notReal: true }).kind, 'minor');
+  assert.equal(st.add({ kind: 'video', prompt: 'a nude celebrity', start: t.token, notReal: true }).kind, 'real');
+  assert.equal(st.add({ kind: 'video', prompt: 'nude elf queen, adult, dancing', start: t.token, notReal: true }).ok, true);
+  await until(() => st.list().items.some((x) => x.kind === 'video'));
+  assert.equal(uploads.length, 1);
+  assert.ok(prompts[0][7].inputs.text.includes('child'), 'minors stay in the negative prompt');
+  // A picture from Made so far doesn't ask.
+  const made = st.list().items[0];
+  const fromGallery = st.add({ kind: 'image', prompt: 'a castle at dusk' });
+  assert.equal(fromGallery.ok, true);
+  await until(() => st.list().items.some((x) => x.kind === 'image'));
+  const img = st.list().items.find((x) => x.kind === 'image');
+  assert.equal(st.add({ kind: 'video', prompt: 'nude elf queen, adult', start: `item:${img.id}` }).ok, true);
+  assert.ok(made);
+});
+test('wiring: the confirmation is a native box asked for every outside file in Uncensored mode, never remembered', () => {
+  const p = read('electron/parity.cjs');
+  assert.match(p, /delete r\.notReal;/, 'the window can\'t confirm for him');
+  assert.match(p, /r\.start\.startsWith\('pick:'\) && unc\.on === true/);
+  assert.match(p, /buttons: \['Cancel', 'Confirm'\]/);
+  assert.match(studio.NOT_REAL_TEXT, /^This picture is not a real person — it's AI-made, drawn or a 3D render/);
 });
 test('studio: a waiting job can be removed; nothing to do without a ComfyUI address', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'studio-'));
