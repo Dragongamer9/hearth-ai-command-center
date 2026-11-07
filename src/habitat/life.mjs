@@ -78,7 +78,7 @@ export const RELIEF_CAP = 2; // watering eases wilting by at most this many step
 export function emptyStore() {
   return {
     v: STORE_V, rev: 0, finished: 0, growth: 0, counted: [], merged: false, failStreak: 0, relief: 0, seen: {}, trophies: {}, ai: {}, pet: { name: '' }, cleanSince: null,
-    locks: {}, lockAll: false, board: {}, journal: {}, life: emptyLife(),
+    locks: {}, lockAll: false, board: {}, journal: {}, life: emptyLife(), raids: {},
   };
 }
 export function emptyLife() { return { rate: {}, watered: {}, look: {}, undo: {}, events: [], jnotes: {}, coffees: [] }; }
@@ -136,6 +136,8 @@ export function migrateStore(raw) {
   s.pet = { name: typeof raw.pet?.name === 'string' ? raw.pet.name.slice(0, 24) : '' };
   s.cleanSince = iso(raw.cleanSince);
   s.rev = int(raw.rev);
+  // 2.4: raiders each AI helped beat at the gate. Game data, only ever counts up.
+  s.raids = isObj(raw.raids) ? Object.fromEntries(Object.entries(raw.raids).filter(([k, v]) => /^[a-z0-9_-]{1,32}$/i.test(k) && Number.isFinite(Number(v)) && Number(v) > 0).map(([k, v]) => [k, int(v, 0, 1e9)])) : {};
   s.relief = int(raw.relief, 0, Math.min(RELIEF_CAP, s.failStreak));
   s.locks = isObj(raw.locks) ? Object.fromEntries(Object.entries(raw.locks).filter(([, v]) => v === true)) : {};
   s.lockAll = raw.lockAll === true;

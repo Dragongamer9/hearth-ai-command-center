@@ -7,11 +7,15 @@ import './habitat3d.css';
 import { habitatEngine } from '../habitat.mjs';
 import { roomOf } from '../habitat/world.mjs';
 import { gardenState } from '../habitat/life.mjs';
-import { tileTo3D, facingOf, visualFor, doorClosed, lampLit, normPrefs, withPref, pickView, motionFor, pixelRatio, lightRig, presets, pxToTile, sceneKey, lodgeBounds, HAIR_STYLES, OUTFITS } from './map.mjs';
+import { tileTo3D, facingOf, visualFor, doorClosed, lampLit, normPrefs, withPref, pickView, motionFor, pixelRatio, lightRig, presets, pxToTile, sceneKey, lodgeBounds, cityBounds, layoutOf, HAIR_STYLES, OUTFITS } from './map.mjs';
 import { STUDY, STUDY_DOOR, NOOK, ownerFree, moveAvatar, inputFrom, speedFor, stepDelta, camBob, nearestTarget, noticers, ownerPool, ownerEdit, KEYS } from './walk.mjs';
 import { buildLodge, disposeTree } from './lodge.mjs';
 import { buildFigure, animateFigure, buildPet, animatePet } from './figures.mjs';
 import { iconTex, screenTex, labelTex, glowTex } from './textures.mjs';
+import { buildCastle } from './castle.mjs';
+import { buildNpc, animateNpc, setGear, healthBar, setHealth, dizzyStars, spinStars, poof, arrow, arcAt } from './npc.mjs';
+import { zoneOf, zoneKey, routeBetween, pathLength, alongPath, timeOfDay, charFor, townsfolk, folkAt, guards, guardAt, folkCount, guardCount, raidAt, planRaid, raidState, guardDazed, RAID_LEN, WALL_TOP, normRaids } from './castlemap.mjs';
+import { charactersPanel, bindCharacters } from './charui.mjs';
 
 let V = null;
 let winBound = false;
@@ -26,7 +30,7 @@ export function webglAvailable() {
 function createRenderer() {
   const canvas = document.createElement('canvas');
   canvas.className = 'hab3d-canvas';
-  canvas.setAttribute('aria-label', 'Habitat in 3D: the Hearth lodge with each AI’s room, the great room, the kitchen nook and the garden');
+  canvas.setAttribute('aria-label', 'Habitat in 3D: the castle city. Each AI’s house on the street, the keep with its great hall and garden, and the King’s Chambers on top');
   canvas.setAttribute('role', 'img');
   canvas.tabIndex = 0;
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance', preserveDrawingBuffer: false });
@@ -36,7 +40,7 @@ function createRenderer() {
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   const scene = new THREE.Scene();
-  const camera = new THREE.PerspectiveCamera(42, 1.6, 0.05, 400);
+  const camera = new THREE.PerspectiveCamera(42, 1.6, 0.05, 900);
   const hemi = new THREE.HemisphereLight('#dfefff', '#6b5240', 0.8); scene.add(hemi);
   const sun = new THREE.DirectionalLight('#fff1d6', 2.2); sun.castShadow = true; scene.add(sun); scene.add(sun.target);
   sun.shadow.bias = -0.0004; sun.shadow.normalBias = 0.02; sun.shadow.radius = 4;
@@ -56,6 +60,7 @@ function ensure() {
     fxMap: new Map(), icons: new Map(), particles: null, weather: '', notice: '', lighter: false,
     walk: { on: false, pos: { x: 1, y: 11 }, yaw: Math.PI / 2, pitch: -0.12, sit: null, mugUntil: 0, camPos: null, prev: {}, moving: false, faceYaw: 0 },
     keys: new Set(), tapped: new Set(), touch: { move: null, look: null }, notice3d: new Map(), lastScreen: 0, prefs: normPrefs(null), opts: null,
+    castle: null, castleKey: '', zones: new Map(), transit: new Map(), npcs: [], raid: null, raidSeen: 0, defend: new Set(),
   };
   return V;
 }
@@ -90,6 +95,7 @@ function teardown() {
   try { gl.renderer.dispose(); gl.renderer.forceContextLoss(); } catch {}
   gl.canvas.remove();
   for (const n of Object.values(V.nodes || {})) n.remove();
+  Object.assign(V, { castle: null, castleKey: '', npcs: [], zones: new Map(), transit: new Map(), raid: null, defend: new Set() });
   Object.assign(V, { gl: null, lodge: null, key: '', figs: new Map(), pet: null, avatar: null, fxMap: new Map(), icons: new Map(), notice3d: new Map(), particles: null, weather: '', screenTex: null, frames: 0 });
 }
 
@@ -120,7 +126,7 @@ function apply() {
   } else {
     V.el.classList.remove('hab3d-on');
     V.gl?.canvas.remove();
-    for (const n of ['vignette', 'hud', 'bubble', 'panel', 'stick']) V.nodes?.[n]?.remove();
+    for (const n of ['vignette', 'hud', 'bubble', 'panel', 'stick', 'toast', 'chars']) V.nodes?.[n]?.remove();
     if (c2) c2.style.display = '';
     eng.setHeadless(false);
     if (V.raf) cancelAnimationFrame(V.raf); V.raf = 0;
@@ -145,12 +151,17 @@ function toolbar() {
   const names = Object.fromEntries(Object.entries(habitatEngine()?.agents || {}).map(([k, a]) => [k, a.name]));
   const pre = world ? presets(world, names) : [];
   bar.innerHTML = `<div class="hab3d-seg" role="group" aria-label="Habitat view"><button class="btn small${is3 ? '' : ' primary'}" data-h3="2d" aria-pressed="${!is3}">2D</button><button class="btn small${is3 ? ' primary' : ''}" data-h3="3d" aria-pressed="${is3}">3D</button></div>
-    ${is3 ? `<select class="hab3d-pre" aria-label="Camera view">${pre.map((x) => `<option value="${esc(x.id)}">${esc(x.label)}</option>`).join('')}<option value="study">Your study</option></select>
-    <button class="btn small" data-h3="walk">Walk the lodge</button><button class="btn small" data-h3="study">Your study…</button>
+    ${is3 ? `<select class="hab3d-pre" aria-label="Camera view">${pre.map((x) => `<option value="${esc(x.id)}">${esc(x.label)}</option>`).join('')}<option value="study">King’s Chambers (decorate)</option></select>
+    <button class="btn small" data-h3="walk">Walk the castle</button><button class="btn small" data-h3="study">King’s Chambers…</button><button class="btn small" data-h3="chars">Characters…</button>
+    <select class="hab3d-time" aria-label="Time of day">${[['auto', 'Time: follow the clock'], ['day', 'Day'], ['sunset', 'Sunset'], ['night', 'Night']].map(([v, l]) => `<option value="${v}"${p.time === v ? ' selected' : ''}>${l}</option>`).join('')}</select>
     <label class="hab3d-check"><input type="checkbox" data-h3="lighter" ${p.lighter ? 'checked' : ''}> Lighter 3D</label>
+    <label class="hab3d-check"><input type="checkbox" data-h3="folk" ${p.folk ? 'checked' : ''}> Townsfolk and guards</label>
+    <select class="hab3d-raids" aria-label="Raids">${[['off', 'Raids: off'], ['rare', 'Raids: rare'], ['sometimes', 'Raids: sometimes'], ['often', 'Raids: often']].map(([v, l]) => `<option value="${v}"${(raidsOn() ? p.raids.freq : 'off') === v ? ' selected' : ''}>${l}</option>`).join('')}</select>
     <a href="#" class="hab3d-link" data-h3="rearrange2d">Rearrange in 2D</a>` : ''}<span class="hab3d-note faint"></span>`;
   bar.querySelectorAll('[data-h3]').forEach((b) => b.addEventListener(b.type === 'checkbox' ? 'change' : 'click', (e) => { e.preventDefault(); barAction(b.dataset.h3, b); }));
   bar.querySelector('.hab3d-pre')?.addEventListener('change', (e) => { if (e.target.value === 'study') return goStudy(); preset(e.target.value); });
+  bar.querySelector('.hab3d-time')?.addEventListener('change', (e) => { savePrefs(withPref(V.prefs, 'time', e.target.value)); V.phase = ''; });
+  bar.querySelector('.hab3d-raids')?.addEventListener('change', (e) => { const v = e.target.value; savePrefs(withPref(V.prefs, 'raids', v === 'off' ? { on: false } : { on: true, freq: v })); });
   noticeLine();
 }
 function noticeLine() { const n = V?.el?.parentElement?.querySelector('.hab3d-note'); if (n) n.textContent = V.notice || ''; }
@@ -159,6 +170,8 @@ function barAction(act, b) {
   else if (act === 'lighter') { savePrefs(withPref(V.prefs, 'lighter', b.checked)); V.lighter = V.prefs.lighter; resize(); quality(); }
   else if (act === 'walk') enterWalk();
   else if (act === 'study') goStudy();
+  else if (act === 'chars') openCharacters();
+  else if (act === 'folk') { savePrefs(withPref(V.prefs, 'folk', b.checked)); V.npcKey = ''; }
   else if (act === 'rearrange2d') { savePrefs(withPref(V.prefs, 'mode', '2d')); toolbar(); apply(); }
 }
 
@@ -228,20 +241,28 @@ function sync(eng) {
     V.gl.scene.add(V.lodge.root);
     V.key = key; V.world = world; V.phase = '';
     for (const m of Object.values(V.lodge.refs.monitors)) m.key = null;
-    const b = lodgeBounds(world);
-    const s = V.gl.sun.shadow.camera; const half = Math.max(b.maxX - b.minX, b.maxZ - b.minZ) / 2 + 9;
-    s.left = -half; s.right = half; s.top = half; s.bottom = -half; s.near = 1; s.far = 120; s.updateProjectionMatrix();
+    // 2.4: the sun's shadows cover the part of the city around the camera's target
+    const s = V.gl.sun.shadow.camera; const half = 48;
+    s.left = -half; s.right = half; s.top = half; s.bottom = -half; s.near = 1; s.far = 260; s.updateProjectionMatrix();
     quality();
     if (first) preset('lodge', true);
     toolbar();
   }
-  // figures: one per AI in the world, kept across rebuilds
+  // the castle city around the keep: rebuilt when the AIs or their names change
+  const ck = [world.ids.join(','), world.w, Object.values(eng.agents).map((a) => `${a.id}:${a.color}:${a.name}`).join(',')].join('#');
+  if (ck !== V.castleKey) {
+    if (V.castle) { V.gl.scene.remove(V.castle.root); disposeTree(V.castle.root, []); }
+    V.castle = buildCastle({ world, L: layoutOf(world), agents: eng.agents, labelTex: (name, color) => labelTex([name], { w: 384, h: 128, bg: '#fff4d6', fg: '#2a2230', font: 'bold 54px system-ui, sans-serif', border: color }) });
+    V.gl.scene.add(V.castle.root); V.castleKey = ck; V.npcKey = ''; V.phase = '';
+  }
+  // figures: one per AI in the world, kept across rebuilds, each as the character picked for it
   for (const id of world.ids) {
     const a = eng.agents[id];
-    const k = `${id}:${a?.color}`;
+    const ch = charFor(V.prefs.characters, id, world.ids);
+    const k = `${id}:${a?.color}:${JSON.stringify(ch)}`;
     if (!V.figs.has(id) || V.figs.get(id).userData.key !== k) {
       if (V.figs.has(id)) V.gl.dyn.remove(V.figs.get(id));
-      const f = buildFigure({ id, color: a?.color || '#888' });
+      const f = buildFigure({ id, color: a?.color || '#888', char: ch });
       f.userData.key = k; f.userData.hitId = id;
       f.traverse((o) => { o.userData.hit = { kind: 'actor', id }; });
       V.gl.dyn.add(f); V.figs.set(id, f);
@@ -249,18 +270,21 @@ function sync(eng) {
   }
   for (const [id, f] of V.figs) if (!world.ids.includes(id)) { V.gl.dyn.remove(f); V.figs.delete(id); }
   if (!V.pet) { V.pet = buildPet(); V.pet.traverse((o) => { o.userData.hit = { kind: 'pet' }; }); V.gl.dyn.add(V.pet); }
-  if (light?.phase !== V.phase) { V.phase = light?.phase; rig(light?.phase); }
+  const ph = timeOfDay(V.prefs.time, light?.phase);
+  if (ph !== V.phase) { V.phase = ph; rig(ph); }
+  syncNpcs(eng);
 }
 
 function rig(phase) {
   const R = lightRig(phase);
   const { scene, sun, hemi, rim, fill } = V.gl;
   scene.background = new THREE.Color(R.sky);
-  scene.fog.color.set(R.fog);
+  scene.fog.color.set(R.fog); scene.fog.near = 140; scene.fog.far = 420;
   sun.color.set(R.sun.color); sun.intensity = R.sun.intensity; sun.position.set(...R.sun.pos).multiplyScalar(1.4); sun.target.position.set(0, 0, 0);
   hemi.color.set(R.hemi.sky); hemi.groundColor.set(R.hemi.ground); hemi.intensity = R.hemi.intensity;
   rim.intensity = phase === 'night' ? 0.25 : 0.45; fill.intensity = phase === 'night' ? 0.1 : 0.18;
   V.gl.renderer.toneMappingExposure = phase === 'night' ? 1.25 : 1.05;
+  if (V.castle) { V.castle.refs.windowMat.emissiveIntensity = R.windows * 1.4; for (const tq of V.castle.refs.torches) tq.visible = R.lampsOn; }
   const refs = V.lodge?.refs; if (!refs) return;
   refs.windowMat.emissiveIntensity = R.windows * 1.6;
   for (const g of refs.windowGlows) { g.visible = R.windows > 0.3; g.material.opacity = 0.5 * R.windows; }
@@ -314,16 +338,37 @@ function update(eng, t, dt, reduced) {
     let wave = fxIcon[id] === 'wave';
     if (near.has(id)) { const st = V.notice3d.get(id) || { since: t, waved: false }; if (!V.notice3d.has(id)) V.notice3d.set(id, st); if (t - st.since < 1.6) wave = true; } else V.notice3d.delete(id);
     const vis = visualFor(beh, a, { mood: eng.moods[id], chat: chatting.has(id) && (reduced || Math.floor(t / 2.2) % 2 === [...chatting].indexOf(id) % 2), waving: wave, cheering: cheering.has(id) });
-    const p = P(a.x, a.y);
+    let p = P(a.x, a.y);
     let rot = facingOf(a.dir); let bedZ = 0.6;
     if (vis.pose === 'sleep') { const r = roomOf(world, id); rot = r?.side === 'bottom' ? Math.PI : 0; bedZ = r?.side === 'bottom' ? -0.3 : 0.6; }
-    f.position.set(p.x, 0, p.z + (vis.pose === 'type' ? -0.28 : 0));
+    // 2.4: crossing between an AI's house and the keep, they walk through town
+    const zk = zoneKey(zoneOf(world, a.x, a.y));
+    const last = V.zones.get(id);
+    const defending = V.defend.has(id) && beh.mode === 'idle';
+    const want = defending ? { x: V.raidSpot?.(id).x ?? p.x, y: 0, z: V.raidSpot?.(id).z ?? p.z } : p;
+    const wantKey = defending ? 'gate' : zk;
+    if (last && last.key !== wantKey && !reduced) {
+      const from = last.pos; const fz = last.key.startsWith('house:') ? { kind: 'house', id: last.key.slice(6) } : { kind: 'keep' };
+      const tz = wantKey.startsWith('house:') ? { kind: 'house', id: wantKey.slice(6) } : { kind: 'keep' };
+      let pts = routeBetween(world, fz, tz, from, want);
+      if (wantKey === 'gate' || last.key === 'gate') { const L = layoutOf(world); const via = [{ x: 0, z: L.keepGate.z + 1 }, { x: 0, z: L.gate.z - 6 }]; pts = [from, ...(wantKey === 'gate' ? via : [...via].reverse()), want]; }
+      V.transit.set(id, { pts, d: 0, len: pathLength(pts) });
+    }
+    V.zones.set(id, { key: wantKey, pos: { x: want.x, z: want.z } });
+    const tr = V.transit.get(id);
+    if (tr && !reduced) {
+      tr.d += dt * 5.5;
+      if (tr.d >= tr.len) V.transit.delete(id);
+      else { const q = alongPath(tr.pts, tr.d); p = { x: q.x, y: 0, z: q.z }; rot = q.yaw; vis.pose = 'walk'; vis.icon = null; }
+    } else if (defending) { p = want; rot = Math.PI; vis.pose = 'stand'; vis.gesture = 'cheer'; vis.icon = null; }
+    f.position.set(p.x, p.y || 0, p.z + (vis.pose === 'type' ? -0.28 : 0));
     if (reduced || vis.pose === 'sleep') f.rotation.y = rot; else f.rotation.y += angDiff(rot, f.rotation.y) * Math.min(1, dt * 10);
+    if (f.userData.sword) f.userData.sword.visible = defending;
     let lookYaw = null;
     if (owner && near.has(id)) { const want = Math.atan2(owner.x - a.x, owner.y - a.y); lookYaw = angDiff(want, f.rotation.y); }
     animateFigure(f, vis, t, dt, { reduced, lookYaw, seatY: a.mode === 'desk' ? 0.3 : 0.06, bedZ });
     const ic = figIcons(f);
-    const top = vis.pose === 'sleep' ? 0.95 : vis.pose === 'type' || vis.pose === 'sit' ? (a.mode === 'desk' ? 1.2 : 0.95) : 1.25;
+    const top = 0.2 + (vis.pose === 'sleep' ? 0.95 : vis.pose === 'type' || vis.pose === 'sit' ? (a.mode === 'desk' ? 1.2 : 0.95) : 1.25);
     setIcon(ic.icon, vis.icon, top);
     ic.icon.position.z = vis.pose === 'sleep' ? (bedZ - 0.9) : 0;
     setIcon(ic.star, vis.star ? 'star' : null, top + (vis.icon ? 0.36 : 0.02));
@@ -373,9 +418,137 @@ function update(eng, t, dt, reduced) {
   effects(eng, t, reduced);
   weather(eng, dt);
   if (V.walk.on) walkStep(eng, t, dt, reduced); else orbitStep(dt, reduced);
+  updateNpcs(eng, t, dt, reduced);
+  updateRaid(eng, t, dt, reduced);
+  roofs();
   // the roof's back slope fades out as you zoom in
   if (refs.roof) { const d = V.walk.on ? 0 : V.cam.dist; const o = Math.max(0, Math.min(0.45, (d - 30) / 25)); refs.roof.mat.opacity = o; refs.roof.mesh.visible = o > 0.02; refs.roof.ridge.visible = o > 0.02; }
 }
+// ---------- 2.4: townsfolk, guards and raids ----------
+// Raids are on unless he turned them off; in Lighter 3D or reduced motion only when he turned them on.
+function raidsOn() { const r = normRaids(V.prefs.raids, { lighter: V.lighter, reduced: Boolean(habitatEngine()?.reduced) }); return r.explicit ? r.on : !(V.prefs.lighter || habitatEngine()?.reduced); }
+function syncNpcs(eng) {
+  const m = motionFor({ reduced: eng.reduced, lighter: V.lighter });
+  const key = [V.castleKey, V.prefs.folk, V.lighter].join('|');
+  if (key === V.npcKey || !V.castle) return;
+  for (const n of V.npcs) n.obj.removeFromParent();
+  V.npcs = [];
+  V.npcKey = key;
+  if (!V.npcGroup) { V.npcGroup = new THREE.Group(); V.gl.scene.add(V.npcGroup); }
+  const L = layoutOf(eng.world);
+  for (const f of townsfolk(L, V.castle.houses, folkCount({ on: V.prefs.folk, lighter: V.lighter }))) {
+    const obj = buildNpc(f.look, { kind: f.cat ? 'cat' : 'folk', small: f.small }); V.npcGroup.add(obj);
+    if (f.kind === 'merchant') setGear(obj, null);
+    if (f.kind === 'farmer') setGear(obj, 'spear');
+    V.npcs.push({ kind: 'folk', f, obj });
+  }
+  guards(L, guardCount({ on: V.prefs.folk, lighter: V.lighter })).forEach((g) => {
+    const obj = buildNpc({ hair: 'soft', hairColor: '#3a2a22', eyes: '#4a7bd1', skin: '#ffe2cf', outfit: 'knight', accessory: 'none' }, { kind: 'guard' }); V.npcGroup.add(obj);
+    setGear(obj, g.wall ? (g.i % 2 ? 'bow' : 'spear') : 'spear');
+    V.npcs.push({ kind: 'guard', g, obj });
+  });
+  void m;
+}
+function updateNpcs(eng, t, dt, reduced) {
+  const still = reduced; const phase = V.phase || 'day';
+  const s = V.raid ? (performance.now() - V.raid.t0) / 1000 : -1;
+  let gi = 0;
+  for (const n of V.npcs) {
+    if (n.kind === 'folk') {
+      // during a raid the market empties near the gate: folk stay where they are but keep clear of the road
+      const p = folkAt(n.f, t, phase, { still });
+      n.obj.visible = p.visible; if (!p.visible) continue;
+      n.obj.position.set(p.x, 0, p.z); n.obj.rotation.y = p.yaw;
+      animateNpc(n.obj, { moving: p.moving, t, reduced });
+    } else {
+      const p = guardAt(n.g, t, phase, { still });
+      const fighting = V.raid && s >= 16 && s < RAID_LEN - 8;
+      const dazed = V.raid && !n.g.wall && guardDazed(V.raid.plan, s, gi);
+      let x = p.x; let z = p.z;
+      if (fighting && !n.g.wall) { const L = layoutOf(eng.world); x = L.gate.x + (gi % 4 - 1.5) * 2.2; z = L.gate.z + 3.2; }
+      n.obj.position.set(x, n.g.wall ? WALL_TOP + 0.35 : 0, z);
+      n.obj.rotation.y = fighting ? 0 : p.yaw;
+      setGear(n.obj, p.torch && !fighting ? 'torch' : n.g.wall ? (n.g.i % 2 ? 'bow' : 'spear') : (gi % 2 ? 'sword' : 'spear'));
+      animateNpc(n.obj, { moving: p.moving && !fighting, t, dazed, attack: fighting && !dazed && !n.g.wall, reduced });
+      if (!n.g.wall) gi += 1;
+    }
+  }
+}
+function startRaid(t0Ms, eng) {
+  const L = layoutOf(eng.world);
+  const defenders = eng.world.ids.filter((id) => eng.behs[id]?.mode === 'idle' && !eng.agents[id]?.task && !eng.agents[id]?.reviewing);
+  const plan = planRaid(Math.floor(t0Ms / 1000), L, defenders);
+  V.raid = { t0: performance.now() - Math.max(0, Date.now() - t0Ms), plan, objs: [], arrows: [], credited: false, startMs: t0Ms };
+  V.defend = new Set(plan.defenders);
+  V.raidSpot = (id) => { const i = plan.defenders.indexOf(id); return { x: L.gate.x + (i - 1) * 2.4, z: L.gate.z + 1.6 }; };
+  if (!V.raidGroup) { V.raidGroup = new THREE.Group(); V.gl.scene.add(V.raidGroup); }
+  for (const x of plan.raiders) {
+    const obj = buildNpc(x.look, { kind: 'raider' }); setGear(obj, 'club');
+    const bar = healthBar(); bar.position.y = 2.05; obj.add(bar);
+    const stars = dizzyStars(); stars.position.y = 1.95; stars.visible = false; obj.add(stars);
+    const pf = poof(); pf.visible = false; obj.add(pf); pf.position.y = 0.8;
+    V.raidGroup.add(obj); V.raid.objs.push({ obj, bar, stars, pf });
+  }
+  for (let k = 0; k < 3; k++) { const a = arrow(k === 1); a.visible = false; V.raidGroup.add(a); V.raid.arrows.push(a); }
+  for (const id of plan.defenders) { const f = V.figs.get(id); if (f && !f.userData.sword) { const sw = new THREE.Mesh(new THREE.BoxGeometry(0.035, 0.42, 0.02), new THREE.MeshToonMaterial({ color: '#dfe6f2' })); sw.position.set(0, -0.3, 0.05); f.userData.fig.arms[1].elbow.add(sw); f.userData.sword = sw; } }
+  toast('Raiders at the gate!', 'Watch', () => preset('gate'));
+}
+function endRaid(eng) {
+  if (V.raid && !V.raid.credited) { V.raid.credited = true; const c = Object.fromEntries(Object.entries(V.raid.plan.credit).filter(([id]) => V.defend.has(id))); if (Object.keys(c).length) eng.addRaidWins?.(c); }
+  V.raid?.objs.forEach((o) => o.obj.removeFromParent()); V.raid?.arrows.forEach((a) => a.removeFromParent());
+  V.raid = null; V.defend = new Set();
+}
+function updateRaid(eng, t, dt, reduced) {
+  // a new raid from the schedule (seeded per day), unless one is already on
+  if (!V.raid && raidsOn() && !V.walk.on) {
+    const now = eng.clock?.().getTime?.() ?? Date.now(); const d = new Date(now); d.setHours(0, 0, 0, 0);
+    const st = raidAt(now, d.getTime(), normRaids(V.prefs.raids).freq);
+    if (st && st !== V.raidSeen) { V.raidSeen = st; startRaid(st, eng); }
+  }
+  if (!V.raid) return;
+  const s = (performance.now() - V.raid.t0) / 1000;
+  const st = raidState(V.raid.plan, s);
+  // work is never interrupted: an AI that starts a task leaves the gate at once
+  for (const id of [...V.defend]) if (eng.behs[id]?.mode !== 'idle') V.defend.delete(id);
+  st.raiders.forEach((x, i) => {
+    const o = V.raid.objs[i]; o.obj.visible = x.visible; if (!x.visible) return;
+    o.obj.position.set(x.x, 0, x.z); o.obj.rotation.y = x.mode === 'flee' ? 0 : Math.PI;
+    animateNpc(o.obj, { moving: x.mode === 'march' || x.mode === 'flee', t, flash: x.flash, dizzy: x.mode === 'dizzy', attack: x.mode === 'fight', reduced });
+    setHealth(o.bar, x.hp, V.gl.camera);
+    o.stars.visible = x.mode === 'dizzy' || x.mode === 'flee'; if (o.stars.visible) spinStars(o.stars, t);
+    o.pf.visible = x.mode === 'poof'; if (o.pf.visible) { const k = Math.min(1, (s - V.raid.plan.raiders[i].beaten - 2.2) / 0.8); o.pf.scale.setScalar(0.5 + k * 1.6); o.pf.material.opacity = 0.8 * (1 - k); o.obj.userData.npc.body.visible = k < 0.3; }
+  });
+  st.arrows.forEach((a, k) => { const m = V.raid.arrows[k]; if (!m) return; m.visible = !reduced; const p = arcAt(a.from, a.to, a.k); const q = arcAt(a.from, a.to, Math.min(1, a.k + 0.02)); m.position.set(p.x, p.y, p.z); m.lookAt(q.x, q.y, q.z); });
+  for (let k = st.arrows.length; k < V.raid.arrows.length; k++) V.raid.arrows[k].visible = false;
+  if (st.done) endRaid(eng);
+}
+// House roofs and the keep tower's roof lift off when the camera comes in close.
+function roofs() {
+  if (!V.castle || V.walk.on) { if (V.castle && V.walk.on) { for (const r of Object.values(V.castle.refs.houseRoofs)) r.visible = false; if (V.castle.refs.towerRoof) V.castle.refs.towerRoof.visible = false; } return; }
+  const c = V.cam; const near = (x, z, r) => c.dist < 24 && Math.hypot(c.target.x - x, c.target.z - z) < r;
+  const L = layoutOf(habitatEngine().world);
+  for (const [id, r] of Object.entries(V.castle.refs.houseRoofs)) { const H = L.houses[id]; r.visible = !(H && near(H.x, H.z, 9)); }
+  if (V.castle.refs.towerRoof) V.castle.refs.towerRoof.visible = !near(L.tower.x, L.tower.z, 9);
+}
+function toast(text, act, onAct) {
+  const n = node('toast'); if (n.parentElement !== V.el) V.el.appendChild(n);
+  n.innerHTML = `<b>${esc(text)}</b>${act ? ` <button class="btn small primary" data-h3t="go">${esc(act)}</button>` : ''} <button class="btn small" data-h3t="x" aria-label="Close">×</button>`;
+  n.hidden = false; n.setAttribute('role', 'status');
+  n.querySelector('[data-h3t="go"]')?.addEventListener('click', () => { onAct?.(); n.hidden = true; });
+  n.querySelector('[data-h3t="x"]')?.addEventListener('click', () => { n.hidden = true; });
+  clearTimeout(V.toastT); V.toastT = setTimeout(() => { n.hidden = true; }, 12000);
+}
+// The Characters page: the 12 ready-made originals, who plays whom, and the creator.
+function openCharacters(state = {}) {
+  const eng = habitatEngine(); if (!eng?.world) return;
+  const n = node('chars'); if (n.parentElement !== V.el) V.el.appendChild(n);
+  const people = [['owner', 'You (the King’s Chambers)'], ...eng.world.ids.map((id) => [id, eng.agents[id]?.name || id])];
+  const chars = Object.fromEntries(people.map(([id]) => [id, charFor(V.prefs.characters, id, eng.world.ids)]));
+  n.innerHTML = charactersPanel({ people, chars, raids: eng.store?.raids || {}, state });
+  n.hidden = false;
+  bindCharacters(n, { people, chars, state, save: (who, spec) => { savePrefs(withPref(V.prefs, 'character', { who, spec })); }, close: () => { n.hidden = true; }, rerender: (st) => openCharacters(st) });
+}
+
 const angDiff = (a, b) => { let d = a - b; while (d > Math.PI) d -= Math.PI * 2; while (d < -Math.PI) d += Math.PI * 2; return d; };
 
 function overviewScreen(eng, refs) {
@@ -421,7 +594,7 @@ function weather(eng, dt) {
     if (V.particles) { V.particles.removeFromParent(); V.particles.geometry.dispose(); V.particles.material.dispose(); V.particles = null; }
     V.weather = kind;
     if (kind === 'snow' || kind === 'rain') {
-      const b = lodgeBounds(eng.world); const n = m.particles; const pos = new Float32Array(n * 3);
+      const b0 = lodgeBounds(eng.world); const tg = V.cam.target; const b = { minX: tg.x - 40, maxX: tg.x + 40, minZ: tg.z - 40, maxZ: tg.z + 40 }; void b0; const n = m.particles; const pos = new Float32Array(n * 3);
       for (let i = 0; i < n; i++) { pos[i * 3] = b.minX - 8 + Math.random() * (b.maxX - b.minX + 16); pos[i * 3 + 1] = Math.random() * 12; pos[i * 3 + 2] = b.minZ - 6 + Math.random() * (b.maxZ - b.minZ + 14); }
       const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
       V.particles = new THREE.Points(g, new THREE.PointsMaterial({ color: kind === 'snow' ? '#ffffff' : '#a9c8ff', size: kind === 'snow' ? 0.12 : 0.06, transparent: true, opacity: kind === 'snow' ? 0.95 : 0.6, depthWrite: false }));
@@ -444,7 +617,7 @@ function preset(id, instant = false) {
   const eng = habitatEngine(); if (!eng?.world) return;
   const names = Object.fromEntries(Object.entries(eng.agents).map(([k, a]) => [k, a.name]));
   const p = presets(eng.world, names).find((x) => x.id === id) || presets(eng.world, names)[0];
-  V.goal = { target: new THREE.Vector3(p.target.x, 0.4, p.target.z), dist: p.dist, theta: p.theta, phi: p.phi };
+  V.goal = { target: new THREE.Vector3(p.target.x, (p.target.y || 0) + 0.4, p.target.z), dist: p.dist, theta: p.theta, phi: p.phi };
   if (instant || eng.reduced) { V.cam = { target: V.goal.target.clone(), dist: V.goal.dist, theta: V.goal.theta, phi: V.goal.phi }; }
 }
 function focusOn(x, z, dist = 4.5) {
@@ -455,7 +628,7 @@ function goStudy() {
   if (!V.gl) { savePrefs(withPref(V.prefs, 'mode', '3d')); toolbar(); apply(); }
   const eng = habitatEngine(); if (!eng?.world) return;
   const c = tileTo3D(eng.world, STUDY.x0 + 2.5, STUDY.y0 + 1.5);
-  V.goal = { target: new THREE.Vector3(c.x, 0.4, c.z), dist: 7, theta: -0.5, phi: 0.8 };
+  V.goal = { target: new THREE.Vector3(c.x, (c.y || 0) + 0.4, c.z), dist: 8, theta: -0.4, phi: 0.82 };
   if (eng.reduced) V.cam = { ...V.goal, target: V.goal.target.clone() };
   openPanel();
 }
@@ -466,7 +639,7 @@ function orbitStep(dt, reduced) {
     const dz = (v) => (Math.abs(v) < 0.18 ? 0 : v);
     const g = V.goal || (V.goal = { ...V.cam, target: V.cam.target.clone() });
     g.theta -= dz(pad.axes[0] || 0) * dt * 1.6; g.phi = Math.max(0.25, Math.min(1.35, g.phi + dz(pad.axes[1] || 0) * dt));
-    g.dist = Math.max(3, Math.min(90, g.dist * (1 + dz(pad.axes[3] || 0) * dt * 1.5)));
+    g.dist = Math.max(3, Math.min(260, g.dist * (1 + dz(pad.axes[3] || 0) * dt * 1.5)));
     panBy(dz(pad.axes[2] || 0) * dt * 8, 0, g);
   }
   if (V.goal) {
@@ -475,6 +648,7 @@ function orbitStep(dt, reduced) {
     V.cam.theta += angDiff(V.goal.theta, V.cam.theta) * k; V.cam.phi += (V.goal.phi - V.cam.phi) * k;
   }
   const c = V.cam; const cam = V.gl.camera;
+  if (V.gl.sun) { const R = lightRig(V.phase || 'day'); V.gl.sun.target.position.set(c.target.x, 0, c.target.z); V.gl.sun.position.set(c.target.x + R.sun.pos[0] * 2.2, R.sun.pos[1] * 2.2, c.target.z + R.sun.pos[2] * 2.2); }
   cam.position.set(c.target.x + c.dist * Math.sin(c.phi) * Math.sin(c.theta), c.target.y + c.dist * Math.cos(c.phi), c.target.z + c.dist * Math.sin(c.phi) * Math.cos(c.theta));
   cam.lookAt(c.target);
 }
@@ -482,8 +656,8 @@ function panBy(dx, dy, g = V.goal || (V.goal = { ...V.cam, target: V.cam.target.
   const th = g.theta; const s = g.dist * 0.0018 * 60;
   const right = new THREE.Vector3(Math.cos(th), 0, -Math.sin(th)); const fwd = new THREE.Vector3(-Math.sin(th), 0, -Math.cos(th));
   g.target.addScaledVector(right, dx * s * 0.05).addScaledVector(fwd, dy * s * 0.05);
-  const b = lodgeBounds(habitatEngine().world);
-  g.target.x = Math.max(b.minX - 8, Math.min(b.maxX + 2, g.target.x)); g.target.z = Math.max(b.minZ - 2, Math.min(b.maxZ + 2, g.target.z));
+  const b = cityBounds(habitatEngine().world);
+  g.target.x = Math.max(b.minX, Math.min(b.maxX, g.target.x)); g.target.z = Math.max(b.minZ, Math.min(b.maxZ, g.target.z));
 }
 
 // ---------- pointer ----------
@@ -509,7 +683,7 @@ function bindPointer() {
       if (pts.size >= 2) {
         const others = [...pts.entries()].filter(([k]) => k !== e.pointerId).map(([, v]) => v)[0];
         const d0 = Math.hypot(p.x - others.x, p.y - others.y); const d1 = Math.hypot(e.clientX - others.x, e.clientY - others.y);
-        if (d0 > 0) g.dist = Math.max(3, Math.min(90, g.dist * (d0 / d1)));
+        if (d0 > 0) g.dist = Math.max(3, Math.min(260, g.dist * (d0 / d1)));
         panBy(-dx / 2, -dy / 2, g);
       } else if (drag && (drag.button === 2 || drag.button === 1 || drag.shift)) panBy(-dx, -dy, g);
       else { g.theta -= dx * 0.006; g.phi = Math.max(0.25, Math.min(1.38, g.phi - dy * 0.005)); }
@@ -524,7 +698,7 @@ function bindPointer() {
   };
   c.addEventListener('pointerup', up); c.addEventListener('pointercancel', up);
   c.addEventListener('pointerleave', () => { const tip = V.el?.querySelector('.hab-tip'); if (tip) tip.hidden = true; });
-  c.addEventListener('wheel', (e) => { if (V.walk.on) return; e.preventDefault(); const g = V.goal || (V.goal = { ...V.cam, target: V.cam.target.clone() }); g.dist = Math.max(3, Math.min(90, g.dist * (e.deltaY > 0 ? 1.12 : 0.89))); if (habitatEngine()?.reduced) V.cam = { ...g, target: g.target.clone() }; }, { passive: false });
+  c.addEventListener('wheel', (e) => { if (V.walk.on) return; e.preventDefault(); const g = V.goal || (V.goal = { ...V.cam, target: V.cam.target.clone() }); g.dist = Math.max(3, Math.min(260, g.dist * (e.deltaY > 0 ? 1.12 : 0.89))); if (habitatEngine()?.reduced) V.cam = { ...g, target: g.target.clone() }; }, { passive: false });
   c.addEventListener('dblclick', (e) => { if (V.walk.on) return; const h = pickAt(e); if (!h) return; const o = h.point; focusOn(o.x, o.z, h.hit.kind === 'actor' ? 3.2 : 4.5); });
   c.addEventListener('mousemove', (e) => { if (V.walk.on && document.pointerLockElement === c) { V.walk.yaw -= e.movementX * 0.0025; V.walk.pitch = Math.max(-1.1, Math.min(0.6, V.walk.pitch - e.movementY * 0.0022)); } });
   if (winBound) return; // window listeners once, however often the renderer is recreated
@@ -580,12 +754,14 @@ function enterWalk() {
   const eng = habitatEngine(); if (!eng?.world || !V.gl) return;
   const w = V.walk; w.on = true; w.sit = null; w.camPos = null;
   const k = eng.world.kitchen;
-  if (!w.placed || !ownerFree(eng.world, V.prefs.room)(Math.round(w.pos.x), Math.round(w.pos.y))) { w.pos = { x: 1, y: 10 }; w.yaw = -Math.PI / 2; w.placed = true; }
+  // 2.4: he starts in the King's Chambers, at the top of the keep
+  if (!w.placed || !ownerFree(eng.world, V.prefs.room)(Math.round(w.pos.x), Math.round(w.pos.y))) { const fr = ownerFree(eng.world, V.prefs.room); const start = [[-3, 6], [-4, 6], [-2, 7], [-1, 7]].find(([x, y]) => fr(x, y)) || [-1, 7]; w.pos = { x: start[0], y: start[1] }; w.yaw = 0; w.placed = true; }
   void k;
-  if (!V.avatar || V.avatar.userData.key !== JSON.stringify(V.prefs.avatar)) {
+  const och = charFor(V.prefs.characters, 'owner');
+  if (!V.avatar || V.avatar.userData.key !== JSON.stringify(och)) {
     if (V.avatar) V.gl.dyn.remove(V.avatar);
-    V.avatar = buildFigure({ id: 'owner', owner: true, color: V.prefs.avatar.outfit, hairStyle: HAIR_STYLES[V.prefs.avatar.hair], skin: '#eac4a0', hairColor: '#5a3424' });
-    V.avatar.userData.key = JSON.stringify(V.prefs.avatar);
+    V.avatar = buildFigure({ id: 'owner', owner: true, char: och });
+    V.avatar.userData.key = JSON.stringify(och);
     V.gl.dyn.add(V.avatar);
   }
   V.avatar.visible = true;
@@ -640,7 +816,7 @@ function walkTargets(eng) {
   out.push({ kind: 'couch', x: NOOK.x0 + 0.5, y: NOOK.y0 + 1, label: 'Sit by the fire' });
   if (w.kitchen) out.push({ kind: 'coffee', x: w.kitchen.coffeeSpot.x, y: w.kitchen.coffeeSpot.y, label: 'Get a coffee' });
   if (w.courtyard) out.push({ kind: 'garden', x: w.courtyard.x0 + 2, y: w.courtyard.y0 + 2, label: 'Water the garden (just for fun)' });
-  out.push({ kind: 'study', x: STUDY.x0 + 3, y: STUDY.y0 + 1.5, label: 'Decorate your study' });
+  out.push({ kind: 'study', x: STUDY.x0 + 3, y: STUDY.y0 + 1.5, label: 'Decorate the King’s Chambers' });
   return out;
 }
 function walkStep(eng, t, dt, reduced) {
@@ -672,11 +848,12 @@ function walkStep(eng, t, dt, reduced) {
   const p = tileTo3D(world, w.pos.x, w.pos.y);
   const av = V.avatar;
   av.visible = !fp;
-  if (w.sit) { av.position.set(w.sit.x, 0, w.sit.z); av.rotation.y = w.sit.rot; } else { av.position.set(p.x, 0, p.z); av.rotation.y = reduced ? w.faceYaw : av.rotation.y + angDiff(w.faceYaw, av.rotation.y) * Math.min(1, dt * 12); }
+  const zk = zoneKey(zoneOf(world, w.pos.x, w.pos.y)); if (w.zone !== zk) { w.zone = zk; w.camPos = null; }
+  if (w.sit) { av.position.set(w.sit.x, 0, w.sit.z); av.rotation.y = w.sit.rot; } else { av.position.set(p.x, p.y || 0, p.z); av.rotation.y = reduced ? w.faceYaw : av.rotation.y + angDiff(w.faceYaw, av.rotation.y) * Math.min(1, dt * 12); }
   animateFigure(av, { pose: w.sit ? 'sit' : moving ? 'walk' : 'stand', hold: t < w.mugUntil ? 'mug' : null, gesture: null, face: 'smile', speed: inp.run ? 1.5 : 1 }, t, dt, { reduced, seatY: 0.42 });
   // camera
   const cam = V.gl.camera;
-  const head = new THREE.Vector3(av.position.x, (w.sit ? 0.75 : 0.95), av.position.z);
+  const head = new THREE.Vector3(av.position.x, av.position.y + (w.sit ? 0.85 : 1.15), av.position.z);
   if (fp) {
     cam.position.set(head.x, head.y + camBob(t, moving, { reduced }), head.z);
     cam.rotation.set(w.pitch, w.yaw, 0, 'YXZ');
@@ -764,7 +941,7 @@ function openPanel(msg = '') {
 // ---------- for the CI screenshot harness ----------
 function api() {
   return {
-    get ready() { return Boolean(V?.lodge) && V.frames > 2; },
+    get ready() { return Boolean(V?.lodge) && Boolean(V?.castle) && V.frames > 2; },
     get frames() { return V?.frames || 0; },
     mode: () => (V?.el?.classList.contains('hab3d-on') ? '3d' : '2d'),
     preset: (id) => preset(id, true),
@@ -775,6 +952,12 @@ function api() {
     setView: (v) => setWalkView(v),
     pos: () => ({ ...V.walk.pos }),
     study: () => goStudy(),
-    stats: () => ({ figures: [...V.figs.values()].filter((f) => f.visible).length, pet: Boolean(V.pet?.visible), fire: Boolean(V.lodge?.refs.fire), lampsLit: (V.lodge?.refs.lamps || []).filter((l) => l.halo?.visible).length, windows: V.lodge?.refs.windowMat.emissiveIntensity || 0, weather: V.weather, phase: V.phase, walking: V.walk.on, avatar: Boolean(V.avatar?.visible), prefs: { ...V.prefs } }),
+    raid: () => { const eng = habitatEngine(); if (eng?.world) { if (V.raid) endRaid(eng); startRaid(Date.now(), eng); } },
+    raidAt: (sec) => { if (V.raid) V.raid.t0 = performance.now() - sec * 1000; },
+    time: (v) => { savePrefs(withPref(V.prefs, 'time', v)); V.phase = ''; },
+    characters: () => openCharacters(),
+    roomPreset: (i = 0) => preset(`room:${habitatEngine().world.ids[i]}`, true),
+    walkStart: () => enterWalk(),
+    stats: () => ({ figures: [...V.figs.values()].filter((f) => f.visible).length, pet: Boolean(V.pet?.visible), fire: Boolean(V.lodge?.refs.fire), lampsLit: (V.lodge?.refs.lamps || []).filter((l) => l.halo?.visible).length, windows: V.lodge?.refs.windowMat.emissiveIntensity || 0, weather: V.weather, phase: V.phase, walking: V.walk.on, avatar: Boolean(V.avatar?.visible), prefs: { ...V.prefs }, folk: V.npcs.filter((n) => n.kind === 'folk' && n.obj.visible).length, guards: V.npcs.filter((n) => n.kind === 'guard').length, raid: V.raid ? V.raid.plan.raiders.length : 0, castle: Boolean(V.castle) }),
   };
 }
