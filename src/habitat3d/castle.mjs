@@ -137,19 +137,37 @@ export function buildCastle({ world, L, agents = {}, labelTex, night = false }) 
   // the keep tower behind the great hall, the King's Chambers on its top floor
   const tw = L.tower;
   put(root, new THREE.BoxGeometry(tw.w, CHAMBERS_Y, tw.d), stone2, tw.x, CHAMBERS_Y / 2, tw.z, { ink: true });
-  put(root, new THREE.BoxGeometry(tw.w + 0.8, 0.4, tw.d + 0.8), stone, tw.x, CHAMBERS_Y, tw.z, { cast: false });
+  // the chambers' floor slab: its top is exactly CHAMBERS_Y, where the study's floor, props and people stand
+  put(root, new THREE.BoxGeometry(tw.w + 0.8, 0.4, tw.d + 0.8), stone, tw.x, CHAMBERS_Y - 0.21, tw.z, { cast: false });
   for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
     const cx = tw.x + sx * (tw.w / 2 + 0.6); const cz = tw.z + sz * (tw.d / 2 + 0.6);
     put(root, geo('kt', () => new THREE.CylinderGeometry(1.6, 1.7, CHAMBERS_Y + 6, 12)), stone, cx, (CHAMBERS_Y + 6) / 2, cz, { ink: true });
     put(root, geo('ktr', () => new THREE.ConeGeometry(2.2, 4.6, 12)), toon('#ec7552'), cx, CHAMBERS_Y + 6 + 2.3, cz, { ink: true });
   }
   // the chambers' walls (low at the front so you can look in) and a lift-off roof
-  const cw = tw.w - 1; const cd = tw.d - 1; const ch = 2.6; const top = CHAMBERS_Y + 0.2;
+  const cw = tw.w - 1; const cd = tw.d - 1; const ch = 2.6; const top = CHAMBERS_Y;
   put(root, new THREE.BoxGeometry(cw, ch, 0.35), stone, tw.x, top + ch / 2, tw.z - cd / 2, { ink: true });
   for (const sx of [-1, 1]) put(root, new THREE.BoxGeometry(0.35, ch * 0.8, cd), stone, tw.x + sx * cw / 2, top + ch * 0.4, tw.z, { ink: true });
   put(root, new THREE.BoxGeometry(cw, 0.8, 0.35), stone, tw.x, top + 0.4, tw.z + cd / 2, { ink: true });
   refs.towerRoof = put(root, new THREE.ConeGeometry(Math.hypot(cw, cd) * 0.6, 5, 4), toon('#5b7cfa'), tw.x, top + ch + 2.5, tw.z, { ry: Math.PI / 4, ink: true });
   flag(root, tw.x, top + ch + 5, tw.z, '#ec7552');
+  // the King's Chambers' own furnishings, outside the 6×4 floor he decorates: a canopy bed
+  // along the west wall, banners and a tall window on the back wall, a carpet under it all
+  const kc = new THREE.Group(); kc.name = 'kings-chambers'; root.add(kc);
+  put(kc, new THREE.BoxGeometry(cw - 0.6, 0.04, cd - 0.6), toon('#b03a48'), tw.x, top + 0.02, tw.z, { cast: false });
+  put(kc, new THREE.BoxGeometry(cw - 1.4, 0.05, cd - 1.4), toon('#e8c35a'), tw.x, top + 0.03, tw.z, { cast: false });
+  const bx = tw.x - cw / 2 + 1.1; const bz = tw.z - cd / 2 + 1.6;
+  put(kc, new THREE.BoxGeometry(1.6, 0.5, 2.4), toon('#8a5634'), bx, top + 0.25, bz, { ink: true });
+  put(kc, new THREE.BoxGeometry(1.5, 0.22, 2.3), toon('#f4f1ea'), bx, top + 0.6, bz, { ink: true });
+  put(kc, new THREE.BoxGeometry(1.5, 0.12, 1.4), toon('#5b7cfa'), bx, top + 0.74, bz + 0.45, { ink: true });
+  for (const [dx, dz] of [[-0.75, -1.15], [0.75, -1.15], [-0.75, 1.15], [0.75, 1.15]]) put(kc, geo('kc-post', () => new THREE.CylinderGeometry(0.06, 0.06, 2.1, 6)), toon('#6d4128'), bx + dx, top + 1.05, bz + dz, {});
+  put(kc, new THREE.BoxGeometry(1.7, 0.08, 2.5), toon('#b03a48'), bx, top + 2.12, bz, { ink: true });
+  for (const [sx, c] of [[-1, '#ec7552'], [1, '#5b7cfa']]) {
+    put(kc, new THREE.BoxGeometry(0.9, 1.6, 0.05), toon(c), tw.x + sx * 2.2, top + 1.5, tw.z - cd / 2 + 0.22, {});
+    put(kc, geo('kc-crest', () => new THREE.CircleGeometry(0.22, 16)), toon('#ffd27a'), tw.x + sx * 2.2, top + 1.6, tw.z - cd / 2 + 0.25, { cast: false });
+  }
+  put(kc, new THREE.BoxGeometry(1.2, 1.5, 0.06), windowMat || toon('#8fd3ff'), tw.x, top + 1.5, tw.z - cd / 2 + 0.2, { cast: false });
+  refs.kingsChambers = kc;
   // the great hall's own walls: the band between where the rooms used to be (their
   // walls went with them to their houses), with an opening at each room door
   const hall = new THREE.Group(); hall.name = 'hall-shell'; root.add(hall); refs.hallShell = hall;
