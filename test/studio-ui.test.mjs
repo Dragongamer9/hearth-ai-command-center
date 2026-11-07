@@ -55,3 +55,14 @@ test('window wiring: sidebar entry, settings tab, events and actions', () => {
   const p = fs.readFileSync(new URL('../electron/preload.cjs', import.meta.url), 'utf8');
   for (const f of ['studioList', 'studioAdd', 'studioCancel', 'studioPickImage', 'studioToAttach', 'onStudio']) assert.ok(p.includes(`${f}:`), f);
 });
+
+test('the request carries what was typed when it comes from the kept form (2.2.1: "Say what the picture should show" with a prompt typed)', () => {
+  const r = requestFrom({ kind: 'image', prompt: ' a red fox in snow ', size: '1024x1024', count: 2, negative: 'blurry', seed: '', steps: '' });
+  assert.equal(r.prompt, 'a red fox in snow');
+  assert.equal(r.size, '1024x1024');
+  assert.equal(r.count, 2);
+  assert.equal(r.negative, 'blurry');
+  const v = requestFrom({ kind: 'video', prompt: 'a lamp', start: 'item:c3' });
+  assert.equal(v.prompt, 'a lamp');
+  assert.equal(v.start, 'item:c3');
+});
