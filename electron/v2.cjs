@@ -163,6 +163,11 @@ function register(d) {
     const key = helper ? `${e.id}#${runId}` : e.id;
     if (running.has(key)) return { ok: false, error: { kind: 'busy', message: 'Another AI is still working in this chat.' } };
     const s = readSettings();
+    // Uncensored mode (Settings, electron/studio.cjs): local chat uses the owner's 18+ model, and
+    // the hard limits are checked first. Claude, ChatGPT and Gemini are never changed by it.
+    const unc = d.uncensoredFor ? d.uncensoredFor(agent, prompt) : null;
+    if (unc && !unc.ok) return { ok: false, error: { kind: 'refused', message: unc.message, limit: unc.kind } };
+    if (unc?.model) o = { ...o, model: unc.model };
     // The owner's limit on chats working at once (the window queues the rest and says so).
     if (!helper && primaryRunning() >= (s.maxChats || 3)) return { ok: false, error: { kind: 'queue', message: `${s.maxChats || 3} chats are already working; this one waits its turn.` } };
     const tools = s.tools;

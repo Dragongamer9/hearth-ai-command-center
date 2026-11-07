@@ -19,7 +19,7 @@ const AUDIO = { mp3: 'audio/mpeg', wav: 'audio/wav', ogg: 'audio/ogg', oga: 'aud
 const FILES = { pdf: 'application/pdf', zip: 'application/zip', md: 'text/markdown; charset=utf-8', txt: 'text/plain; charset=utf-8', csv: 'text/csv; charset=utf-8', json: 'application/json', html: 'text/plain; charset=utf-8', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', odt: 'application/vnd.oasis.opendocument.text', tar: 'application/x-tar', gz: 'application/gzip', log: 'text/plain; charset=utf-8' };
 // Per file: 10 GB (bigfiles.MAX_STORED). Files are streamed to disk, never held in memory.
 const MAX_FILE = big.MAX_STORED;
-const CHAT_RE = /^(c[0-9a-f]{10}|team-[a-z0-9]{3,16}|t[0-9a-f]{10})$/;
+const CHAT_RE = /^(c[0-9a-f]{10}|team-[a-z0-9]{3,16}|t[0-9a-f]{10}|studio)$/; // studio: Images & Videos (electron/studio.cjs)
 const FILE_RE = /^[A-Za-z0-9][A-Za-z0-9._ -]{0,150}$/;
 const SKIP = new Set(['.git', 'node_modules', '.hearth-preview', '.hearth-ai', 'dist', 'build', 'target', '.cache', '.venv', '__pycache__']);
 

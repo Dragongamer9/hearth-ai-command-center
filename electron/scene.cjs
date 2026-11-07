@@ -202,4 +202,4 @@ function negativeFor(list = []) {
 // His own negative words, added after the built-in ones (they can only take things out).
 const ownNegative = (t) => String(t || '').replace(/[\0-\x08\x0b-\x1f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 1000);
 
-module.exports = { visualOrPlace, buildScenePrompt, checkScene, negativeFor, ownNegative, lookOf, hasLook, pronounOf, visualFrom, sceneOf, whereIn, NEG_MINOR, NEG_NSFW, N_MESSAGES, AMBIGUOUS };
+module.exports = { visualOrPlace, buildScenePrompt, checkScene, negativeFor, ownNegative, lookOf, hasLook, pronounOf, visualFrom, sceneOf, whereIn, NEG_MINOR, NEG_NSFW, N_MESSAGES, AMBIGUOUS, LIKENESS, lookAges };

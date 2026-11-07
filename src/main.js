@@ -32,6 +32,8 @@ import { activateLore, nextSpeakers, rpPrompt, addSwipe, moveSwipe, isSexual, fi
 import { createVoice } from './voice.mjs';
 import { creditsHtml } from './app/credits.mjs';
 import { voiceSettings, routeFor, isServer, serverIdOf, idOf } from './app/voice-logic.mjs';
+import { studioView, queueHtml, requestFrom } from './app/studio.mjs';
+import { defaultsFrom, prefsFor, prefsOf, samePrefs, applyPrefs, rememberPrefs } from './app/chat-prefs.mjs';
 import { FIND_FIELDS, searchFields, stepIndex, replaceAllFields, snippet, cardMatches, matchedIn } from './app/card-find.mjs';
 
 const api = window.hearth || null;
@@ -45,7 +47,7 @@ const QUICK = [
   ['stats', 'Analyse a spreadsheet', 'Analyse the CSV I attached: summarise it and make charts of '],
   ['flag', 'Prepare a release', 'Prepare a release: list what changed since the last release and draft the release notes. Don\'t pick a version number; ask me for it.'],
 ];
-const SECTIONS = [['team', 'AI team'], ['accounts', 'Accounts'], ['github', 'GitHub'], ['tools', 'Tools'], ['memory', 'Memory'], ['scheduled', 'Scheduled'], ['connectors', 'Connectors'], ['perms', 'Permissions'], ['alerts', 'Notifications'], ['voice', 'Voice'], ['look', 'Appearance'], ['updates', 'App updates'], ['data', 'Saved data']];
+const SECTIONS = [['team', 'AI team'], ['accounts', 'Accounts'], ['uncensored', 'Uncensored mode'], ['github', 'GitHub'], ['tools', 'Tools'], ['memory', 'Memory'], ['scheduled', 'Scheduled'], ['connectors', 'Connectors'], ['perms', 'Permissions'], ['alerts', 'Notifications'], ['voice', 'Voice'], ['look', 'Appearance'], ['updates', 'App updates'], ['data', 'Saved data']];
 const IDLE = [[1, '1 hour'], [6, '6 hours'], [24, '1 day'], [72, '3 days'], [168, '1 week'], [0, 'Never']];
 const MAX_CHATS = [1, 2, 3, 4, 5, 6, 8, 10];
 const IMAGE_MAKERS = ['openai', 'google', 'xai', 'venice', 'civitai', 'gpu', 'hearth'];
@@ -55,6 +57,8 @@ const MEDIA_KEYS = [['google', 'Gemini API key', 'pictures (Gemini image model),
 
 const S = {
   view: 'home', tab: 'team',
+  // Images & Videos (src/app/studio.mjs): the form, what the main process reported, the PC's status.
+  studio: { f: { kind: 'image', count: 1 }, data: null, st: null, filter: 'all', shown: new Set(), models: null },
   chats: [], temps: [], trash: [], notices: [], broken: false,
   open: null, lastChat: null,
   draft: '', attach: [], conn: null, mode: 'team', web: true, build: true, deep: false, homeModels: {},
@@ -166,6 +170,8 @@ function saveRt(R) {
   return R.chain;
 }
 const save = () => saveRt(cur());
+// The owner changed a composer switch in an open chat: saved with that chat only.
+function keepPrefs() { const R = S.view === 'chat' && S.open ? cur() : null; if (R && rememberPrefs(R, S)) saveRt(R); }
 
 function toast(text, undo = null) {
   S.toast = { text, undo, at: Date.now() };
@@ -216,6 +222,8 @@ async function openChat(id) {
   S.open = id;
   S.lastChat = id;
   S.view = 'chat';
+  // This chat's own switches (who it talks to, web, build, deep), else the defaults.
+  applyPrefs(S, prefsFor(R, S.settings));
   S.pane = null;
   S.pop = null;
   S.editing = null;
@@ -229,6 +237,8 @@ async function openChat(id) {
 
 function goHome() {
   S.view = 'home'; S.open = null; S.pane = null; S.pop = null; S.editing = null;
+  // A new chat starts from the owner's defaults, never from what the last chat used.
+  applyPrefs(S, defaultsFrom(S.settings)); S.homeModels = {};
   try { localStorage.removeItem('hearth.v2.open'); } catch {}
   render(true);
 }
@@ -242,6 +252,8 @@ async function ensureChat(firstText) {
   const R = rt(e.id);
   R.loaded = true;
   if (Object.keys(S.homeModels).length) R.sessions._models = { ...S.homeModels };
+  // Switches he changed on the home screen before the first message belong to this chat.
+  if (!samePrefs(prefsOf(S), defaultsFrom(S.settings))) rememberPrefs(R, S);
   S.open = e.id; S.lastChat = e.id; S.view = 'chat';
   try { localStorage.setItem('hearth.v2.open', e.id); } catch {}
   return entry(e.id) || e;
@@ -1072,6 +1084,7 @@ function renderSide() {
     <button class="navitem" data-a="temp-chat" title="Nothing is saved: no chat file, no history, no memory">${icon('eyeoff', 'sm')}Temporary chat</button>
     <label class="search">${icon('search', 'sm')}<input id="chat-search" placeholder="Search chats" value="${esc(S.search)}" aria-label="Search chats"></label>
     <button class="navitem ${['characters', 'card', 'lorebooks'].includes(S.view) ? 'on' : ''}" data-a="characters" title="Character cards, lorebooks and your persona">${icon('user', 'sm')}Characters<span class="faint">${S.cards ? S.cards.length : ''}</span></button>
+    <button class="navitem ${S.view === 'studio' ? 'on' : ''}" data-a="studio" title="Pictures and videos made on your PC (ComfyUI)">${icon('pic', 'sm')}Images &amp; Videos<span class="faint">${S.studio.data?.jobs?.length ? `${S.studio.data.jobs.length} on your PC` : ''}</span></button>
     <button class="navitem hab ${S.view === 'habitat' ? 'on' : ''}" data-a="habitat" title="Your AI team's Habitat">${icon('home', 'sm')}Habitat<span class="faint">${esc(S.lastChat && entry(S.lastChat) ? entry(S.lastChat).title.slice(0, 22) : 'your team')}</span></button>
     <div class="list" id="chat-list">
       ${S.broken ? '<div class="note bad">Your chats list couldn\'t be read. It was left as it is; new chats can\'t be saved until it\'s fixed.</div>' : ''}
@@ -1090,6 +1103,7 @@ function renderSide() {
 
 function topbar() {
   const c = entry();
+  if (S.view === 'studio') return `<span class="ttl">Images &amp; Videos</span><span class="grow"></span>`;
   const title = S.view === 'settings' ? 'Settings' : S.view === 'habitat' ? 'Habitat' : ['characters', 'card', 'lorebooks'].includes(S.view) ? 'Characters' : S.view === 'chat' ? (c?.title || 'Chat') : '';
   if (['characters', 'card', 'lorebooks'].includes(S.view)) return `<span class="ttl">${esc(title)}</span><span class="grow"></span>`;
   const chip = S.view === 'chat' && c && (c.repo || c.repoDir) ? `<button class="chip" data-a="repo-pop" title="Connected repo">${icon('gh', 'sm')}${esc(c.repo || c.repoDir)} <span class="faint">· ${esc(c.branch || S.copy?.base || 'default branch')}</span></button>` : '';
@@ -1111,6 +1125,7 @@ function renderMain(scroll = false) {
   if (S.view !== 'habitat' && habMounted) { stopHabitat(); stopHabitat3d(); habMounted = false; }
   if (S.view === 'settings') { html = settingsView(); dock = ''; }
   else if (S.view === 'habitat') { html = `<div class="habwrap">${viewHabitat()}</div>`; dock = ''; }
+  else if (S.view === 'studio') { stSync(); html = stHtml(); dock = ''; }
   else if (S.view === 'characters') { html = charactersView(); dock = ''; }
   else if (S.view === 'card') { html = cardEditView(); dock = ''; queueMicrotask(() => cfRun(false)); }
   else if (S.view === 'lorebooks') { html = lorebooksView(); dock = ''; }
@@ -1120,8 +1135,11 @@ function renderMain(scroll = false) {
   main.classList.toggle('home-mode', S.view === 'home');
   main.classList.toggle('settings-mode', S.view === 'settings');
   main.classList.toggle('habitat-mode', S.view === 'habitat');
+  main.classList.toggle('studio-mode', S.view === 'studio');
   main.classList.toggle('lib-mode', ['characters', 'card', 'lorebooks'].includes(S.view));
+  const keep = S.view === 'studio' ? stFocus() : null;
   const changed = setRegion('body', html);
+  if (keep && changed) stRefocus(keep);
   if (S.view === 'habitat' && (changed || !habMounted)) {
     const el = document.getElementById('habitat');
     if (el) { mountHabitat(el, habitatHooks); mountHabitat3d(el, habitatHooks); habMounted = true; }
@@ -1784,6 +1802,7 @@ function section(k) {
       <div class="box"><h3>${icon('mic', 'sm')}Voice</h3><div class="srow">Voice chat, read aloud and voices<span class="d">moved to their own page</span><span class="grow"></span><button class="mini" data-a="tab" data-t="voice">Settings › Voice</button></div></div>`;
   }
   if (k === 'voice') return voice.settingsHtml({ tog, team: t, mono, aiName });
+  if (k === 'uncensored') return uncensoredSection();
   if (k === 'look') {
     return `<h1>Appearance</h1><div class="box"><h3>Look</h3>
       <div class="srow">Theme<span class="grow"></span>${['hearth', 'dark', 'light', 'system'].map((v) => `<button class="seg ${s.theme === v ? 'on' : ''}" data-a="theme" data-v="${v}">${{ hearth: 'Follow Hearth OS', dark: 'Dark', light: 'Light', system: 'System' }[v]}</button>`).join('')}</div>
@@ -1876,6 +1895,7 @@ async function loadSection(t) {
   if (t === 'data') { loadCopies(); S.boards = await call('savedBoards'); S.slog = await call('settingsLog'); }
   if (t === 'perms') { refreshAgents(); loadPerms(); }
   if (t === 'tools') loadMissing();
+  if (t === 'uncensored') { refreshAgents(); if (!S.studio.models) { const l = await call('comfyCheckpoints'); S.studio.models = l?.ok ? l.checkpoints : null; } }
   if (t === 'accounts' || t === 'team') { refreshAgents(); await refreshMates(); }
   if (t === 'accounts') { S.hd = (await call('hearthStatus', { probe: true })) || S.hd; }
   if (t === 'github') loadRepos();
@@ -1885,6 +1905,51 @@ async function loadSection(t) {
   if (t === 'tools') { S.skills = (await call('skillsList', S.lastChat)) || []; }
   render();
 }
+// ---------- Images & Videos (2.2.1; electron/studio.cjs, src/app/studio.mjs) ----------
+const stHtml = () => studioView({ f: S.studio.f, data: S.studio.data || {}, st: S.studio.st, filter: S.studio.filter, models: S.studio.models, shown: S.studio.shown });
+// What he typed is kept across re-renders (the page is redrawn when a job moves on).
+function stSync() {
+  if (S.view !== 'studio' || !document.getElementById('st-prompt')) return;
+  const r = requestFrom(S.studio.f, document);
+  Object.assign(S.studio.f, { prompt: document.getElementById('st-prompt').value, size: r.size, count: r.count, model: r.model, negative: r.negative, seed: document.getElementById('st-seed')?.value ?? S.studio.f.seed, steps: document.getElementById('st-steps')?.value ?? S.studio.f.steps });
+}
+function stFocus() {
+  const a = document.activeElement;
+  if (!a?.id || !a.closest?.('.studio')) return null;
+  return { id: a.id, start: a.selectionStart, end: a.selectionEnd, top: document.getElementById('body')?.scrollTop || 0 };
+}
+function stRefocus(k) {
+  const el = document.getElementById(k.id);
+  if (el) { el.focus(); try { if (k.start !== null && k.start !== undefined) el.setSelectionRange(k.start, k.end); } catch {} }
+  const body = document.getElementById('body');
+  if (body) body.scrollTop = k.top;
+}
+async function openStudio() {
+  S.view = 'studio'; S.pane = null; S.pop = null;
+  if (!S.studio.data) S.studio.data = (await call('studioList')) || { items: [], jobs: [] };
+  render(true);
+  stStatus();
+  if (!S.studio.models) { const l = await call('comfyCheckpoints'); S.studio.models = l?.ok ? l.checkpoints : []; if (S.view === 'studio') render(); }
+}
+async function stStatus(force = false) {
+  if (force) { S.studio.st = null; render(); }
+  S.studio.st = await call('studioStatus');
+  if (S.view === 'studio') render();
+  clearTimeout(stStatus.t);
+  stStatus.t = setTimeout(() => { if (S.view === 'studio') stStatus(); }, 30000);
+}
+function onStudio(type, a) {
+  if (type === 'failed') { toast(`${a?.kind === 'video' ? 'The video' : 'The picture'} “${String(a?.prompt || '').slice(0, 40)}” didn't work: ${a?.message || 'no reason given'}`); return; }
+  const before = S.studio.data;
+  S.studio.data = a || before;
+  if (S.view !== 'studio') { renderSide(); return; }
+  // Only the queue moved: patch it alone (playing videos and what he's typing stay as they are).
+  const same = before && a && before.items.length === a.items.length && before.items[0]?.id === a.items[0]?.id && before.uncensored === a.uncensored;
+  const q = document.getElementById('st-queue');
+  if (same && q) { q.innerHTML = queueHtml(a.jobs); if ((before.jobs || []).length !== (a.jobs || []).length) renderSide(); return; }
+  render();
+}
+
 // ---------- Characters chat: Generate scene (ComfyUI; electron/scene.cjs) ----------
 // The last messages as plain text for the prompt (built in the main process, shown to edit).
 const sceneMsgs = (chatId) => (rt(chatId)?.msgs || []).filter((x) => !x.deleted && x.who !== 'system').slice(-12).map((x) => ({ who: x.who, text: String(x.text || '').slice(0, 2000), err: x.err === true }));
@@ -2011,6 +2076,27 @@ function hearthBox() {
 // saved until he presses Save or picks something.
 const COMFY_SUGGEST = { url: 'http://chris-hearth.tail0e2082.ts.net:8188', checkpoint: 'NoobAI-XL-v1.1.safetensors' };
 const COMFY_SIZES = [['1024x1024', '1024 × 1024 (square, about 8 s)'], ['1344x768', '1344 × 768 (wide, about 13 s)'], ['768x1344', '768 × 1344 (tall, about 13 s)']];
+// Settings › Uncensored mode (2.2.1): one switch; the hard limits are listed and can't be changed.
+const ADULT_CHAT_SUGGEST = ['huihui_ai/qwen3-abliterated:30b-a3b', 'huihui_ai/qwen3-abliterated:14b', 'dolphin3:8b'];
+function uncensoredSection() {
+  const u = S.settings.uncensored || {};
+  const chatOpts = [...new Set([...(S.cli.ollama?.models || []), ...ADULT_CHAT_SUGGEST, ...(u.chatModel ? [u.chatModel] : [])])];
+  const picOpts = [...new Set([...(S.studio.models || []), ...(u.pictureModel ? [u.pictureModel] : [])])];
+  return `<h1>Uncensored mode</h1><div class="box"><h3>${icon('shield', 'sm')}Uncensored mode (18+)</h3>
+    <p class="fine">For adults only. Off until you turn it on; it stays exactly as you set it.</p>
+    <div class="srow"><b>Uncensored mode</b><span class="d">${u.on ? 'on: 18+ pictures, videos and local chat are allowed' : 'off'}</span><span class="grow"></span>${tog(u.on === true, 'unc-on')}</div>
+    <div class="note">When it's on:</div>
+    <ul class="fine unc-list">
+      <li><b>Images &amp; Videos:</b> videos use the uncensored Wan 2.2 LoRA pair (Wan2.2_LightX2V_4Step_Uncensored), and pictures no longer leave out nudity. Pictures can use the 18+ picture model below.</li>
+      <li><b>Local chat:</b> Local AI (Ollama) and Hearth devices answer with the 18+ chat model below.</li>
+      <li><b>Claude, ChatGPT and Gemini don't change:</b> they keep their own rules, and 18+ pictures and videos are never sent to them.</li>
+      <li><b>18+ pictures and videos are blurred</b> in Images &amp; Videos until you click them.</li>
+    </ul>
+    <div class="srow">18+ chat model<span class="d">used by Local AI and Hearth devices while this is on (download it on the PC first, e.g. in Hearth's Settings › Home server › AI chat › Show 18+ models)</span><span class="grow"></span><select data-a="unc-chat" aria-label="18+ chat model"><option value="">your normal local model</option>${chatOpts.map((m) => `<option ${u.chatModel === m ? 'selected' : ''}>${esc(m)}</option>`).join('')}</select></div>
+    <div class="srow">18+ picture model<span class="d">${picOpts.length ? 'a checkpoint on your PC\'s ComfyUI' : 'open Images &amp; Videos once, or press Load models in Accounts › ComfyUI server, to list your checkpoints'}</span><span class="grow"></span><select data-a="unc-pic" aria-label="18+ picture model" ${picOpts.length ? '' : 'disabled'}><option value="">your ComfyUI default</option>${picOpts.map((m) => `<option ${u.pictureModel === m ? 'selected' : ''}>${esc(m)}</option>`).join('')}</select></div></div>
+    <div class="box"><h3>${icon('flag', 'sm')}Always on, in every mode</h3><p class="fine">These can't be switched off by any setting:</p>
+    <ul class="fine unc-list"><li>Nothing sexual involving minors or anyone who looks under 18.</li><li>No sexual or nude pictures or videos of real people, and no real person's likeness.</li><li>A picture file you add starts a video in Uncensored mode only after you confirm, each time, that it isn't a real person (AI-made, drawn or a 3D render) and everyone in it is an adult.</li><li>Minors are left out of every picture and video.</li></ul></div>`;
+}
 function comfyBox() {
   const c = S.settings.comfy || {};
   const t = S.comfyTest?.url === c.url ? S.comfyTest : null;
@@ -2252,6 +2338,36 @@ document.addEventListener('click', async (ev) => {
     case 'rp-pic-do': { const m = S.modal; const R = rt(m.chatId); const kind = document.querySelector('input[name="rpk"]:checked')?.value || 'portrait'; const ids = [...document.querySelectorAll('.rpc:checked')].map((x) => x.value); const note = document.getElementById('rp-note')?.value || ''; const provider = document.getElementById('rp-maker')?.value || ''; S.modal = null; renderOverlay(); R.busy = { agent: provider, role: 'member', runId: `pic${uid()}`, steps: [{ kind: 'image', label: kind === 'scene' ? 'Making a scene picture' : 'Making a portrait', detail: aiName(provider) }], startedAt: Date.now() }; render(); const r = await call('rpImage', m.chatId, { kind, cardIds: ids, note, provider }); R.busy = null; runner.post(R, r?.ok ? { who: provider, text: `${kind === 'scene' ? 'Scene' : 'Portrait'}${note ? `: ${note}` : ''}`, via: r.via, media: r.items || [] } : r?.error?.kind === 'minor' || r?.error?.kind === 'real' ? { who: 'system', block: true, text: r.error.message } : { who: provider, err: true, text: r?.error?.message || r?.message || 'No picture came back.' }); await saveRt(R); return render(); }
     case 'temp-chat': return startTemp();
     case 'temp-end': ev.stopPropagation(); return endTemp(d.id);
+    case 'studio': return openStudio();
+    case 'unc-on': { const r = await setSettings({ uncensored: { on: !(S.settings.uncensored?.on === true) } }); if (S.studio.data && r?.uncensored) S.studio.data = { ...S.studio.data, uncensored: r.uncensored.on }; return render(); }
+    case 'st-kind': stSync(); S.studio.f.kind = d.v === 'video' ? 'video' : 'image'; S.studio.f.size = ''; return render();
+    case 'st-more': stSync(); S.studio.f.more = !S.studio.f.more; return render();
+    case 'st-filter': stSync(); S.studio.filter = d.v; return render();
+    case 'st-show': stSync(); S.studio.shown.add(d.id); return render();
+    case 'st-refresh': return stStatus(true);
+    case 'st-start-none': stSync(); S.studio.f.start = null; S.studio.f.startName = ''; return render();
+    case 'st-start-file': { stSync(); const r = await call('studioPickImage'); if (r?.ok) { S.studio.f.start = r.token; S.studio.f.startName = r.name; } else if (r?.message) toast(r.message); return render(); }
+    case 'st-animate': { stSync(); const it = (S.studio.data?.items || []).find((x) => x.id === d.id); if (!it) return; Object.assign(S.studio.f, { kind: 'video', size: '', start: `item:${it.id}`, startName: it.prompt.slice(0, 60) }); render(); document.getElementById('st-prompt')?.focus(); return; }
+    case 'st-make': {
+      stSync();
+      const req = requestFrom(S.studio.f);
+      if (!req.prompt) { toast(`Say what the ${req.kind === 'video' ? 'video' : 'picture'} should show.`); return; }
+      const r = await call('studioAdd', req);
+      if (!r?.ok) { toast(r?.message || r?.error?.message || 'Not started.'); return; }
+      toast(r.jobs.length > 1 ? `${r.jobs.length} pictures are on their way.` : `Your ${req.kind === 'video' ? 'video' : 'picture'} is on its way.`);
+      return;
+    }
+    case 'st-cancel': { const r = await call('studioCancel', d.id); if (r && !r.ok && r.message) toast(r.message); return; }
+    case 'st-again': { const r = await call('studioAgain', d.id); toast(r?.ok ? 'Again, with a new seed.' : r?.message || 'Not started.'); return; }
+    case 'st-remove': { if (!confirm('Delete this from Images & Videos? The file is removed too.')) return; const r = await call('studioRemove', d.id); if (r && !r.ok) toast(r.message || 'Not deleted.'); return; }
+    case 'st-save': { const it = (S.studio.data?.items || []).find((x) => x.id === d.id); if (!it) return; const r = await call('mediaSave', 'studio', it.file, it.file.replace(/^[0-9a-f]{10}-/, '')); if (r?.ok) toast(`Saved to ${r.file}`); else if (r && !r.cancelled) toast(r.message || 'Not saved.'); return; }
+    case 'st-send': {
+      const r = await call('studioToAttach', d.id);
+      if (!r?.ok) { toast(r?.message || 'Couldn\'t add it.'); return; }
+      S.attach.push(r.att);
+      if (S.lastChat && entry(S.lastChat)) { await openChat(S.lastChat); toast('Added to the message box of your last chat.'); } else { goHome(); toast('Added to the message box: write your message and send.'); }
+      return;
+    }
     case 'habitat': S.view = 'habitat'; S.pane = null; S.pop = null; if (!S.habitat) { const h = await call('habitatGet'); S.habitat = h?.store || null; } return render(true);
     case 'settings': S.view = 'settings'; S.pane = null; render(true); return loadSection(S.tab);
     case 'tab': S.tab = d.t; render(); return loadSection(d.t);
@@ -2272,10 +2388,10 @@ document.addEventListener('click', async (ev) => {
     case 'no-repo': S.pickRepo = null; return chooseRepo(null, null);
     case 'team-pop': popAt(a, 'team', { top: a.classList.contains('tb') }); return renderOverlay();
     case 'options-pop': popAt(a, 'options'); return renderOverlay();
-    case 'set-mode': S.mode = d.v; S.pop = null; return render();
-    case 'toggle-web': S.web = !S.web; return render();
-    case 'toggle-build': S.build = !S.build; return render();
-    case 'toggle-deep': S.deep = !S.deep; if (S.deep) S.web = true; S.pop = null; return render();
+    case 'set-mode': S.mode = d.v; S.pop = null; keepPrefs(); return render();
+    case 'toggle-web': S.web = !S.web; keepPrefs(); return render();
+    case 'toggle-build': S.build = !S.build; keepPrefs(); return render();
+    case 'toggle-deep': S.deep = !S.deep; if (S.deep) S.web = true; S.pop = null; keepPrefs(); return render();
     case 'toggle-talk': S.pop = null; if (voice.isOpen()) voice.closeView(); else openTalk(); return render();
     case 'talk': return openTalk();
     case 'voice-close': return voice.closeView();
@@ -2501,6 +2617,9 @@ document.addEventListener('click', async (ev) => {
 
 document.addEventListener('change', (ev) => {
   const t = ev.target;
+  if (t.matches?.('select[data-a="st-start-item"]')) { stSync(); const it = (S.studio.data?.items || []).find((x) => `item:${x.id}` === t.value); S.studio.f.start = it ? t.value : null; S.studio.f.startName = it ? it.prompt.slice(0, 60) : ''; render(); }
+  if (t.matches?.('select[data-a="unc-chat"]')) setSettings({ uncensored: { chatModel: t.value } });
+  if (t.matches?.('select[data-a="unc-pic"]')) setSettings({ uncensored: { pictureModel: t.value } });
   if (t.matches?.('[data-a="idle-hours"]')) setSettings({ copyIdleHours: Number(t.value) });
   if (t.matches?.('[data-a="max-chats"]')) setSettings({ maxChats: Number(t.value) });
   if (t.matches?.('select[data-a="voice-set"]')) setSettings({ voice: { [t.dataset.k]: t.value } }).then(() => loadSection('voice'));
@@ -2792,6 +2911,7 @@ async function boot() {
     api.onChatStep?.((e) => runner.onStep(e));
     api.onMediaProgress?.((p) => showCopy(p));
     api.onSceneProgress?.((p) => onSceneProgress(p));
+    api.onStudio?.((type, a) => onStudio(type, a));
     api.onCardsFound?.(async (r) => {
       S.found = [{ ...(r || {}), key: uid() }, ...(S.found || [])].slice(0, 6);
       toast(r?.ok && r.card ? `Imported ${r.card.name}.` : r?.ok && r.lorebook ? `Imported the lorebook ${r.lorebook.name}.` : r?.message || 'Not imported.');

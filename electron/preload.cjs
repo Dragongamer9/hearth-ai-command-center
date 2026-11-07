@@ -162,6 +162,22 @@ contextBridge.exposeInMainWorld('hearth', {
   comfyTest: () => ipcRenderer.invoke('comfy:test'),
   comfyStats: () => ipcRenderer.invoke('comfy:stats'),
   rpSceneCancel: (job) => ipcRenderer.invoke('rp:sceneCancel', job),
+  // Images & Videos (electron/studio.cjs).
+  studioList: () => ipcRenderer.invoke('studio:list'),
+  studioStatus: () => ipcRenderer.invoke('studio:status'),
+  studioAdd: (req) => ipcRenderer.invoke('studio:add', req || {}),
+  studioCancel: (id) => ipcRenderer.invoke('studio:cancel', id),
+  studioRemove: (id) => ipcRenderer.invoke('studio:remove', id),
+  studioAgain: (id) => ipcRenderer.invoke('studio:again', id),
+  studioPickImage: () => ipcRenderer.invoke('studio:pickImage'),
+  studioToAttach: (id) => ipcRenderer.invoke('studio:toAttach', id),
+  onStudio: (cb) => {
+    const up = (_e, a) => cb('update', a);
+    const failed = (_e, a) => cb('failed', a);
+    ipcRenderer.on('studio:update', up);
+    ipcRenderer.on('studio:failed', failed);
+    return () => { ipcRenderer.removeListener('studio:update', up); ipcRenderer.removeListener('studio:failed', failed); };
+  },
   onSceneProgress: (cb) => {
     const listener = (_e, a) => cb(a);
     ipcRenderer.on('rp:sceneProgress', listener);
