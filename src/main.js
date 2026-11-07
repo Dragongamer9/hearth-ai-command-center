@@ -33,6 +33,7 @@ import { createVoice } from './voice.mjs';
 import { creditsHtml } from './app/credits.mjs';
 import { voiceSettings, routeFor, isServer, serverIdOf, idOf } from './app/voice-logic.mjs';
 import { studioView, queueHtml, requestFrom } from './app/studio.mjs';
+import { defaultsFrom, prefsFor, prefsOf, samePrefs, applyPrefs, rememberPrefs } from './app/chat-prefs.mjs';
 import { FIND_FIELDS, searchFields, stepIndex, replaceAllFields, snippet, cardMatches, matchedIn } from './app/card-find.mjs';
 
 const api = window.hearth || null;
@@ -169,6 +170,8 @@ function saveRt(R) {
   return R.chain;
 }
 const save = () => saveRt(cur());
+// The owner changed a composer switch in an open chat: saved with that chat only.
+function keepPrefs() { const R = S.view === 'chat' && S.open ? cur() : null; if (R && rememberPrefs(R, S)) saveRt(R); }
 
 function toast(text, undo = null) {
   S.toast = { text, undo, at: Date.now() };
@@ -219,6 +222,8 @@ async function openChat(id) {
   S.open = id;
   S.lastChat = id;
   S.view = 'chat';
+  // This chat's own switches (who it talks to, web, build, deep), else the defaults.
+  applyPrefs(S, prefsFor(R, S.settings));
   S.pane = null;
   S.pop = null;
   S.editing = null;
@@ -232,6 +237,8 @@ async function openChat(id) {
 
 function goHome() {
   S.view = 'home'; S.open = null; S.pane = null; S.pop = null; S.editing = null;
+  // A new chat starts from the owner's defaults, never from what the last chat used.
+  applyPrefs(S, defaultsFrom(S.settings)); S.homeModels = {};
   try { localStorage.removeItem('hearth.v2.open'); } catch {}
   render(true);
 }
@@ -245,6 +252,8 @@ async function ensureChat(firstText) {
   const R = rt(e.id);
   R.loaded = true;
   if (Object.keys(S.homeModels).length) R.sessions._models = { ...S.homeModels };
+  // Switches he changed on the home screen before the first message belong to this chat.
+  if (!samePrefs(prefsOf(S), defaultsFrom(S.settings))) rememberPrefs(R, S);
   S.open = e.id; S.lastChat = e.id; S.view = 'chat';
   try { localStorage.setItem('hearth.v2.open', e.id); } catch {}
   return entry(e.id) || e;
@@ -2379,10 +2388,10 @@ document.addEventListener('click', async (ev) => {
     case 'no-repo': S.pickRepo = null; return chooseRepo(null, null);
     case 'team-pop': popAt(a, 'team', { top: a.classList.contains('tb') }); return renderOverlay();
     case 'options-pop': popAt(a, 'options'); return renderOverlay();
-    case 'set-mode': S.mode = d.v; S.pop = null; return render();
-    case 'toggle-web': S.web = !S.web; return render();
-    case 'toggle-build': S.build = !S.build; return render();
-    case 'toggle-deep': S.deep = !S.deep; if (S.deep) S.web = true; S.pop = null; return render();
+    case 'set-mode': S.mode = d.v; S.pop = null; keepPrefs(); return render();
+    case 'toggle-web': S.web = !S.web; keepPrefs(); return render();
+    case 'toggle-build': S.build = !S.build; keepPrefs(); return render();
+    case 'toggle-deep': S.deep = !S.deep; if (S.deep) S.web = true; S.pop = null; keepPrefs(); return render();
     case 'toggle-talk': S.pop = null; if (voice.isOpen()) voice.closeView(); else openTalk(); return render();
     case 'talk': return openTalk();
     case 'voice-close': return voice.closeView();
