@@ -903,3 +903,13 @@ table.perms tr.off td { color: var(--faint); }
 :root[data-design="hologram"] .msg-u { font-size: 13.6px; padding: 8px 12px; }
 :root[data-design="hologram"] .composer { width: min(720px, calc(100% - 40px)); padding: 9px 12px; }
 :root[data-design="hologram"] .composer textarea { font-size: 13.6px; }
+
+/* ---------- 3.2: who's working, under a chat on the left ---------- */
+.sidework { margin: -2px 6px 6px 22px; padding: 4px 0 4px 8px; border-left: 1px solid var(--line-2); display: flex; flex-direction: column; gap: 3px; }
+.sw-row { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--muted); min-width: 0; animation: stackIn .3s ease-out both; }
+.sw-row b { color: var(--text); font-weight: 600; flex: none; }
+.sw-row span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sw-row.sub { padding-left: 14px; }
+.sw-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); flex: none; box-shadow: 0 0 6px var(--accent); }
+.sw-row .core.mini { flex: none; }
+.reduce-motion .sw-row { animation: none; }
