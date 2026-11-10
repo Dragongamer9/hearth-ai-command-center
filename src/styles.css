@@ -721,3 +721,168 @@ table.perms tr.off td { color: var(--faint); }
 .desk-asks { position: fixed; right: 18px; bottom: 18px; z-index: 60; display: flex; flex-direction: column; gap: 10px; width: min(460px, calc(100vw - 36px)); max-height: 70vh; overflow: auto; }
 .desk-ask { margin: 0; box-shadow: 0 10px 30px rgba(0, 0, 0, .35); border-color: var(--warn); }
 .desk-ask .fine { word-break: break-all; margin: 6px 0; }
+
+/* ===================== 2.9: the gold hologram design =====================
+   On unless Settings › Appearance › Design is Classic. Always dark. Everything is drawn
+   in CSS (no images, nothing from the network). Reduced motion stops every animation. */
+:root[data-design="hologram"] {
+  --bg: #030201;
+  --bg-2: #020100;
+  --panel: #0c0702;
+  --panel-2: #140c03;
+  --line: #2b1c08;
+  --line-2: #4a3212;
+  --text: #ffe9c7;
+  --strong: #fff4df;
+  --muted: #c9a372;
+  --faint: #8a6a3e;
+  --accent: #ffb347;
+  --accent-2: #ffc56b;
+  --accent-ink: #140c03;
+  --accent-soft: #2b1a08;
+  --good: #6fe39a;
+  --good-soft: #0f2a1a;
+  --warn: #ff8a4c;
+  --warn-soft: #2e1608;
+  --bad: #ff5a4f;
+  --bad-soft: #2e0d0a;
+  --hover: rgba(255, 179, 71, .07);
+  --shadow: 0 0 0 1px rgba(255, 179, 71, .06), 0 10px 40px rgba(0, 0, 0, .6);
+  --glow: 0 0 18px rgba(255, 179, 71, .28);
+  --hud: 'Inter', 'Noto Sans', system-ui, sans-serif;
+  --hole: #050302;
+  color-scheme: dark;
+}
+:root[data-design="hologram"] body {
+  background-color: var(--bg);
+  background-image: radial-gradient(rgba(255, 179, 71, .07) 1px, transparent 1px);
+  background-size: 22px 22px;
+}
+:root[data-design="hologram"] .side { background: rgba(2, 1, 0, .92); border-right: 1px solid var(--line); }
+:root[data-design="hologram"] .main, :root[data-design="hologram"] .top { background: transparent; }
+:root[data-design="hologram"] .top { border-bottom: 1px solid var(--line); }
+:root[data-design="hologram"] .top .ttl,
+:root[data-design="hologram"] .spage h1,
+:root[data-design="hologram"] .home h1,
+:root[data-design="hologram"] .brand b { font-family: var(--hud); text-transform: uppercase; letter-spacing: .1em; font-weight: 600; color: var(--strong); }
+:root[data-design="hologram"] .sec,
+:root[data-design="hologram"] .box h3 { text-transform: uppercase; letter-spacing: .2em; font-size: 11px; color: var(--muted); font-weight: 600; }
+:root[data-design="hologram"] .sec::before, :root[data-design="hologram"] .box h3::before { content: '◢ '; color: var(--accent); }
+:root[data-design="hologram"] .navitem.on, :root[data-design="hologram"] .item.on, :root[data-design="hologram"] .snav button.on {
+  background: var(--accent-soft); color: var(--accent); box-shadow: inset 2px 0 0 var(--accent), 0 0 16px rgba(255, 179, 71, .12);
+}
+:root[data-design="hologram"] .newchat { border: 1px solid #6a4a1a; background: var(--accent-soft); color: var(--accent); box-shadow: var(--glow); }
+:root[data-design="hologram"] .box,
+:root[data-design="hologram"] .card,
+:root[data-design="hologram"] .composer,
+:root[data-design="hologram"] .pop,
+:root[data-design="hologram"] .modal {
+  position: relative; background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+  background-image: linear-gradient(var(--accent), var(--accent)), linear-gradient(var(--accent), var(--accent)), linear-gradient(var(--accent), var(--accent)), linear-gradient(var(--accent), var(--accent));
+  background-size: 14px 2px, 2px 14px, 14px 2px, 2px 14px;
+  background-position: 0 0, 0 0, 100% 100%, 100% 100%;
+  background-repeat: no-repeat;
+}
+:root[data-design="hologram"] .composer { box-shadow: 0 0 40px rgba(255, 179, 71, .08); }
+:root[data-design="hologram"] .send, :root[data-design="hologram"] .btn.p { background: var(--accent); color: var(--accent-ink); box-shadow: var(--glow); }
+:root[data-design="hologram"] .chip.on, :root[data-design="hologram"] .seg.on { border-color: #6a4a1a; background: var(--accent-soft); color: var(--accent); }
+:root[data-design="hologram"] .tog.on { background: #3a2408; border-color: #6a4a1a; }
+:root[data-design="hologram"] .tog.on::after { background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+:root[data-design="hologram"] .msg-u { background: var(--panel-2); border: 1px solid var(--line-2); }
+:root[data-design="hologram"] .ava { box-shadow: 0 0 0 1.5px currentColor, 0 0 12px rgba(255, 179, 71, .25); }
+:root[data-design="hologram"] ::selection { background: rgba(255, 179, 71, .35); }
+
+/* ---------- the cores ---------- */
+.core { position: relative; flex: none; overflow: visible; padding: 0; border: 0; background: transparent; cursor: pointer; border-radius: 50%; color: var(--c); }
+.core:focus-visible { outline: 2px solid var(--c); outline-offset: 6px; }
+.core-in { position: absolute; inset: 0; perspective: 900px; overflow: visible; }
+.core i { position: absolute; display: block; box-sizing: border-box; border-radius: 50%; font-style: normal; }
+.core i.halo { display: none; }
+.core i.iris { left: 38%; top: 38%; width: 24%; height: 24%; border: 2px solid var(--c); background: radial-gradient(circle, var(--hole, #050302) 35%, var(--c4) 100%); box-shadow: 0 0 18px var(--c); animation: breathe 4s ease-in-out infinite; }
+.core i.iris.talk { animation: talk .65s ease-in-out infinite; }
+.core i.emit { left: 0; top: 0; width: 100%; height: 100%; border: 2px solid var(--c); animation: emit 1.4s ease-out infinite; }
+.core i.emit.late { border-width: 1px; animation-delay: .7s; }
+.core i.dot { background: var(--c); box-shadow: 0 0 10px var(--c); }
+.core i.sq, .core i.hex, .core i.tri, .core i.gem, .core i.px, .core i.bars, .core i.ray, .core .px b, .core .bars b { border-radius: 0; }
+.core i.hex { clip-path: polygon(25% 3%, 75% 3%, 100% 50%, 75% 97%, 25% 97%, 0 50%); }
+.core i.tri { clip-path: polygon(50% 0, 100% 100%, 0 100%); transform-origin: 50% 62%; }
+.core i.tri.down { clip-path: polygon(0 0, 100% 0, 50% 100%); transform-origin: 50% 38%; }
+.core i.gem { left: 26%; top: 4%; width: 48%; height: 92%; clip-path: polygon(50% 0, 100% 45%, 50% 100%, 0 45%); }
+.core i.ray { left: 48%; top: 0; width: 4%; height: 100%; background: linear-gradient(var(--c8) 0 18%, transparent 18% 82%, var(--c8) 82%); }
+.core i.px { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8%; }
+.core i.bars { left: 20%; top: 24%; width: 60%; height: 52%; display: flex; gap: 7%; align-items: center; justify-content: center; }
+.core .bars b { width: 8%; border-radius: 2px; background: var(--c); display: block; }
+.core .px b { display: block; }
+.core.off { opacity: .38; filter: saturate(.4); }
+.core.mini i.halo { display: none; }
+.core.mini { cursor: default; }
+
+@keyframes spinX { from { transform: rotateX(72deg) rotateZ(0deg) } to { transform: rotateX(72deg) rotateZ(360deg) } }
+@keyframes spinY { from { transform: rotateY(66deg) rotateZ(0deg) } to { transform: rotateY(66deg) rotateZ(-360deg) } }
+@keyframes spinT { from { transform: rotateX(48deg) rotateY(32deg) rotateZ(0deg) } to { transform: rotateX(48deg) rotateY(32deg) rotateZ(360deg) } }
+@keyframes spinZ { from { transform: rotate(0deg) } to { transform: rotate(360deg) } }
+@keyframes spinZr { from { transform: rotate(360deg) } to { transform: rotate(0deg) } }
+@keyframes spinYfull { from { transform: rotateY(0deg) } to { transform: rotateY(360deg) } }
+@keyframes breathe { 0%, 100% { transform: scale(1); opacity: .8 } 50% { transform: scale(1.07); opacity: 1 } }
+@keyframes talk { 0%, 100% { transform: scale(1) } 20% { transform: scale(1.18) } 45% { transform: scale(.94) } 70% { transform: scale(1.12) } }
+@keyframes flick { 0%, 100% { opacity: .3 } 50% { opacity: 1 } }
+@keyframes bar { 0%, 100% { transform: scaleY(.2) } 50% { transform: scaleY(1) } }
+@keyframes ripple { 0% { transform: scale(.25); opacity: 1 } 100% { transform: scale(1.15); opacity: 0 } }
+@keyframes blink { 0%, 92%, 100% { transform: scaleY(1) } 96% { transform: scaleY(.1) } }
+@keyframes emit { 0% { transform: scale(.7); opacity: .9 } 100% { transform: scale(1.55); opacity: 0 } }
+@keyframes tFlare { 0%, 100% { transform: scale(1); opacity: .85 } 30% { transform: scale(1.1); opacity: 1 } 60% { transform: scale(.97); opacity: .92 } }
+@keyframes tSnap { 0%, 100% { transform: rotate(0) } 25% { transform: rotate(30deg) } 50% { transform: rotate(30deg) scale(1.08) } 75% { transform: rotate(60deg) } }
+@keyframes tOrbit { from { transform: rotate(0) scale(1.06) } to { transform: rotate(360deg) scale(1.06) } }
+@keyframes tBounce { 0%, 100% { transform: translateY(0) } 35% { transform: translateY(-12%) } 55% { transform: translateY(3%) } }
+@keyframes tGlitch { 0%, 100% { transform: translate(0, 0) } 20% { transform: translate(-4%, 1%) skewX(8deg) } 40% { transform: translate(3%, -2%) } 60% { transform: translate(-2%, 0) skewX(-6deg) } 80% { transform: translate(4%, 2%) } }
+@keyframes tSun { 0% { transform: rotate(0) scale(1) } 50% { transform: rotate(45deg) scale(1.16) } 100% { transform: rotate(90deg) scale(1) } }
+@keyframes tPing { 0%, 100% { transform: scale(1) } 15% { transform: scale(1.14) } 30% { transform: scale(1) } 45% { transform: scale(1.08) } }
+@keyframes tTilt { 0%, 100% { transform: rotate(0) } 30% { transform: rotate(-14deg) } 70% { transform: rotate(14deg) } }
+@keyframes tShimmer { 0%, 100% { opacity: .75; transform: scale(1) rotate(0) } 50% { opacity: 1; transform: scale(1.06) rotate(8deg) } }
+@keyframes tWiden { 0%, 100% { transform: scaleY(1) } 40% { transform: scaleY(1.3) scaleX(1.06) } 70% { transform: scaleY(.9) } }
+@keyframes tVortex { from { transform: rotate(0) scale(1.1) } to { transform: rotate(-360deg) scale(1.1) } }
+@keyframes tFlip { from { transform: rotateX(0) } to { transform: rotateX(360deg) } }
+@keyframes tHum { 0%, 100% { transform: scale(1) } 50% { transform: scale(1.04) } }
+@keyframes tPixel { 0%, 100% { transform: scale(1) } 25% { transform: scale(1.12) } 50% { transform: scale(.94) } 75% { transform: scale(1.08) } }
+@keyframes tWobble { 0%, 100% { transform: skewX(0) } 25% { transform: skewX(10deg) scaleY(1.08) } 75% { transform: skewX(-10deg) scaleY(.94) } }
+@keyframes tSwell { 0%, 100% { transform: scale(1) } 50% { transform: scale(1.22) } }
+@keyframes tNebula { 0%, 100% { opacity: .8; transform: scale(1) rotate(0) } 50% { opacity: 1; transform: scale(1.12) rotate(-10deg) } }
+@keyframes tStack { 0%, 100% { transform: scale(1) translateY(0) } 33% { transform: scale(1.08) translateY(-4%) } 66% { transform: scale(.96) translateY(3%) } }
+@media (prefers-reduced-motion: reduce) { .core *, .live-bars b { animation: none !important; } }
+.reduce-motion .core *, .reduce-motion .live-bars b { animation: none !important; }
+
+/* ---------- the Live view ---------- */
+.main.live-mode .body { display: flex; padding: 0; overflow: hidden; }
+.live { flex: 1; min-width: 0; display: flex; min-height: 0; }
+.live-stage { flex: 1; min-width: 0; overflow: auto; padding: 18px 26px 28px; display: flex; flex-direction: column; gap: 18px; }
+.live-top { display: flex; gap: 14px; align-items: baseline; flex-wrap: wrap; }
+.live-tag, .live-h { font-size: 11px; letter-spacing: .24em; color: var(--accent); font-weight: 600; text-transform: uppercase; }
+.live-h { color: var(--muted); margin-bottom: 10px; }
+.live-title { font-size: 17px; letter-spacing: .08em; text-transform: uppercase; color: var(--strong); }
+.live-cores { display: flex; flex-wrap: wrap; gap: 26px 30px; align-items: flex-end; }
+.live-ai { display: flex; flex-direction: column; align-items: center; gap: 4px; width: 128px; text-align: center; }
+.live-ai.lead { width: 260px; }
+.live-ai b { margin-top: 10px; font-size: 11.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--strong); }
+.live-ai.lead b { font-size: 14px; }
+.live-ai span { font-size: 11.5px; color: var(--muted); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.live-cap { display: flex; gap: 14px; align-items: center; border: 1px solid var(--line-2); border-radius: 14px; background: rgba(12, 7, 2, .9); padding: 10px 14px; box-shadow: 0 0 40px rgba(255, 179, 71, .1); }
+.live-line { font-size: 14px; line-height: 1.45; color: var(--strong); margin-top: 3px; max-height: 4.4em; overflow: hidden; }
+.live-bars { display: flex; gap: 3px; align-items: center; height: 30px; flex: none; }
+.live-bars b { width: 3px; height: 28px; border-radius: 2px; background: var(--c); animation: bar .7s ease-in-out infinite; }
+.live-bars b:nth-child(2) { animation-duration: .5s; animation-delay: .1s; }
+.live-bars b:nth-child(3) { animation-duration: .8s; animation-delay: .2s; }
+.live-bars b:nth-child(4) { animation-duration: .6s; animation-delay: .05s; }
+.live-bars b:nth-child(5) { animation-duration: .9s; animation-delay: .3s; }
+.live-mic { flex: none; width: 46px; height: 46px; border-radius: 50%; border: 2px solid var(--accent); background: var(--accent-soft); color: var(--accent); box-shadow: var(--glow); display: flex; align-items: center; justify-content: center; }
+.live-hint { text-align: center; }
+.live-drawer { width: 360px; flex: none; border-left: 1px solid var(--line); background: rgba(6, 3, 1, .94); display: flex; flex-direction: column; min-height: 0; }
+.live-drawer[hidden] { display: none; }
+.live-drawer .dh { display: flex; gap: 8px; align-items: center; padding: 12px 14px; border-bottom: 1px solid var(--line); font-size: 11px; letter-spacing: .2em; text-transform: uppercase; color: var(--muted); }
+.live-msgs { flex: 1; overflow: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 12px; }
+.live-msg b { font-size: 12px; }
+.live-msg div { font-size: 13px; line-height: 1.45; color: var(--strong); white-space: pre-wrap; overflow-wrap: anywhere; margin-top: 2px; }
+.live-msg.owner div { color: var(--text); }
+.live-drawer .composer { margin: 10px; }
+.live-drawer .composer .row .chip:not(.talk) { display: none; }
+.team-cores { display: flex; flex-wrap: wrap; gap: 14px; justify-content: center; margin: 4px 0 14px; }
+.team-cores .tc { display: flex; flex-direction: column; align-items: center; gap: 4px; font-size: 11px; color: var(--muted); width: 64px; text-align: center; }
