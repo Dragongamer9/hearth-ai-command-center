@@ -1718,8 +1718,8 @@ function section(k) {
       <div class="srow">${mono('civitai')}<b>Civitai</b><span class="d">pictures (billed in Buzz) · mature content allowed · ${M.keys?.civitai ? 'token saved' : 'Add your Civitai key'}</span><span class="grow"></span><button class="mini" data-a="mate-key" data-v="civitai">${M.keys?.civitai ? 'Change token' : 'Add token'}</button>${M.keys?.civitai ? '<button class="mini" data-a="mate-unkey" data-v="civitai">Remove</button>' : ''}</div>
       <div class="srow sub">Engine<select data-a="civitai-engine">${(M.models?.civitaiEngines || []).map((x) => `<option ${c.civitai?.engine === x ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select><input id="civitai-fields" class="mono grow" value="${esc(c.civitai?.fields || '{"prompt": "{prompt}"}')}" aria-label="Civitai request fields"><button class="mini" data-a="civitai-fields">Save fields</button><span class="d">the engine's own fields as JSON; {prompt} is filled in (check Civitai's docs for your engine)</span></div>
       <div class="srow">${mono('gpu')}<b>Your GPU servers</b><span class="d">RunPod or any rented or local GPU: an OpenAI-compatible chat URL, or a ComfyUI image API · ${M.servers?.length ? `${M.servers.length} added` : 'Add your GPU server'}</span></div>
-      ${(M.servers || []).map((sv) => `<div class="srow sub">${icon('cpu', 'sm')}<b>${esc(sv.name)}</b><span class="d mono">${esc(sv.type === 'comfy' ? 'ComfyUI' : 'OpenAI-compatible')} · ${esc(sv.url)}${sv.model ? ` · ${esc(sv.model)}` : ''}${sv.key ? ' · key saved' : ''}${sv.workflow ? ' · own workflow' : ''}</span><span class="grow"></span><button class="mini" data-a="server-remove" data-id="${esc(sv.id)}">Remove</button></div>`).join('')}
-      <div class="srow sub form"><input id="sv-name" placeholder="Name (e.g. RunPod 4090)"><select id="sv-type"><option value="openai">OpenAI-compatible chat</option><option value="comfy">ComfyUI pictures</option></select><input id="sv-url" class="grow" placeholder="https://…/v1 or http://192.168.1.20:8188"><input id="sv-model" placeholder="Model or checkpoint (optional)"><input id="sv-key" type="password" placeholder="Key (optional)"><button class="mini" data-a="server-add">Add server</button></div>
+      ${(M.servers || []).map((sv) => `<div class="srow sub">${icon('cpu', 'sm')}<b>${esc(sv.name)}</b><span class="d mono">${esc(sv.type === 'comfy' ? 'ComfyUI' : 'OpenAI-compatible')} · ${esc(sv.url)}${sv.key ? ' · key saved' : ''}${sv.workflow ? ' · own workflow' : ''}</span><span class="grow"></span>${svModelPick(sv)}<button class="mini" data-a="server-models" data-id="${esc(sv.id)}" title="Look for the models on this server again">Refresh</button><button class="mini" data-a="server-remove" data-id="${esc(sv.id)}">Remove</button></div>`).join('')}
+      <div class="srow sub form"><input id="sv-name" placeholder="Name (e.g. RunPod 4090)"><select id="sv-type"><option value="openai">OpenAI-compatible chat</option><option value="comfy">ComfyUI pictures</option></select><input id="sv-url" class="grow" placeholder="https://…/v1 or http://192.168.1.20:8188">${svAddModelPick()}<input id="sv-key" type="password" placeholder="Key (optional)"><button class="mini" data-a="server-add">Add server</button></div>
       <details class="sub"><summary class="fine">ComfyUI workflow (optional): paste your own workflow JSON; {prompt}, {negative}, {seed} and {ckpt} are filled in. Empty uses a stock SDXL text-to-image graph.</summary><textarea id="sv-workflow" rows="4" class="mono" placeholder='{"3": {"class_type": "KSampler", …}}'></textarea></details>
       <div class="note">NovelAI isn't offered: it has no public developer API, and its terms restrict third-party apps.</div></div>
       ${hearthBox()}
@@ -1897,7 +1897,7 @@ async function loadSection(t) {
   if (t === 'tools') loadMissing();
   if (t === 'uncensored') { refreshAgents(); if (!S.studio.models) { const l = await call('comfyCheckpoints'); S.studio.models = l?.ok ? l.checkpoints : null; } }
   if (t === 'accounts' || t === 'team') { refreshAgents(); await refreshMates(); }
-  if (t === 'accounts') { S.hd = (await call('hearthStatus', { probe: true })) || S.hd; }
+  if (t === 'accounts') { S.hd = (await call('hearthStatus', { probe: true })) || S.hd; loadAllServerModels().then(() => render()); }
   if (t === 'github') loadRepos();
   if (t === 'memory') S.memory = await call('memoryList');
   if (t === 'scheduled') S.schedules = await call('scheduleList');
@@ -2133,6 +2133,50 @@ async function comfyTest() {
 function hdAfter(r) {
   if (r && !r.message && r.hearthDevices) S.hd = { ...(S.hd || {}), settings: r.hearthDevices };
   return r;
+}
+
+// Your GPU servers: the models each one has, picked up automatically (nothing to type).
+// S.svModels[id] = { loading } | { models } | { message }; S.svAdd for the Add form.
+function svOptions(models, current, firstLabel) {
+  const list = [...new Set([...(current ? [current] : []), ...(models || [])])];
+  return `<option value="" ${current ? '' : 'selected'}>${esc(firstLabel)}</option>${list.map((m) => `<option value="${esc(m)}" ${m === current ? 'selected' : ''}>${esc(m)}${models && !models.includes(m) ? ' (not on the server now)' : ''}</option>`).join('')}`;
+}
+function svModelPick(sv) {
+  const st = S.svModels?.[sv.id];
+  if (!st || st.loading) return `<span class="d">${st ? 'finding models…' : esc(sv.model || '')}</span>`;
+  const note = st.message ? `<span class="d bad" title="${esc(st.message)}">couldn't list its models</span>` : '';
+  return `${note}<select data-a="sv-model-pick" data-id="${esc(sv.id)}" aria-label="Model on ${esc(sv.name)}">${svOptions(st.models, sv.model || '', sv.type === 'comfy' ? 'Pick automatically' : 'First model on the server')}</select>`;
+}
+function svAddModelPick() {
+  const st = S.svAdd || {};
+  if (st.loading) return '<span class="d">finding models…</span>';
+  if (st.models) return `<select id="sv-model" aria-label="Model">${svOptions(st.models, st.pick || '', 'First model on the server')}</select>`;
+  return `<input id="sv-model" placeholder="${st.message ? 'Couldn\'t list its models: type one (optional)' : 'Model: found when you type the address'}" title="${esc(st.message || '')}">`;
+}
+async function loadServerModels(id) {
+  S.svModels = S.svModels || {};
+  S.svModels[id] = { loading: true };
+  const r = await call('teammatesListModels', { id });
+  S.svModels[id] = r?.ok ? { models: r.models } : { message: r?.message || 'Couldn\'t list its models.' };
+}
+async function loadAllServerModels() {
+  await Promise.all((S.mates?.servers || []).map((sv) => loadServerModels(sv.id)));
+}
+async function loadAddModels() {
+  const v = (id) => document.getElementById(id)?.value || '';
+  const url = v('sv-url').trim();
+  if (!url) { S.svAdd = {}; return; }
+  const keep = { name: v('sv-name'), type: v('sv-type'), url, key: v('sv-key') };
+  S.svAdd = { loading: true, keep };
+  render(); restoreAddForm(keep);
+  const r = await call('teammatesListModels', { url, type: keep.type, key: keep.key });
+  S.svAdd = r?.ok ? { models: r.models, keep } : { message: r?.message || 'Couldn\'t list its models.', keep };
+  render(); restoreAddForm(keep);
+}
+// A render rebuilds the form: put back what he typed (the key too, only in the box).
+function restoreAddForm(k) {
+  if (!k) return;
+  for (const [id, val] of [['sv-name', k.name], ['sv-type', k.type], ['sv-url', k.url], ['sv-key', k.key]]) { const el = document.getElementById(id); if (el && val != null) el.value = val; }
 }
 
 async function refreshMates() {
@@ -2574,8 +2618,9 @@ document.addEventListener('click', async (ev) => {
     case 'media-unkey': await call('mediaRemoveKey', d.v); await refreshMates(); return render();
     case 'mate-key': { const key = await secretPrompt(`Paste your ${aiName(d.v)} ${d.v === 'civitai' ? 'API token' : 'API key'}`); if (key) { const r = await call('teammatesSetKey', d.v, key); if (r?.ok === false) toast(r.message); await refreshMates(); render(); } return; }
     case 'mate-unkey': await call('teammatesRemoveKey', d.v); await refreshMates(); return render();
-    case 'server-add': { const v = (id) => document.getElementById(id)?.value || ''; const r = await call('teammatesAddServer', { name: v('sv-name'), type: v('sv-type'), url: v('sv-url'), model: v('sv-model').trim(), key: v('sv-key'), workflow: v('sv-workflow').trim() }); if (r?.ok === false || r?.message) toast(r.message || 'Not added.'); else toast(`Added ${r.name}. Turn on “Your GPU server” in Settings › AI team to use it.`); await refreshMates(); return render(); }
-    case 'server-remove': await call('teammatesRemoveServer', d.id); await refreshMates(); return render();
+    case 'server-add': { const v = (id) => document.getElementById(id)?.value || ''; const r = await call('teammatesAddServer', { name: v('sv-name'), type: v('sv-type'), url: v('sv-url'), model: v('sv-model').trim(), key: v('sv-key'), workflow: v('sv-workflow').trim() }); if (r?.ok === false || r?.message) toast(r.message || 'Not added.'); else { toast(`Added ${r.name}. Turn on “Your GPU server” in Settings › AI team to use it.`); S.svAdd = {}; } await refreshMates(); if (r?.id) await loadServerModels(r.id); return render(); }
+    case 'server-remove': await call('teammatesRemoveServer', d.id); if (S.svModels) delete S.svModels[d.id]; await refreshMates(); return render();
+    case 'server-models': await loadServerModels(d.id); return render();
     case 'hd-url': { hdAfter(await setSettings({ hearthDevices: { url: document.getElementById('hd-url')?.value || '' } })); S.hd = (await call('hearthStatus', { probe: true, fresh: true })) || S.hd; await refreshMates(); return render(); }
     case 'hd-test': { toast('Asking your Home server…'); S.hd = (await call('hearthStatus', { probe: true, fresh: true })) || S.hd; toast(S.hd?.error ? 'The test didn\'t work (see Hearth devices).' : `${(S.hd?.devices || []).length} device${(S.hd?.devices || []).length === 1 ? '' : 's'} found.`); return render(); }
     case 'hd-code': { const v = document.getElementById('hd-code')?.value || ''; if (!v.trim()) return toast('Type the share code first.'); const r = await call('hearthShareCode', v); toast(r?.ok ? 'Share code saved (encrypted).' : r?.message || 'Not saved.'); S.hd = (await call('hearthStatus', { probe: true, fresh: true })) || S.hd; return render(); }
@@ -2635,6 +2680,11 @@ document.addEventListener('change', (ev) => {
   if (t.matches?.('[data-cvoice]') && S.cardEdit) { const c = S.cardEdit; c.ownerVoice = { ...(c.ownerVoice || {}), [t.dataset.cvoice]: Number(t.value) }; c.voiceChanged = true; renderMain(); }
   if (t.matches?.('[data-a="venice-model"]')) setSettings({ teammates: { venice: { model: t.value } } });
   if (t.matches?.('[data-a="venice-image"]')) setSettings({ teammates: { venice: { imageModel: t.value } } });
+  if (t.matches?.('select[data-a="sv-model-pick"]')) {
+    const id = t.dataset.id; const m = t.value;
+    call('teammatesUpdateServer', id, { model: m }).then(async (r) => { if (r?.ok === false || r?.message) toast(r.message || 'Not saved.'); else toast(m ? `Saved. ${r.name} now uses ${m}.` : `Saved. ${r.name} uses the first model it has.`); await refreshMates(); render(); });
+  }
+  if (t.matches?.('#sv-url, #sv-type')) loadAddModels();
   if (t.matches?.('[data-a="civitai-engine"]')) setSettings({ teammates: { civitai: { engine: t.value } } });
   if (t.matches?.('[data-a="hd-pick"]')) setSettings({ hearthDevices: { [t.dataset.k]: { [t.dataset.v]: t.value || null } } }).then(hdAfter);
   if (t.matches?.('[data-a="comfy-ckpt"]')) setSettings({ comfy: { checkpoint: t.value } });

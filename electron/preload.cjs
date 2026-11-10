@@ -130,6 +130,8 @@ contextBridge.exposeInMainWorld('hearth', {
   teammatesRemoveKey: (agent) => ipcRenderer.invoke('teammates:removeKey', agent),
   teammatesAddServer: (spec) => ipcRenderer.invoke('teammates:addServer', spec),
   teammatesRemoveServer: (id) => ipcRenderer.invoke('teammates:removeServer', id),
+  teammatesUpdateServer: (id, patch) => ipcRenderer.invoke('teammates:updateServer', id, patch),
+  teammatesListModels: (q) => ipcRenderer.invoke('teammates:listModels', q),
   cardsList: () => ipcRenderer.invoke('cards:list'),
   cardsImport: (name, data) => ipcRenderer.invoke('cards:import', name, data),
   cardsPick: () => ipcRenderer.invoke('cards:pick'),
