@@ -9,6 +9,7 @@
 //   REMEMBER: <fact>                     a memory suggestion: saved only after the owner's yes
 //   SEARCH CHATS: <words>                look through the owner's other chats (read-only)
 //   READ CHAT: <title>                   read one other chat (read-only)
+//   READ MESSAGE: <id> [from <n>]       the rest of a message in this chat that was too long to send whole
 //   HELPER @Name: <side task>            a teammate works on it in parallel and reports back
 //   FOLLOW-UPS: one | two | three        suggestion chips under the answer
 import { aliasOf } from '../registry.mjs';
@@ -21,10 +22,11 @@ const RX = {
   remember: /^REMEMBER\s*:\s*(.+)$/i,
   search: /^SEARCH\s+(?:PAST\s+)?CHATS\s*:\s*(.+)$/i,
   read: /^READ\s+CHAT\s*:\s*(.+)$/i,
+  readmsg: /^READ\s+MESSAGE\s*:?\s*([A-Za-z0-9_-]{1,40})(?:\s+from\s+(\d{1,9}))?\s*[.\]]?$/i,
   helper: /^HELPER(?:\s+@([A-Za-z][\w-]{1,20}))?\s*:\s*(.+)$/i,
   follow: /^FOLLOW[- ]?UPS?\s*:\s*(.+)$/i,
 };
-export const LIMITS = { image: 3, edit: 2, video: 1, shot: 3, remember: 3, search: 2, read: 2, helper: 3 };
+export const LIMITS = { image: 3, edit: 2, video: 1, shot: 3, remember: 3, search: 2, read: 2, readmsg: 6, helper: 3 };
 
 const clean = (l) => l.replace(/^\s*[-*>]\s+/, '').replace(/[*`_]/g, '').trim();
 
@@ -46,6 +48,7 @@ export function parseTools(text, { agent = null } = {}) {
     if ((m = l.match(RX.shot))) { if (room('shot')) tools.push({ kind: 'shot', url: m[1].replace(/[).,]+$/, ''), by: agent }); continue; }
     if ((m = l.match(RX.remember))) { if (room('remember')) tools.push({ kind: 'remember', text: m[1].trim().slice(0, 500), by: agent }); continue; }
     if ((m = l.match(RX.search))) { if (room('search')) tools.push({ kind: 'search', query: m[1].trim().slice(0, 200), by: agent }); continue; }
+    if ((m = l.match(RX.readmsg))) { if (room('readmsg')) tools.push({ kind: 'readmsg', id: m[1], from: m[2] ? Number(m[2]) : 0, by: agent }); continue; }
     if ((m = l.match(RX.read))) { if (room('read')) tools.push({ kind: 'read', chat: m[1].trim().replace(/^["“]|["”]$/g, '').slice(0, 120), by: agent }); continue; }
     if ((m = l.match(RX.helper))) { if (room('helper')) tools.push({ kind: 'helper', to: m[1] ? aliasOf(m[1]) || m[1].toLowerCase() : null, task: m[2].trim().slice(0, 3000), by: agent }); continue; }
     if ((m = l.match(RX.follow))) { follow = m[1].split('|').map((x) => x.trim().replace(/^["“]|["”]$/g, '')).filter((x) => x.length > 1).slice(0, 4).map((x) => x.slice(0, 120)); continue; }

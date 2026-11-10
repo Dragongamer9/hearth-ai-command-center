@@ -6,7 +6,7 @@
 // The owner's limit on chats working at the same time is a waiting line: a chat over the
 // limit waits its turn and says so; it is never refused.
 import { AGENTS, UNFILTERED } from '../registry.mjs';
-import { planTurn, handoffs, pickReviewer, brief, turnPrompt, transcript, name as aiName, mentionsIn } from './brief.mjs';
+import { planTurn, handoffs, pickReviewer, brief, turnPrompt, transcript, name as aiName, mentionsIn, teamReports, readMessage } from './brief.mjs';
 import { extractPreviews, kindOf } from './previews.mjs';
 import { parseActs, makeAct } from './act.mjs';
 import { outcomeSteps } from './steps.mjs';
@@ -154,13 +154,18 @@ export function createTeamRunner(ctx) {
           // 2.10: everyone the lead picked works AT THE SAME TIME, each in its own copy of the files; the app merges
           // their work, then the lead checks it all and answers the owner.
           for (const h of picked) addState(R, h);
+          const from = R.msgs.length;
           const res = await parallel(R, picked, { lead: agent });
           for (const x of res) { done.push(x.agent); if (x.r?.changes?.files?.length) changed = { by: x.agent, msgId: x.r.msgId }; if (!x.r || x.r.ok === false) ok = false; }
           const merge = await mergeLanes(R, picked);
           if (merge.changed) changed = { by: merge.by || picked[0], msgId: null };
           if (!R.stop) {
             setState(R, agent, 'working', '');
-            const w = await turn(R, agent, { role: 'lead', task: wrapUpTask(R, res, merge) });
+            // Their replies go into the lead's prompt itself (labelled, whole), so they're left out of the chat part.
+            const theirs = R.msgs.slice(from).filter((m) => picked.includes(m.who));
+            let w = await turn(R, agent, { role: 'lead', task: wrapUpTask(R, res, merge, theirs, agent), exclude: new Set(theirs.map((m) => m.id)) });
+            // READ MESSAGE (a reply too long to send whole) and other app lines: answered, then it goes on (at most twice).
+            for (let loop = 0; loop < 2 && w && w.ok !== false && w.followUp && !R.stop; loop++) w = await turn(R, agent, { role: 'lead', task: w.followUp, isFollowUp: true }) || { ok: false };
             setState(R, agent, w && w.ok !== false ? 'done' : 'failed', w && w.ok !== false ? '' : (w?.plain?.reason || ''));
             if (w?.changes?.files?.length) changed = { by: agent, msgId: w.msgId };
           }
@@ -208,6 +213,7 @@ export function createTeamRunner(ctx) {
       setState(R, a, 'working', '');
       const own = handoffTask(R, a);
       const task = `${own ? `Your part, from ${aiName(lead)}: ${own}\n\n` : ''}You're working AT THE SAME TIME as ${others(a).length ? others(a).join(', ') : 'no one else'}${others(a).length ? ', each in your own copy of the files' : ''}. Do only your part; don't redo the others'. The app merges everyone's changes when you're all done, and ${aiName(lead)} checks the result.`;
+      let mark = R.msgs.length;
       let r = await turn(R, a, { role: 'member', task, lane: true });
       // Done: it reports to the lead straight away and the lead answers it (others keep working). The lead can give
       // it more to do with an @line, up to twice; nobody waits for the owner.
@@ -215,10 +221,11 @@ export function createTeamRunner(ctx) {
         for (let loop = 0; loop < 2 && r?.ok !== false && r?.followUp && !R.stop; loop++) r = await turn(R, a, { role: 'member', task: r.followUp, isFollowUp: true, lane: true }) || { ok: false };
         if (!r || r.ok === false || R.stop) break;
         setState(R, a, 'done', 'reported to the lead');
-        const reply = await leadReplies(R, lead, a, r, agents);
+        const reply = await leadReplies(R, lead, a, r, R.msgs.slice(mark).filter((m) => m.who === a));
         const next = reply && reply.ok !== false && more < 2 ? handoffs(reply.text || '', { team: ctx.team(), live: ctx.live(), done: [] }).includes(a) : false;
         if (!next) break;
         setState(R, a, 'working', `more from ${aiName(lead)}`);
+        mark = R.msgs.length;
         r = await turn(R, a, { role: 'member', task: `${aiName(lead)} answered your report and gave you more: ${lineFor(reply.text, a) || 'see its last message'}\n\nYou're still working at the same time as the others, in your own copy.`, lane: true });
       }
       if (!r || r.ok === false) {
@@ -229,12 +236,14 @@ export function createTeamRunner(ctx) {
     }));
   }
   // The lead answers one teammate's report while the rest work. One reply at a time (they queue), read-only.
-  function leadReplies(R, lead, a, r, agents) {
+  function leadReplies(R, lead, a, r, report) {
     const run = async () => {
       if (R.stop) return null;
       const still = (R.working || []).filter((b) => b.lane && b.agent !== a).map((b) => aiName(b.agent));
-      const task = `${aiName(a)} just finished its part and reported (its message is the last one from it above)${r.changes?.files?.length ? `, changing ${r.changes.files.length} file(s) in its own copy` : ''}. ${still.length ? `Still working: ${[...new Set(still)].join(', ')}.` : 'Everyone else is done.'}\n\nAnswer ${aiName(a)} in one to three lines: say what's good, what's wrong or missing. If it should do more, start a line with @${aiName(a).replace(/\s+/g, '')} and the next step. Don't wait for the owner and don't redo its work. Your full check comes after everyone is done.`;
-      return turn(R, lead, { role: 'lead', task, quick: true });
+      const task = `${aiName(a)} just finished its part and reported${r.changes?.files?.length ? `, changing ${r.changes.files.length} file(s) in its own copy` : ''}. ${still.length ? `Still working: ${[...new Set(still)].join(', ')}.` : 'Everyone else is done.'}\n\n${aiName(a).toUpperCase()}'S REPORT:\n${teamReports(report, [a], { forAgent: lead, room: 16000 })}\n\nAnswer ${aiName(a)} in one to three lines: say what's good, what's wrong or missing. If it should do more, start a line with @${aiName(a).replace(/\s+/g, '')} and the next step. Don't wait for the owner and don't redo its work. Your full check comes after everyone is done.`;
+      let w = await turn(R, lead, { role: 'lead', task, quick: true, exclude: new Set(report.map((m) => m.id)) });
+      if (w && w.ok !== false && w.followUp && !R.stop) w = await turn(R, lead, { role: 'lead', task: w.followUp, quick: true, isFollowUp: true }) || { ok: false };
+      return w;
     };
     const p = (R.leadChain || Promise.resolve()).then(run, run);
     R.leadChain = p.catch(() => null);
@@ -255,13 +264,13 @@ export function createTeamRunner(ctx) {
     await ctx.save(R);
     return { changed: Boolean((m.merged || []).length), by: (m.merged || [])[0]?.agent, merged: m.merged || [], conflicts: m.conflicts || [], empty: m.empty || [] };
   }
-  function wrapUpTask(R, res, merge) {
-    const lines = res.map((x) => `- ${aiName(x.agent)}: ${!x.r || x.r.ok === false ? 'did not finish' : x.r.changes?.files?.length ? `changed ${x.r.changes.files.length} file(s)` : 'answered'}`);
+  function wrapUpTask(R, res, merge, theirs = [], lead = null) {
+    const lines = res.map((x) => `- ${aiName(x.agent)}: ${!x.r || x.r.ok === false ? 'did not finish (its error is below)' : x.r.changes?.files?.length ? `changed ${x.r.changes.files.length} file(s)` : 'answered'}`);
     const clash = merge.conflicts.length ? `\nClashes the app couldn't merge (fix them in the chat's copy: run \`git merge <branch>\` and resolve, or redo that part):\n${merge.conflicts.map((c) => `- ${aiName(c.agent)}: ${c.files.join(', ')} (branch ${c.branch})`).join('\n')}` : '';
-    return `Your teammates have finished working at the same time (their answers are in the chat above):\n${lines.join('\n')}${merge.merged.length ? `\nMerged into this chat's branch: ${merge.merged.map((m) => aiName(m.agent)).join(', ')}.` : ''}${clash}\n\nCheck their work together, fix anything wrong or missing, and give the owner ONE short answer: what was done, by whom, and what's left. Don't hand the same work out again.`;
+    return `Your teammates have finished working at the same time:\n${lines.join('\n')}${merge.merged.length ? `\nMerged into this chat's branch: ${merge.merged.map((m) => aiName(m.agent)).join(', ')}.` : ''}${clash}\n\nTHEIR REPLIES, IN FULL (each teammate's own words, errors and refusals included):\n${teamReports(theirs, res.map((x) => x.agent), { forAgent: lead })}\n\nCheck their work together, fix anything wrong or missing, and give the owner ONE short answer: what was done, by whom, and what's left. Don't hand the same work out again.`;
   }
 
-  async function turn(R, agent, { role = 'member', task = '', readOnly = false, isFollowUp = false, regenerate = null, lane = false, quick = false } = {}) {
+  async function turn(R, agent, { role = 'member', task = '', readOnly = false, isFollowUp = false, regenerate = null, lane = false, quick = false, exclude = null } = {}) {
     const c = ctx.entry(R.id);
     if (!c) return null;
     // A teammate that only makes pictures (Civitai, a ComfyUI server): the request is the picture.
@@ -279,7 +288,8 @@ export function createTeamRunner(ctx) {
     const me = setBusy(R, { agent, role, runId, steps: [], startedAt: Date.now(), lane });
     // A quick reply (the lead answering a teammate while others work) runs read-only beside them, in a fresh session.
     const resumeId = typeof R.sessions[agent] === 'string' && !regenerate && !quick ? R.sessions[agent] : null;
-    const upto = regenerate ? R.msgs.slice(0, R.msgs.findIndex((m) => m.id === regenerate)) : R.msgs;
+    const all = regenerate ? R.msgs.slice(0, R.msgs.findIndex((m) => m.id === regenerate)) : R.msgs;
+    const upto = exclude?.size ? all.filter((m) => !exclude.has(m.id)) : all;
     const build = ctx.buildFor(R) && !readOnly && !quick;
     const web = ctx.webFor(R);
     const opts = { agent, role, chat: c, copy: R.copy ? { base: R.copy.base, work: R.copy.work } : null, build, web, quickChecks: ctx.settings().tools?.quickChecks || [], team: ctx.team(), live: ctx.live(), actForMe: ctx.settings().actForMe === true, apiOnly: ctx.method(agent) === 'api', status: ctx.statusMap?.() || {}, missing: ctx.missingChecks?.() || [], canPush: Boolean(c.repo || c.repoDir) && !c.temp, autoPush: ctx.settings().autoPush !== false, uncensored: ctx.settings().uncensored?.on === true };
@@ -329,7 +339,7 @@ export function createTeamRunner(ctx) {
     const { acts, refused } = parseActs(noTools, { agent, enabled: ctx.settings().actForMe === true });
     const shown = noTools.split('\n').filter((l) => !/^\s*ACT FOR OWNER:/i.test(l.replace(/[*`]/g, ''))).join('\n').trim();
     const fields = {
-      who: agent, role, text: shown || (previews.length ? 'Here\'s the preview.' : media.length ? 'Here it is.' : '(no text)'), via: r.via, steps, web,
+      who: agent, role, text: shown || (previews.length ? 'Here\'s the preview.' : media.length ? 'Here it is.' : tools.some((x) => x.kind === 'readmsg') ? 'Reading the rest of a long reply…' : '(no text)'), via: r.via, steps, web,
       outcome: outcomeSteps({ ...r, previews }), previews,
       ...(media.length ? { media } : {}),
       ...(Array.isArray(r.mediaProblems) && r.mediaProblems.length ? { mediaProblems: r.mediaProblems.slice(0, 10) } : {}),
@@ -340,6 +350,7 @@ export function createTeamRunner(ctx) {
       ...(acts.length ? { acts: acts.map((a) => makeAct(a.kind, { chatId: R.id, sha: r.status?.head || null })) } : {}),
       ...(refused.length ? { refusedActs: refused } : {}),
       ...(model ? { model } : {}),
+      ...(quick ? { quick: true } : {}),
     };
     let msg;
     if (regenerate) {
@@ -360,8 +371,13 @@ export function createTeamRunner(ctx) {
     let followUp = null;
     if (tools.length) {
       const helpers = tools.filter((x) => x.kind === 'helper' && role === 'lead');
-      const other = tools.filter((x) => x.kind !== 'helper');
-      if (helpers.length) followUp = await runHelpers(R, msg, helpers);
+      const reads = tools.filter((x) => x.kind === 'readmsg');
+      const other = tools.filter((x) => x.kind !== 'helper' && x.kind !== 'readmsg');
+      if (reads.length) {
+        followUp = `THE MESSAGES YOU ASKED TO READ (read-only; now go on with your answer):\n\n${reads.map((x) => readMessage(R.msgs, x.id, { from: x.from, forAgent: agent })).join('\n\n')}`;
+        msg.steps = [...(msg.steps || []), { kind: 'read', label: 'Read a long reply', detail: reads.map((x) => x.id).join(', ') }];
+      }
+      if (helpers.length) { const f = await runHelpers(R, msg, helpers); if (f) followUp = followUp ? `${followUp}\n\n${f}` : f; }
       if (other.length) { const f = await ctx.onTools?.(R, msg, other, agent); if (f) followUp = followUp ? `${followUp}\n\n${f}` : f; }
     }
     await ctx.save(R);
