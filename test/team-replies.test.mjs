@@ -132,3 +132,29 @@ test('READ MESSAGE lines are parsed and taken out of the text', () => {
   assert.equal(r.text, 'Let me look.');
   assert.deepEqual(r.tools.map((x) => [x.kind, x.id, x.from]), [['readmsg', 'm1a', 1200], ['readmsg', 'm2b', 0]]);
 });
+
+// Reverse Engineering chats: Claude did it all alone. The lead is told to split the program between the team, who has
+// the REA tools and who doesn't, and a resumed lead (an older chat) is reminded every time.
+import { reverseBrief, brief, turnPrompt } from '../src/app/brief.mjs';
+const RE_TEAM = { lead: 'anthropic', reviewer: null, members: ['anthropic', 'openai', 'google', 'xai', 'mistral', 'perplexity'] };
+const PROJECT = { name: 'game.exe', kind: 'Windows program', path: '/home/me/game.exe' };
+
+test('a Reverse Engineering lead is told to split the program between the team, and who has REA', () => {
+  const t = reverseBrief({ agent: 'anthropic', role: 'lead', project: PROJECT, on: true, team: RE_TEAM, live: RE_TEAM.members });
+  assert.match(t, /don't do it all alone/);
+  assert.match(t, /Teammates with the REA tools: ChatGPT, Gemini\./);
+  assert.match(t, /Teammates without them: Grok, Mistral, Perplexity\./);
+  const api = reverseBrief({ agent: 'anthropic', role: 'lead', project: PROJECT, on: true, team: RE_TEAM, live: RE_TEAM.members, method: (a) => (a === 'google' ? 'api' : 'cli') });
+  assert.match(api, /Teammates with the REA tools: ChatGPT\./, 'Gemini through its API has no REA');
+  assert.match(reverseBrief({ agent: 'xai', role: 'member', project: PROJECT, on: true, team: RE_TEAM, live: RE_TEAM.members }), /You don't have the REA tools here/);
+  assert.equal(reverseBrief({ agent: 'anthropic', role: 'lead', project: null }), '', 'other chats get nothing');
+});
+
+test('a resumed lead is reminded to lead the team every time (Reverse Engineering included)', () => {
+  const extra = reverseBrief({ agent: 'anthropic', role: 'lead', project: PROJECT, on: true, team: RE_TEAM, live: RE_TEAM.members });
+  const b = brief({ agent: 'anthropic', role: 'lead', chat: { title: 'T' }, team: RE_TEAM, live: RE_TEAM.members, status: {}, extra });
+  const p = turnPrompt({ agent: 'anthropic', role: 'lead', messages: [{ id: '1', who: 'owner', text: 'look at it' }], briefText: b, resumed: true });
+  assert.match(p, /How you lead: .*first work out what the task needs, then split it/);
+  assert.match(p, /Teammates with the REA tools: ChatGPT, Gemini/);
+  assert.doesNotMatch(turnPrompt({ agent: 'openai', role: 'member', messages: [], briefText: b, resumed: true }), /How you lead/);
+});

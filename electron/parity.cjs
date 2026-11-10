@@ -84,7 +84,7 @@ function register(d) {
     return { ...out, first: reverse.firstMessage(out.project) };
   });
   handle('reverse:removeProject', (id) => reverse.removeProject(String(id)));
-  handle('reverse:first', (id) => { const p = reverse.projectFor(String(id)); return p ? { ok: true, first: reverse.firstMessage(p) } : { ok: false }; });
+  handle('reverse:first', (id) => { const p = reverse.projectFor(String(id)); return p ? { ok: true, first: reverse.firstMessage(p), project: { name: p.name, kind: p.kind, path: p.path }, on: Boolean(reverse.serverFor(String(id))) } : { ok: false }; });
   const habitat = createJsonFile(path.join(dataDir(), 'habitat.json'), { empty: () => null, check: (j) => typeof j === 'object', label: 'Your Habitat file' });
   const teammates = d.teammates || createTeammates({ secrets, file: path.join(dataDir(), 'servers.json'), settings: readSettings });
   // Hearth devices: the AI his Hearth OS machines share (electron/hearth-devices.cjs).

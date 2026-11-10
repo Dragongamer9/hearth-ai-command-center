@@ -147,6 +147,29 @@ export function transcript(messages = [], { max = 24000, forAgent = null } = {})
   return out.join('\n\n');
 }
 
+// A Reverse Engineering project's chat (electron/reverse.cjs): the team splits the program instead of the lead doing it
+// all alone. Only the AIs that run as their own CLI here (Claude Code, Codex, Gemini CLI) get the REA tools; the others
+// can't open the program but can research, write it up and check conclusions.
+export const REA_AGENTS = ['anthropic', 'openai', 'google'];
+export function reverseBrief({ agent, role, project, on = false, team = { members: [] }, live = [], method = () => 'cli' } = {}) {
+  if (!project) return '';
+  const rea = (a) => on && REA_AGENTS.includes(a) && method(a) !== 'api';
+  const mates = (team.members || []).filter((m) => m !== agent && live.includes(m));
+  const withRea = mates.filter(rea).map(name);
+  const without = mates.filter((m) => !rea(m)).map(name);
+  const L = ['', `REVERSE ENGINEERING PROJECT: ${project.name} (${project.kind}), the file ${project.path}. Only read it: never change, run or patch the file. Every finding comes with its evidence (the address, function, string or bytes).`];
+  L.push(rea(agent) ? '- You have the REA tools in this chat: use them.' : on ? '- You don\'t have the REA tools here (only Claude Code, Codex and Gemini CLI get them), so you can\'t open the program yourself: work from what your teammates found and from public sources, and say which is which.' : '- REA is off (the owner turns it on in Reverse Engineering), so nobody can open the program with it yet.');
+  if (role === 'lead' && mates.length) {
+    L.push(
+      '- You lead a TEAM here, as in any chat: don\'t do it all alone. First take a quick look (what the file is, its main parts), then split it so everyone works at the same time, one @line each: for example one REA teammate per part of the program (the file format and headers, the entry point and main loop, one subsystem such as graphics, sound, saves or networking, the strings and resources).',
+      `- Teammates with the REA tools: ${withRea.length ? withRea.join(', ') : 'none (only you)'}. Give them the parts that need the program itself.`,
+      `- Teammates without them: ${without.length ? without.join(', ') : 'none'}. Give them what needs no program: research on the engine, file formats and what others already found (with sources), writing up the findings, a plan for a port, or checking your conclusions.`,
+      '- When they report, put it together with the evidence and say what is known, what is a guess and what is left.',
+    );
+  } else if (role !== 'lead') L.push('- Do only the part the lead gave you, and report what you found with the evidence.');
+  return L.join('\n');
+}
+
 // Messages since this AI last spoke (for a resumed CLI session that already has the rest). Its quick replies (the lead
 // answering a teammate while the others work) ran in a fresh session that the resumed one never saw, so they don't
 // count as "spoke": what came before and after them is sent too.
@@ -217,7 +240,11 @@ export function readMessage(messages = [], id, { from = 0, forAgent = null, size
 export function turnPrompt({ agent, role, messages, briefText, resumed, task = '' }) {
   if (resumed) {
     const fresh = since(messages, agent);
-    return `${transcript(fresh, { forAgent: agent })}\n\n${task || `Answer as ${name(agent)}.`}\n\n(Reminder: ${briefText.split('\n').filter((l) => /never|OFF|quick checks|HARD LIMITS/i.test(l)).slice(0, 7).join(' ')})`;
+    // A lead's team lines go every time: a session started before team work (or before this chat became a Reverse
+    // Engineering project) never got them, and then the lead did everything alone.
+    const lines = briefText.split('\n');
+    const lead = role === 'lead' ? lines.filter((l) => /^- (You lead|Everyone you name works|Teammates with)/.test(l)) : [];
+    return `${transcript(fresh, { forAgent: agent })}\n\n${task || `Answer as ${name(agent)}.`}\n\n(Reminder: ${lines.filter((l) => /never|OFF|quick checks|HARD LIMITS/i.test(l)).slice(0, 7).join(' ')})${lead.length ? `\n\n(How you lead: ${lead.join(' ')})` : ''}`;
   }
   return `${briefText}\n\nTHE CHAT SO FAR:\n${transcript(messages, { forAgent: agent })}\n\n${task || `Now answer as ${name(agent)}${role === 'lead' ? ' (lead)' : ''}.`}`;
 }
