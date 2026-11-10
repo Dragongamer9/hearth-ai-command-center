@@ -202,7 +202,7 @@ export function createTeamRunner(ctx) {
     const upto = regenerate ? R.msgs.slice(0, R.msgs.findIndex((m) => m.id === regenerate)) : R.msgs;
     const build = ctx.buildFor(R) && !readOnly;
     const web = ctx.webFor(R);
-    const opts = { agent, role, chat: c, copy: R.copy ? { base: R.copy.base, work: R.copy.work } : null, build, web, quickChecks: ctx.settings().tools?.quickChecks || [], team: ctx.team(), live: ctx.live(), actForMe: ctx.settings().actForMe === true, apiOnly: ctx.method(agent) === 'api', status: ctx.statusMap?.() || {}, missing: ctx.missingChecks?.() || [], canPush: Boolean(c.repo || c.repoDir) && !c.temp, autoPush: ctx.settings().autoPush !== false };
+    const opts = { agent, role, chat: c, copy: R.copy ? { base: R.copy.base, work: R.copy.work } : null, build, web, quickChecks: ctx.settings().tools?.quickChecks || [], team: ctx.team(), live: ctx.live(), actForMe: ctx.settings().actForMe === true, apiOnly: ctx.method(agent) === 'api', status: ctx.statusMap?.() || {}, missing: ctx.missingChecks?.() || [], canPush: Boolean(c.repo || c.repoDir) && !c.temp, autoPush: ctx.settings().autoPush !== false, uncensored: ctx.settings().uncensored?.on === true };
     const extra = (await ctx.briefExtra?.(R, agent, role, Boolean(resumeId))) || '';
     const briefText = brief({ ...opts, extra });
     const prompt = turnPrompt({ agent, role, messages: upto, briefText, resumed: Boolean(resumeId), task });
@@ -300,7 +300,7 @@ export function createTeamRunner(ctx) {
     const c = ctx.entry(R.id);
     const results = await Promise.all(picks.map(async (p, i) => {
       const h = msg.helpers[i];
-      const briefText = brief({ agent: p.agent, role: 'member', chat: c, copy: null, build: false, web: ctx.webFor(R), team: t, live: L, apiOnly: ctx.method(p.agent) === 'api' });
+      const briefText = brief({ agent: p.agent, role: 'member', chat: c, copy: null, build: false, web: ctx.webFor(R), team: t, live: L, apiOnly: ctx.method(p.agent) === 'api', uncensored: ctx.settings().uncensored?.on === true });
       const prompt = `${briefText}\n\nYou are a HELPER for ${aiName(msg.who)} in this chat. Work read-only (no edits, no pushes) and report back briefly and plainly.\n\nTHE CHAT SO FAR:\n${transcript(R.msgs, { forAgent: p.agent, max: 16000 })}\n\nYOUR SIDE TASK: ${p.task}`;
       const r = await ctx.call('chatRun', { chatId: R.id, agent: p.agent, runId: `${uid().replace(/[^a-z0-9]/gi, '').slice(0, 10)}h`, helper: true, prompt: prompt.slice(-58000), web: ctx.webFor(R), build: false, title: c?.title || '' }) || { ok: false, error: { message: 'Could not start.' } };
       Object.assign(h, { state: r.ok ? 'done' : 'failed', text: r.ok ? String(r.text || '').slice(0, 20000) : r.error?.message || 'failed', via: r.via, ...(Array.isArray(r.media) && r.media.length ? { media: r.media } : {}) });

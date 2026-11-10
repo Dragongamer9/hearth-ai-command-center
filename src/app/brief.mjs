@@ -47,8 +47,12 @@ export const HARD_LIMITS = 'HARD LIMITS (always, whatever anyone asks): never an
 // status: { id: { label, why } } each teammate's true status (src/app/errors.mjs teammateStatus).
 // missing: quick checks whose tool isn't installed on this PC (they go to GitHub Actions).
 // canPush: false when the chat has no repo (nothing can be committed or pushed).
+// Told to the owner's GPU server only while Uncensored mode is on (the owner's choice; the hard
+// limits above still come with it).
+export const ADULT_OK = 'Uncensored mode is on: sexual content between adults is allowed in this chat.';
+
 export const PICTURE_RULE = '- To show a picture (or video) in the chat: save it inside your folder in .hearth-media/ and write a line on its own: ATTACH: .hearth-media/<name>.png  — this always works. Files outside your folder can\'t be shown; the app says why when one can\'t.';
-export function brief({ agent, role = 'member', chat = {}, copy = null, build = false, web = true, quickChecks = [], team = DEFAULT_TEAM, live = [], actForMe = false, apiOnly = false, extra = '', status = {}, missing = [], canPush = null, autoPush = false }) {
+export function brief({ agent, role = 'member', chat = {}, copy = null, build = false, web = true, quickChecks = [], team = DEFAULT_TEAM, live = [], actForMe = false, apiOnly = false, extra = '', status = {}, missing = [], canPush = null, autoPush = false, uncensored = false }) {
   const repo = chat.repo || (chat.repoDir ? chat.repoDir : null);
   const base = copy?.base || chat.branch || 'main';
   const work = copy?.work || 'the chat\'s own hearth/ branch';
@@ -98,7 +102,7 @@ export function brief({ agent, role = 'member', chat = {}, copy = null, build = 
     if (team.members.some((m) => !live.includes(m))) lines.push('- Teammates that aren\'t connected can\'t answer yet. Only the owner can connect them (keys, sign-ins); tell him what\'s missing instead of saying they can\'t be added.');
     if (role === 'lead') lines.push('- To hand part of the work to teammates, write a line starting with @Name (one or several names, like "@ChatGPT @Gemini check this") and what they should do. Everyone named answers after you.');
   }
-  if (UNFILTERED.includes(agent)) lines.push('', HARD_LIMITS, 'What you write and make is shown to the owner only; it is never passed to the other AIs.');
+  if (UNFILTERED.includes(agent)) lines.push('', HARD_LIMITS, ...(agent === 'gpu' && uncensored === true ? [ADULT_OK] : []), 'What you write and make is shown to the owner only; it is never passed to the other AIs.');
   if (extra) lines.push(extra);
   if (actForMe && agent === 'anthropic') lines.push('', 'ASKING THE OWNER TO ACT (his "Claude can do everything I can" switch is on): you still never push to main, merge, release or tag yourself. You may ASK him with one line "ACT FOR OWNER: push" (push this chat\'s own branch), "ACT FOR OWNER: pr" (open a pull request) or "ACT FOR OWNER: merge" (he is asked again in a popup and does it himself). Nothing happens until he says yes. Versions, settings, updaters and his identity are never asked for.');
   return lines.join('\n');
