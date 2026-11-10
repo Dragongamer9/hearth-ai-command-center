@@ -1059,7 +1059,7 @@ function render(scroll = false) {
 function chatStatus(id) {
   const R = runner.runtimes.get(id);
   if (!R) return '';
-  if (R.round) return (R.working || []).length > 1 ? workStack(R, 18) : `<span class="st" title="The team is working in this chat"><span class="spin"></span>replying…</span>`;
+  if (R.round) return `<span class="st" title="The team is working in this chat"><span class="spin"></span>replying…</span>${(R.working || []).length > 1 ? workStack(R, 18) : ''}`;
   if (R.waiting) return `<span class="st" title="Over your limit of chats working at once: it waits its turn">waiting…</span>`;
   if (R.unseen) return '<span class="dot" title="New results you haven\'t seen"></span>';
   return null;
@@ -1078,7 +1078,7 @@ function renderSide() {
       ${c.rp ? avatarHtml(cardById(c.rp.characters[0]), 'xs') : icon(c.pinned ? 'pin' : 'chat', 'sm')}<span class="t">${esc(c.title)}</span>
       ${st || (pend ? '<span class="dot"></span>' : repoHint(c) ? `<span class="repo">${esc(repoHint(c))}</span>` : '')}
       <button class="more" data-a="chat-menu" data-id="${esc(c.id)}" title="More" aria-label="More for ${esc(c.title)}">${icon('dots', 'sm')}</button>
-    </div>`;
+    </div>${sideWork(R)}`;
   };
   const working = runner.busyIds().length;
   const html = `
@@ -1250,6 +1250,20 @@ async function livePick(id) {
   return readAloud(m);
 }
 // The AIs working in a chat right now, stacked on top of each other; each one leaves the stack when it's done.
+// Everyone working in a chat right now, for the left side: the teammates (each in its own copy), the lead's side
+// helpers, and the helpers an AI started itself (Claude's own). Each row goes when that one is done.
+function sideWork(R) {
+  if (!R?.round) return '';
+  const rows = [];
+  for (const b of (R.working?.length ? R.working : R.busy ? [R.busy] : [])) {
+    const step = (b.steps || []).filter((x) => x.kind !== 'task').slice(-1)[0];
+    rows.push(`<div class="sw-row">${S.settings.design !== 'classic' ? miniCore(b.agent, aiName(b.agent), 16, 'working') : mono(b.agent, 'sm')}<b>${esc(aiName(b.agent))}</b><span>${esc(b.role === 'lead' ? 'leading' : step?.label || (b.lane ? 'working in its own copy' : 'working'))}</span></div>`);
+    const own = (b.steps || []).filter((x) => x.kind === 'task').length;
+    if (own) rows.push(`<div class="sw-row sub"><span class="sw-dot"></span><span>${esc(aiName(b.agent))}'s own helper${own === 1 ? '' : 's'}: ${own}</span></div>`);
+  }
+  for (const m of R.msgs.slice(-6)) for (const h of (m.helpers || []).filter((x) => x.state === 'working')) rows.push(`<div class="sw-row sub">${mono(h.agent, 'sm')}<b>${esc(aiName(h.agent))}</b><span>helping ${esc(aiName(m.who))}: ${esc(String(h.task || '').slice(0, 40))}</span></div>`);
+  return rows.length ? `<div class="sidework" aria-label="Working now">${rows.join('')}</div>` : '';
+}
 function workStack(R, size = 26) {
   const list = [...new Map((R?.working?.length ? R.working : R?.busy ? [R.busy] : []).map((b) => [b.agent, b])).values()];
   if (!list.length) return '';
