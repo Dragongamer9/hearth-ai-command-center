@@ -124,6 +124,8 @@ function normalSettings(s) {
     // Lead handles GitHub (pull, combine, push branches). Off until the owner turns it on.
     leadGitHub: s.leadGitHub === true,
     theme: THEMES.includes(s.theme) ? s.theme : 'hearth',
+    // 2.9: the gold hologram design unless the owner picks Classic.
+    design: s.design === 'classic' ? 'classic' : 'hologram',
     textSize: TEXT_SIZES.includes(s.textSize) ? s.textSize : 100,
     // Habitat page: characters stay in place. Off unless the owner turns it on (the OS setting also counts).
     reduceMotion: s.reduceMotion === true,
@@ -493,6 +495,7 @@ function registerIpc() {
     if ('leadActions' in patch) s.leadActions = patch.leadActions === true;
     if ('leadGitHub' in patch) s.leadGitHub = patch.leadGitHub === true;
     if ('theme' in patch && THEMES.includes(patch.theme)) s.theme = patch.theme;
+    if ('design' in patch && ['hologram', 'classic'].includes(patch.design)) s.design = patch.design;
     if ('textSize' in patch) {
       if (!TEXT_SIZES.includes(patch.textSize)) throw new Error('Invalid text size');
       s.textSize = patch.textSize;
