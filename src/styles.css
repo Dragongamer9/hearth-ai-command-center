@@ -777,7 +777,7 @@ table.perms tr.off td { color: var(--faint); }
 :root[data-design="hologram"] .composer,
 :root[data-design="hologram"] .pop,
 :root[data-design="hologram"] .modal {
-  position: relative; background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+  background-color: var(--panel); border-color: var(--line);
   background-image: linear-gradient(var(--accent), var(--accent)), linear-gradient(var(--accent), var(--accent)), linear-gradient(var(--accent), var(--accent)), linear-gradient(var(--accent), var(--accent));
   background-size: 14px 2px, 2px 14px, 14px 2px, 2px 14px;
   background-position: 0 0, 0 0, 100% 100%, 100% 100%;
