@@ -285,6 +285,7 @@ contextBridge.exposeInMainWorld('hearth', {
   gitRelease: (opts) => ipcRenderer.invoke('git:release', opts),
   agentOpenSignin: (agent) => ipcRenderer.invoke('agents:openSignin', agent),
   openWeb: (provider) => ipcRenderer.invoke('web:open', provider),
+  bridgeShow: (id) => ipcRenderer.invoke('bridge:show', id),
   openExport: (provider) => ipcRenderer.invoke('web:openExport', provider),
 
   historyScan: () => ipcRenderer.invoke('history:scan'),
