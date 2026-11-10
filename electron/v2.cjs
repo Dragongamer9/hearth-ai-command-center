@@ -205,7 +205,7 @@ function register(d) {
       if (apiOnly) {
         r = await callApi(agent, o.model ? validateModel(o.model) : undefined, prompt, controller.signal);
       } else {
-        try { mcp = d.mcpForRun ? d.mcpForRun(path.join(dataDir(), 'run')) : null; } catch { mcp = null; }
+        try { mcp = d.mcpForRun ? d.mcpForRun(path.join(dataDir(), 'run'), e.id) : null; } catch { mcp = null; }
         const base = {
           agent, cwd, mode,
           model: o.model ? validateModel(o.model) : undefined,

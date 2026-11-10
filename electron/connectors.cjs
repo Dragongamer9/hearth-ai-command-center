@@ -53,8 +53,12 @@ function createConnectors({ file, secrets }) {
     return { ok: true };
   }
   // For one run: config files with ${VAR} references, plus the env holding the values.
-  function forRun(runDir) {
-    const servers = f.read().servers.filter((s) => s.enabled);
+  // extra: built-in servers for this run only (e.g. REA for a Reverse Engineering chat), with
+  // plainEnv values that aren't secrets (a folder path); never saved in connectors.json.
+  function forRun(runDir, extra = []) {
+    const own = f.read().servers.filter((s) => s.enabled);
+    const add = (Array.isArray(extra) ? extra : []).filter((x) => x && NAME_RE.test(x.name) && !own.some((s) => s.name === x.name));
+    const servers = [...own, ...add.map((x) => ({ id: `x${x.name}`, name: x.name, type: 'stdio', command: x.command, args: x.args, envKeys: [], headerKeys: [], plainEnv: x.plainEnv || {} }))];
     if (!servers.length) return null;
     const env = {};
     const codexEnv = {};
@@ -67,11 +71,13 @@ function createConnectors({ file, secrets }) {
       const h = {};
       for (const k of s.envKeys) { const v = secrets.get(secretName(s.id, 'env', k)); if (v == null) continue; const n = envVar(s.id, 'env', k); env[n] = v; codexEnv[k] = v; e[k] = n; }
       for (const k of s.headerKeys) { const v = secrets.get(secretName(s.id, 'header', k)); if (v == null) continue; const n = envVar(s.id, 'header', k); env[n] = v; h[k] = n; }
+      for (const [k, v] of Object.entries(s.plainEnv || {})) { if (!KEY_RE.test(k)) continue; const n = envVar(s.id, 'env', k); env[n] = String(v); codexEnv[k] = String(v); e[k] = n; }
+      const envNames = [...s.envKeys, ...Object.keys(s.plainEnv || {}).filter((k) => KEY_RE.test(k))];
       if (s.type === 'stdio') {
         claude.mcpServers[s.name] = { type: 'stdio', command: s.command, args: s.args, env: Object.fromEntries(Object.entries(e).map(([k, n]) => [k, `\${${n}}`])) };
         gemini.mcpServers[s.name] = { command: s.command, args: s.args, env: Object.fromEntries(Object.entries(e).map(([k, n]) => [k, `$${n}`])) };
         codexArgs.push('-c', `mcp_servers.${s.name}.command=${toml(s.command)}`, '-c', `mcp_servers.${s.name}.args=${toml(s.args)}`);
-        if (s.envKeys.length) codexArgs.push('-c', `mcp_servers.${s.name}.env_vars=${toml(s.envKeys)}`);
+        if (envNames.length) codexArgs.push('-c', `mcp_servers.${s.name}.env_vars=${toml(envNames)}`);
       } else {
         claude.mcpServers[s.name] = { type: 'http', url: s.url, headers: Object.fromEntries(Object.entries(h).map(([k, n]) => [k, `\${${n}}`])) };
         gemini.mcpServers[s.name] = { httpUrl: s.url, headers: Object.fromEntries(Object.entries(h).map(([k, n]) => [k, `$${n}`])) };

@@ -133,6 +133,24 @@ contextBridge.exposeInMainWorld('hearth', {
   teammatesUpdateServer: (id, patch) => ipcRenderer.invoke('teammates:updateServer', id, patch),
   teammatesListModels: (q) => ipcRenderer.invoke('teammates:listModels', q),
   humanize: (q) => ipcRenderer.invoke('humanize:run', q),
+  desktopStatus: () => ipcRenderer.invoke('desktop:status'),
+  desktopSetEnabled: (on) => ipcRenderer.invoke('desktop:setEnabled', on),
+  desktopAnswer: (id, how) => ipcRenderer.invoke('desktop:answer', id, how),
+  desktopStopWindow: (chat) => ipcRenderer.invoke('desktop:stopWindow', chat),
+  onDesktop: (cb) => {
+    const a = (_e, x) => cb('ask', x);
+    const d = (_e, x) => cb('asked', x);
+    ipcRenderer.on('desktop:ask', a);
+    ipcRenderer.on('desktop:asked', d);
+    return () => { ipcRenderer.removeListener('desktop:ask', a); ipcRenderer.removeListener('desktop:asked', d); };
+  },
+  reverseStatus: () => ipcRenderer.invoke('reverse:status'),
+  reverseSetEnabled: (on) => ipcRenderer.invoke('reverse:setEnabled', on),
+  reversePickGhidra: () => ipcRenderer.invoke('reverse:pickGhidra'),
+  reverseClearGhidra: () => ipcRenderer.invoke('reverse:clearGhidra'),
+  reverseNewProject: () => ipcRenderer.invoke('reverse:newProject'),
+  reverseRemoveProject: (id) => ipcRenderer.invoke('reverse:removeProject', id),
+  reverseFirst: (id) => ipcRenderer.invoke('reverse:first', id),
   cardsList: () => ipcRenderer.invoke('cards:list'),
   cardsImport: (name, data) => ipcRenderer.invoke('cards:import', name, data),
   cardsPick: () => ipcRenderer.invoke('cards:pick'),
