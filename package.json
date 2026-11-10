@@ -24,6 +24,9 @@
       "output": "release",
       "buildResources": "build"
     },
+    "asarUnpack": [
+      "electron/desktop-proxy.cjs"
+    ],
     "files": [
       "dist/**/*",
       "electron/**/*",

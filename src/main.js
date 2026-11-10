@@ -1549,9 +1549,15 @@ function renderOverlay() {
   if (S.pop) html += popHtml();
   if (S.modal) html += modalHtml();
   if (voice.isOpen()) html += voice.viewHtml();
+  if (S.deskAsks?.length) html += deskAsksHtml();
   if (S.toast) html += `<div class="toast">${esc(S.toast.text)}${S.toast.undo ? `<button class="mini" data-a="undo">${icon('undo', 'sm')}Undo</button>` : ''}</div>`;
   setRegion('overlay', html);
   if (S.pop?.kind === 'repo') { const el = document.getElementById('repo-q'); if (el && document.activeElement !== el && !S.pop.noFocus) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } }
+}
+
+// Agent Desktop asking to act (electron/desktop.cjs): one card per ask, newest on top.
+function deskAsksHtml() {
+  return `<div class="desk-asks" role="alertdialog" aria-label="Your AI wants to use this desktop">${S.deskAsks.slice().reverse().map((a) => `<div class="box desk-ask"><b>${icon('cpu', 'sm')}${esc(entry(a.chat)?.title ? `In “${entry(a.chat).title}”` : 'Your AI')} wants to <span class="mono">${esc(a.tool)}</span>${a.detail ? `: “${esc(a.detail)}”` : ''}</b><div class="fine mono">${esc(a.args)}</div><div class="srow"><button class="btn p" data-a="desk-ans" data-id="${esc(a.id)}" data-v="once">Allow</button><button class="btn" data-a="desk-ans" data-id="${esc(a.id)}" data-v="ten">Allow for 10 minutes in this chat</button><button class="btn ghost" data-a="desk-ans" data-id="${esc(a.id)}" data-v="no">Don't allow</button></div></div>`).join('')}</div>`;
 }
 
 function popHtml() {
@@ -1824,7 +1830,11 @@ function section(k) {
   }
   if (k === 'connectors') {
     const cn = S.connectors;
-    return `<h1>Connectors</h1><div class="box"><h3>${icon('cpu', 'sm')}Connectors (MCP servers)</h3><p class="fine">Tools the AIs can use, like in the Claude app. Passed to Claude Code (--mcp-config), Codex (its mcp_servers setting) and the Gemini CLI (its settings file) for every run. Secrets (tokens, keys) go only into the encrypted store; the files the AI apps read hold references, never the values.</p>
+    const dk = S.desktop || {};
+    const desk = `<div class="box"><h3>${icon('cpu', 'sm')}Let your AI use this desktop</h3><p class="fine">Claude Code, Codex and Gemini can look at your open apps and work them for you with Agent Desktop (github.com/vercel-labs/agent-desktop, Apache-2.0), through each app's accessibility. <b>Every action asks you first</b>: a card shows what it wants to click, type, press, open or close, and nothing happens until you press Allow. Looking (reading what's on screen in an app) doesn't ask. No answer in 2 minutes is a no. On Hearth's desktop it clicks and types through the apps themselves; moving the mouse and pressing keys for it needs a later Hearth update.</p>
+      ${dk.broken ? '<div class="note bad">Your desktop control file couldn\'t be read. It was left as it is; this switch can\'t be saved until it\'s fixed.</div>' : ''}
+      <div class="srow"><b>Agent Desktop</b><span class="d">${dk.enabled ? 'On: your AIs can ask to use this desktop' : 'Off'}</span><span class="grow"></span>${tog(dk.enabled === true, 'desk-toggle', '')}</div></div>`;
+    return `<h1>Connectors</h1>${desk}<div class="box"><h3>${icon('cpu', 'sm')}Connectors (MCP servers)</h3><p class="fine">Tools the AIs can use, like in the Claude app. Passed to Claude Code (--mcp-config), Codex (its mcp_servers setting) and the Gemini CLI (its settings file) for every run. Secrets (tokens, keys) go only into the encrypted store; the files the AI apps read hold references, never the values.</p>
       ${cn?.broken ? `<div class="note bad">${esc(cn.broken)}</div>` : ''}
       ${(cn?.list || []).map((x) => `<div class="srow">${icon('cpu', 'sm')}<b>${esc(x.name)}</b><span class="d mono">${esc(x.type === 'http' ? x.url : `${x.command} ${(x.args || []).join(' ')}`)}${x.secrets?.length ? ` · ${x.secrets.map((q) => `${esc(q.key)} ${q.saved ? '✓' : '✗'}`).join(', ')}` : ''}</span><span class="grow"></span>${tog(x.enabled, 'conn-toggle', `data-id="${esc(x.id)}"`)}<button class="mini" data-a="conn-del" data-id="${esc(x.id)}">Remove</button></div>`).join('') || (cn ? '<div class="fine">No connectors yet.</div>' : '<div class="fine">Loading…</div>')}</div>
       <div class="box"><h3>Add a connector</h3>
@@ -1949,7 +1959,7 @@ async function loadSection(t) {
   if (t === 'github') loadRepos();
   if (t === 'memory') S.memory = await call('memoryList');
   if (t === 'scheduled') S.schedules = await call('scheduleList');
-  if (t === 'connectors') S.connectors = await call('connectorsList');
+  if (t === 'connectors') { S.connectors = await call('connectorsList'); S.desktop = await call('desktopStatus'); }
   if (t === 'tools') { S.skills = (await call('skillsList', S.lastChat)) || []; }
   render();
 }
@@ -2460,6 +2470,7 @@ document.addEventListener('click', async (ev) => {
     case 'temp-end': ev.stopPropagation(); return endTemp(d.id);
     case 'studio': return openStudio();
     case 'reverse': return openReverse();
+    case 'desk-ans': { await call('desktopAnswer', d.id, d.v); S.deskAsks = (S.deskAsks || []).filter((a) => a.id !== d.id); return renderOverlay(); }
     case 're-onoff': { const r = await call('reverseSetEnabled', d.v === '1'); if (r?.ok === false || r?.message) toast(r.message || 'Not saved.'); return openReverse(); }
     case 're-ghidra': { const r = await call('reversePickGhidra'); if (r && !r.canceled && (r.ok === false || r.message)) toast(r.message || 'Not saved.'); return openReverse(); }
     case 're-ghidra-clear': await call('reverseClearGhidra'); return openReverse();
@@ -2734,6 +2745,7 @@ document.addEventListener('click', async (ev) => {
     case 'sched-toggle': { const x = S.schedules?.list?.find((y) => y.id === d.id); if (x) await call('scheduleUpdate', d.id, { enabled: !x.enabled }); S.schedules = await call('scheduleList'); return render(); }
     case 'sched-del': await call('scheduleRemove', d.id); S.schedules = await call('scheduleList'); return render();
     case 'conn-add': { const v = (id) => document.getElementById(id)?.value || ''; const type = v('cn-type'); const pairs = Object.fromEntries(v('cn-secrets').split('\n').map((l) => l.trim()).filter((l) => l.includes('=')).map((l) => [l.slice(0, l.indexOf('=')).trim(), l.slice(l.indexOf('=') + 1).trim()])); const words = v('cn-command').trim().split(/\s+/).filter(Boolean); const r = await call('connectorsAdd', { name: v('cn-name').trim(), type, command: words[0] || '', args: words.slice(1), url: v('cn-url').trim(), ...(type === 'http' ? { headers: pairs } : { env: pairs }) }); if (r?.ok === false || r?.message) toast(r.message || 'Not added.'); else toast(`Added ${r.name}. The AIs can use it from the next message.`); S.connectors = await call('connectorsList'); return render(); }
+    case 'desk-toggle': { const r = await call('desktopSetEnabled', !(S.desktop?.enabled === true)); if (r?.ok === false || r?.message) toast(r.message || 'Not saved.'); S.desktop = await call('desktopStatus'); return render(); }
     case 'conn-toggle': { const x = S.connectors?.list?.find((y) => y.id === d.id); if (x) await call('connectorsEnable', d.id, !x.enabled); S.connectors = await call('connectorsList'); return render(); }
     case 'conn-del': await call('connectorsRemove', d.id); S.connectors = await call('connectorsList'); return render();
     case 'phone-toggle': S.phone = await call(S.phone?.enabled ? 'opsPhoneDisable' : 'opsPhoneEnable'); render(); pushPhone(); return;
@@ -3050,6 +3062,11 @@ async function boot() {
     api.onMediaProgress?.((p) => showCopy(p));
     api.onSceneProgress?.((p) => onSceneProgress(p));
     api.onStudio?.((type, a) => onStudio(type, a));
+    api.onDesktop?.((type, a) => {
+      if (type === 'ask') { S.deskAsks = [...(S.deskAsks || []).filter((x) => x.id !== a.id), a]; try { new Notification('Your AI wants to use this desktop', { body: `${a.tool}${a.detail ? `: ${a.detail}` : ''}` }); } catch {} }
+      if (type === 'asked') S.deskAsks = (S.deskAsks || []).filter((x) => x.id !== a.id);
+      renderOverlay();
+    });
     api.onCardsFound?.(async (r) => {
       S.found = [{ ...(r || {}), key: uid() }, ...(S.found || [])].slice(0, 6);
       toast(r?.ok && r.card ? `Imported ${r.card.name}.` : r?.ok && r.lorebook ? `Imported the lorebook ${r.lorebook.name}.` : r?.message || 'Not imported.');

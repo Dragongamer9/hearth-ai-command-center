@@ -61,6 +61,14 @@ function register(d) {
   const connectors = createConnectors({ file: path.join(dataDir(), 'connectors.json'), secrets });
   // Reverse Engineering (electron/reverse.cjs): REA only for chats started from that section.
   const reverse = require('./reverse.cjs').createReverse({ file: path.join(dataDir(), 'reverse.json'), chats });
+  // "Let your AI use this desktop" (electron/desktop.cjs): every action asks the owner first.
+  const desktopLib = require('./desktop.cjs');
+  const desktop = desktopLib.createDesktop({ file: path.join(dataDir(), 'desktop.json'), send, hasWindow: () => Boolean(getWindow()), proxyPath: desktopLib.proxyFile() });
+  desktop.start().catch(() => {});
+  handle('desktop:status', () => ({ enabled: desktop.enabled(), broken: Boolean(desktop.broken()), asks: desktop.asks() }));
+  handle('desktop:setEnabled', (on) => desktop.setEnabled(on === true));
+  handle('desktop:answer', (id, how) => desktop.answer(String(id), ['once', 'ten', 'no'].includes(how) ? how : 'no'));
+  handle('desktop:stopWindow', (chat) => desktop.stopWindow(chat));
   handle('reverse:status', () => reverse.status());
   handle('reverse:setEnabled', (on) => reverse.setEnabled(on === true));
   handle('reverse:pickGhidra', async () => {
@@ -640,7 +648,7 @@ function register(d) {
   // CosyVoice2 voice clips (his, with consent) live in voice-clips/<server id>/, never in settings.
   const voice = voiceChat.register({ handle, secrets, readSettings, send, which: makers.which, media, mediaRoot: root, dialog, getWindow, clipsDir: path.join(dataDir(), 'voice-clips'), hearth });
 
-  return { studio, memory, scheduler, connectors, teammates, hearth, makeScene, cards, rpGuard, docText, mcpForRun: (dir, chatId) => connectors.forRun(dir, [reverse.serverFor(chatId)].filter(Boolean)), stop() { scheduler.stop(); makers.stopSpeaking(); voice.stop(); } };
+  return { studio, memory, scheduler, connectors, teammates, hearth, makeScene, cards, rpGuard, docText, mcpForRun: (dir, chatId) => connectors.forRun(dir, [reverse.serverFor(chatId), desktop.serverFor(chatId)].filter(Boolean)), stop() { desktop.stop(); scheduler.stop(); makers.stopSpeaking(); voice.stop(); } };
 }
 
 module.exports = { register, transcriptOf, shieldLine, KEY_NAMES, UNFILTERED };

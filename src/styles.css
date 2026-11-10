@@ -716,3 +716,8 @@ table.perms tr.off td { color: var(--faint); }
 .lnk:disabled { color: var(--faint); cursor: not-allowed; }
 .lnk.dim { color: var(--faint); }
 .unc-list { margin: 6px 0 4px 18px; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+
+/* Agent Desktop asking to act: cards above everything, bottom right. */
+.desk-asks { position: fixed; right: 18px; bottom: 18px; z-index: 60; display: flex; flex-direction: column; gap: 10px; width: min(460px, calc(100vw - 36px)); max-height: 70vh; overflow: auto; }
+.desk-ask { margin: 0; box-shadow: 0 10px 30px rgba(0, 0, 0, .35); border-color: var(--warn); }
+.desk-ask .fine { word-break: break-all; margin: 6px 0; }

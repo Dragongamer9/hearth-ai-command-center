@@ -97,7 +97,7 @@ test('connectors: the extra server goes into this run\'s configs only, never int
 
 test('wiring: the run passes its chat; the window has the section', () => {
   assert.match(read('electron/v2.cjs'), /d\.mcpForRun\(path\.join\(dataDir\(\), 'run'\), e\.id\)/);
-  assert.match(read('electron/parity.cjs'), /mcpForRun: \(dir, chatId\) => connectors\.forRun\(dir, \[reverse\.serverFor\(chatId\)\]\.filter\(Boolean\)\)/);
+  assert.match(read('electron/parity.cjs'), /mcpForRun: \(dir, chatId\) => connectors\.forRun\(dir, \[reverse\.serverFor\(chatId\), desktop\.serverFor\(chatId\)\]\.filter\(Boolean\)\)/);
   const ui = read('src/main.js');
   assert.match(ui, /data-a="reverse"[^>]*>\$\{icon\('code', 'sm'\)\}Reverse Engineering/);
   assert.match(ui, /data-a="re-new"/);
