@@ -19,7 +19,7 @@ import { SAFE_MEDIA, GALLERY_MIN, thumbUrl, shownUrl, tooBigCard, previewTooBig,
 import { esc } from './app/text.mjs';
 import { rich, sourcesOf, plainText, hostOf } from './app/rich.mjs';
 import { parseDiff } from './app/diff.mjs';
-import { teamOf, mentionsIn, name as aiName } from './app/brief.mjs';
+import { teamOf, mentionsIn, name as aiName, reverseBrief } from './app/brief.mjs';
 import { expired, typedAnswer, ACT_KINDS } from './app/act.mjs';
 import { pickMaker, toolsBrief } from './app/tools.mjs';
 import { createTeamRunner } from './app/team-run.mjs';
@@ -491,8 +491,10 @@ async function stopRun(R = cur()) {
 
 // What every AI also gets: memory, the owner's custom instructions, this chat's own
 // instructions and files, the Habitat, the app lines, and the mode of this round.
-function briefExtra(R, agent, role, resumed) {
+async function briefExtra(R, agent, role, resumed) {
   const c = entry(R.id) || {};
+  // A Reverse Engineering project's chat: the team splits the program (src/app/brief.mjs reverseBrief).
+  const re = c.repo || c.repoDir || c.rp ? null : await call('reverseFirst', R.id).catch(() => null);
   const ci = S.settings.customInstructions || {};
   const L = [];
   if (S.memPrompt && !c.temp) L.push('', S.memPrompt);
@@ -511,6 +513,7 @@ function briefExtra(R, agent, role, resumed) {
     const p = previewOf(R.canvas.msgId, R.canvas.pid, R);
     if (p) L.push('', `THE CANVAS (the document open next to the chat, exactly as the owner left it; name ${p.name}):\n\`\`\`\n${String(p.content).slice(0, 30000)}\n\`\`\`\nTo change it, reply with the whole new version in one fenced block whose first line is \`\`\`${p.kind === 'markdown' ? 'markdown' : p.kind === 'svg' ? 'svg' : 'html'} preview ${p.name}`);
   }
+  if (re?.ok && re.project) L.push(reverseBrief({ agent, role, project: re.project, on: re.on === true, team: team(), live: live(), method }));
   const hab = habitatPrompt(agent, resumed);
   if (hab) L.push('', hab);
   return L.join('\n');

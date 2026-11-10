@@ -112,7 +112,7 @@ export function brief({ agent, role = 'member', chat = {}, copy = null, build = 
 }
 
 const who = (m) => (m.who === 'owner' ? 'Owner' : m.who === 'system' ? 'App' : name(m.who));
-function messageText(m) {
+export function messageText(m) {
   const files = (m.attachments || []).map((a) => `[attached ${a.kind === 'file' ? 'file' : a.kind} ${a.name}: ${a.path}]${a.text ? `\n--- ${a.name} ---\n${String(a.text).slice(0, 60000)}\n--- end of ${a.name} ---` : ''}`);
   const made = (m.media || []).map((x) => `[${x.kind === 'file' ? 'file' : x.kind} made in this chat: ${x.name}]`);
   const tool = m.toolResult ? [`[app result]\n${String(m.toolResult).slice(0, 20000)}`] : [];
@@ -147,17 +147,104 @@ export function transcript(messages = [], { max = 24000, forAgent = null } = {})
   return out.join('\n\n');
 }
 
-// Messages since this AI last spoke (for a resumed CLI session that already has the rest).
+// A Reverse Engineering project's chat (electron/reverse.cjs): the team splits the program instead of the lead doing it
+// all alone. Only the AIs that run as their own CLI here (Claude Code, Codex, Gemini CLI) get the REA tools; the others
+// can't open the program but can research, write it up and check conclusions.
+export const REA_AGENTS = ['anthropic', 'openai', 'google'];
+export function reverseBrief({ agent, role, project, on = false, team = { members: [] }, live = [], method = () => 'cli' } = {}) {
+  if (!project) return '';
+  const rea = (a) => on && REA_AGENTS.includes(a) && method(a) !== 'api';
+  const mates = (team.members || []).filter((m) => m !== agent && live.includes(m));
+  const withRea = mates.filter(rea).map(name);
+  const without = mates.filter((m) => !rea(m)).map(name);
+  const L = ['', `REVERSE ENGINEERING PROJECT: ${project.name} (${project.kind}), the file ${project.path}. Only read it: never change, run or patch the file. Every finding comes with its evidence (the address, function, string or bytes).`];
+  L.push(rea(agent) ? '- You have the REA tools in this chat: use them.' : on ? '- You don\'t have the REA tools here (only Claude Code, Codex and Gemini CLI get them), so you can\'t open the program yourself: work from what your teammates found and from public sources, and say which is which.' : '- REA is off (the owner turns it on in Reverse Engineering), so nobody can open the program with it yet.');
+  if (role === 'lead' && mates.length) {
+    L.push(
+      '- You lead a TEAM here, as in any chat: don\'t do it all alone. First take a quick look (what the file is, its main parts), then split it so everyone works at the same time, one @line each: for example one REA teammate per part of the program (the file format and headers, the entry point and main loop, one subsystem such as graphics, sound, saves or networking, the strings and resources).',
+      `- Teammates with the REA tools: ${withRea.length ? withRea.join(', ') : 'none (only you)'}. Give them the parts that need the program itself.`,
+      `- Teammates without them: ${without.length ? without.join(', ') : 'none'}. Give them what needs no program: research on the engine, file formats and what others already found (with sources), writing up the findings, a plan for a port, or checking your conclusions.`,
+      '- When they report, put it together with the evidence and say what is known, what is a guess and what is left.',
+    );
+  } else if (role !== 'lead') L.push('- Do only the part the lead gave you, and report what you found with the evidence.');
+  return L.join('\n');
+}
+
+// Messages since this AI last spoke (for a resumed CLI session that already has the rest). Its quick replies (the lead
+// answering a teammate while the others work) ran in a fresh session that the resumed one never saw, so they don't
+// count as "spoke": what came before and after them is sent too.
 export function since(messages = [], agent) {
   let i = messages.length - 1;
-  while (i >= 0 && messages[i].who !== agent) i--;
+  while (i >= 0 && (messages[i].who !== agent || messages[i].quick)) i--;
   return messages.slice(i + 1);
+}
+
+// What teammates sent back, for the lead, labelled by name and whole: their answers, errors and refusals, the files
+// they changed and anything they made. It goes into the lead's prompt itself (not "see the chat above", which a resumed
+// session never had). Only when it can't all fit is a reply cut, and then it says so and how to read the rest
+// (READ MESSAGE, see tools.mjs). An uncensored teammate's content still never reaches the other AIs (HARD rule): the
+// lead is told that it answered, not what it said.
+export const REPORT_ROOM = 24000;
+export function teamReports(messages = [], agents = [], { forAgent = null, room = REPORT_ROOM } = {}) {
+  const blocks = agents.map((a) => {
+    const n = name(a);
+    const list = messages.filter((m) => m.who === a && !m.deleted && !m.temp && !m.local);
+    const parts = list.map((m) => {
+      if (forAgent && !UNFILTERED.includes(forAgent) && UNFILTERED.includes(a)) {
+        return { m, text: `[${n} ${m.err ? 'ended with an error' : 'answered'}. What it wrote${(m.media || []).length ? ' and made' : ''} is shown to the owner only: the app never passes an uncensored teammate's content to the other AIs. Ask the owner if you need it.]`, whole: true };
+      }
+      const files = (m.changes?.files || []).map((f) => f.path || f.file || f).filter((x) => typeof x === 'string');
+      const text = [
+        m.err ? `ERROR (${n} did not finish): ${String(m.text || '')}${m.rawError ? `\nDetails: ${String(m.rawError).slice(0, 1500)}` : ''}` : messageText(m),
+        files.length ? `[files ${n} changed in its own copy: ${files.slice(0, 60).join(', ')}${files.length > 60 ? ` and ${files.length - 60} more` : ''}]` : '',
+      ].filter(Boolean).join('\n');
+      return { m, text: text || '(an empty message)' };
+    });
+    return { a, n, parts, size: parts.reduce((s, p) => s + p.text.length, 0) };
+  });
+  // Share the room: short replies are whole; what's left is split between the long ones.
+  const allow = new Map();
+  let left = room;
+  const bySize = [...blocks].sort((x, y) => x.size - y.size);
+  bySize.forEach((b, i) => { const share = Math.floor(left / (bySize.length - i)); const give = Math.min(b.size, Math.max(share, 1500)); allow.set(b.a, give); left = Math.max(0, left - give); });
+  return blocks.map((b) => {
+    if (!b.parts.length) return `=== ${b.n} ===\n(nothing came back from ${b.n}: no answer and no error was posted)\n=== end of ${b.n} ===`;
+    let budget = allow.get(b.a);
+    const out = [];
+    const rest = [];
+    for (const p of b.parts) {
+      if (p.whole || p.text.length <= budget) { out.push(p.text); budget -= Math.min(budget, p.text.length); continue; }
+      const keep = Math.max(0, budget);
+      if (keep > 200) out.push(`${p.text.slice(0, keep)}\n[… cut here: this message is ${p.text.length} characters and only the first ${keep} fit]`);
+      rest.push(`READ MESSAGE: ${p.m.id}${keep > 200 ? ` from ${keep}` : ''}`);
+      budget = 0;
+    }
+    const more = rest.length ? `\n[${b.n}'s reply was too long to include in full. To read the rest before you answer, write ${rest.length > 1 ? 'these lines' : 'this line'} on its own (the app answers at once):\n${rest.join('\n')}\n]` : '';
+    return `=== ${b.n} ===\n${out.join('\n\n')}${more}\n=== end of ${b.n} ===`;
+  }).join('\n\n');
+}
+
+// One message, read in pieces (the answer to READ MESSAGE). Same shield as the transcript.
+export function readMessage(messages = [], id, { from = 0, forAgent = null, size = 20000 } = {}) {
+  const m = messages.find((x) => x.id === id && !x.deleted && !x.temp);
+  if (!m) return `READ MESSAGE ${id}: there's no such message in this chat.`;
+  const shield = shieldFor(m, forAgent);
+  if (shield) return `READ MESSAGE ${id}: ${shield} (the app never passes an uncensored teammate's content to the other AIs).`;
+  const t = `${who(m)}: ${messageText(m)}`;
+  const start = Math.max(0, Math.min(Number(from) || 0, t.length));
+  const piece = t.slice(start, start + size);
+  const end = start + piece.length;
+  return `READ MESSAGE ${id} (characters ${start}–${end} of ${t.length}):\n${piece}${end < t.length ? `\n[continues: READ MESSAGE: ${id} from ${end}]` : '\n[end of the message]'}`;
 }
 
 export function turnPrompt({ agent, role, messages, briefText, resumed, task = '' }) {
   if (resumed) {
     const fresh = since(messages, agent);
-    return `${transcript(fresh, { forAgent: agent })}\n\n${task || `Answer as ${name(agent)}.`}\n\n(Reminder: ${briefText.split('\n').filter((l) => /never|OFF|quick checks|HARD LIMITS/i.test(l)).slice(0, 7).join(' ')})`;
+    // A lead's team lines go every time: a session started before team work (or before this chat became a Reverse
+    // Engineering project) never got them, and then the lead did everything alone.
+    const lines = briefText.split('\n');
+    const lead = role === 'lead' ? lines.filter((l) => /^- (You lead|Everyone you name works|Teammates with)/.test(l)) : [];
+    return `${transcript(fresh, { forAgent: agent })}\n\n${task || `Answer as ${name(agent)}.`}\n\n(Reminder: ${lines.filter((l) => /never|OFF|quick checks|HARD LIMITS/i.test(l)).slice(0, 7).join(' ')})${lead.length ? `\n\n(How you lead: ${lead.join(' ')})` : ''}`;
   }
   return `${briefText}\n\nTHE CHAT SO FAR:\n${transcript(messages, { forAgent: agent })}\n\n${task || `Now answer as ${name(agent)}${role === 'lead' ? ' (lead)' : ''}.`}`;
 }
