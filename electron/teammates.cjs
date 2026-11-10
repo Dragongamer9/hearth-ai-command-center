@@ -23,6 +23,9 @@ const VENICE_MODELS = ['venice-uncensored-1-2', 'venice-uncensored', 'llama-3.3-
 const VENICE_IMAGE_MODELS = ['lustify-sdxl', 'lustify-v7', 'lustify-v8', 'flux-dev-uncensored', 'hidream'];
 const CIVITAI_ENGINES = ['sdcpp', 'comfy', 'flux2', 'qwen'];
 const MODEL_RE = /^[A-Za-z0-9._:\-/]{1,100}$/;
+// A ComfyUI checkpoint file name (may hold spaces); never a path out of its folder.
+const CKPT_NAME_RE = /^[^\0\r\n]{1,200}$/;
+const modelOk = (type, m) => (type === 'comfy' ? CKPT_NAME_RE.test(m) && !m.startsWith('/') && !m.split(/[\\/]/).includes('..') : MODEL_RE.test(m));
 const NAME = { venice: 'Venice', civitai: 'Civitai', gpu: 'your GPU server' };
 
 const fail = (message, kind = 'failed', status = null) => ({ ok: false, error: { kind, message: String(message || 'Something went wrong.').slice(0, 500), status } });
@@ -102,7 +105,9 @@ function createTeammates({ secrets, file, settings = () => ({}), fetchImpl = (..
       if (!s) return fail('Your GPU server is set up for pictures only (ComfyUI).', 'unsupported');
       url = `${s.url}/chat/completions`;
       key = secrets.get(`server.${s.id}`);
-      mdl = model && MODEL_RE.test(model) ? model : s.model || 'default';
+      mdl = model && MODEL_RE.test(model) ? model : s.model || null;
+      // No model saved: use the first one the server has (Ollama refuses "default").
+      if (!mdl) { const l = await serverModels(s, signal); mdl = l.ok && l.models.length ? l.models[0] : 'default'; }
       via = `${s.name} · ${mdl}`;
     } else return fail(`${NAME[agent] || agent} makes pictures only.`, 'unsupported');
     let res;
@@ -225,13 +230,71 @@ function createTeammates({ secrets, file, settings = () => ({}), fetchImpl = (..
     return fail('That teammate can\'t make pictures.', 'unsupported');
   }
 
+  // ---------- the models on a server (picked up automatically, nothing typed) ----------
+  // OpenAI-compatible: GET <url>/models; Ollama without /v1 support: GET <host>/api/tags.
+  // ComfyUI: its checkpoints. Only the server's own host, redirects never followed.
+  async function serverModels(s, signal) {
+    const h = hnet.hostOf(s.url);
+    const key = s.id ? secrets.get(`server.${s.id}`) : s.key || null;
+    const headers = { accept: 'application/json', ...(key ? { authorization: `Bearer ${key}` } : {}) };
+    const o = { allow: (host) => Boolean(h) && host === h, fetchImpl, name: s.name || 'Your GPU server', signal, timeoutMs: 10000, max: 1024 * 1024, init: { headers } };
+    if (s.type === 'comfy') {
+      const l = await comfy.listCheckpoints({ base: s.url, allow: o.allow, headers: key ? { authorization: `Bearer ${key}` } : {}, fetchImpl, name: o.name, signal });
+      return l.ok ? { ok: true, models: l.checkpoints } : l;
+    }
+    const tidy = (arr) => [...new Set(arr.filter((x) => typeof x === 'string' && MODEL_RE.test(x)))].slice(0, 300);
+    const r = await hnet.fetchJson(`${s.url}/models`, o);
+    if (r.ok && Array.isArray(r.json?.data)) { const m = tidy(r.json.data.map((x) => x?.id)); if (m.length) return { ok: true, models: m }; }
+    if (!r.ok && ['unreachable', 'timeout', 'blocked', 'cancelled'].includes(r.kind)) return r;
+    const base = s.url.replace(/\/v1$/, '');
+    const t = await hnet.fetchJson(`${base}/api/tags`, o);
+    if (t.ok && Array.isArray(t.json?.models)) { const m = tidy(t.json.models.map((x) => x?.name || x?.model)); if (m.length) return { ok: true, models: m }; }
+    return hnet.fail(`${o.name} didn't list any models at ${s.url}.${r.ok ? '' : ` (${r.message})`}`, 'no_models');
+  }
+  // For a saved server (by id), or for the Add form before it's saved (its address and key).
+  async function listModels(q = {}) {
+    if (q && typeof q.id === 'string') {
+      const s = list().find((x) => x.id === q.id);
+      if (!s) return hnet.fail('That server isn\'t saved any more.', 'missing');
+      return serverModels(s);
+    }
+    const url = cleanUrl(q?.url);
+    if (!url) return hnet.fail('Type the server address first.', 'bad_url');
+    const k = String(q?.key || '').trim();
+    return serverModels({ url, type: q?.type === 'comfy' ? 'comfy' : 'openai', key: k || null, name: 'That server' });
+  }
+  // The owner's change to one saved server: only the fields he sent change; the id, the
+  // other servers and (unless he types a new one or removes it) the key stay as they are.
+  async function updateServer(id, patch = {}) {
+    const cur = servers.read().servers;
+    const i = cur.findIndex((s) => s.id === id);
+    if (i < 0) throw new Error('That server isn\'t saved any more.');
+    const next = { ...cur[i] };
+    const p = patch && typeof patch === 'object' && !Array.isArray(patch) ? patch : {};
+    if ('name' in p) { const n = String(p.name || '').trim().slice(0, 40); if (!n) throw new Error('Give the server a name.'); next.name = n; }
+    if ('url' in p) { const u = cleanUrl(p.url); if (!u) throw new Error('Type the server address (https://… or http://… for one on your own network).'); next.url = u; }
+    if ('model' in p) {
+      const m = String(p.model || '').trim();
+      if (m && !modelOk(next.type, m)) throw new Error('That model name looks wrong.');
+      if (m) next.model = m; else delete next.model;
+    }
+    const k = String(p.key || '').trim();
+    if (k || p.removeKey === true) {
+      if (k && !(await secrets.available())) throw new Error('This PC has no keyring for encrypted secrets, so the key was not saved.');
+    }
+    servers.write({ version: 1, servers: cur.map((s, j) => (j === i ? next : s)) });
+    if (k) await secrets.set(`server.${id}`, k);
+    else if (p.removeKey === true) secrets.remove(`server.${id}`);
+    return { ...next, key: secrets.has(`server.${id}`) };
+  }
+
   async function addServer(spec = {}) {
     const name = String(spec.name || '').trim().slice(0, 40);
     if (!name) throw new Error('Give the server a name.');
     const type = spec.type === 'comfy' ? 'comfy' : 'openai';
     const url = cleanUrl(spec.url);
     if (!url) throw new Error('Type the server address (https://… or http://… for one on your own network).');
-    if (spec.model && !MODEL_RE.test(String(spec.model))) throw new Error('That model name looks wrong.');
+    if (spec.model && !modelOk(type, String(spec.model))) throw new Error('That model name looks wrong.');
     if (spec.workflow) { try { JSON.parse(String(spec.workflow)); } catch { throw new Error('The workflow isn\'t valid JSON.'); } }
     const cur = servers.read().servers;
     if (cur.length >= 6) throw new Error('Six servers at most.');
@@ -265,7 +328,7 @@ function createTeammates({ secrets, file, settings = () => ({}), fetchImpl = (..
     return { ready: Object.fromEntries(IDS.map((a) => [a, ready(a)])), keys: { venice: secrets.has('venice'), civitai: secrets.has('civitai') }, servers: list().map(({ workflow, ...s }) => ({ ...s, workflow: Boolean(workflow) })), imagesOnly: Object.fromEntries(IDS.map((a) => [a, imagesOnly(a)])), conf: c, models: { venice: VENICE_MODELS, veniceImage: VENICE_IMAGE_MODELS, civitaiEngines: CIVITAI_ENGINES }, broken: servers.broken() };
   }
 
-  return { IDS, ready, hint, imagesOnly, chat, image, addServer, removeServer, setKey, removeKey, status, list };
+  return { IDS, ready, hint, imagesOnly, chat, image, addServer, updateServer, listModels, removeServer, setKey, removeKey, status, list };
 }
 
 module.exports = { createTeammates, fillWorkflow, DEFAULT_WORKFLOW, VENICE, CIVITAI, IDS, VENICE_MODELS, VENICE_IMAGE_MODELS, CIVITAI_ENGINES };

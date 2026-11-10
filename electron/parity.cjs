@@ -349,6 +349,8 @@ function register(d) {
   handle('teammates:removeKey', (agent) => teammates.removeKey(String(agent)));
   handle('teammates:addServer', (spec) => teammates.addServer(spec || {}));
   handle('teammates:removeServer', (id) => teammates.removeServer(String(id)));
+  handle('teammates:updateServer', (id, patch) => teammates.updateServer(String(id), patch || {}));
+  handle('teammates:listModels', (q) => teammates.listModels(q || {}));
 
   // ---- roleplay: character cards, lorebooks, persona (electron/cards.cjs) ----
   const cards = cardsLib.createCards({ dataDir: dataDir() });
