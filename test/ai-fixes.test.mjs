@@ -31,6 +31,8 @@ function harness(fail = {}) {
       if (fn !== 'chatRun') return null;
       calls.push(o.agent);
       if (fail[o.agent]) { const f = fail[o.agent]; delete fail[o.agent]; return { ok: false, error: f }; }
+      // The lead's quick answers to a teammate's report (helper runs) just say thanks here.
+      if (o.helper) return { ok: true, text: 'Thanks, good.', via: 'fake' };
       return { ok: true, text: o.agent === 'anthropic' ? 'On it.\n@ChatGPT @Gemini @Grok @Mistral check one file each' : `answer from ${o.agent}`, via: 'fake' };
     },
     settings: () => S.settings, openId: () => null, entry: (id) => ({ id, title: 'T' }),
@@ -65,7 +67,11 @@ test('the lead hands off to four teammates on one line: all four answer after it
   const R = h.runner.rt('c0000000002');
   R.msgs.push({ id: 'o1', who: 'owner', text: 'check the repo' });
   await h.runner.start(R, 'check the repo');
-  assert.deepEqual(h.calls, ['anthropic', 'openai', 'google', 'xai', 'mistral']);
+  // 2.10: the lead first, then all four at the same time, the lead answering each one that finished (Grok failed),
+  // then the lead's check of everything.
+  assert.equal(h.calls[0], 'anthropic');
+  assert.deepEqual(h.calls.slice(1, 5).sort(), ['google', 'mistral', 'openai', 'xai']);
+  assert.deepEqual(h.calls.slice(5), ['anthropic', 'anthropic', 'anthropic', 'anthropic']);
   const x = R.turnState.list.find((y) => y.agent === 'xai');
   assert.equal(x.state, 'blocked');
   assert.match(x.reason, /allow-list/);

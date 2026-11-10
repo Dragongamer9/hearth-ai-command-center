@@ -160,8 +160,13 @@ function register(d) {
     const prompt = validatePrompt(o.prompt);
     const runId = typeof o.runId === 'string' && /^[A-Za-z0-9]{4,24}$/.test(o.runId) ? o.runId : crypto.randomBytes(5).toString('hex');
     const helper = o.helper === true;
-    const key = helper ? `${e.id}#${runId}` : e.id;
+    // A lane (2.10): a teammate working at the same time as the others, in its own copy of the files.
+    const lane = o.lane === true && !helper;
+    const key = helper ? `${e.id}#${runId}` : lane ? `${e.id}#L${agent}` : e.id;
     if (running.has(key)) return { ok: false, error: { kind: 'busy', message: 'Another AI is still working in this chat.' } };
+    // The chat's own copy is never worked on by a single AI and lanes at once.
+    if (!helper && !lane && [...running.keys()].some((k) => k.startsWith(`${e.id}#L`))) return { ok: false, error: { kind: 'busy', message: 'Teammates are still working in this chat.' } };
+    if (lane && running.has(e.id)) return { ok: false, error: { kind: 'busy', message: 'Another AI is still working in this chat.' } };
     const s = readSettings();
     // Uncensored mode (Settings, electron/studio.cjs): local chat uses the owner's 18+ model, and
     // the hard limits are checked first. Claude, ChatGPT and Gemini are never changed by it.
@@ -187,9 +192,14 @@ function register(d) {
         // Belt and braces: never run in a copy whose origin isn't this chat's repo.
         if (!(await copies.belongs(e.id, connOf(e)))) return { ok: false, error: { kind: 'wrong_repo', message: 'This chat\'s copy belongs to a different repo, so nothing was run.' } };
         cwd = copy.dir;
+        if (lane) {
+          try { cwd = (await copies.lane(e.id, agent)).dir; } catch (err) { return { ok: false, error: { kind: 'copy', message: err.message } }; }
+          step({ kind: 'copy', label: 'Has its own copy', detail: 'works at the same time as the others; merged when everyone is done', live: true });
+        }
       } else cwd = scratchDir(e.id);
       const startedAt = Date.now();
       const headBefore = copy ? (await copies.git(cwd, ['rev-parse', 'HEAD'])).out : null;
+      // (a lane's own branch: its base is the chat's HEAD when it started)
       // A roleplay turn: the hard limits are checked before the AI starts (electron/cards.cjs).
       const rp = o.rp && typeof o.rp === 'object' ? { cardIds: (Array.isArray(o.rp.cardIds) ? o.rp.cardIds : []).map(String).slice(0, 8) } : null;
       if (rp && d.rpGuard) { const g = d.rpGuard(agent, rp, 'before', String(o.rp.check || '')); if (!g.ok) return { ok: false, error: { kind: 'refused', message: g.message, limit: g.kind } }; }
@@ -239,8 +249,15 @@ function register(d) {
       if (rp && d.rpGuard && r.ok && r.text) { const g = d.rpGuard(agent, rp, 'after', r.text); if (!g.ok) return { ok: false, error: { kind: 'refused', message: g.message, limit: g.kind } }; }
       if (r.partial) r.partial = redact(r.partial);
       if (r.error?.message) r.error.message = redact(r.error.message);
-      const out = { ...r, mode, web, build, helper, ...(undone ? { settingsUndone: undone } : {}) };
-      if (copy && !helper) {
+      const out = { ...r, mode, web, build, helper, lane, ...(undone ? { settingsUndone: undone } : {}) };
+      if (copy && lane) {
+        // A lane's work stays on its own branch until everyone is done (chat:lanesMerge); nothing is pushed from it.
+        try { await copies.commitAll(e.id, `${String(o.title || e.title).slice(0, 60)} (${agent})`, cwd); } catch (err) { out.commitError = err.message; }
+        out.changedThisTurn = (await copies.git(cwd, ['rev-parse', 'HEAD'])).out !== headBefore;
+        out.changes = out.changedThisTurn ? await copies.laneChanges(e.id, agent) : null;
+        out.status = await copies.status(e.id);
+        copies.touch(e.id);
+      } else if (copy && !helper) {
         // Anything the AI left uncommitted is saved as the owner's commit.
         try { await copies.commitAll(e.id, `${String(o.title || e.title).slice(0, 72)}`); } catch (err) { out.commitError = err.message; }
         // The files-changed card only for a turn that really changed something.
@@ -284,6 +301,16 @@ function register(d) {
     }
   }
   handle('chat:run', runChat);
+  // Teammates that worked at the same time: merge their lanes into the chat's branch (conflicts are reported).
+  handle('chat:lanesMerge', async (id, agents, given) => {
+    const e = entryOf(id);
+    if (!copies.exists(e.id)) return { ok: true, merged: [], empty: [], conflicts: [] };
+    if ([...running.keys()].some((k) => k === e.id || k.startsWith(`${e.id}#L`))) return { ok: false, message: 'Teammates are still working in this chat.' };
+    const list = (Array.isArray(agents) ? agents : []).map(String).filter((a) => /^[a-z]{2,16}$/.test(a)).slice(0, 20);
+    const names = Object.fromEntries(list.map((a) => { const n = given && typeof given === 'object' ? String(given[a] || '') : ''; return [a, /^[\w .'-]{1,40}$/.test(n) ? n : a]; }));
+    const r = await copies.mergeLanes(e.id, list, names);
+    return { ok: true, ...r, status: await copies.status(e.id) };
+  });
   // Stop one chat (and its helpers); other chats keep working.
   handle('chat:cancel', (chatId) => { const id = String(chatId); for (const [k, c] of running) if (k === id || k.startsWith(`${id}#`)) c.abort(); return true; });
 

@@ -100,7 +100,10 @@ export function brief({ agent, role = 'member', chat = {}, copy = null, build = 
   if (mates.length) {
     lines.push('', 'THE TEAM IN THIS CHAT (the owner picks it in Settings › AI team):', ...team.members.map((m) => `- ${name(m)}${m === agent ? ' (you)' : ''}${m === team.lead ? ' [lead]' : m === team.reviewer ? ' [reviewer]' : ''}${live.includes(m) ? '' : status[m] ? ` (${status[m].label}${status[m].why ? `: ${status[m].why}` : ''})` : ' (not available right now)'}`));
     if (team.members.some((m) => !live.includes(m))) lines.push('- Teammates that aren\'t connected can\'t answer yet. Only the owner can connect them (keys, sign-ins); tell him what\'s missing instead of saying they can\'t be added.');
-    if (role === 'lead') lines.push('- To hand part of the work to teammates, write a line starting with @Name (one or several names, like "@ChatGPT @Gemini check this") and what they should do. Everyone named answers after you.');
+    if (role === 'lead') lines.push(
+      '- You lead: first work out what the task needs, then split it. Give each teammate that would really help its own part on its own line: @Name and what to do (like "@Gemini write the tests for the parser in tests/parser"). Pick by strength: coding and edits (Claude, ChatGPT/Codex, Qwen, DeepSeek), big files, tests and long documents (Gemini), web research with sources (Perplexity), writing and documents (Mistral), quick drafts (Free AI, Grok). Skip teammates that wouldn\'t add anything; don\'t name anyone for trivial work.',
+      '- Everyone you name works AT THE SAME TIME, each in its own copy of the files, so give parts that touch different files to different teammates. As each one finishes it reports to you and you answer it at once (you can give it more with another @line). When all are done the app merges their changes and you check everything and answer the owner. Don\'t wait for the owner in between.',
+    );
   }
   if (UNFILTERED.includes(agent)) lines.push('', HARD_LIMITS, ...(agent === 'gpu' && uncensored === true ? [ADULT_OK] : []), 'What you write and make is shown to the owner only; it is never passed to the other AIs.');
   if (extra) lines.push(extra);

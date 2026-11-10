@@ -28,6 +28,7 @@ contextBridge.exposeInMainWorld('hearth', {
   chatsConnect: (id, conn) => ipcRenderer.invoke('chats:connect', id, conn),
   chatsDelete2: (id, opts) => ipcRenderer.invoke('chats:delete2', id, opts || {}),
   chatRun: (o) => ipcRenderer.invoke('chat:run', o),
+  chatLanesMerge: (id, agents, names) => ipcRenderer.invoke('chat:lanesMerge', id, agents, names || {}),
   chatCancel: (chatId) => ipcRenderer.invoke('chat:cancel', chatId),
   chatChanges: (id) => ipcRenderer.invoke('chat:changes', id),
   chatDiff: (id) => ipcRenderer.invoke('chat:diff', id),
