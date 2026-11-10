@@ -221,10 +221,10 @@ function createCopies({ dataDir, gitBin = 'git', urlFor = (repo) => `https://git
     return { exists: true, dirty, ahead: n, unpushed: unknown || dirty > 0 || n > 0, unknown, head: head.out || null, branch: branch.out || meta.work, work: meta.work, base: meta.branch, repo: meta.repo || null, dir: meta.dir || null };
   }
 
-  // Commit everything (except the app's own folders) as the owner.
-  async function commitAll(chatId, message) {
+  // Commit everything (except the app's own folders) as the owner. dir: a teammate's own lane (below).
+  async function commitAll(chatId, message, dir = null) {
     if (!exists(chatId)) return null;
-    const d = dirOf(chatId);
+    const d = dir || dirOf(chatId);
     await git(d, ['add', '-A', '--', '.', ...APP_PATHS.map((p) => `:(exclude)${p}`)]);
     for (const p of APP_PATHS) await git(d, ['rm', '-r', '--cached', '--quiet', '--ignore-unmatch', '--', p]);
     const staged = await git(d, ['diff', '--cached', '--name-only']);
@@ -311,8 +311,82 @@ function createCopies({ dataDir, gitBin = 'git', urlFor = (repo) => `https://git
     if (!real.startsWith(fs.realpathSync(fs.existsSync(root) ? root : dataDir) + path.sep) && fs.existsSync(d)) return { ok: false, message: 'Refused: that folder is not one of the app\'s temporary copies.' };
     const freed = fs.existsSync(d) ? du(d) : 0;
     fs.rmSync(d, { recursive: true, force: true });
+    fs.rmSync(lanesRoot(chatId), { recursive: true, force: true });
     try { fs.unlinkSync(metaFile(chatId)); } catch {}
     return { ok: true, freed };
+  }
+
+  // ---- lanes: teammates working at the same time (2.10), each in its own worktree of the chat's copy, on its own
+  // local branch (<work>--<agent>, never pushed: the pre-push hook only lets the chat's own branch out). When they're
+  // done, mergeLanes() merges each one into the chat's branch as the owner; a lane that conflicts is left on its branch.
+  const LANE_AGENT = /^[a-z]{2,16}$/;
+  const lanesRoot = (chatId) => `${dirOf(chatId)}.lanes`;
+  const laneDir = (chatId, agent) => { if (!LANE_AGENT.test(String(agent))) throw new Error('bad agent'); return path.join(lanesRoot(chatId), agent); };
+  const laneBranch = (meta, agent) => `${meta.work}--${agent}`;
+  const laneBase = (chatId, agent) => { try { return fs.readFileSync(`${laneDir(chatId, agent)}.base`, 'utf8').trim(); } catch { return ''; } };
+  async function lane(chatId, agent) {
+    if (!exists(chatId)) throw new Error('This chat has no temporary copy yet.');
+    const meta = readMeta(chatId) || {};
+    if (!validBranch(meta.work)) throw new Error('This chat\'s branch is unknown.');
+    const d = dirOf(chatId);
+    const ld = laneDir(chatId, agent);
+    const br = laneBranch(meta, agent);
+    if (!validBranch(br)) throw new Error('bad lane branch');
+    // A teammate the lead gives more work keeps its own lane (and what it did) until the lanes are merged.
+    if (fs.existsSync(path.join(ld, '.git')) && laneBase(chatId, agent)) return { dir: ld, branch: br, base: laneBase(chatId, agent), reused: true };
+    // Anything uncommitted in the chat's copy goes in first, so every lane starts from the same work.
+    await commitAll(chatId, 'Work in chat');
+    if (fs.existsSync(path.join(ld, '.git'))) await git(d, ['worktree', 'remove', '--force', ld]);
+    if (fs.existsSync(ld)) fs.rmSync(ld, { recursive: true, force: true });
+    await git(d, ['worktree', 'prune']);
+    await git(d, ['branch', '-D', br]);
+    fs.mkdirSync(lanesRoot(chatId), { recursive: true, mode: 0o700 });
+    const base = (await git(d, ['rev-parse', 'HEAD'])).out;
+    const r = await git(d, ['worktree', 'add', '-q', '-b', br, ld, base]);
+    if (!r.ok) throw new Error(`Could not give ${agent} its own copy: ${lastLine(r)}`);
+    fs.writeFileSync(`${ld}.base`, base, { mode: 0o600 });
+    return { dir: ld, branch: br, base };
+  }
+  async function laneChanges(chatId, agent) {
+    const ld = laneDir(chatId, agent);
+    const base = laneBase(chatId, agent);
+    if (!base || !fs.existsSync(ld)) return { files: [], add: 0, del: 0 };
+    const r = await git(ld, ['diff', '--numstat', base, 'HEAD', '--', '.', ...APP_PATHS.map((p) => `:(exclude)${p}`)]);
+    const files = (r.out ? r.out.split('\n') : []).map((l) => { const [a, b, ...p] = l.split('\t'); return { path: p.join('\t'), add: a === '-' ? 0 : Number(a) || 0, del: b === '-' ? 0 : Number(b) || 0, binary: a === '-' }; }).filter((f) => f.path);
+    return { files, add: files.reduce((x, f) => x + f.add, 0), del: files.reduce((x, f) => x + f.del, 0), lane: agent };
+  }
+  // Merge the lanes into the chat's branch, one by one, as the owner. Returns what was merged and what conflicted.
+  async function mergeLanes(chatId, agents, names = {}) {
+    const out = { merged: [], empty: [], conflicts: [] };
+    if (!exists(chatId)) return out;
+    const d = dirOf(chatId);
+    const meta = readMeta(chatId) || {};
+    const id = ident();
+    await commitAll(chatId, 'Work in chat');
+    for (const agent of [...new Set(agents)].filter((a) => LANE_AGENT.test(String(a)))) {
+      const ld = laneDir(chatId, agent);
+      const br = laneBranch(meta, agent);
+      if (!fs.existsSync(ld)) continue;
+      await commitAll(chatId, `${names[agent] || agent}'s part`, ld);
+      const n = Number((await git(d, ['rev-list', '--count', `HEAD..${br}`])).out) || 0;
+      if (n > 0) {
+        const files = (await git(d, ['diff', '--name-only', `HEAD...${br}`])).out.split('\n').filter(Boolean);
+        const m = await git(d, ['-c', `user.name=${id.name}`, '-c', `user.email=${id.email}`, 'merge', '--no-ff', '--no-edit', '-m', identity.stripTrailers(`Merge ${names[agent] || agent}'s part`).trim(), br]);
+        if (m.ok) out.merged.push({ agent, files, commits: n });
+        else {
+          const bad = (await git(d, ['diff', '--name-only', '--diff-filter=U'])).out.split('\n').filter(Boolean);
+          await git(d, ['merge', '--abort']);
+          out.conflicts.push({ agent, files: bad.length ? bad : files, branch: br });
+        }
+      } else out.empty.push(agent);
+      await git(d, ['worktree', 'remove', '--force', ld]);
+      if (fs.existsSync(ld)) fs.rmSync(ld, { recursive: true, force: true });
+      try { fs.unlinkSync(`${ld}.base`); } catch {}
+      // A lane that conflicted keeps its branch, so its work isn't lost (the lead is told its name).
+      if (!out.conflicts.some((c) => c.agent === agent)) await git(d, ['branch', '-D', br]);
+    }
+    await git(d, ['worktree', 'prune']);
+    return out;
   }
 
   async function list() {
@@ -345,7 +419,7 @@ function createCopies({ dataDir, gitBin = 'git', urlFor = (repo) => `https://git
     return { removed, keptUnpushed };
   }
 
-  return { root, dirOf, exists, ensure, belongs, originOf, status, commitAll, changes, diff, push, writeFile, remove, list, sweep, touch, readMeta, git };
+  return { root, dirOf, exists, ensure, belongs, originOf, status, commitAll, changes, diff, push, writeFile, remove, list, sweep, touch, readMeta, git, lane, laneDir, laneChanges, mergeLanes };
 }
 
 module.exports = { createCopies, sourceOf, sameRepo, validRepo, validBranch, prePushHook, du, slug, CHAT_ID, REPO_RE, OWNER, APP_PATHS, PREPUSH_MARK };

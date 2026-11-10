@@ -1057,7 +1057,7 @@ function render(scroll = false) {
 function chatStatus(id) {
   const R = runner.runtimes.get(id);
   if (!R) return '';
-  if (R.round) return `<span class="st" title="The team is working in this chat"><span class="spin"></span>replying…</span>`;
+  if (R.round) return (R.working || []).length > 1 ? workStack(R, 18) : `<span class="st" title="The team is working in this chat"><span class="spin"></span>replying…</span>`;
   if (R.waiting) return `<span class="st" title="Over your limit of chats working at once: it waits its turn">waiting…</span>`;
   if (R.unseen) return '<span class="dot" title="New results you haven\'t seen"></span>';
   return null;
@@ -1108,14 +1108,14 @@ function topbar() {
   const c = entry();
   if (S.view === 'studio') return `<span class="ttl">Images &amp; Videos</span><span class="grow"></span>`;
   if (S.view === 'reverse') return `<span class="ttl">Reverse Engineering</span><span class="grow"></span>`;
-  if (S.view === 'live') return `<span class="ttl">Live</span><span class="grow"></span>${c ? `<button class="tb" data-a="live-full" title="Open this chat with every message and tool">${icon('chat', 'sm')}Full chat</button>` : ''}<button class="tb" data-a="live-drawer" aria-pressed="${S.liveDrawer}" title="${S.liveDrawer ? 'Hide' : 'Show'} the chat on the right">${icon('panel', 'sm')}${S.liveDrawer ? 'Hide chat' : 'Show chat'}</button>`;
+  if (S.view === 'live') return `<span class="ttl">Live</span>${workStack(liveChat(), 26)}<span class="grow"></span>${c ? `<button class="tb" data-a="live-full" title="Open this chat with every message and tool">${icon('chat', 'sm')}Full chat</button>` : ''}<button class="tb" data-a="live-drawer" aria-pressed="${S.liveDrawer}" title="${S.liveDrawer ? 'Hide' : 'Show'} the chat on the right">${icon('panel', 'sm')}${S.liveDrawer ? 'Hide chat' : 'Show chat'}</button>`;
   const title = S.view === 'settings' ? 'Settings' : S.view === 'habitat' ? 'Habitat' : ['characters', 'card', 'lorebooks'].includes(S.view) ? 'Characters' : S.view === 'chat' ? (c?.title || 'Chat') : '';
   if (['characters', 'card', 'lorebooks'].includes(S.view)) return `<span class="ttl">${esc(title)}</span><span class="grow"></span>`;
   const chip = S.view === 'chat' && c && (c.repo || c.repoDir) ? `<button class="chip" data-a="repo-pop" title="Connected repo">${icon('gh', 'sm')}${esc(c.repo || c.repoDir)} <span class="faint">· ${esc(c.branch || S.copy?.base || 'default branch')}</span></button>` : '';
   const temp = S.view === 'chat' && c?.temp ? `<span class="chip">${icon('eyeoff', 'sm')}Temporary · nothing is saved</span><button class="mini" data-a="temp-end" data-id="${esc(c.id)}">End</button>` : '';
   const know = S.view === 'chat' && c?.rp ? `<span class="chip">${rpCards(c).map((x) => avatarHtml(x, 'xs')).join('')}Roleplay${c.rp.characters.length > 1 ? ` · group · ${c.rp.order === 'list' ? 'in order' : 'natural order'}` : ''}</span>` : S.view === 'chat' && c && !c.temp ? `<button class="tb" data-a="chat-act" data-k="knowledge" data-id="${esc(c.id)}" title="This chat's instructions and reference files">${icon('doc', 'sm')}${c.instructions || c.refs?.length ? 'Instructions ✓' : 'Instructions'}</button>` : '';
   if (S.view === 'habitat') return `<span class="ttl">Habitat</span><span class="faint hab-sub">${S.lastChat && entry(S.lastChat) ? `the team of “${esc(entry(S.lastChat).title)}”` : 'your AI team'}</span><span class="grow"></span>`;
-  return `<span class="ttl">${esc(title)}</span>${chip}${temp}<span class="grow"></span>${know}
+  return `<span class="ttl">${esc(title)}</span>${S.view === 'chat' ? workStack(cur(), 26) : ''}${chip}${temp}<span class="grow"></span>${know}
     ${S.view === 'chat' ? `<button class="tb" data-a="live" title="See this chat's team as living cores">${icon('eye', 'sm')}Live</button>` : ''}
     <button class="tb" data-a="team-pop" title="Who's in this chat">${icon('users', 'sm')}Team</button>
     ${S.view === 'chat' && S.msgs.some((m) => (m.media || []).some((x) => x.kind === 'image')) ? `<button class="tb" data-a="gallery" data-m="" data-i="0" title="Every picture in this chat">${icon('eye', 'sm')}Gallery</button>` : ''}
@@ -1193,14 +1193,14 @@ function liveChat() { return S.open ? runner.runtimes.get(S.open) || null : null
 function lastLineOf(R, who) { if (!R) return null; for (let i = R.msgs.length - 1; i >= 0; i--) { const m = R.msgs[i]; if (m.who === who && m.text && !m.err) return m; } return null; }
 function liveWho() {
   const R = liveChat();
-  const busy = R?.busy?.agent || null;
+  const busyBy = new Map((R?.working?.length ? R.working : R?.busy ? [R.busy] : []).map((b) => [b.agent, b]));
   const speaking = voice.state.speakingWho || null;
   const lead = team().lead;
   const vs = voiceSettings(S.settings);
   const out = LIVE_AIS.map((a) => {
     const isReady = a === 'freebuff' ? true : ready(a);
-    const st = a === speaking ? 'speaking' : a === busy ? 'working' : isReady ? 'ready' : 'off';
-    const step = a === busy ? (R.busy.steps || []).slice(-1)[0] : null;
+    const st = a === speaking ? 'speaking' : busyBy.has(a) ? 'working' : isReady ? 'ready' : 'off';
+    const step = busyBy.has(a) ? (busyBy.get(a).steps || []).slice(-1)[0] : null;
     const status = st === 'speaking' ? 'speaking' : st === 'working' ? (step?.label || 'working…') : a === 'freebuff' ? 'opens freebuff.com' : isReady ? (a === lead ? 'lead · ready' : 'ready') : statusOf(a).label;
     return { id: a, name: aiName(a), state: st, status, big: a === lead };
   });
@@ -1217,7 +1217,7 @@ function liveCaption() {
   const R = liveChat();
   const sp = voice.state.speakingWho;
   if (sp && AGENTS[sp]) return { id: sp, name: aiName(sp), note: 'speaking', line: shortLine(lastLineOf(R, sp)?.text || voice.state.speakingName || '') };
-  if (R?.busy?.agent) { const a = R.busy.agent; const step = (R.busy.steps || []).slice(-1)[0]; return { id: a, name: aiName(a), note: step?.label || 'working', line: shortLine(lastLineOf(R, a)?.text || 'Working on it…') }; }
+  if (R?.busy?.agent) { const a = R.busy.agent; const step = (R.busy.steps || []).slice(-1)[0]; const more = (R.working || []).length - 1; return { id: a, name: aiName(a), note: `${step?.label || 'working'}${more > 0 ? ` · ${more} more working at the same time` : ''}`, line: shortLine(lastLineOf(R, a)?.text || 'Working on it…') }; }
   if (R) for (let i = R.msgs.length - 1; i >= 0; i--) { const m = R.msgs[i]; if (AGENTS[m.who] && m.text && !m.err) return { id: m.who, name: aiName(m.who), note: 'said', line: shortLine(m.text) }; }
   return null;
 }
@@ -1246,6 +1246,14 @@ async function livePick(id) {
   const m = lastLineOf(liveChat(), id);
   if (!m) return toast(`${aiName(id)} hasn't said anything in this chat yet.`);
   return readAloud(m);
+}
+// The AIs working in a chat right now, stacked on top of each other; each one leaves the stack when it's done.
+function workStack(R, size = 26) {
+  const list = [...new Map((R?.working?.length ? R.working : R?.busy ? [R.busy] : []).map((b) => [b.agent, b])).values()];
+  if (!list.length) return '';
+  const holo = S.settings.design !== 'classic';
+  const names = list.map((b) => aiName(b.agent));
+  return `<span class="wstack" title="Working now: ${esc(names.join(', '))}" aria-label="Working now: ${esc(names.join(', '))}">${list.map((b, i) => `<span class="wi" style="z-index:${i + 1}">${holo ? miniCore(b.agent, aiName(b.agent), size, 'working') : mono(b.agent)}</span>`).join('')}${list.length > 1 ? `<span class="wn">${list.length}</span>` : ''}</span>`;
 }
 function homeCores() {
   const ids = team().members;
@@ -1305,7 +1313,9 @@ function chatView() {
   const lastAi = [...msgs].reverse().find((m) => m.who !== 'owner' && m.who !== 'system');
   const items = msgs.map((m) => message(m, m.id === lastChanges, m === lastAi && !R?.round)).join('');
   const b = S.busy;
-  const working = b ? `<div class="msg-a working"><div class="who">${b.char ? avatarHtml(cardById(b.char)) : mono(b.agent)}<b>${esc(b.char ? `${cardById(b.char)?.name || ''} (${aiName(b.agent)})` : aiName(b.agent))}</b>${b.role === 'lead' ? '<span class="star">★ lead</span>' : b.role === 'reviewer' ? '<span>· reviewer</span>' : ''}<span>· working</span><span class="dots"><i></i><i></i><i></i></span>${b.note ? `<span class="faint">· ${esc(b.note)}</span>` : ''}</div>${stepsHtml(b.steps, [], true)}</div>` : R?.waiting ? `<div class="msg-s waitline">${icon('clock', 'sm')} Waiting for a free slot: ${runner.queue.active.size} chats are already working (your limit is ${S.settings.maxChats || 3}). This chat starts by itself when one finishes.</div>` : '';
+  const card = (b) => `<div class="msg-a working"><div class="who">${b.char ? avatarHtml(cardById(b.char)) : mono(b.agent)}<b>${esc(b.char ? `${cardById(b.char)?.name || ''} (${aiName(b.agent)})` : aiName(b.agent))}</b>${b.role === 'lead' ? '<span class="star">★ lead</span>' : b.role === 'reviewer' ? '<span>· reviewer</span>' : ''}<span>· working</span>${b.lane ? '<span class="faint">· at the same time, in its own copy</span>' : ''}<span class="dots"><i></i><i></i><i></i></span>${b.note ? `<span class="faint">· ${esc(b.note)}</span>` : ''}</div>${stepsHtml(b.steps, [], true)}</div>`;
+  const all = R?.working?.length ? R.working : b ? [b] : [];
+  const working = all.length ? all.map(card).join('') : R?.waiting ? `<div class="msg-s waitline">${icon('clock', 'sm')} Waiting for a free slot: ${runner.queue.active.size} chats are already working (your limit is ${S.settings.maxChats || 3}). This chat starts by itself when one finishes.</div>` : '';
   const empty = !msgs.length && !b ? `<div class="chat-empty"><p>${entry()?.temp ? 'A temporary chat: nothing is saved, and it ends when you close it.' : `Ask the team anything. ${entry()?.repo ? `They work in a temporary copy of <b>${esc(entry().repo)}</b> and push to their own branch.` : 'Connect a repo from the box below to let them change code.'}`}</p></div>` : '';
   const c = entry();
   if (c?.rp && R?.vn) return `<div class="col vncol">${vnStage(R, c)}</div>`;
@@ -1824,6 +1834,7 @@ function section(k) {
   if (k === 'team') {
     return `<h1>AI team</h1><div class="box"><h3>Who's in your chats</h3>
       ${TEAM_IDS.map((a) => { const inTeam = t.members.includes(a); const r = ready(a); return `<div class="srow mem">${mono(a)}<b>${esc(aiName(a))}</b><span class="d">${a === t.lead ? 'lead ★ · ' : a === t.reviewer ? 'reviewer · ' : ''}${esc(AGENTS[a].tool)}${r ? `, ${esc(AGENTS[a].plan)} · connected` : inTeam ? ` · ${esc(statusOf(a).label)}${statusOf(a).why ? `: ${esc(statusOf(a).why)}` : ''}` : ''}${inTeam ? '' : ' · off'}</span><span class="grow"></span>${inTeam && a !== t.lead && AGENTS[a].edits ? `<button class="mini" data-a="make-lead" data-v="${a}">Make lead</button>` : ''}${inTeam && a !== t.lead && a !== t.reviewer && !UNFILTERED.includes(a) ? `<button class="mini" data-a="make-reviewer" data-v="${a}">Make reviewer</button>` : ''}${tog(inTeam, 'team-member', `data-v="${a}" ${a === t.lead ? 'disabled title="The lead is always in"' : ''}`)}</div>`; }).join('')}
+      <div class="srow">Work at the same time<span class="d">${S.settings.teamParallel !== false ? 'everyone the lead picks works at once, each in its own copy of the files; each reports to the lead as soon as it\'s done, and the app merges their changes' : 'one after another, as before'}</span><span class="grow"></span>${tog(S.settings.teamParallel !== false, 'team-parallel')}</div>
       <div class="note">The lead (Claude unless you change it) answers first and hands parts to teammates. When the lead changes files, the reviewer checks the diff. Type @name in a message to ask one AI. ${t.reviewer ? '' : 'No reviewer is set.'} Venice, Civitai and your GPU server never see the other AIs' private context and what they make is never passed to Claude, ChatGPT or Gemini.</div>
       ${t.reviewer ? '<button class="mini" data-a="no-reviewer">No reviewer</button>' : ''}</div>
       ${teamTestBox()}`;
@@ -2769,6 +2780,7 @@ document.addEventListener('click', async (ev) => {
     case 'unpushed-force': { const m = S.modal; S.modal = null; render(); if (m.then === 'delete') return deleteChat(m.chatId, { force: true }); const r = await call('copiesRemove', m.chatId, true); if (!r?.ok) { if (!r?.cancelled) toast(r?.message || 'Kept.'); return; } if (m.then === 'connect') { S.pop = { chatId: m.chatId }; return chooseRepo(m.conn?.repo || null, m.conn?.branch || null); } await loadChats(); if (S.copies) await loadCopies(); return render(); }
     // settings (each one only from the owner's own click)
     case 'team-member': { const t = team(); const v = d.v; const members = t.members.includes(v) ? t.members.filter((x) => x !== v) : [...t.members, v]; return setSettings({ team: { ...t, members, reviewer: t.reviewer === v && !members.includes(v) ? null : t.reviewer } }); }
+    case 'team-parallel': return setSettings({ teamParallel: S.settings.teamParallel === false });
     case 'make-lead': { const t = team(); return setSettings({ team: { ...t, lead: d.v, reviewer: t.reviewer === d.v ? t.lead : t.reviewer } }); }
     case 'make-reviewer': return setSettings({ team: { ...team(), reviewer: d.v } });
     case 'no-reviewer': return setSettings({ team: { ...team(), reviewer: null } });

@@ -168,3 +168,64 @@ test('origins are read from git itself', () => {
   assert.deepEqual(sourceOf('file:///tmp/x/'), { dir: '/tmp/x' });
   assert.equal(sourceOf('https://gitlab.com/a/b'), null);
 });
+
+// 2.10: teammates working at the same time, each in its own lane (a worktree on its own local branch).
+test('lanes: two teammates change different files at once and both are merged into the chat\'s branch as the owner', async () => {
+  const f = fixture();
+  const c = await f.copies.ensure({ chatId: 'c0123456781', repo: 'Dragongamer9/alpha', branch: 'main', title: 'Port' });
+  const a = await f.copies.lane('c0123456781', 'openai');
+  const b = await f.copies.lane('c0123456781', 'google');
+  assert.notEqual(a.dir, b.dir);
+  assert.equal(g(a.dir, 'branch', '--show-current'), `${c.work}--openai`);
+  fs.writeFileSync(path.join(a.dir, 'parser.js'), 'parse\n');
+  fs.writeFileSync(path.join(b.dir, 'tests.js'), 'test\n');
+  await f.copies.commitAll('c0123456781', 'parser', a.dir);
+  await f.copies.commitAll('c0123456781', 'tests', b.dir);
+  assert.ok(!fs.existsSync(path.join(c.dir, 'parser.js')), 'the chat\'s copy is untouched while they work');
+  assert.equal((await f.copies.laneChanges('c0123456781', 'openai')).files[0].path, 'parser.js');
+  const m = await f.copies.mergeLanes('c0123456781', ['openai', 'google'], { openai: 'ChatGPT', google: 'Gemini' });
+  assert.deepEqual(m.merged.map((x) => x.agent), ['openai', 'google']);
+  assert.deepEqual(m.conflicts, []);
+  assert.ok(fs.existsSync(path.join(c.dir, 'parser.js')) && fs.existsSync(path.join(c.dir, 'tests.js')));
+  assert.equal(g(c.dir, 'branch', '--show-current'), c.work);
+  assert.match(g(c.dir, 'log', '--format=%s', '-n', '1'), /^Merge Gemini's part$/);
+  assert.deepEqual(g(c.dir, 'log', '--format=%an <%ae>', '-n', '4').split('\n').filter((x, i, l) => l.indexOf(x) === i), ['Dragongamer9 <Dragongamer9@users.noreply.github.com>'], 'every commit is the owner\'s');
+  assert.equal(g(c.dir, 'branch', '--list', `${c.work}--*`), '', 'merged lanes are gone');
+  assert.ok(!fs.existsSync(a.dir) && !fs.existsSync(b.dir));
+  assert.equal((await f.copies.status('c0123456781')).dirty, 0);
+});
+
+test('lanes: a clash is not merged, the chat\'s copy stays clean and the work is kept on the teammate\'s branch', async () => {
+  const f = fixture();
+  const c = await f.copies.ensure({ chatId: 'c0123456782', repo: 'Dragongamer9/alpha', branch: 'main', title: 'Port' });
+  const a = await f.copies.lane('c0123456782', 'openai');
+  const b = await f.copies.lane('c0123456782', 'google');
+  fs.writeFileSync(path.join(a.dir, 'f.txt'), 'ChatGPT\n');
+  fs.writeFileSync(path.join(b.dir, 'f.txt'), 'Gemini\n');
+  await f.copies.commitAll('c0123456782', 'a', a.dir);
+  await f.copies.commitAll('c0123456782', 'b', b.dir);
+  const m = await f.copies.mergeLanes('c0123456782', ['openai', 'google']);
+  assert.deepEqual(m.merged.map((x) => x.agent), ['openai']);
+  assert.equal(m.conflicts.length, 1);
+  assert.deepEqual(m.conflicts[0].files, ['f.txt']);
+  assert.equal(m.conflicts[0].branch, `${c.work}--google`);
+  assert.equal(fs.readFileSync(path.join(c.dir, 'f.txt'), 'utf8'), 'ChatGPT\n');
+  assert.equal((await f.copies.status('c0123456782')).dirty, 0, 'no half-done merge left behind');
+  assert.equal(g(c.dir, 'show', `${c.work}--google:f.txt`), 'Gemini', 'Gemini\'s work is kept');
+});
+
+test('lanes: more work for the same teammate keeps its lane; a bad name is refused; removing the copy removes its lanes', async () => {
+  const f = fixture();
+  await f.copies.ensure({ chatId: 'c0123456783', repo: 'Dragongamer9/alpha', branch: 'main', title: 'Port' });
+  const a = await f.copies.lane('c0123456783', 'openai');
+  fs.writeFileSync(path.join(a.dir, 'x.js'), '1\n');
+  await f.copies.commitAll('c0123456783', 'x', a.dir);
+  const again = await f.copies.lane('c0123456783', 'openai');
+  assert.equal(again.reused, true);
+  assert.ok(fs.existsSync(path.join(again.dir, 'x.js')));
+  await assert.rejects(() => f.copies.lane('c0123456783', '../evil'), /bad agent/);
+  await f.copies.mergeLanes('c0123456783', ['openai']);
+  const r = await f.copies.remove('c0123456783', { force: true });
+  assert.equal(r.ok, true);
+  assert.ok(!fs.existsSync(`${f.copies.dirOf('c0123456783')}.lanes`));
+});

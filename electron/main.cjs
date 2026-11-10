@@ -158,6 +158,8 @@ function normalSettings(s) {
     previewNetwork: s.previewNetwork === true,
     // Who's in chats: { lead, reviewer, members }. null = the default team (Claude leads).
     team: cleanTeam(s.team),
+    // 2.10: everyone the lead picks works at the same time (each in its own copy). On unless the owner turns it off.
+    teamParallel: s.teamParallel !== false,
     // New in this version: defaults shown at read time, saved only when the owner changes one.
     // A desktop notification when a long turn finishes or an AI needs him.
     notify: s.notify !== false,
@@ -520,6 +522,7 @@ function registerIpc() {
     }
     if ('previewNetwork' in patch) s.previewNetwork = patch.previewNetwork === true;
     if ('team' in patch) s.team = cleanTeam(patch.team);
+    if ('teamParallel' in patch) s.teamParallel = patch.teamParallel === true;
     if ('notify' in patch) s.notify = patch.notify === true;
     if ('autoRead' in patch) s.autoRead = patch.autoRead === true;
     if ('maxChats' in patch) {

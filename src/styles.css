@@ -886,3 +886,20 @@ table.perms tr.off td { color: var(--faint); }
 .live-drawer .composer .row .chip:not(.talk) { display: none; }
 .team-cores { display: flex; flex-wrap: wrap; gap: 14px; justify-content: center; margin: 4px 0 14px; }
 .team-cores .tc { display: flex; flex-direction: column; align-items: center; gap: 4px; font-size: 11px; color: var(--muted); width: 64px; text-align: center; }
+
+/* ---------- 2.10: the AIs working right now, stacked (each leaves when it's done) ---------- */
+.wstack { display: inline-flex; align-items: center; margin-left: 10px; padding-left: 10px; flex: none; }
+.wstack .wi { margin-left: -10px; display: inline-flex; border-radius: 50%; background: var(--bg); box-shadow: 0 0 0 2px var(--bg); animation: stackIn .35s ease-out both; }
+.wstack .wi .core { cursor: default; }
+.wstack .wn { margin-left: 6px; font-size: 11px; font-weight: 700; color: var(--accent); }
+.item .wstack { margin-left: auto; }
+@keyframes stackIn { from { transform: translateY(-6px) scale(.5); opacity: 0 } to { transform: none; opacity: 1 } }
+.reduce-motion .wstack .wi { animation: none; }
+@media (prefers-reduced-motion: reduce) { .wstack .wi { animation: none; } }
+
+/* ---------- 2.10: a smaller chat window in the gold design ---------- */
+:root[data-design="hologram"] .col { width: min(680px, calc(100% - 40px)); }
+:root[data-design="hologram"] .msg-a { font-size: 13.6px; line-height: 1.52; margin-bottom: 12px; }
+:root[data-design="hologram"] .msg-u { font-size: 13.6px; padding: 8px 12px; }
+:root[data-design="hologram"] .composer { width: min(720px, calc(100% - 40px)); padding: 9px 12px; }
+:root[data-design="hologram"] .composer textarea { font-size: 13.6px; }

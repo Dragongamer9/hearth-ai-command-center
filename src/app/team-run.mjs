@@ -54,6 +54,10 @@ export function createTeamRunner(ctx) {
   const now = ctx.now || (() => new Date().toISOString());
   const rt = (id, extra) => { if (!runtimes.has(id)) runtimes.set(id, newRuntime(id, extra)); return runtimes.get(id); };
 
+  // Who is working right now (2.10: several at once). R.busy stays the newest one, for the views that show one.
+  function setBusy(R, b) { R.working = [...(R.working || []).filter((x) => x.runId !== b.runId), b]; R.busy = b; ctx.render(R); return b; }
+  function clearBusy(R, b) { R.working = (R.working || []).filter((x) => x !== b); R.busy = R.working[R.working.length - 1] || null; }
+
   function post(R, m) {
     const msg = { id: uid(), at: now(), ...m };
     R.msgs.push(msg);
@@ -90,6 +94,7 @@ export function createTeamRunner(ctx) {
       R.queued = R.stop ? [] : R.queued;
       R.round = false;
       R.busy = null;
+      R.working = [];
       ctx.call('chatBusy', R.id, false);
       ctx.render(R);
       ctx.onRoundDone?.(R, { ok, stopped: R.stop });
@@ -142,9 +147,24 @@ export function createTeamRunner(ctx) {
       setState(R, agent, 'done', '');
       if (r.changes?.files?.length) changed = { by: agent, msgId: r.msgId };
       if (role === 'lead' && !opts.regenerate) {
-        for (const h of handoffs(r.text, { team: t, live: L, done: [...done, ...order] })) { order.push(h); addState(R, h); }
+        const picked = handoffs(r.text, { team: t, live: L, done: [...done, ...order] });
         // Named in the lead's hand-off but not connected: blocked, with what it needs.
-        for (const h of handoffs(r.text, { team: t, live: t.members, done: [...done, ...order] })) if (!L.includes(h)) addState(R, h, 'blocked', ctx.statusOf?.(h)?.why || ctx.setupHint?.(h) || 'not set up');
+        for (const h of handoffs(r.text, { team: t, live: t.members, done: [...done, ...order, ...picked] })) if (!L.includes(h)) addState(R, h, 'blocked', ctx.statusOf?.(h)?.why || ctx.setupHint?.(h) || 'not set up');
+        if (picked.length && parallelOn() && !R.stop) {
+          // 2.10: everyone the lead picked works AT THE SAME TIME, each in its own copy of the files; the app merges
+          // their work, then the lead checks it all and answers the owner.
+          for (const h of picked) addState(R, h);
+          const res = await parallel(R, picked, { lead: agent });
+          for (const x of res) { done.push(x.agent); if (x.r?.changes?.files?.length) changed = { by: x.agent, msgId: x.r.msgId }; if (!x.r || x.r.ok === false) ok = false; }
+          const merge = await mergeLanes(R, picked);
+          if (merge.changed) changed = { by: merge.by || picked[0], msgId: null };
+          if (!R.stop) {
+            setState(R, agent, 'working', '');
+            const w = await turn(R, agent, { role: 'lead', task: wrapUpTask(R, res, merge) });
+            setState(R, agent, w && w.ok !== false ? 'done' : 'failed', w && w.ok !== false ? '' : (w?.plain?.reason || ''));
+            if (w?.changes?.files?.length) changed = { by: agent, msgId: w.msgId };
+          }
+        } else for (const h of picked) { order.push(h); addState(R, h); }
       }
     }
     if (R.stop && R.turnState) for (const x of R.turnState.list) if (x.state === 'waiting') { x.state = 'skipped'; x.reason = 'Stopped by you before its turn.'; }
@@ -180,27 +200,87 @@ export function createTeamRunner(ctx) {
     return line ? line.replace(/@[A-Za-z][\w-]{1,20}/g, '').replace(/^\s*[-*]\s*/, '').trim() : '';
   }
 
-  async function turn(R, agent, { role = 'member', task = '', readOnly = false, isFollowUp = false, regenerate = null } = {}) {
+  const parallelOn = () => ctx.settings().teamParallel !== false;
+  // Everyone the lead picked, at once. A teammate's own failure never stops the others.
+  async function parallel(R, agents, { lead }) {
+    const others = (a) => agents.filter((x) => x !== a).map(aiName);
+    return Promise.all(agents.map(async (a) => {
+      setState(R, a, 'working', '');
+      const own = handoffTask(R, a);
+      const task = `${own ? `Your part, from ${aiName(lead)}: ${own}\n\n` : ''}You're working AT THE SAME TIME as ${others(a).length ? others(a).join(', ') : 'no one else'}${others(a).length ? ', each in your own copy of the files' : ''}. Do only your part; don't redo the others'. The app merges everyone's changes when you're all done, and ${aiName(lead)} checks the result.`;
+      let r = await turn(R, a, { role: 'member', task, lane: true });
+      // Done: it reports to the lead straight away and the lead answers it (others keep working). The lead can give
+      // it more to do with an @line, up to twice; nobody waits for the owner.
+      for (let more = 0; more < 3 && !R.stop; more++) {
+        for (let loop = 0; loop < 2 && r?.ok !== false && r?.followUp && !R.stop; loop++) r = await turn(R, a, { role: 'member', task: r.followUp, isFollowUp: true, lane: true }) || { ok: false };
+        if (!r || r.ok === false || R.stop) break;
+        setState(R, a, 'done', 'reported to the lead');
+        const reply = await leadReplies(R, lead, a, r, agents);
+        const next = reply && reply.ok !== false && more < 2 ? handoffs(reply.text || '', { team: ctx.team(), live: ctx.live(), done: [] }).includes(a) : false;
+        if (!next) break;
+        setState(R, a, 'working', `more from ${aiName(lead)}`);
+        r = await turn(R, a, { role: 'member', task: `${aiName(lead)} answered your report and gave you more: ${lineFor(reply.text, a) || 'see its last message'}\n\nYou're still working at the same time as the others, in your own copy.`, lane: true });
+      }
+      if (!r || r.ok === false) {
+        const pe = r?.plain || { state: 'failed', reason: `${aiName(a)} didn't answer.` };
+        setState(R, a, R.stop ? 'failed' : pe.state, R.stop ? 'Stopped by you.' : pe.reason, r?.raw);
+      } else setState(R, a, 'done', '');
+      return { agent: a, r };
+    }));
+  }
+  // The lead answers one teammate's report while the rest work. One reply at a time (they queue), read-only.
+  function leadReplies(R, lead, a, r, agents) {
+    const run = async () => {
+      if (R.stop) return null;
+      const still = (R.working || []).filter((b) => b.lane && b.agent !== a).map((b) => aiName(b.agent));
+      const task = `${aiName(a)} just finished its part and reported (its message is the last one from it above)${r.changes?.files?.length ? `, changing ${r.changes.files.length} file(s) in its own copy` : ''}. ${still.length ? `Still working: ${[...new Set(still)].join(', ')}.` : 'Everyone else is done.'}\n\nAnswer ${aiName(a)} in one to three lines: say what's good, what's wrong or missing. If it should do more, start a line with @${aiName(a).replace(/\s+/g, '')} and the next step. Don't wait for the owner and don't redo its work. Your full check comes after everyone is done.`;
+      return turn(R, lead, { role: 'lead', task, quick: true });
+    };
+    const p = (R.leadChain || Promise.resolve()).then(run, run);
+    R.leadChain = p.catch(() => null);
+    return p;
+  }
+  const lineFor = (text, a) => String(text || '').split('\n').find((l) => mentionsIn(l).includes(a))?.replace(/@[A-Za-z][\w-]{1,20}/g, '').trim() || '';
+
+  // Their lanes into the chat's branch (only chats with a repo have lanes).
+  async function mergeLanes(R, agents) {
+    if (!R.copy && !ctx.entry(R.id)?.repo && !ctx.entry(R.id)?.repoDir) return { changed: false, merged: [], conflicts: [], empty: [] };
+    const m = await ctx.call('chatLanesMerge', R.id, agents, Object.fromEntries(agents.map((a) => [a, aiName(a)]))) || { ok: false };
+    if (!m.ok) { post(R, { who: 'system', text: `The teammates' changes couldn't be put together: ${m.message || 'unknown error'}. Their work is still on their own branches.` }); return { changed: false, merged: [], conflicts: [], empty: [] }; }
+    if (m.status) R.copy = { ...m.status, exists: true };
+    const lines = [];
+    for (const x of m.merged || []) lines.push(`${aiName(x.agent)}'s changes were merged (${x.files.length} file${x.files.length === 1 ? '' : 's'}).`);
+    for (const x of m.conflicts || []) lines.push(`${aiName(x.agent)}'s changes clash with another teammate's in ${x.files.slice(0, 4).join(', ')}${x.files.length > 4 ? '…' : ''}. They're kept on the branch ${x.branch} for the lead.`);
+    if (lines.length) post(R, { who: 'system', text: lines.join('\n') });
+    await ctx.save(R);
+    return { changed: Boolean((m.merged || []).length), by: (m.merged || [])[0]?.agent, merged: m.merged || [], conflicts: m.conflicts || [], empty: m.empty || [] };
+  }
+  function wrapUpTask(R, res, merge) {
+    const lines = res.map((x) => `- ${aiName(x.agent)}: ${!x.r || x.r.ok === false ? 'did not finish' : x.r.changes?.files?.length ? `changed ${x.r.changes.files.length} file(s)` : 'answered'}`);
+    const clash = merge.conflicts.length ? `\nClashes the app couldn't merge (fix them in the chat's copy: run \`git merge <branch>\` and resolve, or redo that part):\n${merge.conflicts.map((c) => `- ${aiName(c.agent)}: ${c.files.join(', ')} (branch ${c.branch})`).join('\n')}` : '';
+    return `Your teammates have finished working at the same time (their answers are in the chat above):\n${lines.join('\n')}${merge.merged.length ? `\nMerged into this chat's branch: ${merge.merged.map((m) => aiName(m.agent)).join(', ')}.` : ''}${clash}\n\nCheck their work together, fix anything wrong or missing, and give the owner ONE short answer: what was done, by whom, and what's left. Don't hand the same work out again.`;
+  }
+
+  async function turn(R, agent, { role = 'member', task = '', readOnly = false, isFollowUp = false, regenerate = null, lane = false, quick = false } = {}) {
     const c = ctx.entry(R.id);
     if (!c) return null;
     // A teammate that only makes pictures (Civitai, a ComfyUI server): the request is the picture.
     if (ctx.imagesOnly?.(agent)) {
       const lastOwner = [...R.msgs].reverse().find((m) => m.who === 'owner');
       const prompt = (task || String(lastOwner?.text || '')).replace(/@[A-Za-z][\w-]{1,20}/g, '').trim();
-      R.busy = { agent, role, runId: `${uid()}i`, steps: [{ kind: 'image', label: 'Making a picture', detail: aiName(agent) }], startedAt: Date.now() };
-      ctx.render(R);
+      const me = setBusy(R, { agent, role, runId: `${uid()}i`, steps: [{ kind: 'image', label: 'Making a picture', detail: aiName(agent) }], startedAt: Date.now() });
       const r = await ctx.makeImage(R, { agent, prompt });
-      R.busy = null;
+      clearBusy(R, me);
       const msg = post(R, r.ok ? { who: agent, role, text: r.text || 'Here it is.', via: r.via, media: r.items || [] } : { who: agent, role, err: true, text: r.message || 'No picture came back.' });
       await ctx.save(R);
       return r.ok ? { text: msg.text, msgId: msg.id } : { ok: false, plain: plainError(agent, { message: r.message || 'No picture came back.' }), raw: r.message };
     }
     const runId = `${uid().replace(/[^a-z0-9]/gi, '').slice(0, 10)}r`;
-    R.busy = { agent, role, runId, steps: [], startedAt: Date.now() };
-    ctx.render(R);
-    const resumeId = typeof R.sessions[agent] === 'string' && !regenerate ? R.sessions[agent] : null;
+    const me = setBusy(R, { agent, role, runId, steps: [], startedAt: Date.now(), lane });
+    // A quick reply (the lead answering a teammate while others work) runs read-only beside them, in a fresh session.
+    const resumeId = typeof R.sessions[agent] === 'string' && !regenerate && !quick ? R.sessions[agent] : null;
     const upto = regenerate ? R.msgs.slice(0, R.msgs.findIndex((m) => m.id === regenerate)) : R.msgs;
-    const build = ctx.buildFor(R) && !readOnly;
+    const build = ctx.buildFor(R) && !readOnly && !quick;
     const web = ctx.webFor(R);
     const opts = { agent, role, chat: c, copy: R.copy ? { base: R.copy.base, work: R.copy.work } : null, build, web, quickChecks: ctx.settings().tools?.quickChecks || [], team: ctx.team(), live: ctx.live(), actForMe: ctx.settings().actForMe === true, apiOnly: ctx.method(agent) === 'api', status: ctx.statusMap?.() || {}, missing: ctx.missingChecks?.() || [], canPush: Boolean(c.repo || c.repoDir) && !c.temp, autoPush: ctx.settings().autoPush !== false, uncensored: ctx.settings().uncensored?.on === true };
     const extra = (await ctx.briefExtra?.(R, agent, role, Boolean(resumeId))) || '';
@@ -216,17 +296,17 @@ export function createTeamRunner(ctx) {
         chatId: R.id, agent, runId, prompt: prompt.slice(-58000), fallbackPrompt: fallbackPrompt.slice(-58000), resumeId,
         images: atts.filter((a) => a.kind === 'image').map((a) => a.path).concat(atts.filter((a) => a.kind === 'video').flatMap((a) => a.frames || [])),
         files: atts.filter((a) => a.kind === 'file' || (a.kind === 'video' && agent === 'google')).map((a) => a.path),
-        web, build, title: c.title, historyText: lastOwner?.text || '', ...(model ? { model } : {}),
+        web, build, title: c.title, historyText: lastOwner?.text || '', ...(model ? { model } : {}), ...(lane ? { lane: true } : {}), ...(quick ? { helper: true } : {}),
       }) || { ok: false, error: { message: 'The app could not start the AI.' } };
       // A scheduled task took the last free slot: wait for it, then go on.
       if (r.ok || r.error?.kind !== 'queue' || R.stop || tries > 90) break;
-      if (R.busy) R.busy.note = r.error.message;
+      me.note = r.error.message;
       ctx.render(R);
       await sleep(ctx.queueRetryMs ?? 4000);
     }
-    const steps = R.busy?.steps || [];
-    R.busy = null;
-    if (r.sessionId) R.sessions[agent] = r.sessionId;
+    const steps = me.steps || [];
+    clearBusy(R, me);
+    if (r.sessionId && !quick) R.sessions[agent] = r.sessionId;
     if (r.status) R.copy = { ...r.status, exists: true };
     const media = Array.isArray(r.media) ? r.media : [];
     if (r.settingsUndone) post(R, { who: 'system', text: `${aiName(agent)} changed your settings file during its turn. The change was undone at once; your settings are as you left them. Settings › Saved data shows it in the change log.` });
@@ -325,8 +405,9 @@ export function createTeamRunner(ctx) {
   // A step streamed from the main process: only the chat it belongs to gets it.
   function onStep(e) {
     const R = e && runtimes.get(e.chatId);
-    if (!R?.busy || e.runId !== R.busy.runId || !e.step) return false;
-    R.busy.steps.push(e.step);
+    const b = R && ((R.working || []).find((x) => x.runId === e.runId) || (R.busy && R.busy.runId === e.runId ? R.busy : null));
+    if (!b || !e.step) return false;
+    b.steps.push(e.step);
     ctx.render(R);
     return true;
   }
