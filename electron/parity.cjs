@@ -28,7 +28,7 @@ const { createStudio, NOT_REAL_TEXT } = require('./studio.cjs');
 
 // elevenlabs: voice chat's most realistic voices (electron/voice-chat.cjs).
 const KEY_NAMES = ['google', 'openai', 'xai', 'mistral', 'elevenlabs'];
-const whoName = { owner: 'Owner', system: 'App', anthropic: 'Claude', openai: 'ChatGPT', google: 'Gemini', xai: 'Grok', mistral: 'Mistral', qwen: 'Qwen', perplexity: 'Perplexity', deepseek: 'DeepSeek', ollama: 'Local AI', venice: 'Venice', civitai: 'Civitai', gpu: 'Your GPU server', hearth: 'Hearth devices' };
+const whoName = { owner: 'Owner', system: 'App', anthropic: 'Claude', openai: 'ChatGPT', google: 'Gemini', xai: 'Grok', mistral: 'Mistral', qwen: 'Qwen', perplexity: 'Perplexity', deepseek: 'DeepSeek', ollama: 'Local AI', venice: 'Venice', civitai: 'Civitai', gpu: 'Your GPU server', hearth: 'Hearth devices', free: 'Free AI' };
 // Teammates whose output never reaches the other AIs (the same rule as src/app/brief.mjs).
 const UNFILTERED = ['venice', 'civitai', 'gpu', 'hearth'];
 const uid = () => crypto.randomBytes(5).toString('hex');

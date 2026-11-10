@@ -55,3 +55,11 @@ When an AI hits its usage limit, it's marked *Out of usage*. Its task is saved a
 - OpenAI Codex sign-in: https://learn.chatgpt.com/docs/auth
 - Gemini CLI: https://github.com/google-gemini/gemini-cli
 - FreeBuff: https://github.com/CodebuffAI/freebuff
+
+## Free AI
+
+Settings › Accounts › Free AI takes a free API key for each provider you want: Cerebras, Groq, Google AI Studio, Mistral and OpenRouter (its `:free` models only). Each key is saved encrypted as `free.<provider>` and only ever sent to that provider. Free AI tries them in that order. When one is at its free limit (HTTP 429), it rests for the time the provider asks (one minute by default) and the next one answers. Each reply says which provider and model answered. If a provider drops a model, Free AI picks another from that provider's own model list. The idea and provider list follow [FreeLLMAPI](https://github.com/tashfeenahmed/freellmapi) (MIT). Stay inside each provider's terms: one account each, for your own use.
+
+## Make it sound human
+
+The person button on your message box, and on each AI reply, rewrites the text with [Humanizer](https://github.com/blader/humanizer)'s rules (MIT, bundled unchanged in `electron/humanizer/`). You pick which AI does the rewrite from the ones that answer by API. Free AI is first. A reply from Venice, your GPU server or Hearth devices is only ever rewritten by one of those three. The result goes into your message box and is never sent until you press Send.

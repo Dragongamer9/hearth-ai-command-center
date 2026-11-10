@@ -15,10 +15,11 @@ const crypto = require('node:crypto');
 const { createJsonFile } = require('./jsonfile.cjs');
 const comfy = require('./comfy.cjs');
 const hnet = require('./hearth-net.cjs');
+const { createFreeAi } = require('./free-ai.cjs');
 
 const VENICE = 'https://api.venice.ai/api/v1';
 const CIVITAI = 'https://orchestration.civitai.com/v2/consumer/recipes/imageGen';
-const IDS = ['venice', 'civitai', 'gpu'];
+const IDS = ['venice', 'civitai', 'gpu', 'free'];
 const VENICE_MODELS = ['venice-uncensored-1-2', 'venice-uncensored', 'llama-3.3-70b', 'qwen3-235b', 'mistral-31-24b'];
 const VENICE_IMAGE_MODELS = ['lustify-sdxl', 'lustify-v7', 'lustify-v8', 'flux-dev-uncensored', 'hidream'];
 const CIVITAI_ENGINES = ['sdcpp', 'comfy', 'flux2', 'qwen'];
@@ -26,7 +27,7 @@ const MODEL_RE = /^[A-Za-z0-9._:\-/]{1,100}$/;
 // A ComfyUI checkpoint file name (may hold spaces); never a path out of its folder.
 const CKPT_NAME_RE = /^[^\0\r\n]{1,200}$/;
 const modelOk = (type, m) => (type === 'comfy' ? CKPT_NAME_RE.test(m) && !m.startsWith('/') && !m.split(/[\\/]/).includes('..') : MODEL_RE.test(m));
-const NAME = { venice: 'Venice', civitai: 'Civitai', gpu: 'your GPU server' };
+const NAME = { venice: 'Venice', civitai: 'Civitai', gpu: 'your GPU server', free: 'Free AI' };
 
 const fail = (message, kind = 'failed', status = null) => ({ ok: false, error: { kind, message: String(message || 'Something went wrong.').slice(0, 500), status } });
 async function json(res) { try { return await res.json(); } catch { return null; } }
@@ -67,6 +68,7 @@ function cleanUrl(u) {
 }
 
 function createTeammates({ secrets, file, settings = () => ({}), fetchImpl = (...a) => fetch(...a), sleep = (ms) => new Promise((r) => setTimeout(r, ms)), maxPolls = 120 }) {
+  const free = createFreeAi({ secrets, fetchImpl });
   const servers = createJsonFile(file, { empty: () => ({ version: 1, servers: [] }), check: (j) => Array.isArray(j.servers), label: 'Your GPU servers file' });
   const list = () => servers.read().servers.map((s) => ({ ...s, key: secrets.has(`server.${s.id}`) }));
   const chatServer = () => list().find((s) => s.type === 'openai') || null;
@@ -83,14 +85,16 @@ function createTeammates({ secrets, file, settings = () => ({}), fetchImpl = (..
     if (agent === 'venice') return secrets.has('venice');
     if (agent === 'civitai') return secrets.has('civitai');
     if (agent === 'gpu') return list().length > 0;
+    if (agent === 'free') return free.ready();
     return false;
   }
-  const hint = (agent) => (agent === 'gpu' ? 'Add your GPU server in Settings › Accounts' : `Add your ${NAME[agent]} key in Settings › Accounts`);
+  const hint = (agent) => (agent === 'gpu' ? 'Add your GPU server in Settings › Accounts' : agent === 'free' ? 'Add a free key for at least one provider in Settings › Accounts › Free AI' : `Add your ${NAME[agent]} key in Settings › Accounts`);
   // Pictures only (no chat): Civitai, or a GPU server set up only as ComfyUI.
   const imagesOnly = (agent) => agent === 'civitai' || (agent === 'gpu' && !chatServer() && Boolean(imageServer()));
 
   async function chat(agent, { prompt, model, signal } = {}) {
     if (!ready(agent)) return fail(`${hint(agent)}.`, 'auth');
+    if (agent === 'free') return free.chat({ prompt, signal });
     let url;
     let key;
     let mdl;
@@ -315,17 +319,18 @@ function createTeammates({ secrets, file, settings = () => ({}), fetchImpl = (..
     return { ok: true };
   }
   async function setKey(agent, key) {
+    if (agent.startsWith('free.')) return free.setKey(agent.slice(5), key);
     if (!['venice', 'civitai'].includes(agent)) throw new Error('bad teammate');
     const k = String(key || '').trim();
     if (k.length < 8 || k.length > 600 || /\s/.test(k)) throw new Error('That doesn\'t look like a key.');
     await secrets.set(agent, k);
     return { ok: true };
   }
-  function removeKey(agent) { if (!['venice', 'civitai'].includes(agent)) throw new Error('bad teammate'); secrets.remove(agent); return { ok: true }; }
+  function removeKey(agent) { if (agent.startsWith('free.')) return free.removeKey(agent.slice(5)); if (!['venice', 'civitai'].includes(agent)) throw new Error('bad teammate'); secrets.remove(agent); return { ok: true }; }
 
   function status() {
     const c = conf();
-    return { ready: Object.fromEntries(IDS.map((a) => [a, ready(a)])), keys: { venice: secrets.has('venice'), civitai: secrets.has('civitai') }, servers: list().map(({ workflow, ...s }) => ({ ...s, workflow: Boolean(workflow) })), imagesOnly: Object.fromEntries(IDS.map((a) => [a, imagesOnly(a)])), conf: c, models: { venice: VENICE_MODELS, veniceImage: VENICE_IMAGE_MODELS, civitaiEngines: CIVITAI_ENGINES }, broken: servers.broken() };
+    return { ready: Object.fromEntries(IDS.map((a) => [a, ready(a)])), keys: { venice: secrets.has('venice'), civitai: secrets.has('civitai') }, servers: list().map(({ workflow, ...s }) => ({ ...s, workflow: Boolean(workflow) })), imagesOnly: Object.fromEntries(IDS.map((a) => [a, imagesOnly(a)])), conf: c, models: { venice: VENICE_MODELS, veniceImage: VENICE_IMAGE_MODELS, civitaiEngines: CIVITAI_ENGINES }, broken: servers.broken(), free: free.status() };
   }
 
   return { IDS, ready, hint, imagesOnly, chat, image, addServer, updateServer, listModels, removeServer, setKey, removeKey, status, list };

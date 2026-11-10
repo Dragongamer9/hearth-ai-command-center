@@ -15,7 +15,7 @@ const crypto = require('node:crypto');
 const perms = require('./permissions.cjs');
 
 const CLI = ['anthropic', 'openai', 'google', 'xai', 'mistral', 'qwen'];
-const NAME = { anthropic: 'Claude', openai: 'ChatGPT', google: 'Gemini', xai: 'Grok', mistral: 'Mistral', qwen: 'Qwen', perplexity: 'Perplexity', deepseek: 'DeepSeek', ollama: 'Local AI', venice: 'Venice', civitai: 'Civitai', gpu: 'Your GPU server', hearth: 'Hearth devices' };
+const NAME = { anthropic: 'Claude', openai: 'ChatGPT', google: 'Gemini', xai: 'Grok', mistral: 'Mistral', qwen: 'Qwen', perplexity: 'Perplexity', deepseek: 'DeepSeek', ollama: 'Local AI', venice: 'Venice', civitai: 'Civitai', gpu: 'Your GPU server', hearth: 'Hearth devices', free: 'Free AI' };
 const PUSH_CHAT = 'Only the chat\'s own hearth/ branch, and only in a chat with a repo (main, the base branch and tags are refused)';
 
 // One row per AI. cli: { installed, path, version, tool }, api: connected by key/URL,
