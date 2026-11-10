@@ -1059,7 +1059,7 @@ function render(scroll = false) {
 function chatStatus(id) {
   const R = runner.runtimes.get(id);
   if (!R) return '';
-  if (R.round) return (R.working || []).length || R.busy ? workStack(R, 18) : `<span class="st" title="The team is working in this chat"><span class="spin"></span>replying…</span>`;
+  if (R.round) return `<span class="st" title="The team is working in this chat"><span class="spin"></span>replying…</span>${(R.working || []).length > 1 ? workStack(R, 18) : ''}`;
   if (R.waiting) return `<span class="st" title="Over your limit of chats working at once: it waits its turn">waiting…</span>`;
   if (R.unseen) return '<span class="dot" title="New results you haven\'t seen"></span>';
   return null;
