@@ -1,0 +1,1 @@
+blader/humanizer (https://github.com/blader/humanizer), SKILL.md version 4.0.0 at commit b48c832, MIT licence (LICENSE, Copyright (c) 2025 Siqi Chen). Bundled unchanged; used by electron/humanizer.cjs for the "Make it sound human" button.

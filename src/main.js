@@ -38,7 +38,7 @@ import { FIND_FIELDS, searchFields, stepIndex, replaceAllFields, snippet, cardMa
 
 const api = window.hearth || null;
 const TEAM_IDS = ['anthropic', 'openai', 'google', 'xai', 'mistral', 'qwen', 'perplexity', 'deepseek', 'ollama', ...TEAMMATE_IDS];
-const MONO = { hearth: ['H', '#c8743a'], anthropic: ['C', '#c96b3c'], openai: ['G', '#3f8f6f'], google: ['Ge', '#4b6fd0'], xai: ['X', '#5d636b'], mistral: ['M', '#6b5bd2'], qwen: ['Q', '#7a5cc9'], perplexity: ['P', '#1f8a99'], deepseek: ['D', '#3d56c9'], ollama: ['L', '#6d746e'], freebuff: ['F', '#8a7bc6'], venice: ['V', '#c2453b'], civitai: ['Ci', '#2f6fd6'], gpu: ['GP', '#6f7a3e'] };
+const MONO = { free: ['Fr', '#3f8a5a'], hearth: ['H', '#c8743a'], anthropic: ['C', '#c96b3c'], openai: ['G', '#3f8f6f'], google: ['Ge', '#4b6fd0'], xai: ['X', '#5d636b'], mistral: ['M', '#6b5bd2'], qwen: ['Q', '#7a5cc9'], perplexity: ['P', '#1f8a99'], deepseek: ['D', '#3d56c9'], ollama: ['L', '#6d746e'], freebuff: ['F', '#8a7bc6'], venice: ['V', '#c2453b'], civitai: ['Ci', '#2f6fd6'], gpu: ['GP', '#6f7a3e'] };
 const QUICK = [
   ['gh', 'Fix a bug in a repo', 'There\'s a bug I want fixed: '],
   ['dl', 'Look at a sent log', 'Look at the log I attached (or the newest one in Dragongamer9/hearth-logs) and find the cause: '],
@@ -1194,6 +1194,7 @@ function composer(placeholder) {
     <textarea id="composer" rows="1" placeholder="${esc(placeholder)}" aria-label="Message">${esc(S.draft)}</textarea>
     <div class="row">
       <button class="ib" data-a="attach" title="Attach files, images, videos, PDFs or spreadsheets (or paste a screenshot)" aria-label="Attach">${icon('plus', 'sm')}</button>
+      <button class="ib" data-a="humanize-draft" title="Make it sound human (rewrites your draft so it reads less like AI)" aria-label="Make it sound human">${icon('user', 'sm')}</button>
       ${c?.rp ? '' : `<button class="chip ${conn ? '' : 'off'}" data-a="repo-pop" title="Connect a GitHub repo">${icon('gh', 'sm')}${conn ? `${esc(String(conn.repo).split('/').pop())} <span class="faint">· ${esc(conn.branch || 'main')}</span>` : 'No repo'}</button>
       <button class="chip" data-a="team-pop" title="Who answers">${icon('at', 'sm')}${teamLabel}</button>
       <button class="chip sw ${S.web ? 'on' : ''}" data-a="toggle-web" aria-pressed="${S.web}" title="Web search and reading pages">${icon('globe', 'sm')}Web</button>
@@ -1274,7 +1275,7 @@ function controlsHtml(m, owner = false) {
   const ver = m.versions?.length > 1 ? `<span class="ver"><button class="ib sm ghost" data-a="ver" data-m="${esc(m.id)}" data-d="-1" ${(m.v ?? m.versions.length - 1) === 0 ? 'disabled' : ''} aria-label="Previous version">‹</button>${(m.v ?? m.versions.length - 1) + 1}/${m.versions.length}<button class="ib sm ghost" data-a="ver" data-m="${esc(m.id)}" data-d="1" ${(m.v ?? m.versions.length - 1) === m.versions.length - 1 ? 'disabled' : ''} aria-label="Next version">›</button></span>` : '';
   const br = m.branches?.length > 1 ? `<span class="ver"><button class="ib sm ghost" data-a="branch" data-m="${esc(m.id)}" data-d="-1" ${(m.b || 0) === 0 || busy ? 'disabled' : ''} aria-label="Previous version">‹</button>${(m.b || 0) + 1}/${m.branches.length}<button class="ib sm ghost" data-a="branch" data-m="${esc(m.id)}" data-d="1" ${(m.b || 0) === m.branches.length - 1 || busy ? 'disabled' : ''} aria-label="Next version">›</button></span>` : '';
   if (owner) return `<div class="mctl u">${br}<button class="ib sm ghost" data-a="msg-copy" data-m="${esc(m.id)}" title="Copy">${icon('doc', 'sm')}</button>${!S.readOnly ? `<button class="ib sm ghost" data-a="msg-edit" data-m="${esc(m.id)}" title="Edit and resend" ${busy ? 'disabled' : ''}>${icon('pencil', 'sm')}</button>` : ''}</div>`;
-  return `<div class="mctl">${ver}<button class="ib sm ghost" data-a="msg-copy" data-m="${esc(m.id)}" title="Copy">${icon('doc', 'sm')}</button><button class="ib sm ghost ${voice.isReading(m.id) ? 'rec' : ''}" data-a="msg-read" data-m="${esc(m.id)}" title="${voice.isReading(m.id) ? 'Stop reading' : 'Read aloud'}">${icon(voice.isReading(m.id) ? 'stop' : 'mic', 'sm')}</button>${!S.readOnly && AGENTS[m.who] ? `<button class="ib sm ghost" data-a="msg-retry" data-m="${esc(m.id)}" title="Retry (a new version of this answer)" ${busy ? 'disabled' : ''}>${icon('refresh', 'sm')}</button>` : ''}</div>`;
+  return `<div class="mctl">${ver}<button class="ib sm ghost" data-a="msg-copy" data-m="${esc(m.id)}" title="Copy">${icon('doc', 'sm')}</button><button class="ib sm ghost" data-a="humanize-msg" data-m="${esc(m.id)}" title="Make it sound human">${icon('user', 'sm')}</button><button class="ib sm ghost ${voice.isReading(m.id) ? 'rec' : ''}" data-a="msg-read" data-m="${esc(m.id)}" title="${voice.isReading(m.id) ? 'Stop reading' : 'Read aloud'}">${icon(voice.isReading(m.id) ? 'stop' : 'mic', 'sm')}</button>${!S.readOnly && AGENTS[m.who] ? `<button class="ib sm ghost" data-a="msg-retry" data-m="${esc(m.id)}" title="Retry (a new version of this answer)" ${busy ? 'disabled' : ''}>${icon('refresh', 'sm')}</button>` : ''}</div>`;
 }
 
 function message(m, latestChanges, last = false) {
@@ -1576,6 +1577,15 @@ function popHtml() {
 
 function modalHtml() {
   const m = S.modal;
+  if (m.kind === 'humanize') {
+    const list = humanizeTargets(m.from);
+    return `<div class="scrim dark" data-a="close-modal"></div><div class="modal wide"><div class="mhd"><b>Make it sound human</b><span class="grow"></span><button class="tb" data-a="close-modal">${icon('x', 'sm')}</button></div>
+      <p class="fine">Rewrites ${m.source === 'draft' ? 'your draft' : 'this reply'} so it reads less like AI, with Humanizer's rules (github.com/blader/humanizer, MIT). The facts stay the same.</p>
+      ${list.length ? `<div class="srow">Rewrite with<select id="hz-agent" aria-label="AI that rewrites it">${list.map((a) => `<option value="${esc(a)}" ${a === m.agent ? 'selected' : ''}>${esc(aiName(a))}</option>`).join('')}</select><button class="btn p" data-a="humanize-run" ${m.busy ? 'disabled' : ''}>${m.busy ? 'Rewriting…' : m.out ? 'Again' : 'Rewrite'}</button></div>` : `<p class="bad">No AI that answers by API is set up yet. Add Free AI or your GPU server in Settings › Accounts${UNFILTERED.includes(m.from) ? ' (an uncensored teammate\'s reply is only rewritten by Venice, your GPU server or Hearth devices)' : ''}.</p>`}
+      ${m.err ? `<p class="bad">${esc(m.err)}</p>` : ''}
+      ${m.out ? `<textarea id="hz-out" rows="12" class="grow" aria-label="Rewritten text">${esc(m.out)}</textarea><p class="faint">${esc(m.via || '')}</p>
+      <div class="mft"><button class="btn" data-a="humanize-copy">${icon('doc', 'sm')}Copy</button><button class="btn p" data-a="humanize-use">${m.source === 'draft' ? 'Use it as my draft' : 'Put it in my message box'}</button><button class="btn ghost" data-a="close-modal">Close</button></div>` : ''}</div>`;
+  }
   if (m.kind === 'diff') {
     const files = m.files || [];
     return `<div class="scrim dark" data-a="close-modal"></div><div class="modal wide diffm"><div class="mhd"><b>${esc(m.title)}</b>${m.branch ? `<span class="chip">${esc(m.branch)}</span>` : ''}<span class="grow"></span><button class="tb" data-a="close-modal">${icon('x', 'sm')}</button></div>
@@ -1713,6 +1723,9 @@ function section(k) {
       ${MEDIA_KEYS.map(([k2, label, what]) => `<div class="srow"><b>${esc(label)}</b><span class="d">${esc(what)} · ${S.mkeys.keys?.[k2] ? 'saved' : 'not added'}</span><span class="grow"></span><button class="mini" data-a="media-key" data-v="${k2}">${S.mkeys.keys?.[k2] ? 'Change' : 'Add key'}</button>${S.mkeys.keys?.[k2] ? `<button class="mini" data-a="media-unkey" data-v="${k2}">Remove</button>` : ''}</div>`).join('')}
       <div class="srow">On this PC<span class="d">web page screenshots: ${S.mkeys.screenshot ? 'yes (headless browser found)' : 'no Chromium or Chrome found'} · reading aloud: ${esc(S.mkeys.tts || 'Web Speech, or install espeak-ng')} · PDF text: ${S.mkeys.pdftotext ? 'pdftotext' : 'install poppler-utils, or add a Mistral key'}</span></div></div>
       <div class="box"><h3>${icon('users', 'sm')}More teammates</h3><p class="fine">Each one joins your team (Settings › AI team) once you add its key or address. Keys stay in the encrypted store. They are told the same hard limits: never sexual content involving minors, never sexual images of real, identifiable people, nothing illegal. What they make is shown to you but never forwarded to Claude, ChatGPT or Gemini.</p>
+      <div class="srow">${mono('free')}<b>Free AI</b><span class="d">free tiers of several providers with your own free keys: when one runs out, the next one answers · ${M.free?.ready ? `${(M.free.providers || []).filter((p) => p.key).length} added` : 'Add at least one free key'}</span></div>
+      ${(M.free?.providers || []).map((p) => `<div class="srow sub"><b>${esc(p.name)}</b><span class="d">${p.key ? `key saved${p.model ? ` · ${esc(p.model)}` : ''}${p.resting ? ' · at its free limit, resting' : ''}` : 'no key yet'}</span><span class="grow"></span>${p.key ? '' : `<a class="mini" href="${esc(p.keys)}" target="_blank" rel="noopener">Get a key</a>`}<button class="mini" data-a="mate-key" data-v="free.${esc(p.id)}">${p.key ? 'Change key' : 'Add key'}</button>${p.key ? `<button class="mini" data-a="mate-unkey" data-v="free.${esc(p.id)}">Remove</button>` : ''}</div>`).join('')}
+      <div class="note sub">Tried in this order; the reply says which one answered. Stay inside each provider's terms: one account each, for your own use. Based on FreeLLMAPI (github.com/tashfeenahmed/freellmapi, MIT).</div>
       <div class="srow">${mono('venice')}<b>Venice</b><span class="d">uncensored chat and pictures · ${M.keys?.venice ? 'key saved' : 'Add your Venice key'}</span><span class="grow"></span><button class="mini" data-a="mate-key" data-v="venice">${M.keys?.venice ? 'Change key' : 'Add key'}</button>${M.keys?.venice ? '<button class="mini" data-a="mate-unkey" data-v="venice">Remove</button>' : ''}</div>
       <div class="srow sub">Text model<select data-a="venice-model">${(M.models?.venice || []).map((x) => `<option ${c.venice?.model === x ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select>Picture model<select data-a="venice-image">${(M.models?.veniceImage || []).map((x) => `<option ${c.venice?.imageModel === x ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select><span class="d">pictures use safe_mode off (Venice's default blurs adult pictures)</span></div>
       <div class="srow">${mono('civitai')}<b>Civitai</b><span class="d">pictures (billed in Buzz) · mature content allowed · ${M.keys?.civitai ? 'token saved' : 'Add your Civitai key'}</span><span class="grow"></span><button class="mini" data-a="mate-key" data-v="civitai">${M.keys?.civitai ? 'Change token' : 'Add token'}</button>${M.keys?.civitai ? '<button class="mini" data-a="mate-unkey" data-v="civitai">Remove</button>' : ''}</div>
@@ -2179,6 +2192,34 @@ function restoreAddForm(k) {
   for (const [id, val] of [['sv-name', k.name], ['sv-type', k.type], ['sv-url', k.url], ['sv-key', k.key]]) { const el = document.getElementById(id); if (el && val != null) el.value = val; }
 }
 
+// "Make it sound human": the AIs that answer by API and are set up (Free AI first). What an
+// uncensored teammate wrote is only ever rewritten by an uncensored teammate (never Claude,
+// ChatGPT or Gemini).
+function humanizeTargets(from) {
+  const order = ['free', ...TEAM_IDS.filter((a) => a !== 'free')];
+  return order.filter((a) => a !== 'civitai' && method(a) === 'api' && ready(a) && (!UNFILTERED.includes(from) || UNFILTERED.includes(a)));
+}
+function openHumanize(source, text, from = 'owner', msgId = null) {
+  if (!String(text || '').trim()) return toast(source === 'draft' ? 'Type something first.' : 'This reply has no text.');
+  const list = humanizeTargets(from);
+  const agent = list.includes(S.humanAgent) ? S.humanAgent : list[0] || null;
+  S.modal = { kind: 'humanize', source, text: String(text), from, msgId, agent, out: '', err: '', busy: false };
+  renderOverlay();
+  if (agent) runHumanize();
+}
+async function runHumanize() {
+  const m = S.modal;
+  if (!m || m.kind !== 'humanize') return;
+  const pick = document.getElementById('hz-agent')?.value || m.agent;
+  if (!humanizeTargets(m.from).includes(pick)) return;
+  m.agent = pick; S.humanAgent = pick; m.busy = true; m.err = ''; renderOverlay();
+  const r = await call('humanize', { text: m.text, agent: pick });
+  if (S.modal !== m) return;
+  m.busy = false;
+  if (r?.ok) { m.out = r.text; m.via = r.via ? `Rewritten by ${r.via}` : `Rewritten by ${aiName(pick)}`; } else m.err = r?.message || 'The rewrite didn\'t come back.';
+  renderOverlay();
+}
+
 async function refreshMates() {
   S.mates = (await call('teammatesStatus')) || S.mates;
   S.mkeys = (await call('mediaKeys')) || S.mkeys;
@@ -2420,6 +2461,11 @@ document.addEventListener('click', async (ev) => {
     case 'chat-act': return chatAction(d.k, d.id);
     case 'close-pop': S.pop = null; S.pickRepo = null; S.pickBranch = null; return renderOverlay();
     case 'close-modal': S.modal = null; return renderOverlay();
+    case 'humanize-draft': return openHumanize('draft', document.getElementById('composer')?.value ?? S.draft);
+    case 'humanize-msg': { const m = msgById(d.m); return m ? openHumanize('msg', m.text, m.who, m.id) : undefined; }
+    case 'humanize-run': return runHumanize();
+    case 'humanize-copy': { const t = document.getElementById('hz-out')?.value ?? S.modal?.out ?? ''; try { await navigator.clipboard.writeText(t); toast('Copied.'); } catch { toast('Couldn\'t copy.'); } return; }
+    case 'humanize-use': { const t = document.getElementById('hz-out')?.value ?? S.modal?.out ?? ''; S.modal = null; S.draft = t; render(true); focusComposer(); return toast('Put in your message box. Nothing is sent until you press Send.'); }
     case 'rename-save': return finishRename(true);
     case 'toggle-hidden': S.showHidden = !S.showHidden; return renderSide();
     case 'toggle-trash': S.showTrash = !S.showTrash; return renderSide();
@@ -2616,7 +2662,7 @@ document.addEventListener('click', async (ev) => {
     case 'set-key': { const key = await secretPrompt(`Paste your ${aiName(d.v)} API key`); if (key) { const r = await call('setKey', d.v, key); if (r?.ok === false) toast(r.message); S.prov = (await call('providerStatus')) || S.prov; render(); } return; }
     case 'media-key': { const key = await secretPrompt(`Paste your ${MEDIA_KEYS.find((x) => x[0] === d.v)?.[1] || 'API key'}`); if (key) { const r = await call('mediaSetKey', d.v, key); if (r?.ok === false) toast(r.message); await refreshMates(); render(); } return; }
     case 'media-unkey': await call('mediaRemoveKey', d.v); await refreshMates(); return render();
-    case 'mate-key': { const key = await secretPrompt(`Paste your ${aiName(d.v)} ${d.v === 'civitai' ? 'API token' : 'API key'}`); if (key) { const r = await call('teammatesSetKey', d.v, key); if (r?.ok === false) toast(r.message); await refreshMates(); render(); } return; }
+    case 'mate-key': { const key = await secretPrompt(d.v.startsWith('free.') ? `Paste your free ${esc((S.mates.free?.providers || []).find((p) => `free.${p.id}` === d.v)?.name || '')} API key` : `Paste your ${aiName(d.v)} ${d.v === 'civitai' ? 'API token' : 'API key'}`); if (key) { const r = await call('teammatesSetKey', d.v, key); if (r?.ok === false) toast(r.message); await refreshMates(); render(); } return; }
     case 'mate-unkey': await call('teammatesRemoveKey', d.v); await refreshMates(); return render();
     case 'server-add': { const v = (id) => document.getElementById(id)?.value || ''; const r = await call('teammatesAddServer', { name: v('sv-name'), type: v('sv-type'), url: v('sv-url'), model: v('sv-model').trim(), key: v('sv-key'), workflow: v('sv-workflow').trim() }); if (r?.ok === false || r?.message) toast(r.message || 'Not added.'); else { toast(`Added ${r.name}. Turn on “Your GPU server” in Settings › AI team to use it.`); S.svAdd = {}; } await refreshMates(); if (r?.id) await loadServerModels(r.id); return render(); }
     case 'server-remove': await call('teammatesRemoveServer', d.id); if (S.svModels) delete S.svModels[d.id]; await refreshMates(); return render();

@@ -40,6 +40,9 @@ export const AGENTS = {
   venice: { name: 'Venice', vendor: 'Venice AI', cls: 'a-venice', kind: 'api', tool: 'Venice API', plan: 'an API key from your Venice account', install: '', headless: true, edits: false, api: true, unfiltered: true, images: true, mention: ['venice', 'veniceai'], web: 'https://venice.ai/', signin: 'https://venice.ai/settings/api', export: null },
   civitai: { name: 'Civitai', vendor: 'Civitai', cls: 'a-civitai', kind: 'api', tool: 'Civitai image API', plan: 'an API token from your Civitai account (billed in Buzz)', install: '', headless: true, edits: false, api: true, unfiltered: true, images: true, imagesOnly: true, mention: ['civitai', 'civit'], web: 'https://civitai.com/', signin: 'https://civitai.com/user/account', export: null },
   gpu: { name: 'Your GPU server', vendor: 'your own server', cls: 'a-gpu', kind: 'api', tool: 'your server (OpenAI-compatible chat or ComfyUI)', plan: 'your own rented or local GPU', install: '', headless: true, edits: false, api: true, unfiltered: true, images: true, mention: ['gpu', 'myserver', 'server', 'runpod', 'comfy', 'comfyui'], web: null, signin: null, export: null },
+  // Free AI (2.7): the free tiers of several providers (Cerebras, Groq, Google AI Studio, Mistral,
+  // OpenRouter) with his own keys, one after another when one is at its limit (electron/free-ai.cjs).
+  free: { name: 'Free AI', vendor: 'free tiers of several providers', cls: 'a-free', kind: 'api', tool: 'free tiers: Cerebras, Groq, Google AI Studio, Mistral, OpenRouter', plan: 'free keys from your own accounts', install: '', headless: true, edits: false, api: true, mention: ['free', 'freeai'], web: null, signin: null, export: null },
   // The AI the owner's Hearth OS machines share (Ollama chat, ComfyUI pictures, Kokoro voices,
   // whisper): the best device per job, his Nvidia PC first. His own machines; kept from the other AIs like his GPU server.
   hearth: { name: 'Hearth devices', vendor: 'your Hearth OS machines', cls: 'a-hearth', kind: 'api', tool: 'the AI your Hearth devices share (Ollama, ComfyUI, Kokoro, whisper)', plan: 'your own Hearth OS machines (no account)', install: '', headless: true, edits: false, api: true, unfiltered: true, images: true, mention: ['hearth', 'hearthdevices', 'devices', 'nvidiapc'], web: null, signin: null, export: null },
@@ -50,7 +53,7 @@ export const AGENTS = {
 };
 
 // Each AI's color (the same as the .a-* chips in styles.css).
-export const COLORS = { venice: '#e05a4f', civitai: '#3b82f6', gpu: '#8f9a5b', hearth: '#e08a4c', anthropic: '#d4a27f', openai: '#74c7a4', google: '#8ab4f8', xai: '#c9ccd1', mistral: '#fa7a35', qwen: '#8a7cf6', perplexity: '#20b8cd', deepseek: '#4d6bfe', ollama: '#e6ebe7', freebuff: '#a99be0', copilot: '#36b37e', meta: '#0a7cff' };
+export const COLORS = { free: '#5bb37a', venice: '#e05a4f', civitai: '#3b82f6', gpu: '#8f9a5b', hearth: '#e08a4c', anthropic: '#d4a27f', openai: '#74c7a4', google: '#8ab4f8', xai: '#c9ccd1', mistral: '#fa7a35', qwen: '#8a7cf6', perplexity: '#20b8cd', deepseek: '#4d6bfe', ollama: '#e6ebe7', freebuff: '#a99be0', copilot: '#36b37e', meta: '#0a7cff' };
 
 // Why each provider is a full team member or a web window (shown on the Agents page).
 export const ACCESS_NOTE = {
@@ -79,6 +82,7 @@ export const BILLING = {
   perplexity: 'API key — billed per use to your Perplexity API credits.',
   deepseek: 'API key — billed per use to your DeepSeek platform balance.',
   ollama: 'Free — runs on your own computer. No account, never runs out.',
+  free: 'Free — each provider\'s free tier with your own key. When one runs out, the next one answers.',
   freebuff: 'Free FreeBuff account (it has its own daily limits).',
   copilot: 'Your Microsoft account, inside Microsoft’s own site.',
   meta: 'Your Meta account, inside Meta’s own site.',
@@ -106,7 +110,7 @@ export const EDITORS = AGENT_IDS.filter((a) => AGENTS[a].headless && AGENTS[a].e
 export const API_CAPABLE = AGENT_IDS.filter((a) => AGENTS[a].api);
 
 // Teammates added in 2.x by key or URL (not part of the 1.x agent list).
-export const TEAMMATE_IDS = ['venice', 'civitai', 'gpu', 'hearth'];
+export const TEAMMATE_IDS = ['venice', 'civitai', 'gpu', 'hearth', 'free'];
 export const UNFILTERED = TEAMMATE_IDS.filter((a) => AGENTS[a].unfiltered);
 
 // @local, @LocalAI, @Local_AI, display names ("@Claude", "@ChatGPT"): case-insensitive.

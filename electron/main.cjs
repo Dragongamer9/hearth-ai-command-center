@@ -192,10 +192,10 @@ function cleanInstructions(c) {
   const t = (v) => (typeof v === 'string' ? v.slice(0, 3000) : '');
   return c && typeof c === 'object' && !Array.isArray(c) ? { about: t(c.about), style: t(c.style) } : { about: '', style: '' };
 }
-const TEAM_IDS = ['anthropic', 'openai', 'google', 'xai', 'mistral', 'qwen', 'perplexity', 'deepseek', 'ollama', 'venice', 'civitai', 'gpu', 'hearth'];
+const TEAM_IDS = ['anthropic', 'openai', 'google', 'xai', 'mistral', 'qwen', 'perplexity', 'deepseek', 'ollama', 'venice', 'civitai', 'gpu', 'hearth', 'free'];
 // Teammates by key or URL (electron/teammates.cjs; Hearth devices: electron/hearth-devices.cjs):
 // answered through their own API.
-const TEAMMATES = ['venice', 'civitai', 'gpu', 'hearth'];
+const TEAMMATES = ['venice', 'civitai', 'gpu', 'hearth', 'free'];
 function cleanTeam(t) {
   if (!t || typeof t !== 'object' || Array.isArray(t)) return null;
   const members = [...new Set((Array.isArray(t.members) ? t.members : []).filter((a) => TEAM_IDS.includes(a)))];
@@ -1110,6 +1110,16 @@ function registerIpc() {
   registerOps();
   registerV2();
   registerParity();
+  // "Make it sound human" (electron/humanizer.cjs) through the AI he picks, on its API path.
+  handle('humanize:run', (q) => {
+    const agent = String(q?.agent || '');
+    const ok = TEAMMATES.includes(agent) || API_ONLY.includes(agent) || (LIVE_PROVIDERS.includes(agent) && readSettings().connection[agent] === 'api');
+    if (!ok || agent === 'civitai') return { ok: false, message: 'Pick an AI that answers by API (Free AI, your GPU server, or one with an API key).' };
+    // The same Uncensored mode check (and model) as a chat with that AI.
+    const unc = studioLib.chatUncensored(readSettings(), agent, String(q?.text || ''));
+    if (unc && !unc.ok) return { ok: false, message: unc.message };
+    return require('./humanizer.cjs').humanize({ text: q?.text, agent, callApi: (a, _m, p, sig) => apiCall(a, unc?.model || null, p, sig) });
+  });
   teamCheck.register({
     handle, agents, readSettings, dataDir,
     methodOf: (agent) => (TEAMMATES.includes(agent) || API_ONLY.includes(agent) ? 'api' : (LIVE_PROVIDERS.includes(agent) && readSettings().connection[agent] === 'api') ? 'api' : 'cli'),
@@ -1129,6 +1139,19 @@ function registerParity() {
   });
 }
 
+// The app's own API path for one AI (teammates, API-only AIs, AIs switched to an API key).
+async function apiCall(agent, model, prompt, signal) {
+  if (agent === 'hearth') return parityApi ? parityApi.hearth.chat({ prompt, model, signal }) : { ok: false, error: { kind: 'auth', message: 'Not ready.' } };
+  if (TEAMMATES.includes(agent)) return parityApi ? parityApi.teammates.chat(agent, { prompt, model, signal }) : { ok: false, error: { kind: 'auth', message: 'Not ready.' } };
+  const r = await callProvider({ provider: agent, apiKey: secrets.get(agent), model: validateModel(model || DEFAULT_MODELS[agent]), prompt });
+  if (!r.ok) {
+    if (r.error.kind === 'rate_limit' || agents.isLimit(r.error.message)) r.error.kind = 'limit';
+    else if (r.error.kind === 'server' || r.error.kind === 'network') r.error.kind = 'outage';
+    else if (r.error.kind === 'no_key') r.error.kind = 'auth';
+  }
+  return r.ok ? { ...r, via: 'API' } : r;
+}
+
 // 2.x chats (electron/v2.cjs): runs in temporary copies, GitHub, previews, saved data.
 let v2Api = null;
 function registerV2() {
@@ -1146,17 +1169,7 @@ function registerV2() {
     extraAgents: TEAMMATES,
     guardSettings,
     apiConnected: (agent) => TEAMMATES.includes(agent) || API_ONLY.includes(agent) || (LIVE_PROVIDERS.includes(agent) && readSettings().connection[agent] === 'api'),
-    callApi: async (agent, model, prompt, signal) => {
-      if (agent === 'hearth') return parityApi ? parityApi.hearth.chat({ prompt, model, signal }) : { ok: false, error: { kind: 'auth', message: 'Not ready.' } };
-      if (TEAMMATES.includes(agent)) return parityApi ? parityApi.teammates.chat(agent, { prompt, model, signal }) : { ok: false, error: { kind: 'auth', message: 'Not ready.' } };
-      const r = await callProvider({ provider: agent, apiKey: secrets.get(agent), model: validateModel(model || DEFAULT_MODELS[agent]), prompt });
-      if (!r.ok) {
-        if (r.error.kind === 'rate_limit' || agents.isLimit(r.error.message)) r.error.kind = 'limit';
-        else if (r.error.kind === 'server' || r.error.kind === 'network') r.error.kind = 'outage';
-        else if (r.error.kind === 'no_key') r.error.kind = 'auth';
-      }
-      return r.ok ? { ...r, via: 'API' } : r;
-    },
+    callApi: (agent, model, prompt, signal) => apiCall(agent, model, prompt, signal),
   });
 }
 

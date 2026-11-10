@@ -53,7 +53,7 @@ input.code{font-size:30px;letter-spacing:10px;width:100%;text-align:center;backg
 <script>
 const esc=(s)=>String(s==null?'':s).replace(/[&<>"']/g,(c)=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let tab='wait',snap=null,seen=null;
-const MONO={anthropic:['C','#b9772e'],openai:['G','#3f8a6b'],google:['Ge','#4a73b5'],xai:['X','#5d5a57'],mistral:['M','#b8613a'],qwen:['Q','#6a5fb5'],perplexity:['P','#2f7f8f'],deepseek:['D','#4a5fb0'],ollama:['L','#2f8a8a'],freebuff:['F','#8a5aa8'],copilot:['Co','#3d8a63'],meta:['Me','#3b6fc0']};
+const MONO={anthropic:['C','#b9772e'],openai:['G','#3f8a6b'],google:['Ge','#4a73b5'],xai:['X','#5d5a57'],mistral:['M','#b8613a'],qwen:['Q','#6a5fb5'],perplexity:['P','#2f7f8f'],deepseek:['D','#4a5fb0'],ollama:['L','#2f8a8a'],freebuff:['F','#8a5aa8'],free:['Fr','#3f8a5a'],copilot:['Co','#3d8a63'],meta:['Me','#3b6fc0']};
 const av=(id)=>{const m=MONO[id]||[String(n(id)||'?').slice(0,1),'#7a7166'];return '<span class="av" style="background:'+m[1]+'">'+esc(m[0])+'</span>';};
 async function api(path,body){const r=await fetch(path,body?{method:'POST',headers:{'Content-Type':'application/json','X-Hearth':'1'},body:JSON.stringify(body),credentials:'same-origin'}:{credentials:'same-origin'});return r.json().catch(()=>({ok:false}));}
 function pairView(msg){document.getElementById('tabs').hidden=true;document.getElementById('bar').hidden=true;
