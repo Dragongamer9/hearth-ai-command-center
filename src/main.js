@@ -1085,6 +1085,7 @@ function renderSide() {
     <label class="search">${icon('search', 'sm')}<input id="chat-search" placeholder="Search chats" value="${esc(S.search)}" aria-label="Search chats"></label>
     <button class="navitem ${['characters', 'card', 'lorebooks'].includes(S.view) ? 'on' : ''}" data-a="characters" title="Character cards, lorebooks and your persona">${icon('user', 'sm')}Characters<span class="faint">${S.cards ? S.cards.length : ''}</span></button>
     <button class="navitem ${S.view === 'studio' ? 'on' : ''}" data-a="studio" title="Pictures and videos made on your PC (ComfyUI)">${icon('pic', 'sm')}Images &amp; Videos<span class="faint">${S.studio.data?.jobs?.length ? `${S.studio.data.jobs.length} on your PC` : ''}</span></button>
+    <button class="navitem ${S.view === 'reverse' ? 'on' : ''}" data-a="reverse" title="Look inside programs with REA and your AI">${icon('code', 'sm')}Reverse Engineering<span class="faint">${S.re?.projects?.length ? S.re.projects.length : ''}</span></button>
     <button class="navitem hab ${S.view === 'habitat' ? 'on' : ''}" data-a="habitat" title="Your AI team's Habitat">${icon('home', 'sm')}Habitat<span class="faint">${esc(S.lastChat && entry(S.lastChat) ? entry(S.lastChat).title.slice(0, 22) : 'your team')}</span></button>
     <div class="list" id="chat-list">
       ${S.broken ? '<div class="note bad">Your chats list couldn\'t be read. It was left as it is; new chats can\'t be saved until it\'s fixed.</div>' : ''}
@@ -1104,6 +1105,7 @@ function renderSide() {
 function topbar() {
   const c = entry();
   if (S.view === 'studio') return `<span class="ttl">Images &amp; Videos</span><span class="grow"></span>`;
+  if (S.view === 'reverse') return `<span class="ttl">Reverse Engineering</span><span class="grow"></span>`;
   const title = S.view === 'settings' ? 'Settings' : S.view === 'habitat' ? 'Habitat' : ['characters', 'card', 'lorebooks'].includes(S.view) ? 'Characters' : S.view === 'chat' ? (c?.title || 'Chat') : '';
   if (['characters', 'card', 'lorebooks'].includes(S.view)) return `<span class="ttl">${esc(title)}</span><span class="grow"></span>`;
   const chip = S.view === 'chat' && c && (c.repo || c.repoDir) ? `<button class="chip" data-a="repo-pop" title="Connected repo">${icon('gh', 'sm')}${esc(c.repo || c.repoDir)} <span class="faint">· ${esc(c.branch || S.copy?.base || 'default branch')}</span></button>` : '';
@@ -1126,6 +1128,7 @@ function renderMain(scroll = false) {
   if (S.view === 'settings') { html = settingsView(); dock = ''; }
   else if (S.view === 'habitat') { html = `<div class="habwrap">${viewHabitat()}</div>`; dock = ''; }
   else if (S.view === 'studio') { stSync(); html = stHtml(); dock = ''; }
+  else if (S.view === 'reverse') { html = reverseView(); dock = ''; }
   else if (S.view === 'characters') { html = charactersView(); dock = ''; }
   else if (S.view === 'card') { html = cardEditView(); dock = ''; queueMicrotask(() => cfRun(false)); }
   else if (S.view === 'lorebooks') { html = lorebooksView(); dock = ''; }
@@ -1388,6 +1391,38 @@ function ageBox(c) {
   return `<label class="field" id="card-age">Set age (18+)<input type="number" data-cf="ownerAge" min="18" max="999" step="1" inputmode="numeric" value="${esc(hard ? '' : ownerAgeOf(c))}" placeholder="${hard ? 'can\'t be set: hard flag' : 'for example 25'}" ${hard ? 'disabled' : ''} aria-label="The character's age, 18 or more"></label>
     <div class="fine">${hard ? 'This card has a hard flag, so no age can clear it.' : 'Saved when you press Save, kept in this app only (never in exported card files). An adult age clears soft flags. Leave it empty to remove it.'}</div>`;
 }
+// Reverse Engineering (electron/reverse.cjs): REA, a connector only for these projects' chats.
+function reverseView() {
+  const r = S.re;
+  if (!r) return '<div class="col"><div class="fine">Loading…</div></div>';
+  const ok = (b) => (b ? `<span class="ok">${icon('check', 'sm')}</span>` : `<span class="bad">${icon('x', 'sm')}</span>`);
+  const ready = r.node.ok && r.npx;
+  return `<div class="col">
+    <h1>Reverse Engineering</h1>
+    <p class="fine">Pick a program and your AI looks inside it with <b>REA</b> (Reverse Engineer Anything, github.com/morluto/rea, MIT): what it is, what it's built with, what each part does, with the evidence for each answer. It works on Windows programs and DLLs, Linux programs, Electron and JavaScript apps, .NET, Android apps, firmware and network captures. Use it only on software you own or are allowed to look at, for things like making it work on Linux or keeping it alive.</p>
+    ${r.broken ? '<div class="note bad">Your Reverse Engineering file couldn\'t be read. It was left as it is; nothing here can be saved until it\'s fixed.</div>' : ''}
+    <div class="box"><h3>${icon('gear', 'sm')}REA</h3>
+      <div class="srow"><b>REA ${esc(r.version)}</b><span class="d">${r.enabled ? 'On: given to the chats of your projects below, and to no other chat' : 'Off: no chat gets it'}</span><span class="grow"></span><button class="mini ${r.enabled ? '' : 'p'}" data-a="re-onoff" data-v="${r.enabled ? '0' : '1'}" ${!r.enabled && !ready ? 'disabled' : ''}>${r.enabled ? 'Turn off' : 'Turn on'}</button></div>
+      <div class="srow">${ok(r.node.ok)}<b>Node.js</b><span class="d">${r.node.found ? `${esc(r.node.version)}${r.node.ok ? '' : ' · REA needs 22.23.4 or newer (or 24.22.1+, 26.12.1+)'}` : 'not found: install Node.js 22 or newer'}</span></div>
+      <div class="srow">${ok(r.npx)}<b>npx</b><span class="d">${r.npx ? 'found: REA is fetched by it the first time, then kept' : 'not found (it comes with Node.js)'}</span></div>
+      <div class="srow">${ok(r.ghidra.ok || Boolean(r.ghidra.onPath))}<b>Ghidra</b><span class="d">${r.ghidra.ok ? esc(r.ghidra.dir) : r.ghidra.onPath ? `found on this PC (${esc(r.ghidra.onPath)})` : 'optional: needed for Windows and Linux programs (12.1 or newer, free from ghidra-sre.org). Java ' + (r.java ? esc(r.java) : 'not found: it needs JDK 21 or newer')}</span><span class="grow"></span><button class="mini" data-a="re-ghidra">${r.ghidra.dir ? 'Change folder' : 'Pick Ghidra folder'}</button>${r.ghidra.dir ? '<button class="mini" data-a="re-ghidra-clear">Forget</button>' : ''}</div>
+      <p class="fine">REA runs on this PC and only reads the program. What it finds is sent to the AI you use in the chat, under that AI's rules. Its own setup is never run, so nothing is added to Claude Code's, Codex's or Gemini's own settings.</p>
+    </div>
+    <div class="box"><h3>${icon('folder', 'sm')}Your projects</h3>
+      <div class="srow"><span class="d">Each project is one program and its own chat. Use Claude Code, Codex or Gemini as the lead: REA works through them.</span><span class="grow"></span><button class="btn p" data-a="re-new" ${r.broken ? 'disabled' : ''}>${icon('plus', 'sm')}New project</button></div>
+      ${r.projects.length ? r.projects.slice().reverse().map((p) => `<div class="srow">${icon('doc', 'sm')}<b>${esc(p.name)}</b><span class="d">${esc(p.kind)} · <span class="mono">${esc(p.path)}</span>${p.exists ? '' : ' · <span class="bad">file not found</span>'}</span><span class="grow"></span>${p.chat ? `<button class="mini p" data-a="re-open" data-id="${esc(p.chatId)}">Open chat</button>` : '<span class="faint">chat deleted</span>'}<button class="mini" data-a="re-remove" data-id="${esc(p.id)}" title="Takes it off this list; its chat stays in Chats">Remove</button></div>`).join('') : '<p class="fine">No projects yet. Press New project and pick a program.</p>'}
+    </div>
+  </div>`;
+}
+async function openReverse() { S.view = 'reverse'; S.open = null; render(true); S.re = await call('reverseStatus'); render(); }
+async function openReChat(id, first) {
+  await loadChats();
+  await openChat(id);
+  if (!first) { const r = await call('reverseFirst', id); first = r?.ok ? r.first : ''; }
+  if (first && !S.msgs.length && !String(S.draft || '').trim()) { S.draft = first; render(true); focusComposer(); toast('Your first message is ready. Nothing is sent until you press Send.'); }
+  if (S.re && !S.re.enabled) toast('REA is off, so this chat can\'t use it yet: turn it on in Reverse Engineering.');
+}
+
 function charactersView() {
   if (S.cards === null) return '<div class="col"><div class="fine">Loading…</div></div>';
   const colls = S.colls || [];
@@ -2424,6 +2459,13 @@ document.addEventListener('click', async (ev) => {
     case 'temp-chat': return startTemp();
     case 'temp-end': ev.stopPropagation(); return endTemp(d.id);
     case 'studio': return openStudio();
+    case 'reverse': return openReverse();
+    case 're-onoff': { const r = await call('reverseSetEnabled', d.v === '1'); if (r?.ok === false || r?.message) toast(r.message || 'Not saved.'); return openReverse(); }
+    case 're-ghidra': { const r = await call('reversePickGhidra'); if (r && !r.canceled && (r.ok === false || r.message)) toast(r.message || 'Not saved.'); return openReverse(); }
+    case 're-ghidra-clear': await call('reverseClearGhidra'); return openReverse();
+    case 're-new': { const r = await call('reverseNewProject'); if (!r || r.canceled) return; if (r.ok === false || r.message) return toast(r.message || 'Not saved.'); S.re = await call('reverseStatus'); return openReChat(r.chat.id, r.first); }
+    case 're-open': return openReChat(d.id);
+    case 're-remove': await call('reverseRemoveProject', d.id); return openReverse();
     case 'unc-on': { const r = await setSettings({ uncensored: { on: !(S.settings.uncensored?.on === true) } }); if (S.studio.data && r?.uncensored) S.studio.data = { ...S.studio.data, uncensored: r.uncensored.on }; return render(); }
     case 'st-kind': stSync(); S.studio.f.kind = d.v === 'video' ? 'video' : 'image'; S.studio.f.size = ''; return render();
     case 'st-more': stSync(); S.studio.f.more = !S.studio.f.more; return render();

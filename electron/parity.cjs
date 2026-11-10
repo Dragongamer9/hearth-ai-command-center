@@ -59,6 +59,24 @@ function register(d) {
   const root = media.mediaRoot(dataDir());
   const memory = createMemory(path.join(dataDir(), 'memory.json'));
   const connectors = createConnectors({ file: path.join(dataDir(), 'connectors.json'), secrets });
+  // Reverse Engineering (electron/reverse.cjs): REA only for chats started from that section.
+  const reverse = require('./reverse.cjs').createReverse({ file: path.join(dataDir(), 'reverse.json'), chats });
+  handle('reverse:status', () => reverse.status());
+  handle('reverse:setEnabled', (on) => reverse.setEnabled(on === true));
+  handle('reverse:pickGhidra', async () => {
+    const r = await dialog.showOpenDialog(getWindow(), { title: 'Pick your Ghidra folder', properties: ['openDirectory'] });
+    if (r.canceled || !r.filePaths[0]) return { ok: false, canceled: true };
+    return reverse.setGhidra(r.filePaths[0]);
+  });
+  handle('reverse:clearGhidra', () => reverse.setGhidra(null));
+  handle('reverse:newProject', async () => {
+    const r = await dialog.showOpenDialog(getWindow(), { title: 'Pick the program to look at', properties: ['openFile'] });
+    if (r.canceled || !r.filePaths[0]) return { ok: false, canceled: true };
+    const out = reverse.addProject(r.filePaths[0]);
+    return { ...out, first: reverse.firstMessage(out.project) };
+  });
+  handle('reverse:removeProject', (id) => reverse.removeProject(String(id)));
+  handle('reverse:first', (id) => { const p = reverse.projectFor(String(id)); return p ? { ok: true, first: reverse.firstMessage(p) } : { ok: false }; });
   const habitat = createJsonFile(path.join(dataDir(), 'habitat.json'), { empty: () => null, check: (j) => typeof j === 'object', label: 'Your Habitat file' });
   const teammates = d.teammates || createTeammates({ secrets, file: path.join(dataDir(), 'servers.json'), settings: readSettings });
   // Hearth devices: the AI his Hearth OS machines share (electron/hearth-devices.cjs).
@@ -622,7 +640,7 @@ function register(d) {
   // CosyVoice2 voice clips (his, with consent) live in voice-clips/<server id>/, never in settings.
   const voice = voiceChat.register({ handle, secrets, readSettings, send, which: makers.which, media, mediaRoot: root, dialog, getWindow, clipsDir: path.join(dataDir(), 'voice-clips'), hearth });
 
-  return { studio, memory, scheduler, connectors, teammates, hearth, makeScene, cards, rpGuard, docText, mcpForRun: (dir) => connectors.forRun(dir), stop() { scheduler.stop(); makers.stopSpeaking(); voice.stop(); } };
+  return { studio, memory, scheduler, connectors, teammates, hearth, makeScene, cards, rpGuard, docText, mcpForRun: (dir, chatId) => connectors.forRun(dir, [reverse.serverFor(chatId)].filter(Boolean)), stop() { scheduler.stop(); makers.stopSpeaking(); voice.stop(); } };
 }
 
 module.exports = { register, transcriptOf, shieldLine, KEY_NAMES, UNFILTERED };

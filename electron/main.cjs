@@ -1158,7 +1158,7 @@ function registerV2() {
   v2Api = v2.register({
     handle, dataDir, readSettings, chats, agents, gitops, attachments, history, redact, send, dialog, shell, worktreeRoot, runs, protocol,
     getWindow: () => mainWindow,
-    mcpForRun: (dir) => (parityApi ? parityApi.mcpForRun(dir) : null),
+    mcpForRun: (dir, chatId) => (parityApi ? parityApi.mcpForRun(dir, chatId) : null),
     rpGuard: (...a) => (parityApi ? parityApi.rpGuard(...a) : { ok: true }),
     assetsEnv: (agent, cwd) => (opsApi ? opsApi.assetsEnv(agent, cwd) : undefined),
     validateProvider, validatePrompt, validateModel,
