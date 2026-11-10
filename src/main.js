@@ -38,7 +38,7 @@ import { defaultsFrom, prefsFor, prefsOf, samePrefs, applyPrefs, rememberPrefs }
 import { FIND_FIELDS, searchFields, stepIndex, replaceAllFields, snippet, cardMatches, matchedIn } from './app/card-find.mjs';
 
 const api = window.hearth || null;
-const TEAM_IDS = ['anthropic', 'openai', 'google', 'xai', 'mistral', 'qwen', 'perplexity', 'deepseek', 'ollama', ...TEAMMATE_IDS];
+const TEAM_IDS = ['anthropic', 'openai', 'google', 'xai', 'mistral', 'qwen', 'perplexity', 'deepseek', 'ollama', ...TEAMMATE_IDS, 'freebuff'];
 const MONO = { free: ['Fr', '#3f8a5a'], hearth: ['H', '#c8743a'], anthropic: ['C', '#c96b3c'], openai: ['G', '#3f8f6f'], google: ['Ge', '#4b6fd0'], xai: ['X', '#5d636b'], mistral: ['M', '#6b5bd2'], qwen: ['Q', '#7a5cc9'], perplexity: ['P', '#1f8a99'], deepseek: ['D', '#3d56c9'], ollama: ['L', '#6d746e'], freebuff: ['F', '#8a7bc6'], venice: ['V', '#c2453b'], civitai: ['Ci', '#2f6fd6'], gpu: ['GP', '#6f7a3e'] };
 const QUICK = [
   ['gh', 'Fix a bug in a repo', 'There\'s a bug I want fixed: '],
@@ -99,6 +99,8 @@ function missingNote() {
 }
 function method(a) { return AGENTS[a]?.kind === 'api' ? 'api' : S.settings.connection?.[a] === 'api' ? 'api' : 'cli'; }
 function ready(a) {
+  // 3.1: answered through his own signed-in website (the web sign-in bridge), when he turned that on.
+  if (S.settings.webBridge?.[a] === true) return true;
   if (!AGENTS[a]?.headless) return false;
   if (TEAMMATE_IDS.includes(a)) return Boolean(S.mates.ready?.[a]);
   if (method(a) === 'api') return Boolean(S.prov.keys?.[a]);
@@ -1844,8 +1846,11 @@ function section(k) {
     const c = M.conf || {};
     return `<h1>Accounts</h1>${keyringNote()}<div class="box"><h3>Your AI accounts</h3><p class="fine">Each AI signs in with your own account in its own official app. The Command Center never holds your passwords.</p>
       ${TEAM_IDS.filter((a) => !TEAMMATE_IDS.includes(a)).map((a) => { const cl = S.cli[a] || {}; const isApi = method(a) === 'api'; const st = isApi ? (S.prov.keys?.[a] ? 'API key saved' : 'needs an API key') : !cl.installed ? 'not installed' : cl.signedIn === false ? 'not signed in' : cl.signedIn ? 'signed in' : 'installed'; return `<div class="srow">${mono(a)}<b>${esc(aiName(a))}</b><span class="d">${esc(AGENTS[a].tool)} · ${esc(st)}</span><span class="grow"></span>${isApi ? `<button class="mini" data-a="set-key" data-v="${a}">${S.prov.keys?.[a] ? 'Change key' : 'Add key'}</button>` : !cl.installed && a !== 'ollama' ? `<button class="mini" data-a="install" data-v="${a}">Install</button>` : cl.signedIn === false ? `<button class="mini" data-a="signin" data-v="${a}">Sign in</button>` : ''}<button class="mini" data-a="recheck" data-v="${a}">Re-check</button></div>`; }).join('')}</div>
+      <div class="box"><h3>Web sign-in bridge</h3><p class="fine">For AIs with no official way to use your account from another app (only paid API keys): the Command Center asks them through their own website, signed in as you, in a hidden window that keeps your sign-in to itself. One question at a time, at a person's pace; text only (they can't read or change your files). <b>This is against these sites' terms and your account could be suspended.</b> Each one is off until you turn it on, and their websites can change and stop it working until the app is updated.</p>
+      ${[['perplexity', 'research with sources'], ['deepseek', 'reasoning and second opinions'], ['venice', 'uncensored chat, kept apart from the others'], ['freebuff', 'your free FreeBuff account, now in team chats']].map(([a, what]) => `<div class="srow">${mono(a)}<b>${esc(aiName(a))}</b><span class="d">${esc(what)} · ${S.settings.webBridge?.[a] ? 'using your web sign-in' : 'off'}</span><span class="grow"></span><button class="mini" data-a="bridge-show" data-v="${a}" title="Open its window to sign in, or watch it work">Open</button>${tog(S.settings.webBridge?.[a] === true, 'bridge-toggle', `data-v="${a}" aria-label="Use my ${esc(aiName(a))} web sign-in"`)}</div>`).join('')}
+      <div class="note sub">Sign in first: press Open, sign in on the site, close the window. While the bridge is on, it's used instead of that AI's API key.</div></div>
       <div class="box"><h3>FreeBuff on the web</h3><div class="srow">${mono('freebuff')}<b>FreeBuff</b><span class="d">opens freebuff.com in its own window here. Sign in there once with your FreeBuff account; it stays signed in. Your FreeBuff chats live in FreeBuff's cloud, so the ones from your phone are there too.</span><span class="grow"></span><button class="mini" data-a="open-freebuff">Open FreeBuff</button></div>
-      <div class="note sub">FreeBuff has no official way for other apps to drive it yet, so it can't join team chats. The Command Center never reads or copies your FreeBuff login; the window is sandboxed and gets nothing from this app.</div></div>
+      <div class="note sub">FreeBuff has no official way for other apps to drive it yet. To have it in team chats, turn on its web sign-in bridge above. The Command Center never reads or copies your FreeBuff login; its windows are sandboxed and get nothing from this app.</div></div>
       <div class="box"><h3>${icon('eye', 'sm')}Pictures, videos and documents</h3><p class="fine">The AIs' own picture and video tools through their official APIs, with your own keys (saved encrypted on this PC). Each use is billed to that account.</p>
       ${MEDIA_KEYS.map(([k2, label, what]) => `<div class="srow"><b>${esc(label)}</b><span class="d">${esc(what)} · ${S.mkeys.keys?.[k2] ? 'saved' : 'not added'}</span><span class="grow"></span><button class="mini" data-a="media-key" data-v="${k2}">${S.mkeys.keys?.[k2] ? 'Change' : 'Add key'}</button>${S.mkeys.keys?.[k2] ? `<button class="mini" data-a="media-unkey" data-v="${k2}">Remove</button>` : ''}</div>`).join('')}
       <div class="srow">On this PC<span class="d">web page screenshots: ${S.mkeys.screenshot ? 'yes (headless browser found)' : 'no Chromium or Chrome found'} · reading aloud: ${esc(S.mkeys.tts || 'Web Speech, or install espeak-ng')} · PDF text: ${S.mkeys.pdftotext ? 'pdftotext' : 'install poppler-utils, or add a Mistral key'}</span></div></div>
@@ -2780,6 +2785,12 @@ document.addEventListener('click', async (ev) => {
     case 'unpushed-force': { const m = S.modal; S.modal = null; render(); if (m.then === 'delete') return deleteChat(m.chatId, { force: true }); const r = await call('copiesRemove', m.chatId, true); if (!r?.ok) { if (!r?.cancelled) toast(r?.message || 'Kept.'); return; } if (m.then === 'connect') { S.pop = { chatId: m.chatId }; return chooseRepo(m.conn?.repo || null, m.conn?.branch || null); } await loadChats(); if (S.copies) await loadCopies(); return render(); }
     // settings (each one only from the owner's own click)
     case 'team-member': { const t = team(); const v = d.v; const members = t.members.includes(v) ? t.members.filter((x) => x !== v) : [...t.members, v]; return setSettings({ team: { ...t, members, reviewer: t.reviewer === v && !members.includes(v) ? null : t.reviewer } }); }
+    case 'bridge-show': { const r = await call('bridgeShow', d.v); if (r && r.ok === false) toast('That window couldn\'t open.'); return; }
+    case 'bridge-toggle': {
+      const on = S.settings.webBridge?.[d.v] === true;
+      if (!on && !confirm(`Use your ${aiName(d.v)} web sign-in?\n\nThe Command Center will ask ${aiName(d.v)} through its website, signed in as you. This is against ${aiName(d.v)}'s terms, and your account could be suspended. You can turn it off any time.`)) return;
+      return setSettings({ webBridge: { [d.v]: !on } });
+    }
     case 'team-parallel': return setSettings({ teamParallel: S.settings.teamParallel === false });
     case 'make-lead': { const t = team(); return setSettings({ team: { ...t, lead: d.v, reviewer: t.reviewer === d.v ? t.lead : t.reviewer } }); }
     case 'make-reviewer': return setSettings({ team: { ...team(), reviewer: d.v } });

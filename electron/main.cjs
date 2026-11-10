@@ -20,6 +20,8 @@ const imports = require('./imports.cjs');
 const { createHistory } = require('./history.cjs');
 const theme = require('./theme.cjs');
 const web = require('./webapps.cjs');
+const webBridgeLib = require('./web-bridge.cjs');
+let webBridge = null;
 const { LIVE_PROVIDERS } = require('./validate.cjs');
 const { cleanSavedLevels } = require('./ops/approval.cjs');
 const { cleanIdentity } = require('./ops/identity.cjs');
@@ -160,6 +162,8 @@ function normalSettings(s) {
     team: cleanTeam(s.team),
     // 2.10: everyone the lead picks works at the same time (each in its own copy). On unless the owner turns it off.
     teamParallel: s.teamParallel !== false,
+    // 3.1: Perplexity, DeepSeek, Venice, FreeBuff through his signed-in website. Each off until he turns it on.
+    webBridge: webBridgeLib.cleanBridge(s.webBridge),
     // New in this version: defaults shown at read time, saved only when the owner changes one.
     // A desktop notification when a long turn finishes or an AI needs him.
     notify: s.notify !== false,
@@ -196,7 +200,7 @@ function cleanInstructions(c) {
   const t = (v) => (typeof v === 'string' ? v.slice(0, 3000) : '');
   return c && typeof c === 'object' && !Array.isArray(c) ? { about: t(c.about), style: t(c.style) } : { about: '', style: '' };
 }
-const TEAM_IDS = ['anthropic', 'openai', 'google', 'xai', 'mistral', 'qwen', 'perplexity', 'deepseek', 'ollama', 'venice', 'civitai', 'gpu', 'hearth', 'free'];
+const TEAM_IDS = ['anthropic', 'openai', 'google', 'xai', 'mistral', 'qwen', 'perplexity', 'deepseek', 'ollama', 'venice', 'civitai', 'gpu', 'hearth', 'free', 'freebuff'];
 // Teammates by key or URL (electron/teammates.cjs; Hearth devices: electron/hearth-devices.cjs):
 // answered through their own API.
 const TEAMMATES = ['venice', 'civitai', 'gpu', 'hearth', 'free'];
@@ -319,6 +323,8 @@ function createWindow() {
     mainWindow.webContents.setZoomFactor(readSettings().textSize / 100);
   });
   mainWindow.once('ready-to-show', () => mainWindow.show());
+  // The web bridge's hidden windows must never keep the app running after its window closes.
+  mainWindow.on('closed', () => webBridge?.closeAll());
   // The microphone (voice chat) only for this window's own page; never for previews or web windows.
   voicePerms.install(mainWindow, { devUrl: process.env.VITE_DEV_SERVER_URL });
   // No navigating away from the app. Reloading the app's own page is allowed: switching projects and
@@ -523,6 +529,7 @@ function registerIpc() {
     if ('previewNetwork' in patch) s.previewNetwork = patch.previewNetwork === true;
     if ('team' in patch) s.team = cleanTeam(patch.team);
     if ('teamParallel' in patch) s.teamParallel = patch.teamParallel === true;
+    if ('webBridge' in patch) s.webBridge = webBridgeLib.cleanBridge({ ...webBridgeLib.cleanBridge(s.webBridge), ...(patch.webBridge && typeof patch.webBridge === 'object' ? patch.webBridge : {}) });
     if ('notify' in patch) s.notify = patch.notify === true;
     if ('autoRead' in patch) s.autoRead = patch.autoRead === true;
     if ('maxChats' in patch) {
@@ -616,6 +623,7 @@ function registerIpc() {
   });
   // The provider's own chat site in a sandboxed in-app window (you sign in there).
   handle('web:open', (provider) => openWeb(String(provider)));
+  handle('bridge:show', (id) => (webBridge ? webBridge.show(String(id)) : { ok: false }));
   handle('web:openExport', (provider) => {
     const url = web.EXPORT[provider];
     if (!url) return { ok: false, message: 'This provider offers no chat export.' };
@@ -1147,6 +1155,8 @@ function registerParity() {
 
 // The app's own API path for one AI (teammates, API-only AIs, AIs switched to an API key).
 async function apiCall(agent, model, prompt, signal) {
+  // 3.1: his own signed-in website instead of a paid key, only when he turned the bridge on for this AI.
+  if (webBridge && readSettings().webBridge[agent] === true) return webBridge.ask(agent, prompt, signal);
   if (agent === 'hearth') return parityApi ? parityApi.hearth.chat({ prompt, model, signal }) : { ok: false, error: { kind: 'auth', message: 'Not ready.' } };
   if (TEAMMATES.includes(agent)) return parityApi ? parityApi.teammates.chat(agent, { prompt, model, signal }) : { ok: false, error: { kind: 'auth', message: 'Not ready.' } };
   const r = await callProvider({ provider: agent, apiKey: secrets.get(agent), model: validateModel(model || DEFAULT_MODELS[agent]), prompt });
@@ -1174,7 +1184,7 @@ function registerV2() {
     stateFileFor: (id) => ops.projectStateFile(id),
     extraAgents: TEAMMATES,
     guardSettings,
-    apiConnected: (agent) => TEAMMATES.includes(agent) || API_ONLY.includes(agent) || (LIVE_PROVIDERS.includes(agent) && readSettings().connection[agent] === 'api'),
+    apiConnected: (agent) => readSettings().webBridge[agent] === true || TEAMMATES.includes(agent) || API_ONLY.includes(agent) || (LIVE_PROVIDERS.includes(agent) && readSettings().connection[agent] === 'api'),
     callApi: (agent, model, prompt, signal) => apiCall(agent, model, prompt, signal),
   });
 }
@@ -1212,6 +1222,7 @@ app.whenReady().then(async () => {
   chats = createChats(dataDir(), { onPurge: (id) => require('./media.cjs').removeChat(require('./media.cjs').mediaRoot(dataDir()), id) });
   history = createHistory(historyFile());
   openWeb = web.createWebWindows({ BrowserWindow, shell, iconPath: path.join(__dirname, '..', 'dist', 'icon.png') });
+  webBridge = webBridgeLib.createWebBridge({ BrowserWindow, iconPath: path.join(__dirname, '..', 'dist', 'icon.png') });
   theme.watchTheme((t) => send('theme:changed', t));
   updater = createUpdater({ app, send });
   registerIpc();
@@ -1223,6 +1234,7 @@ app.whenReady().then(async () => {
 
 app.on('before-quit', () => {
   for (const c of runs.values()) c.abort();
+  webBridge?.closeAll();
   opsApi?.stop();
   v2Api?.stop();
   parityApi?.stop();
