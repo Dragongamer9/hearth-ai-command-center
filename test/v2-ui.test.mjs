@@ -173,7 +173,12 @@ test('settings never change by themselves: the window writes settings only from 
   assert.doesNotMatch(boot, /setSettings|chatsUpdate|chatsSave/);
   const click = between(ui, "document.addEventListener('click'", "document.addEventListener('change'");
   const change = between(ui, "document.addEventListener('change'", "let searchTimer");
-  const outside = ui.replace(click, '').replace(change, '');
+  // 3.4.1: his own Ctrl − / Ctrl + / Ctrl 0 (the app's size) is the only other place, and only on those keys.
+  const keys = between(ui, '// 3.4.1: Ctrl − / Ctrl + / Ctrl 0', "document.addEventListener('input'");
+  assert.match(keys, /if \(!\(ev\.ctrlKey \|\| ev\.metaKey\)/);
+  assert.match(keys, /setSettings\(\{ textSize: next \}\)/);
+  assert.equal([...keys.matchAll(/setSettings\(/g)].length, 1);
+  const outside = ui.replace(click, '').replace(change, '').replace(keys, '');
   assert.deepEqual([...outside.matchAll(/setSettings\(\{/g)].length, 0, 'every setSettings({…}) is inside the click handler');
   assert.match(ui, /if \(t\.matches\?\.\('\[data-a="idle-hours"\]'\)\) setSettings/, 'plus the owner\'s own idle-time choice');
 });

@@ -12,6 +12,13 @@ export function teamOf(saved) {
   return { lead, reviewer, members };
 }
 
+// The @name to write for a teammate (its name without spaces: @GitHubCopilot, @LocalAI).
+export const handle = (a) => name(a).replace(/[^A-Za-z0-9]/g, '');
+// One line: every member of the team and whether it can answer now.
+export function teamStatusLine({ team = DEFAULT_TEAM, live = [], status = {}, agent = null } = {}) {
+  return team.members.map((m) => `@${handle(m)} ${m === agent ? 'you' : live.includes(m) ? 'connected' : status[m]?.label && status[m].label !== 'checking…' ? status[m].label : 'not connected'}`).join(', ');
+}
+
 export function mentionsIn(text) {
   return [...new Set([...String(text || '').matchAll(/(^|[^\w@])@([A-Za-z][\w-]{1,20})/g)].map((m) => aliasOf(m[2])).filter(Boolean))];
 }
@@ -29,10 +36,10 @@ export function planTurn({ text, mode = 'team', team, live = [] }) {
 
 // Teammates the lead handed work to in its reply (lines like "@Gemini research …", or several
 // names on one line: "@ChatGPT @Gemini, @Grok and @Mistral check this"). Everyone named is reached
-// (1.7 stopped after two).
+// (1.7 stopped after two; 3.4.1 raised the cap from 8 to 24, the web-bridge ones take turns in the main process).
 export function handoffs(reply, { team, live = [], done = [] }) {
   const lines = String(reply || '').split('\n').filter((l) => /^\s*[-*]?\s*@[A-Za-z]/.test(l));
-  return [...new Set(lines.flatMap((l) => mentionsIn(l)))].filter((a) => live.includes(a) && team.members.includes(a) && !done.includes(a)).slice(0, 8);
+  return [...new Set(lines.flatMap((l) => mentionsIn(l)))].filter((a) => live.includes(a) && team.members.includes(a) && !done.includes(a)).slice(0, 24);
 }
 
 export function pickReviewer({ team, live = [], author }) {
@@ -98,12 +105,14 @@ export function brief({ agent, role = 'member', chat = {}, copy = null, build = 
   );
   const mates = team.members.filter((m) => m !== agent);
   if (mates.length) {
-    lines.push('', 'THE TEAM IN THIS CHAT (the owner picks it in Settings › AI team):', ...team.members.map((m) => `- ${name(m)}${m === agent ? ' (you)' : ''}${m === team.lead ? ' [lead]' : m === team.reviewer ? ' [reviewer]' : ''}${live.includes(m) ? '' : status[m] ? ` (${status[m].label}${status[m].why ? `: ${status[m].why}` : ''})` : ' (not available right now)'}`));
+    lines.push('', 'THE TEAM IN THIS CHAT (the owner picks it in Settings › AI team):', ...team.members.map((m) => `- ${name(m)}${m === agent ? ' (you)' : ''}${m === team.lead ? ' [lead]' : m === team.reviewer ? ' [reviewer]' : ''}${live.includes(m) ? ' (connected)' : status[m] ? ` (${status[m].label}${status[m].why ? `: ${status[m].why}` : ''})` : ' (not available right now)'}${m === agent ? '' : ` · write @${handle(m)}`}`));
     if (team.members.some((m) => !live.includes(m))) lines.push('- Teammates that aren\'t connected can\'t answer yet. Only the owner can connect them (keys, sign-ins); tell him what\'s missing instead of saying they can\'t be added.');
+    // 3.4.1: the lead gets who can answer RIGHT NOW in every turn (a resumed session never saw the list above).
+    if (role === 'lead') lines.push(`- Team status now: ${teamStatusLine({ team, live, status, agent })}. Hand work only to the ones marked connected; for the others, tell the owner what's missing instead.`);
     if (role === 'lead') lines.push(
       '- You lead: first work out what the task needs, then split it. Give each teammate that would really help its own part on its own line: @Name and what to do (like "@Gemini write the tests for the parser in tests/parser"). Pick by strength: coding and edits (Claude, ChatGPT/Codex, Qwen, DeepSeek), big files, tests and long documents (Gemini), web research with sources (Perplexity), writing and documents (Mistral), quick drafts (Free AI, Grok). Skip teammates that wouldn\'t add anything; don\'t name anyone for trivial work.',
       // 3.3: the new AIs, by kind, so the lead uses them for what they're good at.
-      '- More teammates, by kind (use only the ones in THE TEAM below that are connected): CODING TOOLS that change files in their own copy, like Claude and Codex: Cursor, GitHub Copilot (also GitHub issues and pull requests), Kiro (works from a plan: give it the spec), Kimi (big refactors, long files), Aider (small exact changes to named files), OpenCode, Goose, Cline, Crush, OpenHands, Amp, Augment (large codebases), Factory Droid (tests, migrations), Warp (terminal jobs). CHAT and REVIEW (no file edits): OpenRouter (many models, second opinions), GLM, MiniMax, Cohere (writing, summaries), AI21 Jamba (very long documents), NVIDIA (reasoning), Amazon Nova, and Groq and Cerebras (very fast: quick checks and reviews). LOCAL and free: Phi and Local AI (offline, never run out). CLOUD AGENTS: Devin and Jules take one whole, self-contained task on the chat\'s GitHub repo and come back with a pull request, often after 10 to 90 minutes: give them a separate job that doesn\'t touch what the others are changing, and don\'t wait on them to answer the owner. APP BUILDERS: Lovable and Replit build and host whole web apps on their own sites, and v0 writes web UI code: use them when the owner wants an app or page made there, not for this repo\'s files.',
+      '- More teammates, by kind (use only the ones in THE TEAM above that are connected): CODING TOOLS that change files in their own copy, like Claude and Codex: Cursor, GitHub Copilot (also GitHub issues and pull requests), Kiro (works from a plan: give it the spec), Kimi (big refactors, long files), Aider (small exact changes to named files), OpenCode, Goose, Cline, Crush, OpenHands, Amp, Augment (large codebases), Factory Droid (tests, migrations), Warp (terminal jobs). CHAT and REVIEW (no file edits): OpenRouter (many models, second opinions), GLM, MiniMax, Cohere (writing, summaries), AI21 Jamba (very long documents), NVIDIA (reasoning), Amazon Nova, and Groq and Cerebras (very fast: quick checks and reviews). LOCAL and free: Phi and Local AI (offline, never run out). CLOUD AGENTS: Devin and Jules take one whole, self-contained task on the chat\'s GitHub repo and come back with a pull request, often after 10 to 90 minutes: give them a separate job that doesn\'t touch what the others are changing, and don\'t wait on them to answer the owner. APP BUILDERS: Lovable and Replit build and host whole web apps on their own sites, and v0 writes web UI code: use them when the owner wants an app or page made there, not for this repo\'s files.',
       '- Spread the work: when several teammates could do a part, prefer the ones that are free or fast (Local AI, Phi, Free AI, Groq, Cerebras) for checks and small parts, and keep the paid or slow ones (cloud agents, app builders) for what only they can do. Pictures and videos are made with the app lines in TOOLS (each picture or video maker the owner set up is listed there), not by @naming a teammate.',
       '- Everyone you name works AT THE SAME TIME, each in its own copy of the files, so give parts that touch different files to different teammates. As each one finishes it reports to you and you answer it at once (you can give it more with another @line). When all are done the app merges their changes and you check everything and answer the owner. Don\'t wait for the owner in between.',
     );
@@ -122,6 +131,12 @@ export function messageText(m) {
   return [String(m.text || ''), ...files, ...made, ...tool].filter(Boolean).join('\n');
 }
 
+// 3.4.1: the owner's own check of an uncensored teammate's reply ("Looks right" / "Not right"), the only thing about it
+// the other AIs learn (so the lead can confirm a test, like a check word, without seeing the content).
+export function ownerVerdict(m) {
+  return m?.ownerCheck === 'ok' ? ' The owner checked it and marked it: LOOKS RIGHT.' : m?.ownerCheck === 'bad' ? ' The owner checked it and marked it: NOT RIGHT.' : '';
+}
+
 // Unfiltered teammates' messages and pictures (and the owner's messages only to them) never
 // reach the other AIs: they get a short placeholder instead. The owner still sees everything.
 export function shieldFor(m, forAgent) {
@@ -129,7 +144,7 @@ export function shieldFor(m, forAgent) {
   if (UNFILTERED.includes(m.who)) {
     const n = name(m.who);
     const pics = (m.media || []).filter((x) => x.kind !== 'file').length;
-    return `${n}: ${pics ? `[${pics > 1 ? `${pics} images` : 'image'} by ${n}]` : `[content from ${n}, not shown]`}`;
+    return `${n}: ${pics ? `[${pics > 1 ? `${pics} images` : 'image'} by ${n}]` : `[content from ${n}, not shown]`}${ownerVerdict(m)}`;
   }
   if (m.who === 'owner' && Array.isArray(m.to) && m.to.length && m.to.every((a) => UNFILTERED.includes(a))) return `Owner: [message to ${m.to.map(name).join(', ')}, not shown]`;
   return undefined;
@@ -194,7 +209,7 @@ export function teamReports(messages = [], agents = [], { forAgent = null, room 
     const list = messages.filter((m) => m.who === a && !m.deleted && !m.temp && !m.local);
     const parts = list.map((m) => {
       if (forAgent && !UNFILTERED.includes(forAgent) && UNFILTERED.includes(a)) {
-        return { m, text: `[${n} ${m.err ? 'ended with an error' : 'answered'}. What it wrote${(m.media || []).length ? ' and made' : ''} is shown to the owner only: the app never passes an uncensored teammate's content to the other AIs. Ask the owner if you need it.]`, whole: true };
+        return { m, text: `[${n} ${m.err ? 'ended with an error' : 'answered'}. What it wrote${(m.media || []).length ? ' and made' : ''} is shown to the owner only: the app never passes an uncensored teammate's content to the other AIs.${ownerVerdict(m) || ' Ask the owner if you need to know how it went.'}]`, whole: true };
       }
       const files = (m.changes?.files || []).map((f) => f.path || f.file || f).filter((x) => typeof x === 'string');
       const text = [
@@ -246,7 +261,7 @@ export function turnPrompt({ agent, role, messages, briefText, resumed, task = '
     // A lead's team lines go every time: a session started before team work (or before this chat became a Reverse
     // Engineering project) never got them, and then the lead did everything alone.
     const lines = briefText.split('\n');
-    const lead = role === 'lead' ? lines.filter((l) => /^- (You lead|Everyone you name works|Teammates with)/.test(l)) : [];
+    const lead = role === 'lead' ? lines.filter((l) => /^- (You lead|Everyone you name works|Teammates with|Team status now)/.test(l)) : [];
     return `${transcript(fresh, { forAgent: agent })}\n\n${task || `Answer as ${name(agent)}.`}\n\n(Reminder: ${lines.filter((l) => /never|OFF|quick checks|HARD LIMITS/i.test(l)).slice(0, 7).join(' ')})${lead.length ? `\n\n(How you lead: ${lead.join(' ')})` : ''}`;
   }
   return `${briefText}\n\nTHE CHAT SO FAR:\n${transcript(messages, { forAgent: agent })}\n\n${task || `Now answer as ${name(agent)}${role === 'lead' ? ' (lead)' : ''}.`}`;

@@ -1,7 +1,7 @@
 // Hearth AI Command Center — Electron main process.
 // All privileged work (files, secrets, provider APIs, updates) happens here.
 // The renderer only gets the narrow API exposed in preload.cjs.
-const { app, BrowserWindow, Notification, ipcMain, shell, Menu, safeStorage, dialog, clipboard, protocol } = require('electron');
+const { app, BrowserWindow, Notification, ipcMain, shell, Menu, safeStorage, dialog, clipboard, protocol, screen } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -44,7 +44,8 @@ const studioLib = require('./studio.cjs');
 const more = require('./more-ais.cjs');
 // 3.3: the new chat APIs and cloud agents only connect by key (kimi is a CLI that can use its key too).
 const API_ONLY = ['perplexity', 'deepseek', ...more.KEYED.filter((a) => a !== 'kimi')];
-const TEXT_SIZES = [100, 115, 130, 150];
+// 3.4.1: smaller sizes too (the app looked like it was at 150% on his screen). The owner picks it; never changed by itself.
+const TEXT_SIZES = [67, 75, 80, 90, 100, 115, 130, 150];
 const THEMES = ['hearth', 'dark', 'light', 'system'];
 
 if (!app.requestSingleInstanceLock()) {
@@ -131,6 +132,8 @@ function normalSettings(s) {
     // 2.9: the gold hologram design unless the owner picks Classic.
     design: s.design === 'classic' ? 'classic' : 'hologram',
     textSize: TEXT_SIZES.includes(s.textSize) ? s.textSize : 100,
+    // 3.4.1: draw the app at true 100% even when the desktop scales the screen (125%, 150%…). Off unless he turns it on.
+    fitScreen: s.fitScreen === true,
     // Habitat page: characters stay in place. Off unless the owner turns it on (the OS setting also counts).
     reduceMotion: s.reduceMotion === true,
     // Keys without a keyring: basic (weak) protection, only if the owner chose it. Off unless he does.
@@ -327,7 +330,14 @@ function createWindow() {
   // Reapply the saved choice on every load, including renderer recovery.
   mainWindow.webContents.on('did-finish-load', () => {
     mainWindow.webContents.setZoomFactor(readSettings().textSize / 100);
+    applyZoom();
   });
+  // The screen's scale can change (Settings › Display, another monitor): keep the app's size right.
+  let zoomTimer = null;
+  const rezoom = () => { clearTimeout(zoomTimer); zoomTimer = setTimeout(applyZoom, 300); };
+  mainWindow.on('moved', rezoom);
+  screen.on('display-metrics-changed', rezoom);
+  mainWindow.on('closed', () => screen.removeListener('display-metrics-changed', rezoom));
   mainWindow.once('ready-to-show', () => mainWindow.show());
   // The web bridge's hidden windows must never keep the app running after its window closes.
   mainWindow.on('closed', () => webBridge?.closeAll());
@@ -586,8 +596,9 @@ function registerIpc() {
       }
       s.actForMe = on;
     }
+    if ('fitScreen' in patch) s.fitScreen = patch.fitScreen === true;
     writeSettings(s);
-    mainWindow.webContents.setZoomFactor(s.textSize / 100);
+    applyZoom(s);
     return s;
   });
   handle('settings:addDir', async () => {
@@ -645,6 +656,7 @@ function registerIpc() {
   });
   // The provider's own chat site in a sandboxed in-app window (you sign in there).
   handle('web:open', (provider) => openWeb(String(provider)));
+  handle('screen:info', () => ({ scale: screenScale(), wayland: Boolean(process.env.WAYLAND_DISPLAY), zoom: zoomFor(readSettings(), screenScale()) }));
   handle('bridge:show', (id) => (webBridge ? webBridge.show(String(id)) : { ok: false }));
   handle('web:openExport', (provider) => {
     const url = web.EXPORT[provider];
@@ -1196,6 +1208,20 @@ const credit = (() => {
     },
   };
 })();
+
+// 3.4.1: the screen's scale as the app sees it (×1.5 on a laptop Hearth scales to 150%), and the window's zoom: the owner's
+// App size, divided by that scale when he turned on "draw at 100%".
+function screenScale() {
+  try { return mainWindow && !mainWindow.isDestroyed() ? screen.getDisplayMatching(mainWindow.getBounds()).scaleFactor || 1 : screen.getPrimaryDisplay().scaleFactor || 1; } catch { return 1; }
+}
+function zoomFor(s, scale) {
+  const z = (s.textSize / 100) * (s.fitScreen ? 1 / Math.max(0.5, scale) : 1);
+  return Math.min(3, Math.max(0.3, Math.round(z * 1000) / 1000));
+}
+function applyZoom(s = readSettings()) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  try { mainWindow.webContents.setZoomFactor(zoomFor(s, screenScale())); } catch {}
+}
 
 async function apiCall(agent, model, prompt, signal, opts = {}) {
   // 3.1: his own signed-in website instead of a paid key, only when he turned the bridge on for this AI.

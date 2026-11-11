@@ -135,3 +135,16 @@ test('an AI changing the settings file is told to the owner in the chat', async 
   await runner.start(R, 'hi');
   assert.match(R.msgs.find((m) => m.who === 'system').text, /Grok changed your settings file during its turn\. The change was undone/);
 });
+
+// 3.4.1: Qwen Code's newer --output-format json prints a list of events (like Claude Code); the answer was lost.
+import { createRequire } from 'node:module';
+const requireCjs = createRequire(import.meta.url);
+test('3.4.1: Qwen and Gemini answers are read from an event list, one-event-per-line output and the old single object', () => {
+  const { parseGemini } = requireCjs('../electron/agents.cjs');
+  const list = JSON.stringify([{ type: 'system', subtype: 'init', session_id: 'q-1' }, { type: 'assistant', message: { content: [{ type: 'text', text: 'working' }] } }, { type: 'result', subtype: 'success', result: 'CHECK-QWEN-42', session_id: 'q-1' }]);
+  assert.deepEqual(parseGemini(list), { text: 'CHECK-QWEN-42', error: null, sessionId: 'q-1' });
+  const lines = ['{"type":"system","session_id":"q-2"}', '{"type":"result","is_error":true,"result":"Qwen OAuth quota exceeded"}'].join('\n');
+  assert.equal(parseGemini(lines).error, 'Qwen OAuth quota exceeded');
+  assert.equal(parseGemini('{"response":"old style","session_id":"g-1"}').text, 'old style');
+  assert.match(parseGemini(JSON.stringify([{ type: 'system' }, { type: 'result', result: '' }])).error, /without an answer/);
+});

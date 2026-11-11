@@ -270,8 +270,29 @@ function agyRefusalDetail(message, res, agyMode) {
   return [String(message || '').trim(), ...extra, mode].filter(Boolean).join('\n').slice(0, 2000);
 }
 
+// 3.4.1: newer Qwen Code (and Gemini CLI) versions print a list of events, like Claude Code's
+// ([{type:'system'…},{type:'assistant'…},{type:'result', result:'…'}]) or one event per line, instead of one object.
+// The old parser read that as one broken object and the answer was lost.
+function parseEventList(s) {
+  let list = null;
+  if (s.startsWith('[')) { try { const j = JSON.parse(s); if (Array.isArray(j)) list = j; } catch {} }
+  if (!list) {
+    const rows = s.split('\n').map((l) => l.trim()).filter((l) => l.startsWith('{'));
+    if (rows.length > 1) { const parsed = rows.map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean); if (parsed.length > 1) list = parsed; }
+  }
+  if (!list || !list.some((e) => e && typeof e.type === 'string')) return null;
+  const result = [...list].reverse().find((e) => e?.type === 'result');
+  const said = list.filter((e) => e?.type === 'assistant').map((e) => textOf(e.message?.content ?? e.content ?? e.text)).filter(Boolean);
+  const sessionId = (result || list.find((e) => e?.session_id))?.session_id || null;
+  const isErr = result && (result.is_error === true || /error/i.test(String(result.subtype || '')));
+  const text = typeof result?.result === 'string' && result.result.trim() ? result.result : said.join('\n');
+  return { text: isErr ? '' : text, error: isErr ? String(result.result || result.error || result.subtype || 'failed') : (text ? null : 'It finished without an answer.'), sessionId };
+}
+
 function parseGemini(stdout) {
   const s = stdout.trim();
+  const events = parseEventList(s);
+  if (events) return events;
   const start = s.indexOf('{');
   try {
     const j = JSON.parse(s.slice(Math.max(0, start)));

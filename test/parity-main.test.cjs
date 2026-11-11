@@ -295,7 +295,7 @@ test('teammates without a key are skipped with "Add your … key"', async () => 
     assert.match(r.error.message, new RegExp(`Add your ${a === 'venice' ? 'Venice' : 'Civitai'} key`));
   }
   const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'app', 'team-run.mjs'), 'utf8');
-  assert.match(src, /was skipped: /, 'the chat says so');
+  assert.match(src, /named but can't answer/, 'the chat says so');
 });
 
 test('scheduled tasks and read-other-chat give other AIs placeholders for unfiltered teammates', () => {

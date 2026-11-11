@@ -10,7 +10,11 @@ test('provider whitelist', () => {
 test('api key format', () => {
   assert.equal(v.validateApiKey('  abcdefgh12345 '), 'abcdefgh12345');
   assert.throws(() => v.validateApiKey('short'));
-  assert.throws(() => v.validateApiKey('has space inside'));
+  // 3.4.1: a pasted key keeps working with a line break, a space, an invisible character or quotes in it.
+  assert.equal(v.validateApiKey('sk-ant-api03-abc\ndef'), 'sk-ant-api03-abcdef');
+  assert.equal(v.validateApiKey('"sk-ant-api03-abc def"'), 'sk-ant-api03-abcdef');
+  assert.equal(v.validateApiKey('\uFEFFsk-ant-api03-abc\u200Bdef'), 'sk-ant-api03-abcdef');
+  assert.throws(() => v.validateApiKey('  "ab"  '));
   assert.throws(() => v.validateApiKey({}));
 });
 test('model names', () => {

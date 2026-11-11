@@ -29,8 +29,10 @@ function validateProvider(id, { liveOnly = false } = {}) {
 
 function validateApiKey(key) {
   if (typeof key !== 'string') throw new Error('key must be a string');
-  const k = key.trim();
-  if (k.length < 8 || k.length > 512 || /\s/.test(k)) throw new Error('key format looks invalid');
+  // 3.4.1 fix: a key pasted from a web page can carry a line break, a space or an invisible character in it,
+  // or quotes around it; keys never contain those, so they're dropped.
+  const k = key.replace(/[\s\u200B-\u200D\u2060\uFEFF]/g, '').replace(/^["'`]+|["'`]+$/g, '');
+  if (k.length < 8 || k.length > 512) throw new Error('That doesn\'t look like a whole key: copy it again from the company\'s page and paste it.');
   return k;
 }
 
