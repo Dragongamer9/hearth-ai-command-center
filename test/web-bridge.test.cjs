@@ -73,7 +73,7 @@ test('not signed in: a plain message that says what to do', async () => {
   const r = await b.ask('deepseek', 'hi');
   assert.equal(r.ok, false);
   assert.equal(r.error.kind, 'auth');
-  assert.match(r.error.message, /not signed in to DeepSeek.*Settings › Accounts › Web sign-in bridge/);
+  assert.match(r.error.message, /not signed in to DeepSeek.*Settings › Accounts \(press ▸ on its row, then Open\)/);
   assert.equal(f.typed.length, 0, 'nothing typed');
 });
 

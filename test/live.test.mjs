@@ -6,7 +6,7 @@ import { AGENTS } from '../src/registry.mjs';
 
 test('every AI on the Live screen is a real AI with its own core', () => {
   for (const a of LIVE_AIS) { assert.ok(AGENTS[a], `${a} is in the registry`); assert.ok(CORES[a], `${a} has a core`); }
-  const grouped = GROUPS.flatMap((g) => g[2]);
+  const grouped = GROUPS.flatMap((g) => g[3]);
   for (const a of [...LIVE_AIS, 'comfy', 'voice', 'listen']) assert.ok(grouped.includes(a), `${a} has a place on the screen`);
 });
 

@@ -189,7 +189,7 @@ function createWebBridge({ BrowserWindow, iconPath = undefined, now = () => Date
     for (let i = 0; i < 20 && !p.input && !signal?.aborted; i++) { await sleep(1000); p = await probe(win, site); }
     if (!p.input) {
       const why = site.signIn.test(p.url || '') ? `you're not signed in to ${site.name}` : `${site.name}'s page didn't show its ${kind === 'image' || kind === 'video' ? 'prompt box' : 'chat box'}`;
-      return { ok: false, error: { kind: 'auth', message: `The web bridge couldn't ask ${site.name}: ${why}. Open it in Settings › Accounts › Web sign-in bridge and sign in (or check the page), then try again.` } };
+      return { ok: false, error: { kind: 'auth', message: `The web bridge couldn't ask ${site.name}: ${why}. Open it in Settings › Accounts (press ▸ on its row, then Open), sign in there (or check the page), then try again.` } };
     }
     const question = webPrompt(prompt, kind);
     if (!question) return { ok: false, error: { kind: 'failed', message: 'There was nothing to ask.' } };
