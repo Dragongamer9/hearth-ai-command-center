@@ -303,3 +303,15 @@ test('videos: Runway, Luma, Kling and Pika start a job and bring the video back'
   const pika = await makers.generateVideo({ provider: 'pika', key: 'fal-K', prompt: 'x', fetchImpl: fetchOf([[/fal\.run\/fal-ai\/pika/, { method: 'POST', body: { video: { url: 'https://v3.fal.media/files/v.mp4' } } }], [/fal\.media/, { body: mp4 }]]) });
   assert.equal(pika.ok, true, JSON.stringify(pika));
 });
+
+test('the team lead is told what each kind of new AI is for', async () => {
+  const { brief } = await import('../src/app/brief.mjs');
+  const team = { lead: 'anthropic', reviewer: null, members: ['anthropic', 'cursor', 'devin', 'lovable', 'groq'] };
+  const t = brief({ agent: 'anthropic', role: 'lead', chat: { title: 'T' }, team, live: team.members, status: {} });
+  assert.match(t, /CODING TOOLS that change files[^]*Cursor/);
+  assert.match(t, /CLOUD AGENTS: Devin and Jules take one whole, self-contained task[^]*pull request/);
+  assert.match(t, /APP BUILDERS: Lovable and Replit/);
+  assert.match(t, /Groq and Cerebras \(very fast/);
+  const member = brief({ agent: 'cursor', role: 'member', chat: { title: 'T' }, team, live: team.members, status: {} });
+  assert.doesNotMatch(member, /CLOUD AGENTS/, 'only the lead gets the hand-out rules');
+});

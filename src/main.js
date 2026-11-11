@@ -8,7 +8,7 @@
 import './styles.css';
 import './vendor/katex/katex.min.css';
 import './vendor/highlight/github-dark.min.css';
-import { AGENTS, COLORS, TEAMMATE_IDS, UNFILTERED } from './registry.mjs';
+import { AGENTS, COLORS, TEAMMATE_IDS, UNFILTERED, MORE_IDS, MAKERS } from './registry.mjs';
 import { icon } from './icons.mjs';
 import { tokensToCss, pickMode } from './theme.mjs';
 import { autoTitle, moveInGroup, dropInGroup } from './chats.mjs';
@@ -38,7 +38,7 @@ import { defaultsFrom, prefsFor, prefsOf, samePrefs, applyPrefs, rememberPrefs }
 import { FIND_FIELDS, searchFields, stepIndex, replaceAllFields, snippet, cardMatches, matchedIn } from './app/card-find.mjs';
 
 const api = window.hearth || null;
-const TEAM_IDS = ['anthropic', 'openai', 'google', 'xai', 'mistral', 'qwen', 'perplexity', 'deepseek', 'ollama', ...TEAMMATE_IDS, 'freebuff'];
+const TEAM_IDS = ['anthropic', 'openai', 'google', 'xai', 'mistral', 'qwen', 'perplexity', 'deepseek', 'ollama', ...TEAMMATE_IDS, 'freebuff', ...MORE_IDS];
 const MONO = { free: ['Fr', '#3f8a5a'], hearth: ['H', '#c8743a'], anthropic: ['C', '#c96b3c'], openai: ['G', '#3f8f6f'], google: ['Ge', '#4b6fd0'], xai: ['X', '#5d636b'], mistral: ['M', '#6b5bd2'], qwen: ['Q', '#7a5cc9'], perplexity: ['P', '#1f8a99'], deepseek: ['D', '#3d56c9'], ollama: ['L', '#6d746e'], freebuff: ['F', '#8a7bc6'], venice: ['V', '#c2453b'], civitai: ['Ci', '#2f6fd6'], gpu: ['GP', '#6f7a3e'] };
 const QUICK = [
   ['gh', 'Fix a bug in a repo', 'There\'s a bug I want fixed: '],
@@ -51,8 +51,9 @@ const QUICK = [
 const SECTIONS = [['team', 'AI team'], ['accounts', 'Accounts'], ['uncensored', 'Uncensored mode'], ['github', 'GitHub'], ['tools', 'Tools'], ['memory', 'Memory'], ['scheduled', 'Scheduled'], ['connectors', 'Connectors'], ['perms', 'Permissions'], ['alerts', 'Notifications'], ['voice', 'Voice'], ['look', 'Appearance'], ['updates', 'App updates'], ['data', 'Saved data']];
 const IDLE = [[1, '1 hour'], [6, '6 hours'], [24, '1 day'], [72, '3 days'], [168, '1 week'], [0, 'Never']];
 const MAX_CHATS = [1, 2, 3, 4, 5, 6, 8, 10];
-const IMAGE_MAKERS = ['openai', 'google', 'xai', 'venice', 'civitai', 'gpu', 'hearth'];
-const VIDEO_MAKERS = ['openai', 'google'];
+const IMAGE_MAKERS = ['openai', 'google', 'xai', 'venice', 'civitai', 'gpu', 'hearth', 'flux', 'stability', 'ideogram', 'leonardo'];
+const VIDEO_MAKERS = ['openai', 'google', 'runway', 'luma', 'kling', 'pika'];
+const makerName = (a) => MAKERS[a] || aiName(a);
 const MODEL_PRESETS = { anthropic: ['opus', 'sonnet', 'haiku'], openai: ['gpt-5', 'gpt-5-codex', 'o4-mini'], google: ['gemini-2.5-pro', 'gemini-2.5-flash'], xai: ['grok-4', 'grok-code-fast-1'], mistral: ['mistral-large-latest', 'codestral-latest'], perplexity: ['sonar', 'sonar-pro', 'sonar-reasoning-pro'], deepseek: ['deepseek-chat', 'deepseek-reasoner'], qwen: [], ollama: [], venice: [], civitai: [], gpu: [] };
 const MEDIA_KEYS = [['google', 'Gemini API key', 'pictures (Gemini image model), Veo videos'], ['openai', 'OpenAI API key', 'pictures and edits (OpenAI Images), Sora videos; the same key as ChatGPT by API'], ['xai', 'xAI API key', 'Grok pictures'], ['mistral', 'Mistral API key', 'reading PDFs and scans (Mistral OCR)']];
 
@@ -502,8 +503,8 @@ async function briefExtra(R, agent, role, resumed) {
   if (c.instructions) L.push('', `THIS CHAT'S INSTRUCTIONS (from the owner): ${c.instructions}`);
   if (c.refs?.length) L.push('', `THIS CHAT'S REFERENCE FILES (always attached): ${c.refs.map((r) => `${r.name} (${r.path})`).join(', ')}`);
   if (!resumed) {
-    const imgs = IMAGE_MAKERS.filter(makerReady).map(aiName);
-    const vids = VIDEO_MAKERS.filter((a) => S.mkeys.keys?.[a]).map((a) => (a === 'openai' ? 'Sora' : 'Veo'));
+    const imgs = IMAGE_MAKERS.filter(makerReady).map(makerName);
+    const vids = VIDEO_MAKERS.filter((a) => S.mkeys.keys?.[a]).map((a) => (a === 'openai' ? 'Sora' : a === 'google' ? 'Veo' : makerName(a)));
     L.push(toolsBrief({ role, memory: !c.temp, images: imgs, video: vids, screenshots: Boolean(S.mkeys.screenshot) }));
   }
   if (R.deep) L.push('', 'DEEP RESEARCH MODE (the owner turned it on for this message): search widely (many sources, primary ones first), cross-check facts, then write a long, well-structured report with numbered citations [1] … and a Sources list of full https links at the end. Save the full report as .hearth-out/report-<short-topic>.md too. Lead: you may hand parts to teammates with HELPER lines.');

@@ -247,6 +247,7 @@ contextBridge.exposeInMainWorld('hearth', {
   setKey: (provider, key) => ipcRenderer.invoke('providers:setKey', provider, key),
   // 3.3: keys for the command-line agents that take one (saved encrypted as cli.<id>).
   cliKeys: () => ipcRenderer.invoke('cli:keys'),
+  creditStatus: () => ipcRenderer.invoke('credit:status'),
   cliSetKey: (agent, key) => ipcRenderer.invoke('cli:setKey', agent, key),
   cliRemoveKey: (agent) => ipcRenderer.invoke('cli:removeKey', agent),
   removeKey: (provider) => ipcRenderer.invoke('providers:removeKey', provider),
