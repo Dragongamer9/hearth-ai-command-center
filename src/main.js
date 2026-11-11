@@ -2117,6 +2117,35 @@ function section(k) {
 
 // ---- Settings › AI team › Test team ----
 // ---- 3.4.1 Settings › AI team › Test team: a check word from every teammate ----
+// 3.4.1 Settings › AI team: every AI as a small card in its group (two or three to a row), folding per group.
+const TEAM_GROUPS = [
+  ['coders', 'Coding tools', ACCT_GROUPS[0][2]],
+  ['chat', 'Chat & review', ['perplexity', 'deepseek', 'free', ...MORE_GROUPS.chat.filter((a) => a !== 'v0')]],
+  ['cloud', 'Cloud agents', MORE_GROUPS.cloud],
+  ['builders', 'App builders', ['lovable', 'replit', 'v0']],
+  ['mates', 'Uncensored and your PCs', ['venice', 'civitai', 'gpu', 'hearth']],
+  ['here', 'This computer', ['ollama', ...MORE_GROUPS.local]],
+];
+function teamGrid(t) {
+  const fold = S.teamFold || {};
+  const seen = new Set(TEAM_GROUPS.flatMap((g) => g[2]));
+  const groups = [...TEAM_GROUPS, ['other', 'Others', TEAM_IDS.filter((a) => !seen.has(a))]];
+  return groups.map(([key, label, ids]) => {
+    const list = ids.filter((a) => TEAM_IDS.includes(a) && AGENTS[a]);
+    if (!list.length) return '';
+    const inN = list.filter((a) => t.members.includes(a)).length;
+    const shut = fold[key];
+    const cards = list.map((a) => {
+      const inTeam = t.members.includes(a);
+      const r = ready(a);
+      const st = r ? 'connected' : statusOf(a).label;
+      const role = a === t.lead ? '<span class="tm-r">★ lead</span>' : a === t.reviewer ? '<span class="tm-r">reviewer</span>' : '';
+      const acts = inTeam && a !== t.lead ? `${AGENTS[a].edits ? `<button class="tm-b" data-a="make-lead" data-v="${a}" title="Make ${esc(aiName(a))} the lead">★</button>` : ''}${a !== t.reviewer && !UNFILTERED.includes(a) ? `<button class="tm-b" data-a="make-reviewer" data-v="${a}" title="Make ${esc(aiName(a))} the reviewer">✓</button>` : ''}` : '';
+      return `<div class="tm ${inTeam ? 'in' : ''}" title="${esc(aiName(a))} · ${esc(AGENTS[a].tool || '')}${statusOf(a).why ? ` · ${esc(statusOf(a).why)}` : ''}">${mono(a, 'sm')}<div class="tm-t"><b>${esc(aiName(a))}</b>${role}<span class="tm-s"><i class="ac-dot ${r ? 'g' : inTeam ? 'w' : ''}"></i>${esc(inTeam ? st : 'off')}</span></div>${acts}${tog(inTeam, 'team-member', `data-v="${a}" ${a === t.lead ? 'disabled title="The lead is always in"' : ''} aria-label="${esc(aiName(a))} in the team"`)}</div>`;
+    }).join('');
+    return `<div class="tm-g"><button class="ac-gh" data-a="team-fold" data-v="${key}" aria-expanded="${!shut}"><span>${shut ? '▸' : '▾'} ${esc(label)}</span><span class="faint">${inN} of ${list.length} in the team</span></button>${shut ? '' : `<div class="tm-grid">${cards}</div>`}</div>`;
+  }).join('');
+}
 const BUILDER_IDS = ['lovable', 'replit', 'v0', 'bolt', 'firebase'];
 function checkInfo(a) {
   return { inTeam: team().members.includes(a), ready: ready(a), status: statusOf(a), imagesOnly: Boolean(S.mates.imagesOnly?.[a] || AGENTS[a]?.imagesOnly), cloud: Boolean(AGENTS[a]?.cloud), builder: BUILDER_IDS.includes(a), bridge: S.settings.webBridge?.[a] === true };
