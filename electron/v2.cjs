@@ -213,7 +213,7 @@ function register(d) {
       const files = (Array.isArray(o.files) ? o.files : []).filter((f) => typeof f === 'string' && attachments.inside(f, [attachments.attachDir(worktreeRoot())])).slice(0, 8);
       let r;
       if (apiOnly) {
-        r = await callApi(agent, o.model ? validateModel(o.model) : undefined, prompt, controller.signal);
+        r = await callApi(agent, o.model ? validateModel(o.model) : undefined, prompt, controller.signal, { repo: e.repo || null });
       } else {
         try { mcp = d.mcpForRun ? d.mcpForRun(path.join(dataDir(), 'run'), e.id) : null; } catch { mcp = null; }
         const base = {
@@ -224,7 +224,7 @@ function register(d) {
           bin: s.bins[agent],
           extraDirs: [...s.extraDirs, ...(files.length ? [attachments.attachDir(worktreeRoot())] : [])],
           images,
-          extraEnv: { ...(assetsEnv(agent, cwd) || {}), ...(mcp ? (agent === 'openai' ? mcp.codexEnv : mcp.env) : {}), ...(mcp && agent === 'google' ? { GEMINI_CLI_SYSTEM_SETTINGS_PATH: mcp.geminiFile } : {}) },
+          extraEnv: { ...(d.cliEnv ? d.cliEnv(agent) : {}), ...(assetsEnv(agent, cwd) || {}), ...(mcp ? (agent === 'openai' ? mcp.codexEnv : mcp.env) : {}), ...(mcp && agent === 'google' ? { GEMINI_CLI_SYSTEM_SETTINGS_PATH: mcp.geminiFile } : {}) },
           onEvent: (ev) => { for (const st of steps.fromEvent(agent, ev)) step(st); },
           web,
           mcp: mcp ? { claudeFile: mcp.claudeFile, codexArgs: mcp.codexArgs } : null,
