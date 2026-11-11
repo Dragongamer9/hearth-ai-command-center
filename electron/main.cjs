@@ -1170,6 +1170,7 @@ function registerParity() {
     handle, dataDir, readSettings, chats, secrets, shell, dialog, send, protocol, attachments, worktreeRoot, BrowserWindow, Notification,
     getWindow: () => mainWindow,
     v2: () => v2Api,
+    webBridge: () => webBridge,
     // The Habitat from the old (1.x) project boards: read-only, never written.
     oldHabitat: () => { const list = ops.projectsList().list; for (const p of list) { const st = require('./migrate-v2.cjs').readStateReadOnly(ops.projectStateFile(p.id)).state; if (st?.habitat) return st.habitat; } return null; },
   });
@@ -1198,7 +1199,7 @@ const credit = (() => {
 
 async function apiCall(agent, model, prompt, signal, opts = {}) {
   // 3.1: his own signed-in website instead of a paid key, only when he turned the bridge on for this AI.
-  if (webBridge && readSettings().webBridge[agent] === true) return webBridge.ask(agent, prompt, signal);
+  if (webBridge && readSettings().webBridge[agent] === true && !['image', 'video'].includes(webBridgeLib.kindOf(agent))) return webBridge.ask(agent, prompt, signal);
   if (agent === 'hearth') return parityApi ? parityApi.hearth.chat({ prompt, model, signal }) : { ok: false, error: { kind: 'auth', message: 'Not ready.' } };
   if (TEAMMATES.includes(agent)) return parityApi ? parityApi.teammates.chat(agent, { prompt, model, signal }) : { ok: false, error: { kind: 'auth', message: 'Not ready.' } };
   const r = await callProvider({ provider: agent, apiKey: secrets.get(agent), model: validateModel(model || DEFAULT_MODELS[agent]), prompt, signal, repo: opts?.repo || null, timeoutMs: 180000 });

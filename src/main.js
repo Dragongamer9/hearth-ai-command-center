@@ -8,7 +8,7 @@
 import './styles.css';
 import './vendor/katex/katex.min.css';
 import './vendor/highlight/github-dark.min.css';
-import { AGENTS, COLORS, TEAMMATE_IDS, UNFILTERED, MORE_IDS, MAKERS } from './registry.mjs';
+import { AGENTS, COLORS, TEAMMATE_IDS, UNFILTERED, MORE_IDS, MAKERS, BRIDGE } from './registry.mjs';
 import { icon } from './icons.mjs';
 import { tokensToCss, pickMode } from './theme.mjs';
 import { autoTitle, moveInGroup, dropInGroup } from './chats.mjs';
@@ -117,9 +117,10 @@ function statusOf(a) {
 }
 const statusMap = () => Object.fromEntries(team().members.map((a) => [a, statusOf(a)]));
 const missingChecks = () => (S.missing || []).filter((x) => x.missing).map((x) => x.check);
-const mono = (a, cls = '') => { const m = MONO[a] || [(AGENTS[a]?.name || '?')[0], '#7a7166']; return `<span class="ava ${cls}" style="background:${m[1]}">${esc(m[0])}</span>`; };
+const mono = (a, cls = '') => { const m = MONO[a] || [(AGENTS[a]?.name || MAKERS[a] || '?')[0], '#7a7166']; return `<span class="ava ${cls}" style="background:${m[1]}">${esc(m[0])}</span>`; };
 const setupHint = (a) => (a === 'gpu' ? 'Add your GPU server in Settings › Accounts' : a === 'hearth' ? 'Type your Home server\'s address in Settings › Accounts › Hearth devices' : TEAMMATE_IDS.includes(a) ? `Add your ${aiName(a)} key in Settings › Accounts` : `set up ${aiName(a)} in Settings › Accounts`);
-const makerReady = (a) => (TEAMMATE_IDS.includes(a) ? Boolean(S.mates.ready?.[a]) && team().members.includes(a) : Boolean(S.mkeys.keys?.[a]));
+const makerKey = (a) => Boolean(S.mkeys.keys?.[a]) || S.settings.webBridge?.[a] === true;
+const makerReady = (a) => (TEAMMATE_IDS.includes(a) ? Boolean(S.mates.ready?.[a]) && team().members.includes(a) : makerKey(a));
 
 // ---------- every chat's own runtime ----------
 const runner = createTeamRunner({
@@ -504,7 +505,7 @@ async function briefExtra(R, agent, role, resumed) {
   if (c.refs?.length) L.push('', `THIS CHAT'S REFERENCE FILES (always attached): ${c.refs.map((r) => `${r.name} (${r.path})`).join(', ')}`);
   if (!resumed) {
     const imgs = IMAGE_MAKERS.filter(makerReady).map(makerName);
-    const vids = VIDEO_MAKERS.filter((a) => S.mkeys.keys?.[a]).map((a) => (a === 'openai' ? 'Sora' : a === 'google' ? 'Veo' : makerName(a)));
+    const vids = VIDEO_MAKERS.filter(makerKey).map((a) => (a === 'openai' ? 'Sora' : a === 'google' ? 'Veo' : makerName(a)));
     L.push(toolsBrief({ role, memory: !c.temp, images: imgs, video: vids, screenshots: Boolean(S.mkeys.screenshot) }));
   }
   if (R.deep) L.push('', 'DEEP RESEARCH MODE (the owner turned it on for this message): search widely (many sources, primary ones first), cross-check facts, then write a long, well-structured report with numbered citations [1] … and a Sources list of full https links at the end. Save the full report as .hearth-out/report-<short-topic>.md too. Lead: you may hand parts to teammates with HELPER lines.');
@@ -585,7 +586,7 @@ async function onTools(R, msg, tools, agent) {
       R.busy = null;
       runner.post(R, r?.ok ? { who: maker, text: `${t.kind === 'edit' ? 'Edited' : 'Made'} for ${aiName(agent)}: “${t.prompt.slice(0, 240)}”`, via: r.via, media: r.items || [r.item].filter(Boolean) } : { who: maker, err: true, text: `${r?.error?.kind === 'refused' ? '' : 'No picture: '}${r?.error?.message || r?.message || 'it failed.'}` });
     } else if (t.kind === 'video') {
-      const maker = pickMaker(t.to, { capable: VIDEO_MAKERS, ready: (a) => Boolean(S.mkeys.keys?.[a]) });
+      const maker = pickMaker(t.to, { capable: VIDEO_MAKERS, ready: makerKey });
       if (!maker) { runner.post(R, { who: 'system', text: 'Video needs your own OpenAI (Sora) or Gemini API (Veo) key in Settings › Accounts.' }); continue; }
       R.busy = { agent: maker, role: 'member', runId: `vid${uid()}`, steps: [{ kind: 'image', label: 'Making a video', detail: `${maker === 'openai' ? 'Sora' : 'Veo'} · this can take several minutes` }], startedAt: Date.now() };
       renderSide(); if (R.id === S.open) renderMain();
@@ -1800,7 +1801,7 @@ function modalHtml() {
   }
   if (m.kind === 'rppic') {
     const c = entry(m.chatId);
-    const makers = IMAGE_MAKERS.filter((a) => (TEAMMATE_IDS.includes(a) ? S.mates.ready?.[a] : S.mkeys.keys?.[a]));
+    const makers = IMAGE_MAKERS.filter((a) => (TEAMMATE_IDS.includes(a) ? S.mates.ready?.[a] : makerKey(a)));
     return `<div class="scrim dark" data-a="close-modal"></div><div class="modal"><div class="mhd"><b>A picture for this story</b></div>
       <p>Made from the characters' descriptions. The built-in limits are checked before anything is sent.</p>
       <div class="srow"><label class="day"><input type="radio" name="rpk" value="portrait" ${m.kind2 !== 'scene' ? 'checked' : ''}>Character portrait</label><label class="day"><input type="radio" name="rpk" value="scene" ${m.kind2 === 'scene' ? 'checked' : ''}>Scene</label></div>
@@ -1864,8 +1865,8 @@ function section(k) {
     const c = M.conf || {};
     return `<h1>Accounts</h1>${keyringNote()}<div class="box"><h3>Your AI accounts</h3><p class="fine">Each AI signs in with your own account in its own official app. The Command Center never holds your passwords.</p>
       ${TEAM_IDS.filter((a) => !TEAMMATE_IDS.includes(a)).map((a) => { const cl = S.cli[a] || {}; const isApi = method(a) === 'api'; const st = isApi ? (S.prov.keys?.[a] ? 'API key saved' : 'needs an API key') : !cl.installed ? 'not installed' : cl.signedIn === false ? 'not signed in' : cl.signedIn ? 'signed in' : 'installed'; return `<div class="srow">${mono(a)}<b>${esc(aiName(a))}</b><span class="d">${esc(AGENTS[a].tool)} · ${esc(st)}</span><span class="grow"></span>${isApi ? `<button class="mini" data-a="set-key" data-v="${a}">${S.prov.keys?.[a] ? 'Change key' : 'Add key'}</button>` : !cl.installed && a !== 'ollama' ? `<button class="mini" data-a="install" data-v="${a}">Install</button>` : cl.signedIn === false ? `<button class="mini" data-a="signin" data-v="${a}">Sign in</button>` : ''}<button class="mini" data-a="recheck" data-v="${a}">Re-check</button></div>`; }).join('')}</div>
-      <div class="box"><h3>Web sign-in bridge</h3><p class="fine">For AIs with no official way to use your account from another app (only paid API keys): the Command Center asks them through their own website, signed in as you, in a hidden window that keeps your sign-in to itself. One question at a time, at a person's pace; text only (they can't read or change your files). <b>This is against these sites' terms and your account could be suspended.</b> Each one is off until you turn it on, and their websites can change and stop it working until the app is updated.</p>
-      ${[['perplexity', 'research with sources'], ['deepseek', 'reasoning and second opinions'], ['venice', 'uncensored chat, kept apart from the others'], ['freebuff', 'your free FreeBuff account, now in team chats']].map(([a, what]) => `<div class="srow">${mono(a)}<b>${esc(aiName(a))}</b><span class="d">${esc(what)} · ${S.settings.webBridge?.[a] ? 'using your web sign-in' : 'off'}</span><span class="grow"></span><button class="mini" data-a="bridge-show" data-v="${a}" title="Open its window to sign in, or watch it work">Open</button>${tog(S.settings.webBridge?.[a] === true, 'bridge-toggle', `data-v="${a}" aria-label="Use my ${esc(aiName(a))} web sign-in"`)}</div>`).join('')}
+      <div class="box"><h3>Web sign-in bridge</h3><p class="fine">For AIs with no official way to use your account from another app (only paid API keys): the Command Center asks them through their own website, signed in as you, in a hidden window that keeps your sign-in to itself. One question at a time, at a person's pace; text only (they can't read or change your files). Picture and video sites make it on their own site and the bridge saves the new file into your chat; Devin and Jules run the job on their site (pick the repo there). <b>This is against these sites' terms and your account could be suspended.</b> Each one is off until you turn it on, and their websites can change and stop it working until the app is updated.</p>
+      ${BRIDGE.map(([a, what]) => `<div class="srow">${mono(a)}<b>${esc(makerName(a))}</b><span class="d">${esc(what)} · ${S.settings.webBridge?.[a] ? 'using your web sign-in' : 'off'}</span><span class="grow"></span><button class="mini" data-a="bridge-show" data-v="${a}" title="Open its window to sign in, or watch it work">Open</button>${tog(S.settings.webBridge?.[a] === true, 'bridge-toggle', `data-v="${a}" aria-label="Use my ${esc(makerName(a))} web sign-in"`)}</div>`).join('')}
       <div class="note sub">Sign in first: press Open, sign in on the site, close the window. While the bridge is on, it's used instead of that AI's API key.</div></div>
       <div class="box"><h3>FreeBuff on the web</h3><div class="srow">${mono('freebuff')}<b>FreeBuff</b><span class="d">opens freebuff.com in its own window here. Sign in there once with your FreeBuff account; it stays signed in. Your FreeBuff chats live in FreeBuff's cloud, so the ones from your phone are there too.</span><span class="grow"></span><button class="mini" data-a="open-freebuff">Open FreeBuff</button></div>
       <div class="note sub">FreeBuff has no official way for other apps to drive it yet. To have it in team chats, turn on its web sign-in bridge above. The Command Center never reads or copies your FreeBuff login; its windows are sandboxed and get nothing from this app.</div></div>
@@ -2806,7 +2807,7 @@ document.addEventListener('click', async (ev) => {
     case 'bridge-show': { const r = await call('bridgeShow', d.v); if (r && r.ok === false) toast('That window couldn\'t open.'); return; }
     case 'bridge-toggle': {
       const on = S.settings.webBridge?.[d.v] === true;
-      if (!on && !confirm(`Use your ${aiName(d.v)} web sign-in?\n\nThe Command Center will ask ${aiName(d.v)} through its website, signed in as you. This is against ${aiName(d.v)}'s terms, and your account could be suspended. You can turn it off any time.`)) return;
+      if (!on && !confirm(`Use your ${makerName(d.v)} web sign-in?\n\nThe Command Center will ask ${makerName(d.v)} through its website, signed in as you. This is against ${makerName(d.v)}'s terms, and your account could be suspended. You can turn it off any time.`)) return;
       return setSettings({ webBridge: { [d.v]: !on } });
     }
     case 'team-parallel': return setSettings({ teamParallel: S.settings.teamParallel === false });

@@ -173,7 +173,16 @@ function register(d) {
     return { ok: true };
   });
   handle('media:removeKey', (name) => { if (!KEY_NAMES.includes(name)) throw new Error('bad key name'); secrets.remove(name); return { ok: true }; });
-  const pickProvider = (want, list) => (list.includes(want) && secrets.has(want) ? want : list.find((p) => secrets.has(p)) || (list.includes(want) ? want : list[0]));
+  // 3.3: a maker he turned the web sign-in bridge on for makes it on its own website, signed in as him (no key).
+  const viaBridge = (p) => readSettings().webBridge?.[p] === true && typeof d.webBridge === 'function' && Boolean(d.webBridge());
+  const usable = (p) => secrets.has(p) || viaBridge(p);
+  const pickProvider = (want, list) => (list.includes(want) && usable(want) ? want : list.find(usable) || (list.includes(want) ? want : list[0]));
+  async function bridgeMake(provider, prompt, signal, chatId, base) {
+    const r = await d.webBridge().ask(provider, String(prompt || ''), signal);
+    if (!r.ok) return { ...r, provider };
+    const items = (r.files || []).map((f, i) => media.storeBuffer(root, String(chatId), `${base}-${provider}-${Date.now()}-${i + 1}.${f.ext}`, f.buf)).filter(Boolean);
+    return items.length ? { ok: true, provider, via: r.via, item: items[0], items } : { ok: false, provider, error: { kind: 'failed', message: 'Nothing came back.' } };
+  }
   // A picture made (or edited) by an AI that can, posted into the chat.
   handle('media:image', async (chatId, o = {}) => {
     entryOf(chatId);
@@ -198,6 +207,7 @@ function register(d) {
       if (!r.ok || !/^image\//.test(r.mime)) return { ok: false, error: { message: 'There\'s no picture to edit.' } };
       image = { buf: fs.readFileSync(r.file), mime: r.mime, name: r.name };
     }
+    if (!image && !secrets.has(provider) && viaBridge(provider)) return bridgeMake(provider, o.prompt, null, chatId, 'image');
     const r = await makers.generateImage({ provider, key: secrets.get(provider), prompt: o.prompt, image });
     if (!r.ok) return { ...r, provider };
     const item = media.storeBuffer(root, String(chatId), `${o.edit ? 'edited' : 'image'}-${Date.now()}.${r.mime.includes('jpeg') ? 'jpg' : 'png'}`, r.buf);
@@ -210,6 +220,7 @@ function register(d) {
     const ctl = new AbortController();
     videoJobs.set(String(chatId), ctl);
     try {
+      if (!secrets.has(provider) && viaBridge(provider)) return await bridgeMake(provider, o.prompt, ctl.signal, chatId, 'video');
       const r = await makers.generateVideo({ provider, key: secrets.get(provider), secret: provider === 'kling' ? secrets.get('kling.secret') : null, prompt: o.prompt, signal: ctl.signal });
       if (!r.ok) return { ...r, provider };
       return { ok: true, provider, via: r.via, item: media.storeBuffer(root, String(chatId), `video-${Date.now()}.mp4`, r.buf) };
@@ -467,6 +478,7 @@ function register(d) {
       return { ok: true, provider, via: r.via, items, safe: chk.safe };
     }
     if (!makers.IMAGE_PROVIDERS.includes(provider)) return { ok: false, error: { kind: 'unsupported', message: 'Pick a teammate that makes pictures.' } };
+    if (!secrets.has(provider) && viaBridge(provider)) { const b = await bridgeMake(provider, prompt, null, chatId, 'portrait'); return b.ok ? { ...b, safe: chk?.safe } : b; }
     const r = await makers.generateImage({ provider, key: secrets.get(provider), prompt });
     if (!r.ok) return { ...r, provider };
     return { ok: true, provider, via: r.via, items: [media.storeBuffer(root, String(chatId), `portrait-${Date.now()}.png`, r.buf)].filter(Boolean) };

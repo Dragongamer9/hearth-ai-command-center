@@ -4,6 +4,16 @@ export const MORE_IDS = ["openrouter", "kimi", "glm", "cohere", "ai21", "minimax
 // 3.3: picture and video makers (each with its own key in Settings › Media & voice).
 export const MAKERS = { flux: 'FLUX', stability: 'Stability', ideogram: 'Ideogram', leonardo: 'Leonardo', runway: 'Runway', luma: 'Luma', kling: 'Kling', pika: 'Pika' };
 export const MORE_WEB = ["bolt", "firebase"];
+// The web sign-in bridge (electron/web-bridge.cjs SITES, same order): AIs used through his own signed-in website
+// instead of a paid key. [id, what it's for]. Each is off until he turns it on.
+export const BRIDGE = [
+  ['perplexity', 'research with sources'], ['deepseek', 'reasoning and second opinions'], ['venice', 'uncensored chat, kept apart from the others'], ['freebuff', 'your free FreeBuff account, now in team chats'],
+  ['glm', 'chat.z.ai: coding and long answers'], ['minimax', 'MiniMax Agent: research and long jobs'], ['cohere', 'Cohere playground: summaries and checking facts'], ['nova', 'Amazon Nova: quick answers'],
+  ['groq', 'Groq chat: very fast answers'], ['cerebras', 'Cerebras chat: very fast answers'], ['openrouter', 'OpenRouter chat: hundreds of models, free ones too'],
+  ['v0', 'v0.app: builds web pages and apps on its site'], ['devin', 'Devin: takes a coding job in its cloud'], ['jules', 'Jules: takes a coding job and opens a pull request'],
+  ['flux', 'FLUX playground: pictures'], ['stability', 'Stable Assistant: pictures'], ['ideogram', 'Ideogram: pictures with words in them'], ['leonardo', 'Leonardo: pictures'],
+  ['runway', 'Runway: videos'], ['luma', 'Luma Dream Machine: videos'], ['kling', 'Kling: videos'], ['pika', 'Pika: videos'],
+];
 export const MORE_GROUPS = {
   coders: ['cursor', 'ghcopilot', 'kiro', 'kimi', 'aider', 'opencode', 'goose', 'cline', 'crush', 'openhands', 'amp', 'auggie', 'droid', 'warp'],
   chat: ['openrouter', 'glm', 'cohere', 'ai21', 'minimax', 'nova', 'nvidia', 'groq', 'cerebras', 'v0'],
