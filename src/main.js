@@ -1910,7 +1910,7 @@ function accountsList() {
       const [good, status, bill, act] = acctState(a);
       total++; if (good) { ok++; ready++; } else need++;
       const open = S.acctOpen === a;
-      return `<div class="ac-row ${open ? 'open' : ''}">${miniCore(a, makerName(a), 26, good ? 'ready' : 'off')}<b>${esc(makerName(a))}</b><i class="ac-dot ${good ? 'g' : 'w'}"></i><span class="ac-s">${esc(status)}</span><span class="ac-b">${esc(bill)}</span>${act ? `<button class="mini p" data-a="${act[0]}" data-v="${a}">${esc(act[1])}</button>` : ''}<button class="ac-chev" data-a="acct-open" data-v="${a}" aria-expanded="${open}" aria-label="More for ${esc(makerName(a))}">${open ? '▾' : '▸'}</button></div>${open ? acctDetail(a) : ''}`;
+      return `<div class="ac-row ${open ? 'open' : ''}">${miniCore(a, makerName(a), 26, good ? 'ready' : 'off')}<b>${esc(makerName(a))}</b><i class="ac-dot ${good ? 'g' : 'w'}"></i><span class="ac-s">${esc(status)}</span><span class="ac-b">${esc(bill)}</span>${act ? `<button class="mini p" data-a="${act[0]}" data-v="${a}">${esc(act[1])}</button>` : '<span></span>'}<button class="ac-chev" data-a="acct-open" data-v="${a}" aria-expanded="${open}" aria-label="More for ${esc(makerName(a))}">${open ? '▾' : '▸'}</button></div>${open ? acctDetail(a) : ''}`;
     }).join('');
     const shut = fold[key] && !q;
     return `<div class="ac-grp"><button class="ac-gh" data-a="acct-fold" data-v="${key}" aria-expanded="${!shut}"><span>${shut ? '▸' : '▾'} ${esc(label)}</span><span class="faint">${ok} of ${list.length} ready</span></button>${shut ? '' : rows}</div>`;
