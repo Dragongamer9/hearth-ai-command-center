@@ -2920,7 +2920,17 @@ document.addEventListener('click', async (ev) => {
       S.prov = (await call('providerStatus')) || S.prov; render();
       return toast(on ? 'Basic protection is on. Add your keys again.' : 'Basic protection is off.');
     }
-    case 'set-key': { const key = await secretPrompt(`Paste your ${aiName(d.v)} API key`); if (key) { const r = await call('setKey', d.v, key); if (r?.ok === false) toast(r.message); S.prov = (await call('providerStatus')) || S.prov; render(); } return; }
+    case 'set-key': {
+      const key = await secretPrompt(`Paste your ${aiName(d.v)} API key`, d.v === 'anthropic' ? { placeholder: 'sk-ant-api03-… (from your Claude account\'s API keys page)' } : {});
+      if (!key) return;
+      const r = await call('setKey', d.v, key);
+      if (r?.ok === false) { toast(`Not saved: ${r.message}`); return; }
+      S.prov = (await call('providerStatus')) || S.prov;
+      // 3.4.1 fix: the Claude API credit card shows the new key at once (it kept saying "Add key").
+      if (d.v === 'anthropic') S.credit = (await call('creditStatus')) || S.credit;
+      toast(`${aiName(d.v)} key saved.`);
+      return render();
+    }
     case 'media-key': { const key = await secretPrompt(`Paste your ${MEDIA_KEYS.find((x) => x[0] === d.v)?.[1] || (d.v === 'kling.secret' ? 'Kling secret key' : MAKERS[d.v] ? `${MAKERS[d.v]} API key` : 'API key')}`); if (key) { const r = await call('mediaSetKey', d.v, key); if (r?.ok === false) toast(r.message); await refreshMates(); render(); } return; }
     case 'media-unkey': await call('mediaRemoveKey', d.v); await refreshMates(); return render();
     // 3.4 compact Accounts
