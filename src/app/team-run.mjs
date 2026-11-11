@@ -116,14 +116,15 @@ export function createTeamRunner(ctx) {
     }
     // Every teammate in this turn shows as waiting, working, blocked, failed or done, with a
     // plain reason and Retry (src/main.js). A Retry updates its own row; a new message starts fresh.
-    const blockedNamed = mentionsIn(text).filter((x) => !L.includes(x) && AGENTS[x]);
+    const blockedNamed = mentionsIn(text).filter((x) => !L.includes(x) && AGENTS[x] && x !== 'none');
     if (opts.retry && R.turnState) {
       for (const a of order) setState(R, a, 'waiting', '');
     } else {
-      R.turnState = { text, at: now(), list: [...order.map((a) => ({ agent: a, state: 'waiting', reason: '' })), ...blockedNamed.map((a) => ({ agent: a, state: 'blocked', reason: ctx.statusOf?.(a)?.why || ctx.setupHint?.(a) || 'not set up' }))] };
+      R.turnState = { text, at: now(), list: order.map((a) => ({ agent: a, state: 'waiting', reason: '' })) };
     }
-    // Teammates in the team that can't answer yet are named once, plainly.
-    for (const a of blockedNamed.filter((x) => AGENTS[x]?.kind === 'api' && UNFILTERED.includes(x))) post(R, { who: 'system', text: `${aiName(a)} was skipped: ${ctx.setupHint?.(a) || 'not set up'}.` });
+    // 3.4.1: every @-named teammate that can't answer is in the turn's list AND named once in the chat, with what
+    // it needs (it used to be left out, so 18 named teammates just never answered).
+    if (!opts.retry) notReached(R, blockedNamed);
     ctx.render(R);
     const done = [];
     let changed = null;
@@ -141,15 +142,18 @@ export function createTeamRunner(ctx) {
       if (!r || r.ok === false) {
         ok = false;
         const pe = r?.plain || { state: 'failed', reason: `${aiName(agent)} didn't answer.` };
-        setState(R, agent, R.stop ? 'failed' : pe.state, R.stop ? 'Stopped by you.' : pe.reason, r?.raw);
+        setState(R, agent, R.stop ? 'failed' : pe.state, R.stop ? 'Stopped by you.' : pe.reason, r?.raw, R.stop ? null : pe.fix);
         continue;
       }
       setState(R, agent, 'done', '');
       if (r.changes?.files?.length) changed = { by: agent, msgId: r.msgId };
       if (role === 'lead' && !opts.regenerate) {
         const picked = handoffs(r.text, { team: t, live: L, done: [...done, ...order] });
-        // Named in the lead's hand-off but not connected: blocked, with what it needs.
-        for (const h of handoffs(r.text, { team: t, live: t.members, done: [...done, ...order, ...picked] })) if (!L.includes(h)) addState(R, h, 'blocked', ctx.statusOf?.(h)?.why || ctx.setupHint?.(h) || 'not set up');
+        // Named in the lead's hand-off but not connected, or not in the team: in the list as not reached, with what it
+        // needs, and named once in the chat (3.4.1: teammates outside the team used to vanish without a word).
+        const missed = namedIn(r.text).filter((h) => !picked.includes(h) && !done.includes(h) && !order.includes(h) && !L.includes(h));
+        notReached(R, missed);
+        R.notReached = missed;
         if (picked.length && parallelOn() && !R.stop) {
           // 2.10: everyone the lead picked works AT THE SAME TIME, each in its own copy of the files; the app merges
           // their work, then the lead checks it all and answers the owner.
@@ -163,7 +167,7 @@ export function createTeamRunner(ctx) {
             setState(R, agent, 'working', '');
             // Their replies go into the lead's prompt itself (labelled, whole), so they're left out of the chat part.
             const theirs = R.msgs.slice(from).filter((m) => picked.includes(m.who));
-            let w = await turn(R, agent, { role: 'lead', task: wrapUpTask(R, res, merge, theirs, agent), exclude: new Set(theirs.map((m) => m.id)) });
+            let w = await turn(R, agent, { role: 'lead', task: wrapUpTask(R, res, merge, theirs, agent, R.notReached || []), exclude: new Set(theirs.map((m) => m.id)) });
             // READ MESSAGE (a reply too long to send whole) and other app lines: answered, then it goes on (at most twice).
             for (let loop = 0; loop < 2 && w && w.ok !== false && w.followUp && !R.stop; loop++) w = await turn(R, agent, { role: 'lead', task: w.followUp, isFollowUp: true }) || { ok: false };
             setState(R, agent, w && w.ok !== false ? 'done' : 'failed', w && w.ok !== false ? '' : (w?.plain?.reason || ''));
@@ -182,10 +186,32 @@ export function createTeamRunner(ctx) {
     return ok;
   }
 
-  function setState(R, agent, state, reason, raw) {
+  // Every @Name on the lead's hand-off lines (any AI in the app, in the team or not).
+  function namedIn(reply) {
+    const lines = String(reply || '').split('\n').filter((l) => /^\s*[-*]?\s*@[A-Za-z]/.test(l));
+    return [...new Set(lines.flatMap((l) => mentionsIn(l)))].filter((a) => AGENTS[a] && a !== 'none');
+  }
+  // Why a teammate can't answer this turn, in plain words, and the one fix for it (src/main.js turns it into a button).
+  function whyNot(a) {
+    const inTeam = ctx.team().members.includes(a);
+    const st = ctx.statusOf?.(a) || {};
+    if (!inTeam) return { label: 'not in your team', why: 'turn it on in Settings › AI team', fix: 'team' };
+    const label = st.label && st.label !== 'checking…' ? st.label : 'not connected';
+    const why = st.why || ctx.setupHint?.(a) || 'set it up in Settings › Accounts';
+    const fix = st.state === 'signin' ? 'signin' : st.state === 'cli' && /install/i.test(why) ? 'install' : 'accounts';
+    return { label, why: why.replace(/\.$/, ''), fix };
+  }
+  function notReached(R, ids) {
+    const list = [...new Set(ids)].filter((a) => AGENTS[a]);
+    if (!list.length) return;
+    for (const a of list) { const w = whyNot(a); addState(R, a, 'blocked', `${w.label}: ${w.why}.`); const x = R.turnState?.list.find((y) => y.agent === a); if (x) { x.state = 'blocked'; x.reason = `${w.label}: ${w.why}.`; x.fix = w.fix; } }
+    post(R, { who: 'system', text: `${list.length === 1 ? 'This teammate was' : `These ${list.length} teammates were`} named but can't answer:\n${list.map((a) => { const w = whyNot(a); return `- ${aiName(a)}: ${w.label}, ${w.why}.`; }).join('\n')}`, fixes: list.map((a) => ({ agent: a, fix: whyNot(a).fix })) });
+  }
+
+  function setState(R, agent, state, reason, raw, fix = null) {
     if (!R.turnState) R.turnState = { text: '', at: now(), list: [] };
     const x = R.turnState.list.find((y) => y.agent === agent) || (R.turnState.list.push({ agent }), R.turnState.list[R.turnState.list.length - 1]);
-    Object.assign(x, { state, reason: reason || '', raw: raw || undefined, at: now() });
+    Object.assign(x, { state, reason: reason || '', raw: raw || undefined, at: now(), fix: fix || undefined });
     ctx.render(R);
   }
   function addState(R, agent, state = 'waiting', reason = '') {
@@ -230,7 +256,7 @@ export function createTeamRunner(ctx) {
       }
       if (!r || r.ok === false) {
         const pe = r?.plain || { state: 'failed', reason: `${aiName(a)} didn't answer.` };
-        setState(R, a, R.stop ? 'failed' : pe.state, R.stop ? 'Stopped by you.' : pe.reason, r?.raw);
+        setState(R, a, R.stop ? 'failed' : pe.state, R.stop ? 'Stopped by you.' : pe.reason, r?.raw, R.stop ? null : pe.fix);
       } else setState(R, a, 'done', '');
       return { agent: a, r };
     }));
@@ -264,8 +290,11 @@ export function createTeamRunner(ctx) {
     await ctx.save(R);
     return { changed: Boolean((m.merged || []).length), by: (m.merged || [])[0]?.agent, merged: m.merged || [], conflicts: m.conflicts || [], empty: m.empty || [] };
   }
-  function wrapUpTask(R, res, merge, theirs = [], lead = null) {
-    const lines = res.map((x) => `- ${aiName(x.agent)}: ${!x.r || x.r.ok === false ? 'did not finish (its error is below)' : x.r.changes?.files?.length ? `changed ${x.r.changes.files.length} file(s)` : 'answered'}`);
+  function wrapUpTask(R, res, merge, theirs = [], lead = null, missed = []) {
+    const lines = [
+      ...res.map((x) => `- ${aiName(x.agent)}: ${!x.r || x.r.ok === false ? 'did not finish (its error is below)' : x.r.changes?.files?.length ? `changed ${x.r.changes.files.length} file(s)` : 'answered'}`),
+      ...missed.map((a) => { const w = whyNot(a); return `- ${aiName(a)}: NOT REACHED (${w.label}: ${w.why}); list it in your answer so the owner knows`; }),
+    ];
     const clash = merge.conflicts.length ? `\nClashes the app couldn't merge (fix them in the chat's copy: run \`git merge <branch>\` and resolve, or redo that part):\n${merge.conflicts.map((c) => `- ${aiName(c.agent)}: ${c.files.join(', ')} (branch ${c.branch})`).join('\n')}` : '';
     return `Your teammates have finished working at the same time:\n${lines.join('\n')}${merge.merged.length ? `\nMerged into this chat's branch: ${merge.merged.map((m) => aiName(m.agent)).join(', ')}.` : ''}${clash}\n\nTHEIR REPLIES, IN FULL (each teammate's own words, errors and refusals included):\n${teamReports(theirs, res.map((x) => x.agent), { forAgent: lead })}\n\nCheck their work together, fix anything wrong or missing, and give the owner ONE short answer: what was done, by whom, and what's left. Don't hand the same work out again.`;
   }
@@ -323,7 +352,7 @@ export function createTeamRunner(ctx) {
     if (!r.ok) {
       // Known raw errors in plain words (src/app/errors.mjs); the raw text stays under "Details".
       const pe = plainError(agent, r.error || {});
-      post(R, { who: agent, role, err: true, text: pe.reason + (r.partial ? `\n\n${r.partial}` : ''), rawError: pe.raw && pe.raw !== pe.reason ? pe.raw.slice(0, 2000) : undefined, retryable: r.error?.kind !== 'cancelled', steps, outcome: outcomeSteps(r), ...(media.length ? { media } : {}), ...(r.changes?.files?.length ? { changes: changesOf(R, r) } : {}) });
+      post(R, { who: agent, role, err: true, ...(pe.fix ? { fix: pe.fix } : {}), text: pe.reason + (r.partial ? `\n\n${r.partial}` : ''), rawError: pe.raw && pe.raw !== pe.reason ? pe.raw.slice(0, 2000) : undefined, retryable: r.error?.kind !== 'cancelled', steps, outcome: outcomeSteps(r), ...(media.length ? { media } : {}), ...(r.changes?.files?.length ? { changes: changesOf(R, r) } : {}) });
       await ctx.save(R);
       ctx.afterSave?.(R);
       return { ok: false, plain: pe, raw: pe.raw };

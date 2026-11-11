@@ -116,6 +116,35 @@ function textAfter(page, question) {
   return i < 0 ? '' : flat.slice(i + tail.length).trim();
 }
 
+// 3.4.1: the new text on the page since the question was sent, when no answer element matched and the question
+// itself can't be found on the page (sites reformat it): what was added after the part both texts share.
+function newText(beforePage, page, question) {
+  const a = textAfter(page, question);
+  if (a) return a;
+  const b = String(beforePage || '').replace(/\s+/g, ' ').trim();
+  const n = String(page || '').replace(/\s+/g, ' ').trim();
+  if (!n || n === b) return '';
+  let i = 0;
+  while (i < b.length && i < n.length && b[i] === n[i]) i++;
+  let added = n.slice(i).trim();
+  // Drop the question itself (or its start) if the site echoed it.
+  const q = String(question || '').replace(/\s+/g, ' ').trim();
+  for (const piece of [q, q.slice(-200), q.slice(0, 200)]) if (piece && added.startsWith(piece)) added = added.slice(piece.length).trim();
+  return added.length >= 2 ? added.slice(0, 20000) : '';
+}
+
+// Where a bridge ask got to, in plain words (said when it fails, so the owner knows what to look at).
+function stageNote(st, name) {
+  const host = (() => { try { return new URL(st.url).hostname + new URL(st.url).pathname.replace(/\/$/, ''); } catch { return ''; } })();
+  return [
+    `page ${st.loaded ? `loaded${host ? ` (${host})` : ''}` : 'didn\'t load'}`,
+    `chat box ${st.box ? 'found' : 'not found'}`,
+    `message ${st.sent ? 'sent' : st.typed ? 'typed, but the site didn\'t start on it' : 'not sent'}`,
+    st.sent ? (st.changed ? `${name} started answering` : `nothing changed on the page after sending`) : '',
+  ].filter(Boolean).join(' · ');
+}
+const DISPOSED = /disposed|destroyed|render frame|webcontents|context was|navigat/i;
+
 // Runs in the page (as a string: the page gets nothing from this app). Returns { input, answer, busy, signIn }.
 function probeScript(site) {
   return `(() => {
@@ -137,10 +166,20 @@ const grabScript = (src, max) => `(async () => { try { const r = await fetch(${J
 const FOCUS_SCRIPT = `(() => { const vis = (e) => e && e.offsetParent !== null; const el = [...document.querySelectorAll('textarea, [contenteditable="true"]')].filter(vis).pop(); if (!el) return false; el.focus(); return true; })()`;
 const SEND_SCRIPT = `(() => { const b = [...document.querySelectorAll('button')].find((x) => /submit|send/i.test((x.getAttribute('aria-label') || '') + ' ' + (x.getAttribute('type') || '')) && !x.disabled); if (b) { b.click(); return true; } return false; })()`;
 
-function createWebBridge({ BrowserWindow, iconPath = undefined, now = () => Date.now(), sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
+// 3.4.1: how many bridge pages work at the same time (all sites together). In a big round (25 teammates) every site
+// opened at once and pages were torn down mid-answer ("Render frame was disposed") or never answered.
+const MAX_PAGES = 2;
+
+function createWebBridge({ BrowserWindow, iconPath = undefined, now = () => Date.now(), sleep = (ms) => new Promise((r) => setTimeout(r, ms)), maxPages = MAX_PAGES }) {
   const wins = new Map();
   const chains = new Map();
   const last = new Map();
+  let quitting = false;
+  // Pages in use, and the asks waiting for one.
+  let inUse = 0;
+  const waiting = [];
+  const takePage = () => new Promise((resolve) => { if (inUse < maxPages) { inUse++; resolve(); } else waiting.push(resolve); });
+  const givePage = () => { const next = waiting.shift(); if (next) next(); else inUse = Math.max(0, inUse - 1); };
 
   function windowFor(id) {
     const w = wins.get(id);
@@ -150,6 +189,10 @@ function createWebBridge({ BrowserWindow, iconPath = undefined, now = () => Date
       webPreferences: { partition: `persist:web-${id}`, contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true, backgroundThrottling: false },
     });
     win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+    // Closing a bridge window he opened to watch or sign in only hides it, so an answer in progress isn't lost.
+    if (typeof win.on === 'function') win.on('close', (e) => { if (!quitting) { e.preventDefault(); win.hide(); } });
+    // A page that crashed (or was thrown away to save memory) gets a fresh window next time.
+    win.webContents.on('render-process-gone', () => { wins.delete(id); try { win.destroy(); } catch {} });
     wins.set(id, win);
     return win;
   }
@@ -176,7 +219,7 @@ function createWebBridge({ BrowserWindow, iconPath = undefined, now = () => Date
     return t && t.kind === kindOf(id) ? { buf, ...t } : null;
   }
 
-  async function askNow(id, prompt, signal) {
+  async function askNow(id, prompt, signal, st) {
     const site = SITES[id];
     const kind = kindOf(id);
     const { timeout, quiet } = KINDS[kind];
@@ -186,17 +229,23 @@ function createWebBridge({ BrowserWindow, iconPath = undefined, now = () => Date
     const win = windowFor(id);
     await load(win, site.url);
     let p = await probe(win, site);
+    // Wait for the page to settle: sites often redirect (sign-in checks) just after loading.
+    for (let i = 0; i < 4 && !signal?.aborted; i++) { await sleep(1500); const q = await probe(win, site); const same = q.url === p.url; p = q; if (same && p.input) break; }
     for (let i = 0; i < 20 && !p.input && !signal?.aborted; i++) { await sleep(1000); p = await probe(win, site); }
+    st.loaded = Boolean(p.url); st.url = p.url || ''; st.box = Boolean(p.input);
     if (!p.input) {
-      const why = site.signIn.test(p.url || '') ? `you're not signed in to ${site.name}` : `${site.name}'s page didn't show its ${kind === 'image' || kind === 'video' ? 'prompt box' : 'chat box'}`;
-      return { ok: false, error: { kind: 'auth', message: `The web bridge couldn't ask ${site.name}: ${why}. Open it in Settings › Accounts (press ▸ on its row, then Open), sign in there (or check the page), then try again.` } };
+      // Two different problems: signed out (the page went to a sign-in page) or a page without its chat box.
+      if (site.signIn.test(p.url || '')) return { ok: false, error: { kind: 'auth', fix: 'open', message: `You're not signed in to ${site.name} on its website. Press Open page, sign in there, close the window and try again.` } };
+      return { ok: false, error: { kind: 'page', fix: 'open', message: `${site.name}'s page didn't show its ${kind === 'image' || kind === 'video' ? 'prompt box' : 'chat box'} (${stageNote(st, site.name)}). It may be a sign-in or welcome screen, or the site changed. Press Open page to look.` } };
     }
     const question = webPrompt(prompt, kind);
     if (!question) return { ok: false, error: { kind: 'failed', message: 'There was nothing to ask.' } };
     const before = (p.answer || '').trim();
+    const beforePage = p.page || '';
     const seen = new Set((p.media || []).map((m) => m.src));
     await win.webContents.executeJavaScript(FOCUS_SCRIPT, true).catch(() => false);
     await win.webContents.insertText(question);
+    st.typed = true;
     await sleep(400);
     win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Enter' });
     win.webContents.sendInputEvent({ type: 'char', keyCode: '\r' });
@@ -206,7 +255,9 @@ function createWebBridge({ BrowserWindow, iconPath = undefined, now = () => Date
     await sleep(3000);
     p = await probe(win, site);
     const fresh = (q) => (q.media || []).filter((m) => !seen.has(m.src) && (kind === 'image' ? m.tag === 'img' : m.tag === 'video'));
-    if (!p.busy && (p.answer || '').trim() === before && !fresh(p).length) await win.webContents.executeJavaScript(SEND_SCRIPT, true).catch(() => false);
+    const moved = (q) => q.busy || (q.answer || '').trim() !== before || fresh(q).length > 0 || (q.page || '') !== beforePage;
+    if (!moved(p)) await win.webContents.executeJavaScript(SEND_SCRIPT, true).catch(() => false);
+    st.sent = true;
     const start = now();
     let prev = '';
     let still = 0;
@@ -217,16 +268,17 @@ function createWebBridge({ BrowserWindow, iconPath = undefined, now = () => Date
         if (signal?.aborted) return { ok: false, error: { kind: 'cancelled', message: 'Stopped.' } };
         await sleep(1000);
         p = await probe(win, site);
+        if (moved(p)) st.changed = true;
         const got = fresh(p);
         const key = got.map((m) => `${m.src}:${m.done}`).join('|');
         if (got.length && got.every((m) => m.done) && !p.busy && key === prev) { if (++still >= quiet) break; } else still = 0;
         prev = key;
       }
       const got = fresh(p).filter((m) => m.done);
-      if (!got.length) return { ok: false, error: { kind: 'failed', message: `${site.name} didn't show a new ${kind === 'image' ? 'picture' : 'video'} on its website within ${Math.round(timeout / 60000)} minutes. Open it in Settings › Accounts to see what happened.` } };
+      if (!got.length) return { ok: false, error: { kind: 'timeout', fix: 'open', message: `${site.name} didn't show a new ${kind === 'image' ? 'picture' : 'video'} on its website within ${Math.round(timeout / 60000)} minutes (${stageNote(st, site.name)}). Press Open page to see what happened.` } };
       const files = [];
       for (const m of got.slice(0, 4)) { const f = await grab(win, id, m.src); if (f) files.push(f); }
-      if (!files.length) return { ok: false, error: { kind: 'failed', message: `${site.name} made it, but the bridge couldn't save the file. Open it in Settings › Accounts and download it from there.` } };
+      if (!files.length) return { ok: false, error: { kind: 'failed', fix: 'open', message: `${site.name} made it, but the bridge couldn't save the file. Press Open page and download it from there.` } };
       return { ok: true, files, via: 'your web sign-in (bridge)' };
     }
     // The answer is done when it has stopped changing for a while and the site isn't working on it any more.
@@ -234,12 +286,13 @@ function createWebBridge({ BrowserWindow, iconPath = undefined, now = () => Date
       if (signal?.aborted) return { ok: false, error: { kind: 'cancelled', message: 'Stopped.' }, partial: text };
       await sleep(1000);
       p = await probe(win, site);
+      if (moved(p)) st.changed = true;
       const a = (p.answer || '').trim();
-      text = a && a !== before ? a : textAfter(p.page, question);
+      text = a && a !== before ? a : newText(beforePage, p.page, question);
       if (text && text === prev && !p.busy) { if (++still >= quiet) break; } else still = 0;
       prev = text;
     }
-    if (!text) return { ok: false, error: { kind: 'failed', message: `${site.name} gave no answer on its website within ${Math.round(timeout / 60000)} minutes.` } };
+    if (!text) return { ok: false, error: { kind: 'timeout', fix: 'open', message: `${site.name} gave no answer on its website within ${Math.round(timeout / 60000)} minutes (${stageNote(st, site.name)}). Press Open page to see what happened.` } };
     if (kind === 'agent' || kind === 'build') {
       const pr = (p.prs || []).map((u) => { try { const x = new URL(u); return x.protocol === 'https:' && x.hostname === 'github.com' ? x.href : null; } catch { return null; } }).filter(Boolean).pop();
       const where = /^https:\/\//.test(p.url || '') && mediaHostOk(id, p.url) ? p.url : site.url;
@@ -248,10 +301,31 @@ function createWebBridge({ BrowserWindow, iconPath = undefined, now = () => Date
     return { ok: true, text, via: 'your web sign-in (bridge)' };
   }
 
-  // One question at a time per site.
+  // One question at a time per site, and at most a couple of pages at once overall. A page torn down before the
+  // message was sent is tried once more in a fresh window; after sending it isn't sent twice.
   function ask(id, prompt, signal) {
     if (!IDS.includes(id)) return Promise.resolve({ ok: false, error: { kind: 'auth', message: 'No web bridge for this AI.' } });
-    const run = () => askNow(id, prompt, signal).catch((e) => ({ ok: false, error: { kind: 'failed', message: `The web bridge stopped: ${e.message}` } }));
+    const once = async (st) => {
+      try { return await askNow(id, prompt, signal, st); } catch (e) { return { thrown: e }; }
+    };
+    const run = async () => {
+      await takePage();
+      try {
+        let st = { loaded: false, url: '', box: false, typed: false, sent: false, changed: false };
+        let r = await once(st);
+        if (r.thrown && DISPOSED.test(String(r.thrown.message)) && !st.typed && !signal?.aborted) {
+          const w = wins.get(id); wins.delete(id); try { w?.destroy(); } catch {}
+          st = { loaded: false, url: '', box: false, typed: false, sent: false, changed: false };
+          r = await once(st);
+        }
+        if (r.thrown) {
+          const e = r.thrown;
+          const why = DISPOSED.test(String(e.message)) ? `${SITES[id].name}'s page closed or reloaded while the bridge was using it` : `the web bridge stopped: ${e.message}`;
+          return { ok: false, error: { kind: 'failed', fix: 'open', message: `${SITES[id].name} didn't answer: ${why} (${stageNote(st, SITES[id].name)}).${st.typed ? ' The message may already have reached it, so it wasn\'t sent again: press Open page to see the answer there, or Retry.' : ' Press Retry.'}` } };
+        }
+        return r;
+      } finally { givePage(); }
+    };
     const p = (chains.get(id) || Promise.resolve()).then(run, run);
     chains.set(id, p.catch(() => null));
     return p;
@@ -264,8 +338,8 @@ function createWebBridge({ BrowserWindow, iconPath = undefined, now = () => Date
     w.show(); w.focus();
     return { ok: true };
   }
-  function closeAll() { for (const w of wins.values()) if (!w.isDestroyed()) w.destroy(); wins.clear(); }
-  return { ask, show, closeAll };
+  function closeAll() { quitting = true; for (const w of wins.values()) if (!w.isDestroyed()) w.destroy(); wins.clear(); }
+  return { ask, show, closeAll, pagesInUse: () => inUse, waitingForPage: () => waiting.length };
 }
 
-module.exports = { SITES, IDS, KINDS, MIN_GAP_MS, MAX_PROMPT, MAX_MEDIA, kindOf, cleanBridge, webPrompt, textAfter, probeScript, mediaType, mediaHostOk, createWebBridge };
+module.exports = { SITES, IDS, KINDS, MIN_GAP_MS, MAX_PROMPT, MAX_MEDIA, MAX_PAGES, kindOf, newText, stageNote, cleanBridge, webPrompt, textAfter, probeScript, mediaType, mediaHostOk, createWebBridge };

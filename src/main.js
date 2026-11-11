@@ -31,6 +31,7 @@ import { teamHabitatLine } from './habitat/status.mjs';
 import { activateLore, nextSpeakers, rpPrompt, addSwipe, moveSwipe, isSexual, fill, spriteFor } from './app/roleplay.mjs';
 import { createVoice } from './voice.mjs';
 import { liveStageHtml, miniCore, LIVE_AIS, MAKER_IDS } from './live.mjs';
+import { checkWord, CHECK_PROMPT, planCheck, runCheck, CHECK_ORDER, CHECK_LABEL, summary as checkSummary } from './app/rollcall.mjs';
 import { creditsHtml } from './app/credits.mjs';
 import { voiceSettings, routeFor, isServer, serverIdOf, idOf } from './app/voice-logic.mjs';
 import { studioView, queueHtml, requestFrom } from './app/studio.mjs';
@@ -70,12 +71,12 @@ const S = {
   settings: { tools: { web: true, build: true, quickChecks: [] }, team: null, copyIdleHours: 24, theme: 'hearth', textSize: 100, connection: {}, bins: {}, extraDirs: [], notify: true, autoRead: false, maxChats: 3, customInstructions: { about: '', style: '' }, teammates: {} },
   info: {}, upd: { enabled: false, status: { state: 'idle' } }, gh: {}, cli: {}, prov: { keys: {} }, theme: { found: false, tokens: {} },
   mates: { ready: {}, keys: {}, servers: [], imagesOnly: {}, conf: { venice: {}, civitai: {} }, models: { venice: [], veniceImage: [], civitaiEngines: [] } },
-  mkeys: { keys: {} }, clik: {}, credit: null, acctQ: '', acctOpen: null, acctFold: (() => { try { return JSON.parse(localStorage.getItem('hearth.v2.acctFold') || '{}') || {}; } catch { return {}; } })(), memory: null, memPrompt: '', schedules: null, connectors: null, skills: null, habitat: null,
+  mkeys: { keys: {} }, clik: {}, credit: null, acctQ: '', acctOpen: null, acctFold: (() => { try { return JSON.parse(localStorage.getItem('hearth.v2.acctFold') || '{}') || {}; } catch { return {}; } })(), teamFold: (() => { try { return JSON.parse(localStorage.getItem('hearth.v2.teamFold') || '{}') || {}; } catch { return {}; } })(), memory: null, memPrompt: '', schedules: null, connectors: null, skills: null, habitat: null,
   copies: null, boards: null, phone: null, idle: [], rec: null,
   cards: null, books: null, persona: null, cardEdit: null, loreEdit: null, cardQuery: '', cardFind: null, cardColl: '', collSel: [], colls: [],
   // Quick checks whose tool is missing on this PC, the Permissions table, Gemini's allow-list,
   // the last team test and the settings change log.
-  missing: [], permsT: null, agy: null, teamTest: null, testing: false, slog: null, findSites: null, found: [],
+  missing: [], permsT: null, agy: null, teamTest: null, testing: false, check: null, slog: null, findSites: null, found: [],
 };
 
 const uid = () => Math.random().toString(36).slice(2, 10);
@@ -1282,10 +1283,15 @@ function workStack(R, size = 26) {
   const names = list.map((b) => aiName(b.agent));
   return `<span class="wstack" title="Working now: ${esc(names.join(', '))}" aria-label="Working now: ${esc(names.join(', '))}">${list.map((b, i) => `<span class="wi" style="z-index:${i + 1}">${holo ? miniCore(b.agent, aiName(b.agent), size, 'working') : mono(b.agent)}</span>`).join('')}${list.length > 1 ? `<span class="wn">${list.length}</span>` : ''}</span>`;
 }
+// 3.4.1: a big team doesn't fit in a row: the lead, then the connected ones (up to 8), then "+N more".
 function homeCores() {
-  const ids = team().members;
+  const t = team();
+  const ids = t.members;
   if (!ids.length) return '';
-  return `<div class="team-cores" aria-label="Your team">${ids.map((a) => `<div class="tc">${miniCore(a, aiName(a), a === team().lead ? 64 : 40, ready(a) ? 'ready' : 'off')}<span>${esc(aiName(a))}</span></div>`).join('')}</div>`;
+  const order = [t.lead, ...ids.filter((a) => a !== t.lead && ready(a)), ...ids.filter((a) => a !== t.lead && !ready(a))];
+  const shown = order.slice(0, 9);
+  const more = order.length - shown.length;
+  return `<div class="team-cores" aria-label="Your team">${shown.map((a) => `<div class="tc">${miniCore(a, aiName(a), a === t.lead ? 56 : 34, ready(a) ? 'ready' : 'off')}<span>${esc(aiName(a))}</span></div>`).join('')}${more ? `<button class="tc more" data-a="settings-team" title="Everyone in your team: Settings › AI team">+${more}<span>more</span></button>` : ''}</div>`;
 }
 
 function composer(placeholder) {
@@ -1350,12 +1356,23 @@ function chatView() {
   return `<div class="col">${c?.rp ? rpEmpty : empty}${items}${working}${c?.rp ? sceneJobsHtml(R) : ''}${c?.rp ? '' : turnStrip(R)}</div>`;
 }
 
+// 3.4.1: the one fix for a teammate that couldn't answer, right where it says so.
+function fixButton(agent, fix) {
+  if (!fix || !AGENTS[agent]) return '';
+  const n = esc(aiName(agent));
+  if (fix === 'open') return `<button class="mini p" data-a="bridge-show" data-v="${esc(agent)}" title="Open ${n}'s page: sign in there, or see what happened">Open page</button>`;
+  if (fix === 'signin') return `<button class="mini p" data-a="signin" data-v="${esc(agent)}">Sign in to ${n}</button>`;
+  if (fix === 'install') return `<button class="mini p" data-a="install" data-v="${esc(agent)}">Install ${n}</button>`;
+  if (fix === 'team') return `<button class="mini p" data-a="team-add" data-v="${esc(agent)}">Add ${n} to the team</button>`;
+  return `<button class="mini p" data-a="acct-goto" data-v="${esc(agent)}">Set up ${n}</button>`;
+}
+
 // Who is in this turn: waiting, working, blocked, failed or done, with a plain reason and Retry.
 const TS_ICON = { waiting: 'clock', working: 'cpu', blocked: 'flag', failed: 'x', done: 'check', skipped: 'clock' };
 function turnStrip(R) {
   const ts = R?.turnState;
   if (!ts?.list?.length || (ts.list.length === 1 && ts.list[0].state === 'done')) return '';
-  return `<div class="tstrip" id="turn-strip"><div class="mh">This turn</div>${ts.list.map((x) => `<div class="ts ${esc(x.state)}">${mono(x.agent, 'sm')}<b>${esc(aiName(x.agent))}</b><span class="chip ${x.state === 'done' ? 'g' : ['failed', 'blocked'].includes(x.state) ? 'b' : ''}">${icon(TS_ICON[x.state] || 'cpu', 'sm')}${esc(x.state)}</span><span class="d">${esc(x.reason || (x.state === 'working' ? 'answering now' : x.state === 'waiting' ? 'answers after the ones above' : ''))}</span><span class="grow"></span>${['failed', 'blocked'].includes(x.state) && !R.round ? `<button class="mini" data-a="turn-retry" data-v="${esc(x.agent)}">Retry</button>` : ''}</div>`).join('')}</div>`;
+  return `<div class="tstrip" id="turn-strip"><div class="mh">This turn</div>${ts.list.map((x) => `<div class="ts ${esc(x.state)}">${mono(x.agent, 'sm')}<b>${esc(aiName(x.agent))}</b><span class="chip ${x.state === 'done' ? 'g' : ['failed', 'blocked'].includes(x.state) ? 'b' : ''}">${icon(TS_ICON[x.state] || 'cpu', 'sm')}${esc(x.state)}</span><span class="d">${esc(x.reason || (x.state === 'working' ? 'answering now' : x.state === 'waiting' ? 'answers after the ones above' : ''))}</span><span class="grow"></span>${['failed', 'blocked'].includes(x.state) ? fixButton(x.agent, x.fix) : ''}${['failed', 'blocked'].includes(x.state) && !R.round && x.fix !== 'team' ? `<button class="mini" data-a="turn-retry" data-v="${esc(x.agent)}">Retry</button>` : ''}</div>`).join('')}</div>`;
 }
 
 function stepsHtml(steps = [], outcome = [], liveNow = false, actions = null) {
@@ -1401,7 +1418,7 @@ function message(m, latestChanges, last = false) {
     if (S.editing === m.id) return `<div class="msg-u editing" data-msg="${esc(m.id)}"><textarea id="edit-text" rows="3">${esc(m.text)}</textarea><div class="mft"><button class="btn ghost" data-a="edit-cancel">Cancel</button><button class="btn p" data-a="edit-send" data-m="${esc(m.id)}">Save and send</button></div></div>`;
     return `<div class="uwrap" data-msg="${esc(m.id)}"><div class="msg-u">${atts ? `<div class="atts">${atts}</div>` : ''}${rich(m.text)}${m.to ? `<div class="fine">only for ${esc(m.to.map(aiName).join(', '))}: not shown to your other AIs</div>` : ''}</div>${controlsHtml(m, true)}</div>`;
   }
-  if (m.who === 'system') return `<div class="msg-s">${rich(m.text)}${mediaHtml(m)}</div>`;
+  if (m.who === 'system') return `<div class="msg-s">${rich(m.text)}${mediaHtml(m)}${m.fixes?.length ? `<div class="mft left fixes">${m.fixes.map((f) => fixButton(f.agent, f.fix)).join('')}</div>` : ''}</div>`;
   const role = m.role === 'lead' ? '<span class="star">★ lead</span>' : m.role === 'reviewer' ? '<span>· reviewer</span>' : '';
   const when = ago(m.at);
   return `<div class="msg-a ${m.err ? 'err' : ''}" data-msg="${esc(m.id)}">
@@ -1410,7 +1427,8 @@ function message(m, latestChanges, last = false) {
     ${helpersHtml(m)}
     <div class="text">${rich(m.text)}</div>
     ${m.err && m.rawError ? `<details class="raw"><summary class="fine">Details (the tool's own words)</summary><pre class="mono">${esc(m.rawError)}</pre></details>` : ''}
-    ${m.err && m.retryable !== false && AGENTS[m.who] && !cur()?.round ? `<div class="mft left"><button class="mini" data-a="turn-retry" data-v="${esc(m.who)}">Retry ${esc(aiName(m.who))}</button></div>` : ''}
+    ${m.err && (m.fix || (m.retryable !== false && AGENTS[m.who] && !cur()?.round)) ? `<div class="mft left">${fixButton(m.who, m.fix)}${m.retryable !== false && AGENTS[m.who] && !cur()?.round ? `<button class="mini" data-a="turn-retry" data-v="${esc(m.who)}">Retry ${esc(aiName(m.who))}</button>` : ''}</div>` : ''}
+    ${UNFILTERED.includes(m.who) && !m.err && !S.readOnly ? `<div class="mft left ocheck"><span class="fine">${m.ownerCheck ? `You marked this ${m.ownerCheck === 'ok' ? '<b>looks right</b>' : '<b>not right</b>'}: the lead is told that (never what it says).` : 'Only you see this. Tell the lead how it went, without showing it:'}</span><button class="mini ${m.ownerCheck === 'ok' ? 'p' : ''}" data-a="owner-check" data-m="${esc(m.id)}" data-v="ok">Looks right</button><button class="mini ${m.ownerCheck === 'bad' ? 'p' : ''}" data-a="owner-check" data-m="${esc(m.id)}" data-v="bad">Not right</button></div>` : ''}
     ${mediaHtml(m)}
     ${(m.mediaProblems || []).map((p) => p.tooBig || p.noSpace ? problemCard(p, icon) : `<div class="media-why">${icon('eye', 'sm')}<span>Can't show <b class="mono">${esc(p.path)}</b>: ${esc(p.reason)}.</span></div>`).join('')}
     ${(m.previews || []).map((p) => previewCard(m, p)).join('')}
@@ -1688,9 +1706,16 @@ function popHtml() {
     const opt = (v, label, sub) => `<button class="it ${S.mode === v ? 'on' : ''}" data-a="set-mode" data-v="${v}">${label}<small>${sub}</small></button>`;
     return `<div class="scrim" data-a="close-pop"></div><div class="pop" style="${p.top ? 'right:20px;top:52px' : `left:${p.x}px;bottom:${p.b}px`}"><div class="mh">Who answers</div>
       ${opt('team', `${icon('users', 'sm')}Whole team`, `${esc(aiName(t.lead))} ★ leads`)}
-      ${t.members.map((a) => opt(a, `${mono(a, 'sm')}${esc(aiName(a))}`, ready(a) ? (a === t.lead ? 'lead · connected' : a === t.reviewer ? 'reviewer · connected' : 'connected') : `${statusOf(a).label}${statusOf(a).why ? ` · ${statusOf(a).why}` : ''}`)).join('')}
-      <div class="note">Or type @name in your message to ask one AI (several names on one line reach them all). Change who's in the team in Settings › AI team.</div>
-      <button class="it" data-a="team-test-go">${icon('check', 'sm')}Test team<small>a safe test of each connected teammate (Settings › AI team)</small></button></div>`;
+      ${(() => {
+        // 3.4.1: compact: connected teammates as a grid of small chips; the rest folded, with why.
+        const on = t.members.filter(ready);
+        const off = t.members.filter((a) => !ready(a));
+        const chip = (a) => `<button class="wa ${S.mode === a ? 'on' : ''}" data-a="set-mode" data-v="${a}" title="${esc(aiName(a))}${a === t.lead ? ' · lead' : a === t.reviewer ? ' · reviewer' : ''}">${mono(a, 'sm')}<span>${esc(aiName(a))}</span>${a === t.lead ? '<i>★</i>' : ''}</button>`;
+        return `<div class="mh">Just one (${on.length} connected)</div><div class="wa-grid">${on.map(chip).join('') || '<span class="fine">No teammate is connected yet.</span>'}</div>
+          ${off.length ? `<details class="wa-off"><summary class="fine">${off.length} not connected</summary>${off.map((a) => `<div class="wa-why">${mono(a, 'sm')}<b>${esc(aiName(a))}</b><span>${esc(statusOf(a).label)}</span></div>`).join('')}</details>` : ''}`;
+      })()}
+      <div class="note">Or type @name in your message (several names reach them all). Who's in the team: Settings › AI team.</div>
+      <button class="it" data-a="team-check-go">${icon('check', 'sm')}Test team<small>a check word from every teammate</small></button></div>`;
   }
   if (p.kind === 'options') {
     const R = S.view === 'chat' ? cur() : null;
@@ -1702,8 +1727,8 @@ function popHtml() {
       <button class="it" data-a="toggle-deep">${icon('globe', 'sm')}Deep research<small>${S.deep ? 'on' : 'off'} · a long report with sources</small></button>
       <button class="it" data-a="toggle-talk">${icon('wave', 'sm')}Talk<small>${voice.isOpen() ? 'on' : 'off'} · voice chat: say it, hear the answers</small></button>
       <div class="sep"></div><div class="mh">Model per AI ${R ? '(this chat)' : '(the next chat)'}</div>
-      ${t.members.filter((a) => !AGENTS[a]?.imagesOnly).map((a) => `<div class="it static">${mono(a, 'sm')}${esc(aiName(a))}<select data-a="pick-model" data-v="${a}"><option value="default">default</option>${opts(a).map((o) => `<option ${models[a] === o ? 'selected' : ''}>${esc(o)}</option>`).join('')}${models[a] && models[a] !== 'default' && !opts(a).includes(models[a]) ? `<option selected>${esc(models[a])}</option>` : ''}</select></div>`).join('')}
-      <div class="note">Default uses each AI's own setting. Models are kept with the chat, not in your settings.</div></div>`;
+      ${t.members.filter((a) => !AGENTS[a]?.imagesOnly && ready(a) && (opts(a).length || models[a])).map((a) => `<div class="it static compact">${mono(a, 'sm')}${esc(aiName(a))}<select data-a="pick-model" data-v="${a}"><option value="default">default</option>${opts(a).map((o) => `<option ${models[a] === o ? 'selected' : ''}>${esc(o)}</option>`).join('')}${models[a] && models[a] !== 'default' && !opts(a).includes(models[a]) ? `<option selected>${esc(models[a])}</option>` : ''}</select></div>`).join('')}
+      <div class="note">Connected teammates that have models to pick from. Default uses each AI's own setting. Models are kept with the chat, not in your settings.</div></div>`;
   }
   if (p.kind === 'repo') {
     const q = S.repoQuery.toLowerCase();
@@ -1937,10 +1962,11 @@ function section(k) {
   const t = team();
   if (k === 'team') {
     return `<h1>AI team</h1><div class="box"><h3>Who's in your chats</h3>
-      ${TEAM_IDS.map((a) => { const inTeam = t.members.includes(a); const r = ready(a); return `<div class="srow mem">${mono(a)}<b>${esc(aiName(a))}</b><span class="d">${a === t.lead ? 'lead ★ · ' : a === t.reviewer ? 'reviewer · ' : ''}${esc(AGENTS[a].tool)}${r ? `, ${esc(AGENTS[a].plan)} · connected` : inTeam ? ` · ${esc(statusOf(a).label)}${statusOf(a).why ? `: ${esc(statusOf(a).why)}` : ''}` : ''}${inTeam ? '' : ' · off'}</span><span class="grow"></span>${inTeam && a !== t.lead && AGENTS[a].edits ? `<button class="mini" data-a="make-lead" data-v="${a}">Make lead</button>` : ''}${inTeam && a !== t.lead && a !== t.reviewer && !UNFILTERED.includes(a) ? `<button class="mini" data-a="make-reviewer" data-v="${a}">Make reviewer</button>` : ''}${tog(inTeam, 'team-member', `data-v="${a}" ${a === t.lead ? 'disabled title="The lead is always in"' : ''}`)}</div>`; }).join('')}
+      ${teamGrid(t)}
       <div class="srow">Work at the same time<span class="d">${S.settings.teamParallel !== false ? 'everyone the lead picks works at once, each in its own copy of the files; each reports to the lead as soon as it\'s done, and the app merges their changes' : 'one after another, as before'}</span><span class="grow"></span>${tog(S.settings.teamParallel !== false, 'team-parallel')}</div>
       <div class="note">The lead (Claude unless you change it) answers first and hands parts to teammates. When the lead changes files, the reviewer checks the diff. Type @name in a message to ask one AI. ${t.reviewer ? '' : 'No reviewer is set.'} Venice, Civitai and your GPU server never see the other AIs' private context and what they make is never passed to Claude, ChatGPT or Gemini.</div>
       ${t.reviewer ? '<button class="mini" data-a="no-reviewer">No reviewer</button>' : ''}</div>
+      ${teamCheckBox()}
       ${teamTestBox()}`;
   }
   if (k === 'accounts') {
@@ -2090,12 +2116,49 @@ function section(k) {
 }
 
 // ---- Settings › AI team › Test team ----
+// ---- 3.4.1 Settings › AI team › Test team: a check word from every teammate ----
+const BUILDER_IDS = ['lovable', 'replit', 'v0', 'bolt', 'firebase'];
+function checkInfo(a) {
+  return { inTeam: team().members.includes(a), ready: ready(a), status: statusOf(a), imagesOnly: Boolean(S.mates.imagesOnly?.[a] || AGENTS[a]?.imagesOnly), cloud: Boolean(AGENTS[a]?.cloud), builder: BUILDER_IDS.includes(a), bridge: S.settings.webBridge?.[a] === true };
+}
+async function teamCheck(scope = 'team') {
+  if (S.check?.running) return;
+  await refreshAgents();
+  const ids = scope === 'all' ? TEAM_IDS : team().members;
+  const rows = planCheck(ids, checkInfo);
+  const words = Object.fromEntries(rows.map((r) => [r.agent, checkWord(r.agent)]));
+  S.check = { running: true, scope, rows, at: new Date().toISOString() };
+  render();
+  const e = rows.some((r) => r.run) ? await call('chatsTemp') : null;
+  if (rows.some((r) => r.run) && !e?.id) { S.check = { ...S.check, running: false, error: 'The check needs the app (it couldn\'t open a scratch chat).' }; return render(); }
+  try {
+    await runCheck(rows, {
+      words,
+      onUpdate: () => { if (S.view === 'settings' && S.tab === 'team') render(); },
+      run: (row) => call('chatRun', { chatId: e.id, agent: row.agent, runId: `${uid().replace(/[^a-z0-9]/gi, '').slice(0, 10)}k`, helper: true, prompt: CHECK_PROMPT(words[row.agent]), web: false, build: false, title: 'Team check' }),
+    });
+  } finally {
+    if (e?.id) await call('chatsTempEnd', e.id);
+    S.check = { ...S.check, running: false, done: new Date().toISOString() };
+    render();
+  }
+}
+function teamCheckBox() {
+  const C = S.check;
+  const rows = C ? [...C.rows].sort((x, y) => CHECK_ORDER.indexOf(x.state) - CHECK_ORDER.indexOf(y.state)) : [];
+  const chip = (st) => (st === 'passed' ? 'g' : ['failed', 'signin', 'notconnected'].includes(st) ? 'b' : '');
+  return `<div class="box" id="team-check"><h3>${icon('check', 'sm')}Test team: a check word from everyone</h3><p class="fine">Each teammate that's connected is asked to reply with its own check word. Website teammates take turns, two at a time. Nothing is changed or saved; uncensored teammates' answers are checked by the app, not shown to the others.</p>
+    <div class="srow"><span class="d">${C ? esc(checkSummary(C.rows)) || 'Starting…' : 'Not run yet.'}${C?.running ? ' · <span class="spin"></span> asking…' : ''}</span><span class="grow"></span><button class="btn p" data-a="team-check" data-v="team" ${C?.running ? 'disabled' : ''}>Check my team</button><button class="btn" data-a="team-check" data-v="all" ${C?.running ? 'disabled' : ''} title="Every AI in the app, also the ones not in your team">Check every AI</button></div>
+    ${C?.error ? `<div class="note bad">${esc(C.error)}</div>` : ''}
+    ${rows.length ? `<div class="ck-table" role="table" aria-label="Test team results">${rows.map((r) => `<div class="ck-row ${esc(r.state)}" role="row">${miniCore(r.agent, aiName(r.agent), 20, r.state === 'passed' ? 'ready' : r.state === 'working' ? 'working' : 'off')}<b>${esc(aiName(r.agent))}</b><span class="chip ${chip(r.state)}">${r.state === 'working' ? '<span class="spin"></span>' : ''}${esc(CHECK_LABEL[r.state] || r.state)}</span><span class="d">${esc(r.reason || (r.state === 'passed' ? `gave its word${r.ms ? ` in ${Math.max(1, Math.round(r.ms / 1000))} s` : ''}${r.via ? ` · ${r.via}` : ''}` : ''))}</span><span class="grow"></span>${fixButton(r.agent, r.fix)}</div>`).join('')}</div>` : ''}</div>`;
+}
+
 function teamTestBox() {
   const T = S.teamTest;
   const ids = team().members.filter((a) => ready(a) && method(a) !== 'api' && ['anthropic', 'openai', 'google', 'xai', 'mistral', 'qwen'].includes(a));
   const res = (T?.results || []).map((r) => `<div class="tt"><div class="srow">${mono(r.agent)}<b>${esc(aiName(r.agent))}</b><span class="d">${r.via ? esc(r.via) : ''}${r.ms ? ` · ${Math.round(r.ms / 1000)} s` : ''}</span><span class="grow"></span><span class="chip ${r.steps.every((x) => x.pass) ? 'g' : 'b'}">${r.steps.filter((x) => x.pass).length}/${r.steps.length} passed</span></div>
     ${r.steps.map((x) => `<div class="srow sub step-${x.pass ? 'ok' : 'bad'}">${icon(x.pass ? 'check' : 'x', 'sm')}<b>${esc(x.label)}</b><span class="d">${x.pass ? 'pass' : 'fail'}${x.detail ? ` · ${esc(x.detail)}` : ''}${x.verified && !/checked by the app/.test(x.detail || '') ? ' · checked by the app' : ''}</span></div>`).join('')}</div>`).join('');
-  return `<div class="box" id="team-test"><h3>${icon('check', 'sm')}Test team</h3><p class="fine">Every connected teammate runs the same safe test in a temporary scratch folder: read a file, search the web, run node --check on a file it makes, then delete that file. Nothing is pushed, no pictures are made, and your settings are checked afterwards.</p>
+  return `<div class="box" id="team-test"><h3>${icon('check', 'sm')}Tool test: files, web and commands</h3><p class="fine">Every connected teammate runs the same safe test in a temporary scratch folder: read a file, search the web, run node --check on a file it makes, then delete that file. Nothing is pushed, no pictures are made, and your settings are checked afterwards.</p>
     <div class="srow"><span class="d">${ids.length ? `Will test: ${esc(ids.map(aiName).join(', '))}` : 'No connected teammate with a CLI yet.'}</span><span class="grow"></span><button class="btn p" data-a="team-test" ${S.testing || !ids.length ? 'disabled' : ''}>${S.testing ? 'Testing…' : 'Test team'}</button></div>
     ${S.testing ? `<div class="fine">${esc((T?.running || []).map(aiName).join(', '))} are working on it (up to a few minutes)…</div>` : ''}
     ${T?.error ? `<div class="note bad">${esc(T.error)}</div>` : ''}${res}
@@ -2822,8 +2885,15 @@ document.addEventListener('click', async (ev) => {
     case 'send': return send();
     case 'stop': return stopRun();
     case 'turn-retry': { const R = cur(); if (R && !R.round) runner.retry(R, d.v); return; }
+    // 3.4.1: a fix from an error, and the owner's check of an uncensored teammate's reply (the lead learns only the verdict).
+    case 'team-check': return teamCheck(d.v === 'all' ? 'all' : 'team');
+    case 'acct-goto': S.view = 'settings'; S.tab = 'accounts'; S.acctOpen = d.v; S.acctQ = ''; render(true); return loadSection('accounts');
+    case 'team-add': { const t = team(); if (t.members.includes(d.v)) return toast(`${aiName(d.v)} is already in the team.`); await setSettings({ team: { ...t, members: [...t.members, d.v] } }); toast(`${aiName(d.v)} is in the team now.${ready(d.v) ? '' : ' It still needs setting up in Settings › Accounts.'}`); return render(); }
+    case 'owner-check': { const R = cur(); const m = R?.msgs.find((x) => x.id === d.m); if (!m || !UNFILTERED.includes(m.who)) return; m.ownerCheck = m.ownerCheck === d.v ? undefined : d.v; await saveRt(R); return render(); }
     case 'team-test-go': S.pop = null; renderOverlay(); S.view = 'settings'; S.tab = 'team'; render(true); return runTeamTest();
     case 'team-test': return runTeamTest();
+    case 'team-check-go': S.pop = null; renderOverlay(); S.view = 'settings'; S.tab = 'team'; render(true); await loadSection('team'); return teamCheck('team');
+    case 'settings-team': S.view = 'settings'; S.tab = 'team'; S.pane = null; render(true); return loadSection('team');
     case 'agy-setup': { const r = await call('permsAgySetup'); toast(r?.message || (r?.ok ? 'Done.' : 'Not changed.')); return loadPerms(); }
     case 'perms-refresh': return loadPerms(true);
     case 'follow': { const m = msgById(d.m); const f = m?.followUps?.[Number(d.i)]; if (f) send(f); return; }
@@ -2935,6 +3005,7 @@ document.addEventListener('click', async (ev) => {
     case 'media-unkey': await call('mediaRemoveKey', d.v); await refreshMates(); return render();
     // 3.4 compact Accounts
     case 'acct-open': S.acctOpen = S.acctOpen === d.v ? null : d.v; return render();
+    case 'team-fold': S.teamFold = { ...(S.teamFold || {}), [d.v]: !(S.teamFold || {})[d.v] }; try { localStorage.setItem('hearth.v2.teamFold', JSON.stringify(S.teamFold)); } catch {} return render();
     case 'acct-fold': S.acctFold = { ...(S.acctFold || {}), [d.v]: !(S.acctFold || {})[d.v] }; try { localStorage.setItem('hearth.v2.acctFold', JSON.stringify(S.acctFold)); } catch {} return render();
     case 'acct-web': { const r = await call('openWeb', d.v); if (r && r.ok === false) toast(r.message || 'That site couldn\'t open.'); return; }
     case 'cli-key': { const key = await secretPrompt(`Paste your ${CLI_KEY[d.v] || 'API key'} (optional: signing in works without it)`); if (key) { const r = await call('cliSetKey', d.v, key); if (r?.ok === false) toast(r.message); S.clik = (await call('cliKeys')) || S.clik; render(); } return; }
