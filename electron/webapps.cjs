@@ -15,6 +15,8 @@ const WEB = Object.freeze({
   copilot: 'https://copilot.microsoft.com/',
   meta: 'https://www.meta.ai/',
   freebuff: 'https://freebuff.com/',
+  bolt: 'https://bolt.new/',
+  firebase: 'https://studio.firebase.google.com/',
 });
 
 // Official account / key pages (opened in your browser for sign-in and API keys).
@@ -42,7 +44,7 @@ const EXPORT = Object.freeze({
   copilot: 'https://account.microsoft.com/privacy',
 });
 
-const NAMES = { anthropic: 'Claude', openai: 'ChatGPT', google: 'Gemini', xai: 'Grok', mistral: 'Le Chat', qwen: 'Qwen Chat', perplexity: 'Perplexity', deepseek: 'DeepSeek', copilot: 'Copilot', meta: 'Meta AI', freebuff: 'FreeBuff' };
+const NAMES = { anthropic: 'Claude', openai: 'ChatGPT', google: 'Gemini', xai: 'Grok', mistral: 'Le Chat', qwen: 'Qwen Chat', perplexity: 'Perplexity', deepseek: 'DeepSeek', copilot: 'Copilot', meta: 'Meta AI', freebuff: 'FreeBuff', bolt: 'Bolt', firebase: 'Firebase Studio' };
 
 // Conversation links built from validated ids only.
 function conversationUrl(provider, id) {

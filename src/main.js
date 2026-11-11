@@ -8,7 +8,7 @@
 import './styles.css';
 import './vendor/katex/katex.min.css';
 import './vendor/highlight/github-dark.min.css';
-import { AGENTS, COLORS, TEAMMATE_IDS, UNFILTERED } from './registry.mjs';
+import { AGENTS, COLORS, TEAMMATE_IDS, UNFILTERED, MORE_IDS, MAKERS, BRIDGE, MORE_GROUPS } from './registry.mjs';
 import { icon } from './icons.mjs';
 import { tokensToCss, pickMode } from './theme.mjs';
 import { autoTitle, moveInGroup, dropInGroup } from './chats.mjs';
@@ -30,7 +30,7 @@ import { applyHabitatLines, habitatSection, stripHabitatLines } from './habitat/
 import { teamHabitatLine } from './habitat/status.mjs';
 import { activateLore, nextSpeakers, rpPrompt, addSwipe, moveSwipe, isSexual, fill, spriteFor } from './app/roleplay.mjs';
 import { createVoice } from './voice.mjs';
-import { liveStageHtml, miniCore, LIVE_AIS } from './live.mjs';
+import { liveStageHtml, miniCore, LIVE_AIS, MAKER_IDS } from './live.mjs';
 import { creditsHtml } from './app/credits.mjs';
 import { voiceSettings, routeFor, isServer, serverIdOf, idOf } from './app/voice-logic.mjs';
 import { studioView, queueHtml, requestFrom } from './app/studio.mjs';
@@ -38,7 +38,7 @@ import { defaultsFrom, prefsFor, prefsOf, samePrefs, applyPrefs, rememberPrefs }
 import { FIND_FIELDS, searchFields, stepIndex, replaceAllFields, snippet, cardMatches, matchedIn } from './app/card-find.mjs';
 
 const api = window.hearth || null;
-const TEAM_IDS = ['anthropic', 'openai', 'google', 'xai', 'mistral', 'qwen', 'perplexity', 'deepseek', 'ollama', ...TEAMMATE_IDS, 'freebuff'];
+const TEAM_IDS = ['anthropic', 'openai', 'google', 'xai', 'mistral', 'qwen', 'perplexity', 'deepseek', 'ollama', ...TEAMMATE_IDS, 'freebuff', ...MORE_IDS];
 const MONO = { free: ['Fr', '#3f8a5a'], hearth: ['H', '#c8743a'], anthropic: ['C', '#c96b3c'], openai: ['G', '#3f8f6f'], google: ['Ge', '#4b6fd0'], xai: ['X', '#5d636b'], mistral: ['M', '#6b5bd2'], qwen: ['Q', '#7a5cc9'], perplexity: ['P', '#1f8a99'], deepseek: ['D', '#3d56c9'], ollama: ['L', '#6d746e'], freebuff: ['F', '#8a7bc6'], venice: ['V', '#c2453b'], civitai: ['Ci', '#2f6fd6'], gpu: ['GP', '#6f7a3e'] };
 const QUICK = [
   ['gh', 'Fix a bug in a repo', 'There\'s a bug I want fixed: '],
@@ -51,8 +51,9 @@ const QUICK = [
 const SECTIONS = [['team', 'AI team'], ['accounts', 'Accounts'], ['uncensored', 'Uncensored mode'], ['github', 'GitHub'], ['tools', 'Tools'], ['memory', 'Memory'], ['scheduled', 'Scheduled'], ['connectors', 'Connectors'], ['perms', 'Permissions'], ['alerts', 'Notifications'], ['voice', 'Voice'], ['look', 'Appearance'], ['updates', 'App updates'], ['data', 'Saved data']];
 const IDLE = [[1, '1 hour'], [6, '6 hours'], [24, '1 day'], [72, '3 days'], [168, '1 week'], [0, 'Never']];
 const MAX_CHATS = [1, 2, 3, 4, 5, 6, 8, 10];
-const IMAGE_MAKERS = ['openai', 'google', 'xai', 'venice', 'civitai', 'gpu', 'hearth'];
-const VIDEO_MAKERS = ['openai', 'google'];
+const IMAGE_MAKERS = ['openai', 'google', 'xai', 'venice', 'civitai', 'gpu', 'hearth', 'flux', 'stability', 'ideogram', 'leonardo'];
+const VIDEO_MAKERS = ['openai', 'google', 'runway', 'luma', 'kling', 'pika'];
+const makerName = (a) => MAKERS[a] || aiName(a);
 const MODEL_PRESETS = { anthropic: ['opus', 'sonnet', 'haiku'], openai: ['gpt-5', 'gpt-5-codex', 'o4-mini'], google: ['gemini-2.5-pro', 'gemini-2.5-flash'], xai: ['grok-4', 'grok-code-fast-1'], mistral: ['mistral-large-latest', 'codestral-latest'], perplexity: ['sonar', 'sonar-pro', 'sonar-reasoning-pro'], deepseek: ['deepseek-chat', 'deepseek-reasoner'], qwen: [], ollama: [], venice: [], civitai: [], gpu: [] };
 const MEDIA_KEYS = [['google', 'Gemini API key', 'pictures (Gemini image model), Veo videos'], ['openai', 'OpenAI API key', 'pictures and edits (OpenAI Images), Sora videos; the same key as ChatGPT by API'], ['xai', 'xAI API key', 'Grok pictures'], ['mistral', 'Mistral API key', 'reading PDFs and scans (Mistral OCR)']];
 
@@ -69,7 +70,7 @@ const S = {
   settings: { tools: { web: true, build: true, quickChecks: [] }, team: null, copyIdleHours: 24, theme: 'hearth', textSize: 100, connection: {}, bins: {}, extraDirs: [], notify: true, autoRead: false, maxChats: 3, customInstructions: { about: '', style: '' }, teammates: {} },
   info: {}, upd: { enabled: false, status: { state: 'idle' } }, gh: {}, cli: {}, prov: { keys: {} }, theme: { found: false, tokens: {} },
   mates: { ready: {}, keys: {}, servers: [], imagesOnly: {}, conf: { venice: {}, civitai: {} }, models: { venice: [], veniceImage: [], civitaiEngines: [] } },
-  mkeys: { keys: {} }, memory: null, memPrompt: '', schedules: null, connectors: null, skills: null, habitat: null,
+  mkeys: { keys: {} }, clik: {}, credit: null, acctQ: '', acctOpen: null, acctFold: (() => { try { return JSON.parse(localStorage.getItem('hearth.v2.acctFold') || '{}') || {}; } catch { return {}; } })(), memory: null, memPrompt: '', schedules: null, connectors: null, skills: null, habitat: null,
   copies: null, boards: null, phone: null, idle: [], rec: null,
   cards: null, books: null, persona: null, cardEdit: null, loreEdit: null, cardQuery: '', cardFind: null, cardColl: '', collSel: [], colls: [],
   // Quick checks whose tool is missing on this PC, the Permissions table, Gemini's allow-list,
@@ -116,9 +117,10 @@ function statusOf(a) {
 }
 const statusMap = () => Object.fromEntries(team().members.map((a) => [a, statusOf(a)]));
 const missingChecks = () => (S.missing || []).filter((x) => x.missing).map((x) => x.check);
-const mono = (a, cls = '') => { const m = MONO[a] || [(AGENTS[a]?.name || '?')[0], '#7a7166']; return `<span class="ava ${cls}" style="background:${m[1]}">${esc(m[0])}</span>`; };
+const mono = (a, cls = '') => { const m = MONO[a] || [(AGENTS[a]?.name || MAKERS[a] || '?')[0], '#7a7166']; return `<span class="ava ${cls}" style="background:${m[1]}">${esc(m[0])}</span>`; };
 const setupHint = (a) => (a === 'gpu' ? 'Add your GPU server in Settings › Accounts' : a === 'hearth' ? 'Type your Home server\'s address in Settings › Accounts › Hearth devices' : TEAMMATE_IDS.includes(a) ? `Add your ${aiName(a)} key in Settings › Accounts` : `set up ${aiName(a)} in Settings › Accounts`);
-const makerReady = (a) => (TEAMMATE_IDS.includes(a) ? Boolean(S.mates.ready?.[a]) && team().members.includes(a) : Boolean(S.mkeys.keys?.[a]));
+const makerKey = (a) => Boolean(S.mkeys.keys?.[a]) || S.settings.webBridge?.[a] === true;
+const makerReady = (a) => (TEAMMATE_IDS.includes(a) ? Boolean(S.mates.ready?.[a]) && team().members.includes(a) : makerKey(a));
 
 // ---------- every chat's own runtime ----------
 const runner = createTeamRunner({
@@ -502,8 +504,8 @@ async function briefExtra(R, agent, role, resumed) {
   if (c.instructions) L.push('', `THIS CHAT'S INSTRUCTIONS (from the owner): ${c.instructions}`);
   if (c.refs?.length) L.push('', `THIS CHAT'S REFERENCE FILES (always attached): ${c.refs.map((r) => `${r.name} (${r.path})`).join(', ')}`);
   if (!resumed) {
-    const imgs = IMAGE_MAKERS.filter(makerReady).map(aiName);
-    const vids = VIDEO_MAKERS.filter((a) => S.mkeys.keys?.[a]).map((a) => (a === 'openai' ? 'Sora' : 'Veo'));
+    const imgs = IMAGE_MAKERS.filter(makerReady).map(makerName);
+    const vids = VIDEO_MAKERS.filter(makerKey).map((a) => (a === 'openai' ? 'Sora' : a === 'google' ? 'Veo' : makerName(a)));
     L.push(toolsBrief({ role, memory: !c.temp, images: imgs, video: vids, screenshots: Boolean(S.mkeys.screenshot) }));
   }
   if (R.deep) L.push('', 'DEEP RESEARCH MODE (the owner turned it on for this message): search widely (many sources, primary ones first), cross-check facts, then write a long, well-structured report with numbered citations [1] … and a Sources list of full https links at the end. Save the full report as .hearth-out/report-<short-topic>.md too. Lead: you may hand parts to teammates with HELPER lines.');
@@ -584,7 +586,7 @@ async function onTools(R, msg, tools, agent) {
       R.busy = null;
       runner.post(R, r?.ok ? { who: maker, text: `${t.kind === 'edit' ? 'Edited' : 'Made'} for ${aiName(agent)}: “${t.prompt.slice(0, 240)}”`, via: r.via, media: r.items || [r.item].filter(Boolean) } : { who: maker, err: true, text: `${r?.error?.kind === 'refused' ? '' : 'No picture: '}${r?.error?.message || r?.message || 'it failed.'}` });
     } else if (t.kind === 'video') {
-      const maker = pickMaker(t.to, { capable: VIDEO_MAKERS, ready: (a) => Boolean(S.mkeys.keys?.[a]) });
+      const maker = pickMaker(t.to, { capable: VIDEO_MAKERS, ready: makerKey });
       if (!maker) { runner.post(R, { who: 'system', text: 'Video needs your own OpenAI (Sora) or Gemini API (Veo) key in Settings › Accounts.' }); continue; }
       R.busy = { agent: maker, role: 'member', runId: `vid${uid()}`, steps: [{ kind: 'image', label: 'Making a video', detail: `${maker === 'openai' ? 'Sora' : 'Veo'} · this can take several minutes` }], startedAt: Date.now() };
       renderSide(); if (R.id === S.open) renderMain();
@@ -1214,6 +1216,8 @@ function liveWho() {
   out.push({ id: 'comfy', name: 'ComfyUI', state: jobs ? 'working' : pc?.ok ? 'ready' : 'off', status: jobs ? `making ${jobs}` : pc?.ok ? `ready${pc.host ? ` · ${pc.host}` : ''}` : 'not set up', action: 'live-pick' });
   const servers = vs.servers || [];
   out.push({ id: 'voice', name: 'Voices', state: speaking ? 'speaking' : 'ready', status: speaking ? `speaking for ${aiName(speaking)}` : servers.length ? `${servers.length} speech server${servers.length > 1 ? 's' : ''}` : 'this PC’s voice' });
+  // 3.4: the picture and video makers (ready with a key or his web sign-in).
+  for (const m of MAKER_IDS) out.push({ id: m, name: makerName(m), state: makerKey(m) ? 'ready' : 'off', status: S.settings.webBridge?.[m] ? 'ready · web sign-in' : makerKey(m) ? 'ready' : 'not set up' });
   const hearing = voice.isOpen() && voice.state.phase === 'hearing';
   out.push({ id: 'listen', name: 'Listening', state: hearing ? 'speaking' : voice.isOpen() ? 'ready' : 'off', status: hearing ? 'hearing you' : voice.isOpen() ? 'listening for you' : 'press the mic' });
   return out;
@@ -1229,7 +1233,8 @@ function liveCaption() {
 function liveView() {
   const R = liveChat();
   const who = liveWho();
-  const counts = { total: LIVE_AIS.length, working: who.filter((w) => w.state === 'working' || w.state === 'speaking').length };
+  const cr = S.credit;
+  const counts = { total: who.length, team: team().members.length, working: who.filter((w) => w.state === 'working' || w.state === 'speaking').length, credit: cr?.on ? `$${Number(cr.spent || 0).toFixed(2)} / $${cr.budget || 200}` : '' };
   const stage = liveStageHtml({ who, caption: liveCaption(), chatTitle: entry()?.title || '', counts, canTalk: Boolean(S.open) });
   const msgs = (R?.msgs || []).filter((m) => m.text && (m.who === 'owner' || AGENTS[m.who])).slice(-40);
   const list = msgs.length ? msgs.map((m) => `<div class="live-msg ${m.who === 'owner' ? 'owner' : ''}"><b style="color:${m.who === 'owner' ? 'var(--muted)' : (COLORS[m.who] || 'var(--accent)')}">${esc(m.who === 'owner' ? ownerName() : aiName(m.who))}</b><div>${esc(shortLine(m.text, 900))}</div></div>`).join('') : `<div class="fine">${S.open ? 'Nothing said in this chat yet.' : 'Type below to start a chat; the team shows up here as it works.'}</div>`;
@@ -1242,12 +1247,15 @@ async function openLive() {
   render(true);
   const m = document.getElementById('live-msgs'); if (m) m.scrollTop = m.scrollHeight;
   if (!S.studio.st) { S.studio.st = await call('studioStatus'); if (S.view === 'live') renderMain(); }
+  const cr = await call('creditStatus');
+  if (cr && typeof cr === 'object') { S.credit = cr; if (S.view === 'live') renderMain(); }
 }
 async function livePick(id) {
   if (id === 'freebuff') { const r = await call('openWeb', 'freebuff'); if (r && r.ok === false) toast(r.message || 'FreeBuff couldn\'t open.'); return; }
   if (id === 'comfy') { S.view = 'studio'; return render(true); }
   if (id === 'voice') { S.view = 'settings'; S.tab = 'voice'; render(true); return loadSection('voice'); }
   if (id === 'listen') { if (S.open) return openTalk(); return toast('Open or start a chat first, then press the mic.'); }
+  if (MAKER_IDS.includes(id) || ['bolt', 'firebase'].includes(id)) { S.view = 'settings'; S.tab = 'accounts'; render(true); return loadSection('accounts'); }
   const m = lastLineOf(liveChat(), id);
   if (!m) return toast(`${aiName(id)} hasn't said anything in this chat yet.`);
   return readAloud(m);
@@ -1799,7 +1807,7 @@ function modalHtml() {
   }
   if (m.kind === 'rppic') {
     const c = entry(m.chatId);
-    const makers = IMAGE_MAKERS.filter((a) => (TEAMMATE_IDS.includes(a) ? S.mates.ready?.[a] : S.mkeys.keys?.[a]));
+    const makers = IMAGE_MAKERS.filter((a) => (TEAMMATE_IDS.includes(a) ? S.mates.ready?.[a] : makerKey(a)));
     return `<div class="scrim dark" data-a="close-modal"></div><div class="modal"><div class="mhd"><b>A picture for this story</b></div>
       <p>Made from the characters' descriptions. The built-in limits are checked before anything is sent.</p>
       <div class="srow"><label class="day"><input type="radio" name="rpk" value="portrait" ${m.kind2 !== 'scene' ? 'checked' : ''}>Character portrait</label><label class="day"><input type="radio" name="rpk" value="scene" ${m.kind2 === 'scene' ? 'checked' : ''}>Scene</label></div>
@@ -1839,6 +1847,83 @@ function settingsView() {
   const nav = SECTIONS.map(([k, label]) => `<button class="${S.tab === k ? 'on' : ''}" data-a="tab" data-t="${k}">${esc(label)}</button>`).join('');
   return `<div class="set"><nav class="snav">${nav}</nav><div class="spage">${section(S.tab)}</div></div>`;
 }
+// ---------- 3.4 Settings › Accounts: one short row per AI, grouped and folding ----------
+const ACCT_GROUPS = [
+  ['coders', 'Coding tools', ['anthropic', 'openai', 'google', 'xai', 'mistral', 'qwen', 'freebuff', ...MORE_GROUPS.coders]],
+  ['chat', 'Chat & review', ['perplexity', 'deepseek', ...MORE_GROUPS.chat.filter((a) => a !== 'v0')]],
+  ['cloud', 'Cloud agents', MORE_GROUPS.cloud],
+  ['builders', 'App builders', ['lovable', 'replit', 'v0', 'bolt', 'firebase']],
+  ['makers', 'Makers', MAKER_IDS],
+  ['here', 'This computer', ['ollama', ...MORE_GROUPS.local]],
+];
+const BRIDGE_IDS = BRIDGE.map(([a]) => a);
+const CLI_KEY = { cursor: 'Cursor API key', ghcopilot: 'GitHub token for Copilot', kiro: 'Kiro API key', amp: 'Amp API key', droid: 'Factory API key', warp: 'Warp API key' };
+const WEB_SITE = ['bolt', 'firebase'];
+// One AI's row: [good?, status, how it's paid, the one button (or null)].
+function acctState(a) {
+  const bridge = S.settings.webBridge?.[a] === true;
+  if (MAKER_IDS.includes(a)) {
+    if (bridge) return [true, 'Web sign-in', 'your account', null];
+    if (S.mkeys.keys?.[a]) return [true, 'Key saved', 'pay as you go', null];
+    return [false, BRIDGE_IDS.includes(a) ? 'Web sign-in · off' : 'Not set up', '', BRIDGE_IDS.includes(a) ? ['bridge-toggle', 'Turn on'] : ['acct-open', 'Set up']];
+  }
+  if (WEB_SITE.includes(a)) return [true, 'Opens its site', AGENTS[a]?.plan || 'your account', ['acct-web', 'Open']];
+  if (bridge) return [true, 'Web sign-in', 'your account', null];
+  const plan = AGENTS[a]?.plan || '';
+  if (a === 'anthropic' && S.credit?.on) return [true, 'On your API credit', `$${Number(S.credit.spent || 0).toFixed(2)} of $${S.credit.budget || 200} this month`, null];
+  if (method(a) === 'api') {
+    if (S.prov.keys?.[a]) return [true, 'Key saved', plan, null];
+    return [false, BRIDGE_IDS.includes(a) ? 'Web sign-in · off' : 'Needs a key', '', BRIDGE_IDS.includes(a) ? ['bridge-toggle', 'Turn on'] : ['set-key', 'Add key']];
+  }
+  const cl = S.cli[a] || {};
+  if (!cl.installed && a !== 'ollama') return [false, 'Not installed', '', ['install', 'Install']];
+  if (cl.signedIn === false) return [false, 'Sign in needed', '', ['signin', 'Sign in']];
+  return [true, cl.signedIn ? 'Signed in' : 'Installed', plan, null];
+}
+function acctDetail(a) {
+  const bits = [];
+  if (MAKER_IDS.includes(a)) {
+    bits.push(`<button class="mini" data-a="media-key" data-v="${a}">${S.mkeys.keys?.[a] ? 'Change key' : 'Add key'}</button>`);
+    if (a === 'kling') bits.push(`<button class="mini" data-a="media-key" data-v="kling.secret">${S.mkeys.keys?.['kling.secret'] ? 'Change secret key' : 'Add secret key'}</button>`);
+    if (S.mkeys.keys?.[a]) bits.push(`<button class="mini" data-a="media-unkey" data-v="${a}">Remove key</button>`);
+  } else if (WEB_SITE.includes(a)) {
+    bits.push(`<span class="fine">Only a website: it opens in its own window here, signed in as you.</span>`);
+  } else {
+    if (method(a) === 'api') bits.push(`<button class="mini" data-a="set-key" data-v="${a}">${S.prov.keys?.[a] ? 'Change key' : 'Add key'}</button>`);
+    if (CLI_KEY[a]) bits.push(`<button class="mini" data-a="cli-key" data-v="${a}">${S.clik?.[a] ? 'Change' : 'Add'} ${esc(CLI_KEY[a])} (optional)</button>${S.clik?.[a] ? `<button class="mini" data-a="cli-unkey" data-v="${a}">Remove</button>` : ''}`);
+    if (AGENTS[a]?.kind === 'cli' || AGENTS[a]?.kind === 'local' || a === 'ollama') bits.push(`<button class="mini" data-a="recheck" data-v="${a}">Re-check</button>`);
+    if (AGENTS[a]?.kind === 'cli' && S.cli[a]?.installed) bits.push(`<button class="mini" data-a="signin" data-v="${a}">Sign in again</button>`);
+  }
+  if (BRIDGE_IDS.includes(a)) bits.push(`<span class="ac-br">Web sign-in ${tog(S.settings.webBridge?.[a] === true, 'bridge-toggle', `data-v="${a}" aria-label="Use my ${esc(makerName(a))} web sign-in"`)}<button class="mini" data-a="bridge-show" data-v="${a}" title="Open its window to sign in, or watch it work">Open</button></span>`);
+  const what = BRIDGE.find(([x]) => x === a)?.[1] || AGENTS[a]?.tool || '';
+  return `<div class="ac-exp"><span class="fine">${esc(what)}</span><span class="grow"></span>${bits.join('')}</div>`;
+}
+function accountsList() {
+  const q = String(S.acctQ || '').trim().toLowerCase();
+  const fold = S.acctFold || {};
+  let ready = 0; let need = 0; let total = 0;
+  const groups = ACCT_GROUPS.map(([key, label, ids]) => {
+    const list = ids.filter((a) => AGENTS[a] || MAKER_IDS.includes(a)).filter((a) => !q || makerName(a).toLowerCase().includes(q));
+    if (!list.length) return '';
+    let ok = 0;
+    const rows = list.map((a) => {
+      const [good, status, bill, act] = acctState(a);
+      total++; if (good) { ok++; ready++; } else need++;
+      const open = S.acctOpen === a;
+      return `<div class="ac-row ${open ? 'open' : ''}">${miniCore(a, makerName(a), 26, good ? 'ready' : 'off')}<b>${esc(makerName(a))}</b><i class="ac-dot ${good ? 'g' : 'w'}"></i><span class="ac-s">${esc(status)}</span><span class="ac-b">${esc(bill)}</span>${act ? `<button class="mini p" data-a="${act[0]}" data-v="${a}">${esc(act[1])}</button>` : '<span></span>'}<button class="ac-chev" data-a="acct-open" data-v="${a}" aria-expanded="${open}" aria-label="More for ${esc(makerName(a))}">${open ? '▾' : '▸'}</button></div>${open ? acctDetail(a) : ''}`;
+    }).join('');
+    const shut = fold[key] && !q;
+    return `<div class="ac-grp"><button class="ac-gh" data-a="acct-fold" data-v="${key}" aria-expanded="${!shut}"><span>${shut ? '▸' : '▾'} ${esc(label)}</span><span class="faint">${ok} of ${list.length} ready</span></button>${shut ? '' : rows}</div>`;
+  }).join('');
+  const cr = S.credit || {};
+  const spent = Number(cr.spent || 0);
+  const budget = Number(cr.budget || 200);
+  const credit = `<div class="ac-credit ${cr.on ? 'on' : ''}"><div class="grow"><b>Claude API credit</b><div class="fine">Your monthly API credit from your Claude account. Claude stays on your plan's sign-in unless this is on; then Claude Code uses your API key and the app keeps count of what it spends.${cr.key ? '' : ' Add your Claude API key (from your Claude account\'s API keys page) to use it.'}</div></div>
+    <div class="ac-bar" aria-hidden="true"><i style="width:${Math.min(100, Math.round((spent / Math.max(1, budget)) * 100))}%"></i></div><span class="ac-amt"><b>$${spent.toFixed(2)}</b> of $${budget} this month</span>
+    ${cr.key ? '' : '<button class="mini" data-a="set-key" data-v="anthropic">Add key</button>'}${tog(cr.on === true, 'credit-toggle', `aria-label="Use my API credit for Claude" ${cr.key ? '' : 'disabled'}`)}</div>`;
+  return `<div class="ac-sum"><span><b>${ready}</b> of ${total} ready${need ? ` · ${need} need you` : ''}</span><span class="grow"></span><input id="acct-q" class="ac-q" placeholder="Search AIs…" value="${esc(S.acctQ || '')}" aria-label="Search AIs"></div>${credit}${groups || '<div class="fine">No AI matches that.</div>'}
+    <div class="note sub">Web sign-in uses that AI's own website, signed in as you, in a hidden window that keeps your sign-in to itself. It's against those sites' terms and your account could be suspended, so each one is off until you turn it on.</div>`;
+}
 const tog = (on, a, extra = '') => `<button class="tog ${on ? 'on' : ''}" role="switch" aria-checked="${on}" data-a="${a}" ${extra}></button>`;
 const WEEK = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 function whenText(t) {
@@ -1861,11 +1946,7 @@ function section(k) {
   if (k === 'accounts') {
     const M = S.mates;
     const c = M.conf || {};
-    return `<h1>Accounts</h1>${keyringNote()}<div class="box"><h3>Your AI accounts</h3><p class="fine">Each AI signs in with your own account in its own official app. The Command Center never holds your passwords.</p>
-      ${TEAM_IDS.filter((a) => !TEAMMATE_IDS.includes(a)).map((a) => { const cl = S.cli[a] || {}; const isApi = method(a) === 'api'; const st = isApi ? (S.prov.keys?.[a] ? 'API key saved' : 'needs an API key') : !cl.installed ? 'not installed' : cl.signedIn === false ? 'not signed in' : cl.signedIn ? 'signed in' : 'installed'; return `<div class="srow">${mono(a)}<b>${esc(aiName(a))}</b><span class="d">${esc(AGENTS[a].tool)} · ${esc(st)}</span><span class="grow"></span>${isApi ? `<button class="mini" data-a="set-key" data-v="${a}">${S.prov.keys?.[a] ? 'Change key' : 'Add key'}</button>` : !cl.installed && a !== 'ollama' ? `<button class="mini" data-a="install" data-v="${a}">Install</button>` : cl.signedIn === false ? `<button class="mini" data-a="signin" data-v="${a}">Sign in</button>` : ''}<button class="mini" data-a="recheck" data-v="${a}">Re-check</button></div>`; }).join('')}</div>
-      <div class="box"><h3>Web sign-in bridge</h3><p class="fine">For AIs with no official way to use your account from another app (only paid API keys): the Command Center asks them through their own website, signed in as you, in a hidden window that keeps your sign-in to itself. One question at a time, at a person's pace; text only (they can't read or change your files). <b>This is against these sites' terms and your account could be suspended.</b> Each one is off until you turn it on, and their websites can change and stop it working until the app is updated.</p>
-      ${[['perplexity', 'research with sources'], ['deepseek', 'reasoning and second opinions'], ['venice', 'uncensored chat, kept apart from the others'], ['freebuff', 'your free FreeBuff account, now in team chats']].map(([a, what]) => `<div class="srow">${mono(a)}<b>${esc(aiName(a))}</b><span class="d">${esc(what)} · ${S.settings.webBridge?.[a] ? 'using your web sign-in' : 'off'}</span><span class="grow"></span><button class="mini" data-a="bridge-show" data-v="${a}" title="Open its window to sign in, or watch it work">Open</button>${tog(S.settings.webBridge?.[a] === true, 'bridge-toggle', `data-v="${a}" aria-label="Use my ${esc(aiName(a))} web sign-in"`)}</div>`).join('')}
-      <div class="note sub">Sign in first: press Open, sign in on the site, close the window. While the bridge is on, it's used instead of that AI's API key.</div></div>
+    return `<h1>Accounts</h1>${keyringNote()}<div class="box ac">${accountsList()}</div>
       <div class="box"><h3>FreeBuff on the web</h3><div class="srow">${mono('freebuff')}<b>FreeBuff</b><span class="d">opens freebuff.com in its own window here. Sign in there once with your FreeBuff account; it stays signed in. Your FreeBuff chats live in FreeBuff's cloud, so the ones from your phone are there too.</span><span class="grow"></span><button class="mini" data-a="open-freebuff">Open FreeBuff</button></div>
       <div class="note sub">FreeBuff has no official way for other apps to drive it yet. To have it in team chats, turn on its web sign-in bridge above. The Command Center never reads or copies your FreeBuff login; its windows are sandboxed and get nothing from this app.</div></div>
       <div class="box"><h3>${icon('eye', 'sm')}Pictures, videos and documents</h3><p class="fine">The AIs' own picture and video tools through their official APIs, with your own keys (saved encrypted on this PC). Each use is billed to that account.</p>
@@ -2066,7 +2147,7 @@ async function loadSection(t) {
   if (t === 'tools') loadMissing();
   if (t === 'uncensored') { refreshAgents(); if (!S.studio.models) { const l = await call('comfyCheckpoints'); S.studio.models = l?.ok ? l.checkpoints : null; } }
   if (t === 'accounts' || t === 'team') { refreshAgents(); await refreshMates(); }
-  if (t === 'accounts') { S.hd = (await call('hearthStatus', { probe: true })) || S.hd; loadAllServerModels().then(() => render()); }
+  if (t === 'accounts') { S.hd = (await call('hearthStatus', { probe: true })) || S.hd; S.clik = (await call('cliKeys')) || S.clik; S.credit = (await call('creditStatus')) || S.credit; S.mkeys = (await call('mediaKeys')) || S.mkeys; loadAllServerModels().then(() => render()); }
   if (t === 'github') loadRepos();
   if (t === 'memory') S.memory = await call('memoryList');
   if (t === 'scheduled') S.schedules = await call('scheduleList');
@@ -2805,7 +2886,7 @@ document.addEventListener('click', async (ev) => {
     case 'bridge-show': { const r = await call('bridgeShow', d.v); if (r && r.ok === false) toast('That window couldn\'t open.'); return; }
     case 'bridge-toggle': {
       const on = S.settings.webBridge?.[d.v] === true;
-      if (!on && !confirm(`Use your ${aiName(d.v)} web sign-in?\n\nThe Command Center will ask ${aiName(d.v)} through its website, signed in as you. This is against ${aiName(d.v)}'s terms, and your account could be suspended. You can turn it off any time.`)) return;
+      if (!on && !confirm(`Use your ${makerName(d.v)} web sign-in?\n\nThe Command Center will ask ${makerName(d.v)} through its website, signed in as you. This is against ${makerName(d.v)}'s terms, and your account could be suspended. You can turn it off any time.`)) return;
       return setSettings({ webBridge: { [d.v]: !on } });
     }
     case 'team-parallel': return setSettings({ teamParallel: S.settings.teamParallel === false });
@@ -2840,8 +2921,21 @@ document.addEventListener('click', async (ev) => {
       return toast(on ? 'Basic protection is on. Add your keys again.' : 'Basic protection is off.');
     }
     case 'set-key': { const key = await secretPrompt(`Paste your ${aiName(d.v)} API key`); if (key) { const r = await call('setKey', d.v, key); if (r?.ok === false) toast(r.message); S.prov = (await call('providerStatus')) || S.prov; render(); } return; }
-    case 'media-key': { const key = await secretPrompt(`Paste your ${MEDIA_KEYS.find((x) => x[0] === d.v)?.[1] || 'API key'}`); if (key) { const r = await call('mediaSetKey', d.v, key); if (r?.ok === false) toast(r.message); await refreshMates(); render(); } return; }
+    case 'media-key': { const key = await secretPrompt(`Paste your ${MEDIA_KEYS.find((x) => x[0] === d.v)?.[1] || (d.v === 'kling.secret' ? 'Kling secret key' : MAKERS[d.v] ? `${MAKERS[d.v]} API key` : 'API key')}`); if (key) { const r = await call('mediaSetKey', d.v, key); if (r?.ok === false) toast(r.message); await refreshMates(); render(); } return; }
     case 'media-unkey': await call('mediaRemoveKey', d.v); await refreshMates(); return render();
+    // 3.4 compact Accounts
+    case 'acct-open': S.acctOpen = S.acctOpen === d.v ? null : d.v; return render();
+    case 'acct-fold': S.acctFold = { ...(S.acctFold || {}), [d.v]: !(S.acctFold || {})[d.v] }; try { localStorage.setItem('hearth.v2.acctFold', JSON.stringify(S.acctFold)); } catch {} return render();
+    case 'acct-web': { const r = await call('openWeb', d.v); if (r && r.ok === false) toast(r.message || 'That site couldn\'t open.'); return; }
+    case 'cli-key': { const key = await secretPrompt(`Paste your ${CLI_KEY[d.v] || 'API key'} (optional: signing in works without it)`); if (key) { const r = await call('cliSetKey', d.v, key); if (r?.ok === false) toast(r.message); S.clik = (await call('cliKeys')) || S.clik; render(); } return; }
+    case 'cli-unkey': await call('cliRemoveKey', d.v); S.clik = (await call('cliKeys')) || S.clik; return render();
+    case 'credit-toggle': {
+      const on = S.credit?.on === true;
+      if (!on && !confirm('Use your Claude API credit for Claude?\n\nClaude Code will use your API key instead of your plan\'s sign-in, so its work is paid from your monthly API credit. The app counts what it spends. You can turn this off any time.')) return;
+      await setSettings({ claudeApiCredit: !on });
+      S.credit = (await call('creditStatus')) || S.credit;
+      return render();
+    }
     case 'mate-key': { const key = await secretPrompt(d.v.startsWith('free.') ? `Paste your free ${esc((S.mates.free?.providers || []).find((p) => `free.${p.id}` === d.v)?.name || '')} API key` : `Paste your ${aiName(d.v)} ${d.v === 'civitai' ? 'API token' : 'API key'}`); if (key) { const r = await call('teammatesSetKey', d.v, key); if (r?.ok === false) toast(r.message); await refreshMates(); render(); } return; }
     case 'mate-unkey': await call('teammatesRemoveKey', d.v); await refreshMates(); return render();
     case 'server-add': { const v = (id) => document.getElementById(id)?.value || ''; const r = await call('teammatesAddServer', { name: v('sv-name'), type: v('sv-type'), url: v('sv-url'), model: v('sv-model').trim(), key: v('sv-key'), workflow: v('sv-workflow').trim() }); if (r?.ok === false || r?.message) toast(r.message || 'Not added.'); else { toast(`Added ${r.name}. Turn on “Your GPU server” in Settings › AI team to use it.`); S.svAdd = {}; } await refreshMates(); if (r?.id) await loadServerModels(r.id); return render(); }
@@ -2940,6 +3034,7 @@ let searchTimer = null;
 document.addEventListener('input', (ev) => {
   const t = ev.target;
   if (t.id === 'composer') { S.draft = t.value; fitComposer(); return; }
+  if (t.id === 'acct-q') { S.acctQ = t.value; const pos = t.selectionStart; render(); const n = document.getElementById('acct-q'); if (n) { n.focus(); try { n.setSelectionRange(pos, pos); } catch {} } return; }
   if (t.id === 'chat-search') {
     S.search = t.value;
     clearTimeout(searchTimer);

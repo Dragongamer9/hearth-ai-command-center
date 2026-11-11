@@ -41,7 +41,9 @@ const studioLib = require('./studio.cjs');
 // No Hearth OS version pin: the app never changes, bumps, publishes or deploys
 // Hearth OS versions (the owner picks every number). It only shows which Hearth
 // OS this computer runs, read from /etc/os-release.
-const API_ONLY = ['perplexity', 'deepseek'];
+const more = require('./more-ais.cjs');
+// 3.3: the new chat APIs and cloud agents only connect by key (kimi is a CLI that can use its key too).
+const API_ONLY = ['perplexity', 'deepseek', ...more.KEYED.filter((a) => a !== 'kimi')];
 const TEXT_SIZES = [100, 115, 130, 150];
 const THEMES = ['hearth', 'dark', 'light', 'system'];
 
@@ -164,6 +166,10 @@ function normalSettings(s) {
     teamParallel: s.teamParallel !== false,
     // 3.1: Perplexity, DeepSeek, Venice, FreeBuff through his signed-in website. Each off until he turns it on.
     webBridge: webBridgeLib.cleanBridge(s.webBridge),
+    // 3.3: Claude Code runs on his Claude API key (his plan's monthly API credit) instead of his subscription.
+    // Off until he turns it on; the monthly amount is his to set (shown against what's been spent).
+    claudeApiCredit: s.claudeApiCredit === true,
+    creditBudget: Number.isFinite(s.creditBudget) && s.creditBudget >= 0 && s.creditBudget <= 100000 ? s.creditBudget : 200,
     // New in this version: defaults shown at read time, saved only when the owner changes one.
     // A desktop notification when a long turn finishes or an AI needs him.
     notify: s.notify !== false,
@@ -200,7 +206,7 @@ function cleanInstructions(c) {
   const t = (v) => (typeof v === 'string' ? v.slice(0, 3000) : '');
   return c && typeof c === 'object' && !Array.isArray(c) ? { about: t(c.about), style: t(c.style) } : { about: '', style: '' };
 }
-const TEAM_IDS = ['anthropic', 'openai', 'google', 'xai', 'mistral', 'qwen', 'perplexity', 'deepseek', 'ollama', 'venice', 'civitai', 'gpu', 'hearth', 'free', 'freebuff'];
+const TEAM_IDS = ['anthropic', 'openai', 'google', 'xai', 'mistral', 'qwen', 'perplexity', 'deepseek', 'ollama', 'venice', 'civitai', 'gpu', 'hearth', 'free', 'freebuff', ...more.TEAM.filter((a) => !more.WEB_IDS.includes(a))];
 // Teammates by key or URL (electron/teammates.cjs; Hearth devices: electron/hearth-devices.cjs):
 // answered through their own API.
 const TEAMMATES = ['venice', 'civitai', 'gpu', 'hearth', 'free'];
@@ -435,6 +441,16 @@ function registerIpc() {
     return true;
   });
 
+  // 3.3: keys for the command-line agents that take one (KIRO_API_KEY, WARP_API_KEY, …).
+  handle('credit:status', () => { const s = readSettings(); const c = credit.read(); return { on: s.claudeApiCredit, budget: s.creditBudget, month: c.month, spent: c.usd, key: secrets.has('anthropic') }; });
+  handle('cli:keys', () => Object.fromEntries(more.CLI_IDS.filter((a) => more.CLI[a].keyEnv).map((a) => [a, secrets.has(`cli.${a}`)])));
+  handle('cli:setKey', async (agent, key) => {
+    if (!more.CLI[agent]?.keyEnv) throw new Error('bad agent');
+    await secrets.set(`cli.${agent}`, validateApiKey(key));
+    return true;
+  });
+  handle('cli:removeKey', (agent) => { if (!more.CLI[agent]?.keyEnv) throw new Error('bad agent'); secrets.remove(`cli.${agent}`); return true; });
+
   handle('providers:removeKey', (provider) => {
     secrets.remove(validateProvider(provider, { liveOnly: true }));
     return true;
@@ -529,6 +545,12 @@ function registerIpc() {
     if ('previewNetwork' in patch) s.previewNetwork = patch.previewNetwork === true;
     if ('team' in patch) s.team = cleanTeam(patch.team);
     if ('teamParallel' in patch) s.teamParallel = patch.teamParallel === true;
+    if ('claudeApiCredit' in patch) s.claudeApiCredit = patch.claudeApiCredit === true;
+    if ('creditBudget' in patch) {
+      const n = Number(patch.creditBudget);
+      if (!Number.isFinite(n) || n < 0 || n > 100000) throw new Error('Invalid amount');
+      s.creditBudget = Math.round(n * 100) / 100;
+    }
     if ('webBridge' in patch) s.webBridge = webBridgeLib.cleanBridge({ ...webBridgeLib.cleanBridge(s.webBridge), ...(patch.webBridge && typeof patch.webBridge === 'object' ? patch.webBridge : {}) });
     if ('notify' in patch) s.notify = patch.notify === true;
     if ('autoRead' in patch) s.autoRead = patch.autoRead === true;
@@ -1148,18 +1170,39 @@ function registerParity() {
     handle, dataDir, readSettings, chats, secrets, shell, dialog, send, protocol, attachments, worktreeRoot, BrowserWindow, Notification,
     getWindow: () => mainWindow,
     v2: () => v2Api,
+    webBridge: () => webBridge,
     // The Habitat from the old (1.x) project boards: read-only, never written.
     oldHabitat: () => { const list = ops.projectsList().list; for (const p of list) { const st = require('./migrate-v2.cjs').readStateReadOnly(ops.projectStateFile(p.id)).state; if (st?.habitat) return st.habitat; } return null; },
   });
 }
 
 // The app's own API path for one AI (teammates, API-only AIs, AIs switched to an API key).
-async function apiCall(agent, model, prompt, signal) {
+// 3.3: what's been spent of his monthly Claude API credit this month (Claude Code's own cost report,
+// and Claude API chat turns from the tokens Anthropic reports). One small file; a new month starts at 0.
+const credit = (() => {
+  const file = () => path.join(dataDir(), 'api-credit.json');
+  const month = () => new Date().toISOString().slice(0, 7);
+  const read = () => { try { const j = JSON.parse(fs.readFileSync(file(), 'utf8')); return j && j.month === month() && Number.isFinite(j.usd) ? j : { month: month(), usd: 0 }; } catch { return { month: month(), usd: 0 }; } };
+  return {
+    read,
+    add(usd) {
+      const n = Number(usd);
+      if (!Number.isFinite(n) || n <= 0 || n > 10000) return;
+      const j = read();
+      j.usd = Math.round((j.usd + n) * 10000) / 10000;
+      const tmp = `${file()}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify(j), { mode: 0o600 });
+      fs.renameSync(tmp, file());
+    },
+  };
+})();
+
+async function apiCall(agent, model, prompt, signal, opts = {}) {
   // 3.1: his own signed-in website instead of a paid key, only when he turned the bridge on for this AI.
-  if (webBridge && readSettings().webBridge[agent] === true) return webBridge.ask(agent, prompt, signal);
+  if (webBridge && readSettings().webBridge[agent] === true && !['image', 'video'].includes(webBridgeLib.kindOf(agent))) return webBridge.ask(agent, prompt, signal);
   if (agent === 'hearth') return parityApi ? parityApi.hearth.chat({ prompt, model, signal }) : { ok: false, error: { kind: 'auth', message: 'Not ready.' } };
   if (TEAMMATES.includes(agent)) return parityApi ? parityApi.teammates.chat(agent, { prompt, model, signal }) : { ok: false, error: { kind: 'auth', message: 'Not ready.' } };
-  const r = await callProvider({ provider: agent, apiKey: secrets.get(agent), model: validateModel(model || DEFAULT_MODELS[agent]), prompt });
+  const r = await callProvider({ provider: agent, apiKey: secrets.get(agent), model: validateModel(model || DEFAULT_MODELS[agent]), prompt, signal, repo: opts?.repo || null, timeoutMs: 180000 });
   if (!r.ok) {
     if (r.error.kind === 'rate_limit' || agents.isLimit(r.error.message)) r.error.kind = 'limit';
     else if (r.error.kind === 'server' || r.error.kind === 'network') r.error.kind = 'outage';
@@ -1185,7 +1228,14 @@ function registerV2() {
     extraAgents: TEAMMATES,
     guardSettings,
     apiConnected: (agent) => readSettings().webBridge[agent] === true || TEAMMATES.includes(agent) || API_ONLY.includes(agent) || (LIVE_PROVIDERS.includes(agent) && readSettings().connection[agent] === 'api'),
-    callApi: (agent, model, prompt, signal) => apiCall(agent, model, prompt, signal),
+    callApi: (agent, model, prompt, signal, opts) => apiCall(agent, model, prompt, signal, opts),
+    // 3.3: a CLI's own key (Kiro, Warp, Cursor…), saved encrypted as cli.<id>, goes only into its own run.
+    cliEnv: (agent) => {
+      // Claude Code on his API credit: only when he turned it on and a Claude API key is saved.
+      if (agent === 'anthropic') return readSettings().claudeApiCredit && secrets.has('anthropic') ? { ANTHROPIC_API_KEY: secrets.get('anthropic') } : {};
+      const c = more.CLI[agent]; const k = c?.keyEnv && secrets.get(`cli.${agent}`); return k ? { [c.keyEnv]: k } : {};
+    },
+    onCost: (agent, usd) => { if (agent === 'anthropic' && readSettings().claudeApiCredit) credit.add(usd); },
   });
 }
 

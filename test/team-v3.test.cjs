@@ -73,6 +73,8 @@ test('installers only use the fixed official npm packages', () => {
   const agents = require('../electron/agents.cjs');
   assert.deepStrictEqual(agents.NPM_PACKAGE, {
     anthropic: '@anthropic-ai/claude-code', openai: '@openai/codex', google: '@google/gemini-cli', xai: '@xai-official/grok', qwen: '@qwen-code/qwen-code', freebuff: 'freebuff',
+    // 3.3: each company's own CLI package (electron/more-ais.cjs).
+    ghcopilot: '@github/copilot', kimi: '@moonshot-ai/kimi-code', opencode: 'opencode-ai', cline: 'cline', crush: '@charmland/crush', amp: '@sourcegraph/amp', auggie: '@augmentcode/auggie@prerelease', droid: '@factory/cli',
   });
 });
 

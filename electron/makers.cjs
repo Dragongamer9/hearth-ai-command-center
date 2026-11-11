@@ -14,11 +14,14 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawn, execFileSync } = require('node:child_process');
 
-const IMAGE_PROVIDERS = ['google', 'openai', 'xai'];
-const VIDEO_PROVIDERS = ['openai', 'google'];
+const more = require('./more-ais.cjs');
+const moreMakers = require('./more-makers.cjs');
+// 3.3: plus FLUX, Stability, Ideogram, Leonardo (pictures) and Runway, Luma, Kling, Pika (videos).
+const IMAGE_PROVIDERS = ['google', 'openai', 'xai', ...more.IMAGE_MAKERS];
+const VIDEO_PROVIDERS = ['openai', 'google', ...more.VIDEO_MAKERS];
 const IMAGE_MODELS = { openai: 'gpt-image-1', google: 'gemini-2.5-flash-image', xai: 'grok-2-image' };
 const VIDEO_MODELS = { openai: 'sora-2', google: 'veo-3.0-generate-001' };
-const PROVIDER_NAMES = { openai: 'ChatGPT (OpenAI Images)', google: 'Gemini (Gemini API)', xai: 'Grok (xAI images)', mistral: 'Mistral' };
+const PROVIDER_NAMES = { openai: 'ChatGPT (OpenAI Images)', google: 'Gemini (Gemini API)', xai: 'Grok (xAI images)', mistral: 'Mistral', ...more.MAKER_NAMES };
 
 const fail = (message, kind = 'failed') => ({ ok: false, error: { kind, message: String(message).slice(0, 300) } });
 async function jsonOrNull(res) { try { return await res.json(); } catch { return null; } }
@@ -26,6 +29,7 @@ const errOf = (j, res) => (j?.error?.message ? String(j.error.message) : `HTTP $
 
 async function generateImage({ provider, key, prompt, image = null, fetchImpl = fetch, timeoutMs = 180000 }) {
   if (!IMAGE_PROVIDERS.includes(provider)) return fail('That AI can\'t make pictures through its API.', 'unsupported');
+  if (more.IMAGE_MAKERS.includes(provider)) return moreMakers.image({ provider, key, prompt, fetchImpl, timeoutMs });
   if (!key) return fail(`Add your ${PROVIDER_NAMES[provider]} API key in Settings › Media & voice first.`, 'no_key');
   const text = String(prompt || '').slice(0, 4000);
   if (!text) return fail('Say what the picture should show.');
@@ -65,8 +69,9 @@ async function generateImage({ provider, key, prompt, image = null, fetchImpl = 
 }
 
 // Videos are slow: start a job and poll it (up to ~10 minutes).
-async function generateVideo({ provider, key, prompt, fetchImpl = fetch, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), maxPolls = 60, signal = null }) {
+async function generateVideo({ provider, key, secret = null, prompt, fetchImpl = fetch, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), maxPolls = 60, signal = null }) {
   if (!VIDEO_PROVIDERS.includes(provider)) return fail('No video API for that AI.', 'unsupported');
+  if (more.VIDEO_MAKERS.includes(provider)) return moreMakers.video({ provider, key, secret, prompt, fetchImpl, sleep, signal });
   if (!key) return fail(`Video needs your ${provider === 'openai' ? 'OpenAI' : 'Gemini API'} key (Settings › Media & voice).`, 'no_key');
   const text = String(prompt || '').slice(0, 2000);
   try {

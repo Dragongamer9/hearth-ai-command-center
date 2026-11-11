@@ -1,3 +1,5 @@
+const more = require('./more-ais.cjs');
+const cloud = require('./cloud-agents.cjs');
 // Official-API provider adapters. Runs only in the main process; API keys
 // never reach the renderer and are never logged.
 // Official endpoints only. xAI, Mistral, Perplexity and DeepSeek use the
@@ -9,6 +11,8 @@ const ENDPOINTS = Object.freeze({
   mistral: 'https://api.mistral.ai/v1/chat/completions',
   perplexity: 'https://api.perplexity.ai/v1/sonar',
   deepseek: 'https://api.deepseek.com/chat/completions',
+  // 3.3: the new chat APIs (electron/more-ais.cjs), all OpenAI-compatible.
+  ...Object.fromEntries(more.CHAT_IDS.map((id) => [id, `${more.CHAT[id].base}/chat/completions`])),
 });
 
 const DEFAULT_MODELS = Object.freeze({
@@ -18,8 +22,10 @@ const DEFAULT_MODELS = Object.freeze({
   mistral: 'mistral-large-latest',
   perplexity: 'sonar',
   deepseek: 'deepseek-chat',
+  ...Object.fromEntries(more.CHAT_IDS.map((id) => [id, more.CHAT[id].model])),
+  ...Object.fromEntries(more.CLOUD_IDS.map((id) => [id, id])),
 });
-const OPENAI_STYLE = ['openai', 'xai', 'mistral', 'perplexity', 'deepseek'];
+const OPENAI_STYLE = ['openai', 'xai', 'mistral', 'perplexity', 'deepseek', ...more.CHAT_IDS];
 
 const MAX_RESPONSE_CHARS = 50000;
 
@@ -44,13 +50,13 @@ function buildRequest(provider, apiKey, model, prompt) {
         'x-api-key': apiKey,
         'anthropic-version': '2023-06-01',
       },
-      body: { model, max_tokens: 1024, messages: [{ role: 'user', content: prompt }] },
+      body: { model, max_tokens: 16000, messages: [{ role: 'user', content: prompt }] },
     };
   }
   if (OPENAI_STYLE.includes(provider)) {
     return {
       url: ENDPOINTS[provider],
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}`, ...(more.CHAT[provider]?.headers || {}) },
       // Perplexity: its own follow-up questions come back with the answer and citations.
       body: { model, messages: [{ role: 'user', content: prompt }], ...(provider === 'perplexity' ? { return_related_questions: true } : {}) },
     };
@@ -89,8 +95,10 @@ function errorMessageFrom(json) {
   return typeof m === 'string' ? m.slice(0, 300) : null;
 }
 
-async function callProvider({ provider, apiKey, model, prompt, timeoutMs = 60000, fetchImpl = fetch }) {
+async function callProvider({ provider, apiKey, model, prompt, timeoutMs = 60000, fetchImpl = fetch, repo = null, signal = null, sleep }) {
   if (!apiKey) return fail('no_key', 'No API key saved for this provider.');
+  // Devin and Jules: a job in the cloud that comes back later (electron/cloud-agents.cjs).
+  if (more.CLOUD_IDS.includes(provider)) return cloud.run({ provider, key: apiKey, prompt, repo, signal, fetchImpl, ...(sleep ? { sleep } : {}) });
   let req;
   try {
     req = buildRequest(provider, apiKey, model, prompt);

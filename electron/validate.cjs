@@ -1,7 +1,9 @@
 // Input validation for everything that crosses the IPC boundary.
-const PROVIDERS = Object.freeze(['anthropic', 'openai', 'google', 'xai', 'mistral', 'qwen', 'perplexity', 'deepseek', 'ollama', 'freebuff']);
+const more = require('./more-ais.cjs');
+// 3.3: plus the new AIs (electron/more-ais.cjs).
+const PROVIDERS = Object.freeze(['anthropic', 'openai', 'google', 'xai', 'mistral', 'qwen', 'perplexity', 'deepseek', 'ollama', 'freebuff', ...more.TEAM]);
 // Providers with an official API-key connection.
-const LIVE_PROVIDERS = Object.freeze(['anthropic', 'openai', 'xai', 'mistral', 'perplexity', 'deepseek']);
+const LIVE_PROVIDERS = Object.freeze(['anthropic', 'openai', 'xai', 'mistral', 'perplexity', 'deepseek', ...more.KEYED]);
 const MAX_STATE_BYTES = 5 * 1024 * 1024;
 const MAX_PROMPT_CHARS = 60000;
 

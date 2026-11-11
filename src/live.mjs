@@ -2,6 +2,8 @@
 // talking motion. Pure HTML builders (unit tested in test/live.test.mjs); main.js
 // passes in what it knows (status, who is working, who is speaking, last lines).
 
+import { SHAPES, svgCore } from './live-shapes.mjs';
+
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 
 // Each AI: a shape, a colour (r,g,b) and a talking motion. All different.
@@ -24,24 +26,73 @@ export const CORES = {
   listen: { shape: 'ripple', rgb: '156,245,214', talk: 'tSwell 1.2s ease-in-out' },
   hearth: { shape: 'nebula', rgb: '255,138,76', talk: 'tNebula 1.1s ease-in-out' },
   ollama: { shape: 'stack', rgb: '242,239,232', talk: 'tStack .8s ease-in-out' },
+  // 3.4: the AIs added in 3.3/3.4, drawn as line art (src/live-shapes.mjs).
+  cursor: { shape: 'prism', rgb: '159,179,200', talk: 'tKCursor 0.5s ease-in-out' },
+  ghcopilot: { shape: 'twin', rgb: '139,148,158', talk: 'tKGhcopilot 1.2s linear' },
+  kiro: { shape: 'blueprint', rgb: '123,97,255', talk: 'tKKiro 0.6s steps(3)' },
+  kimi: { shape: 'crescent', rgb: '63,181,255', talk: 'tKKimi 1.3s ease-out' },
+  aider: { shape: 'pair', rgb: '20,184,138', talk: 'tKAider 0.7s steps(4)' },
+  opencode: { shape: 'brackets', rgb: '198,198,198', talk: 'tKOpencode 1.4s ease-in-out' },
+  goose: { shape: 'vee', rgb: '217,194,122', talk: 'tKGoose 0.8s linear' },
+  cline: { shape: 'steps', rgb: '91,141,239', talk: 'tKCline 1.5s steps(3)' },
+  crush: { shape: 'shards', rgb: '255,110,199', talk: 'tKCrush 0.9s ease-out' },
+  openhands: { shape: 'fan', rgb: '255,210,63', talk: 'tKOpenhands 1.6s steps(4)' },
+  amp: { shape: 'bolt', rgb: '255,79,63', talk: 'tKAmp 1.0s ease-in-out' },
+  auggie: { shape: 'plus', rgb: '74,222,128', talk: 'tKAuggie 1.7s linear' },
+  droid: { shape: 'gear', rgb: '229,229,229', talk: 'tKDroid 1.1s steps(3)' },
+  warp: { shape: 'tunnel', rgb: '1,164,255', talk: 'tKWarp 0.5s ease-out' },
+  openrouter: { shape: 'routes', rgb: '139,143,247', talk: 'tKOpenrouter 1.2s steps(4)' },
+  glm: { shape: 'lattice', rgb: '47,124,255', talk: 'tKGlm 0.6s ease-in-out' },
+  cohere: { shape: 'petals', rgb: '57,166,139', talk: 'tKCohere 1.3s linear' },
+  ai21: { shape: 'scroll', rgb: '232,93,155', talk: 'tKAi21 0.7s steps(3)' },
+  minimax: { shape: 'pulse', rgb: '255,92,122', talk: 'tKMinimax 1.4s ease-out' },
+  nova: { shape: 'star4', rgb: '255,159,28', talk: 'tKNova 0.8s steps(4)' },
+  nvidia: { shape: 'eye2', rgb: '118,185,0', talk: 'tKNvidia 1.5s ease-in-out' },
+  groq: { shape: 'speed', rgb: '245,80,54', talk: 'tKGroq 0.9s linear' },
+  cerebras: { shape: 'wafer', rgb: '240,90,40', talk: 'tKCerebras 1.6s steps(3)' },
+  v0: { shape: 'frame', rgb: '232,232,232', talk: 'tKV0 1.0s ease-out' },
+  devin: { shape: 'cloudring', rgb: '46,196,182', talk: 'tKDevin 1.7s steps(4)' },
+  jules: { shape: 'comet', rgb: '161,66,244', talk: 'tKJules 1.1s ease-in-out' },
+  lovable: { shape: 'heartgrid', rgb: '255,122,182', talk: 'tKLovable 0.5s linear' },
+  replit: { shape: 'blocks', rgb: '242,98,7', talk: 'tKReplit 1.2s steps(3)' },
+  bolt: { shape: 'zig', rgb: '78,92,255', talk: 'tKBolt 0.6s ease-out' },
+  firebase: { shape: 'flame', rgb: '255,202,40', talk: 'tKFirebase 1.3s steps(4)' },
+  phi: { shape: 'quad', rgb: '0,164,239', talk: 'tKPhi 0.7s ease-in-out' },
+  flux: { shape: 'flow', rgb: '192,132,252', talk: 'tKFlux 1.4s linear' },
+  stability: { shape: 'dunes', rgb: '163,230,53', talk: 'tKStability 0.8s steps(3)' },
+  ideogram: { shape: 'glyph', rgb: '34,211,238', talk: 'tKIdeogram 1.5s ease-out' },
+  leonardo: { shape: 'compass', rgb: '251,191,36', talk: 'tKLeonardo 0.9s steps(4)' },
+  runway: { shape: 'reel', rgb: '244,114,182', talk: 'tKRunway 1.6s ease-in-out' },
+  luma: { shape: 'halo', rgb: '147,197,253', talk: 'tKLuma 1.0s linear' },
+  kling: { shape: 'film', rgb: '52,211,153', talk: 'tKKling 1.7s steps(3)' },
+  pika: { shape: 'spark', rgb: '251,113,133', talk: 'tKPika 1.1s ease-out' },
 };
 const FALLBACK = { shape: 'stack', rgb: '201,163,114', talk: 'tPing .9s ease-in-out' };
 export const coreOf = (id) => CORES[id] || FALLBACK;
 
-// The AIs on the Live screen (the helpers comfy, voice and listen are added by main.js).
-export const LIVE_AIS = ['anthropic', 'openai', 'google', 'free', 'xai', 'mistral', 'perplexity', 'deepseek', 'qwen', 'freebuff', 'venice', 'civitai', 'gpu', 'hearth', 'ollama'];
+// The AIs on the Live screen (the helpers comfy, voice and listen, and the picture and video makers, are added by main.js).
+export const LIVE_AIS = ['anthropic', 'openai', 'google', 'xai', 'mistral', 'qwen', 'freebuff',
+  'cursor', 'ghcopilot', 'kiro', 'kimi', 'aider', 'opencode', 'goose', 'cline', 'crush', 'openhands', 'amp', 'auggie', 'droid', 'warp',
+  'perplexity', 'deepseek', 'free', 'openrouter', 'glm', 'cohere', 'ai21', 'minimax', 'nova', 'nvidia', 'groq', 'cerebras',
+  'devin', 'jules', 'lovable', 'replit', 'v0', 'bolt', 'firebase', 'venice', 'civitai', 'gpu', 'hearth', 'ollama', 'phi'];
+export const MAKER_IDS = ['flux', 'stability', 'ideogram', 'leonardo', 'runway', 'luma', 'kling', 'pika'];
 
-// Where each one lives on the Live screen.
+// 3.4: where each one lives on the Live screen: [key, title, what they do, ids].
 export const GROUPS = [
-  ['cloud', 'In the cloud', ['anthropic', 'openai', 'google', 'free', 'xai', 'mistral', 'perplexity', 'deepseek', 'qwen', 'freebuff', 'venice', 'civitai']],
-  ['pc', 'Your PCs at home', ['gpu', 'comfy', 'voice', 'listen', 'hearth']],
-  ['here', 'This computer', ['ollama']],
+  ['coders', 'Coding tools', 'work right in your folders', ['anthropic', 'openai', 'google', 'xai', 'mistral', 'qwen', 'freebuff', 'cursor', 'ghcopilot', 'kiro', 'kimi', 'aider', 'opencode', 'goose', 'cline', 'crush', 'openhands', 'amp', 'auggie', 'droid', 'warp']],
+  ['chat', 'Chat & review', 'answer, check and research', ['perplexity', 'deepseek', 'free', 'openrouter', 'glm', 'cohere', 'ai21', 'minimax', 'nova', 'nvidia', 'groq', 'cerebras']],
+  ['cloud', 'Cloud agents', 'take a job, come back with a pull request', ['devin', 'jules']],
+  ['builders', 'App builders', 'make whole apps and sites', ['lovable', 'replit', 'v0', 'bolt', 'firebase']],
+  ['makers', 'Makers', 'pictures and video', ['venice', 'civitai', ...MAKER_IDS]],
+  ['pc', 'Your PCs', 'your own machines', ['gpu', 'hearth', 'comfy', 'voice', 'listen']],
+  ['here', 'This computer', 'runs right here, free', ['ollama', 'phi']],
 ];
 
 const ring = (l, w, extra) => `<i style="left:${l}%;top:${l}%;width:${w}%;height:${w}%;${extra}"></i>`;
 
 // The moving parts of one shape (absolutely placed <i> elements; see .core i in styles.css).
 function shapeHtml(shape) {
+  if (SHAPES[shape]) return svgCore(shape);
   switch (shape) {
     case 'gyro': return ring(0, 100, 'border:1px solid var(--c8);box-shadow:0 0 18px var(--c4);animation:spinX 14s linear infinite') + ring(7, 86, 'border:2px dashed var(--c7);animation:spinY 10s linear infinite') + ring(14, 72, 'border:1px solid var(--c5);animation:spinT 18s linear infinite') + ring(22, 56, 'border:1px dotted var(--c7);animation:spinZr 22s linear infinite');
     case 'hex': return `<i class="hex" style="left:4%;top:4%;width:92%;height:92%;background:var(--c8);animation:spinZ 16s linear infinite"></i><i class="hex" style="left:7%;top:7%;width:86%;height:86%;background:var(--hole);animation:spinZ 16s linear infinite"></i><i class="hex" style="left:18%;top:18%;width:64%;height:64%;background:var(--c5);animation:spinZr 10s linear infinite"></i><i class="hex" style="left:21%;top:21%;width:58%;height:58%;background:var(--hole);animation:spinZr 10s linear infinite"></i>`;
@@ -85,16 +136,24 @@ export function miniCore(id, name, size = 34, state = 'ready') {
   return coreHtml({ id, name, size, state, status: state, action: 'live-pick' }).replace('class="core ', 'class="core mini ');
 }
 
-// The whole stage. who: [{ id, name, state, status, big? }], speaking: { id, name, line, voice } | null
+// The whole stage (3.4). who: [{ id, name, state, status, big? }]; lead at the top with what the team is doing,
+// then every AI as a card in its group. counts: { total, working, team, credit? }.
 export function liveStageHtml({ who, caption, chatTitle, counts, canTalk }) {
   const byId = new Map(who.map((w) => [w.id, w]));
-  const groups = GROUPS.map(([key, label, ids]) => {
-    const list = ids.map((id) => byId.get(id)).filter(Boolean);
+  const lead = who.find((w) => w.big) || null;
+  const busy = who.filter((w) => !w.big && (w.state === 'working' || w.state === 'speaking'));
+  const rgb = (id) => coreOf(id).rgb;
+  const card = (w) => `<div class="lv-card ${esc(w.state || 'ready')}" style="--c:rgb(${rgb(w.id)})">${coreHtml({ ...w, size: 56 })}<b>${esc(w.name)}</b><span>${esc(w.status || '')}</span></div>`;
+  const groups = GROUPS.map(([key, label, what, ids]) => {
+    const list = ids.map((id) => byId.get(id)).filter((w) => w && !w.big);
     if (!list.length) return '';
-    return `<section class="live-group g-${key}" aria-label="${esc(label)}"><div class="live-h">◢ ${esc(label)}</div><div class="live-cores">${list.map((w) => `<div class="live-ai ${w.big ? 'lead' : ''}">${coreHtml({ ...w, size: w.big ? 210 : 96 })}<b style="color:${w.state === 'speaking' || w.state === 'working' ? `rgb(${coreOf(w.id).rgb})` : ''}">${esc(w.name)}</b><span>${esc(w.status || '')}</span></div>`).join('')}</div></section>`;
+    return `<section class="live-group g-${key}" aria-label="${esc(label)}"><div class="live-h"><b>${esc(label)}</b><span>${esc(what)} · ${list.length}</span><i></i></div><div class="lv-grid">${list.map(card).join('')}</div></section>`;
   }).join('');
+  const flow = busy.length ? `<div class="lv-flow">${busy.slice(0, 6).map((w) => `<span style="--c:rgb(${rgb(w.id)})"><b>${esc(w.name)}</b> ${esc(w.status || '')}</span>`).join('<em>→</em>')}${busy.length > 6 ? `<em>+${busy.length - 6}</em>` : ''}</div>` : '';
+  const head = lead ? `<div class="lv-lead" style="--c:rgb(${rgb(lead.id)})">${coreHtml({ ...lead, size: 124 })}<div class="grow"><div class="lv-lt">Team lead · ${esc(lead.name)}</div><div class="lv-ls">${esc(lead.status || '')}${chatTitle ? ` · ${esc(chatTitle)}` : ''}</div>${flow}</div>
+    <div class="lv-stats"><div><b>${counts.working}</b><span>working</span></div><div><b>${counts.team ?? counts.total}</b><span>on the team</span></div>${counts.credit ? `<div><b>${esc(counts.credit)}</b><span>of your API credit</span></div>` : ''}</div></div>` : '';
   const cap = caption
-    ? `<div class="live-cap" aria-live="polite"><span class="live-bars" style="--c:rgb(${coreOf(caption.id).rgb})"><b></b><b></b><b></b><b></b><b></b></span><div class="grow"><div><b style="color:rgb(${coreOf(caption.id).rgb})">${esc(caption.name)}</b>${caption.note ? `<span class="faint"> · ${esc(caption.note)}</span>` : ''}</div><div class="live-line">${esc(caption.line)}</div></div>${canTalk ? '<button class="live-mic" data-a="talk" title="Talk to the team" aria-label="Talk to the team"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"></rect><path d="M5 11a7 7 0 0 0 14 0M12 18v3"></path></svg></button>' : ''}</div>`
+    ? `<div class="live-cap" aria-live="polite"><span class="live-bars" style="--c:rgb(${rgb(caption.id)})"><b></b><b></b><b></b><b></b><b></b></span><div class="grow"><div><b style="color:rgb(${rgb(caption.id)})">${esc(caption.name)}</b>${caption.note ? `<span class="faint"> · ${esc(caption.note)}</span>` : ''}</div><div class="live-line">${esc(caption.line)}</div></div>${canTalk ? '<button class="live-mic" data-a="talk" title="Talk to the team" aria-label="Talk to the team"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"></rect><path d="M5 11a7 7 0 0 0 14 0M12 18v3"></path></svg></button>' : ''}</div>`
     : '';
-  return `<div class="live-stage"><div class="live-top"><span class="live-tag">◢ LIVE · ${counts.total} AIs · ${counts.working} working</span><b class="live-title">${esc(chatTitle || 'No chat open')}</b></div>${cap}${groups}<div class="fine live-hint">Click a core to hear its newest line${canTalk ? ' · the mic talks to the whole team' : ''}</div></div>`;
+  return `<div class="live-stage"><div class="live-top"><span class="live-tag">◢ LIVE · ${counts.total} AIs · ${counts.working} working</span><b class="live-title">${esc(chatTitle || 'No chat open')}</b><span class="grow"></span><span class="fine">lit up = working · dim = not set up</span></div>${head}${cap}${groups}<div class="fine live-hint">Click a core to hear its newest line${canTalk ? ' · the mic talks to the whole team' : ''}</div></div>`;
 }
