@@ -14,6 +14,7 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const more = require('./more-ais.cjs');
 
 // Gemini CLI and Qwen Code need Node.js 20 or newer (Claude Code needs 18).
 const MIN_NODE_MAJOR = 20;
@@ -28,11 +29,19 @@ const NPM_PACKAGE = {
   xai: '@xai-official/grok',
   qwen: '@qwen-code/qwen-code',
   freebuff: 'freebuff',
+  // 3.3: the new command-line agents that come from npm (electron/more-ais.cjs).
+  ...Object.fromEntries(more.CLI_IDS.filter((a) => more.CLI[a].install.npm).map((a) => [a, more.CLI[a].install.npm])),
 };
-const UV_TOOL = { mistral: 'mistral-vibe' };
-const LABEL = { anthropic: 'Claude Code', openai: 'Codex CLI', google: 'Gemini CLI', xai: 'Grok Build CLI', qwen: 'Qwen Code', freebuff: 'FreeBuff', mistral: 'Mistral Vibe', ollama: 'Ollama' };
-// Install order for "Install all": CLI tools first, Ollama (password) last.
-const ORDER = ['anthropic', 'openai', 'google', 'xai', 'qwen', 'freebuff', 'mistral', 'ollama'];
+const UV_TOOL = { mistral: 'mistral-vibe', ...Object.fromEntries(more.CLI_IDS.filter((a) => more.CLI[a].install.uv).map((a) => [a, more.CLI[a].install.uv])) };
+const UV_PYTHON = Object.fromEntries(more.CLI_IDS.filter((a) => more.CLI[a].install.python).map((a) => [a, more.CLI[a].install.python]));
+// Official install scripts (Cursor, Kiro, Goose): downloaded over HTTPS and run in the terminal.
+const SCRIPT_INSTALL = Object.fromEntries(more.CLI_IDS.filter((a) => more.CLI[a].install.script).map((a) => [a, more.CLI[a].install]));
+const LABEL = { anthropic: 'Claude Code', openai: 'Codex CLI', google: 'Gemini CLI', xai: 'Grok Build CLI', qwen: 'Qwen Code', freebuff: 'FreeBuff', mistral: 'Mistral Vibe', ollama: 'Ollama',
+  ...Object.fromEntries(more.CLI_IDS.map((a) => [a, more.CLI[a].name])), ...Object.fromEntries(more.BUILDER_IDS.map((a) => [a, `${more.BUILDERS[a].name} for Claude Code`])), phi: 'Phi (Ollama model)' };
+// Install order for "Install all": CLI tools first, Ollama (password) last. Warp's agent comes
+// as a system package (its own repository), so it's not here: its card links to Warp's page.
+const ORDER = ['anthropic', 'openai', 'google', 'xai', 'qwen', 'freebuff', 'mistral',
+  ...more.CLI_IDS.filter((a) => !more.CLI[a].install.manual), ...more.BUILDER_IDS, 'ollama', 'phi'];
 
 const canInstall = (agent) => ORDER.includes(agent);
 
@@ -146,17 +155,35 @@ async function prepare({ agents, dirs, versionOf, fetchImpl, arch }) {
       plan.push(LABEL[a]);
     }
   }
-  if (want.includes('mistral')) {
+  const uvAgents = want.filter((a) => UV_TOOL[a]);
+  if (uvAgents.length) {
     if (!findIn(dirs, 'uv')) {
       steps.push('uv');
       plan.push('uv');
     }
-    steps.push('uvtool', 'mistral', UV_TOOL.mistral, LABEL.mistral);
-    plan.push(LABEL.mistral);
+    for (const a of uvAgents) {
+      if (UV_PYTHON[a]) steps.push('uvtoolpy', a, UV_TOOL[a], UV_PYTHON[a], LABEL[a]);
+      else steps.push('uvtool', a, UV_TOOL[a], LABEL[a]);
+      plan.push(LABEL[a]);
+    }
   }
-  if (want.includes('ollama')) {
+  for (const a of want.filter((x) => SCRIPT_INSTALL[x])) {
+    const i = SCRIPT_INSTALL[a];
+    steps.push('script', a, i.script, Object.entries(i.env || {}).map(([k, v]) => `${k}=${v}`).join(' ') || '-', LABEL[a]);
+    plan.push(LABEL[a]);
+  }
+  // Builders: add their official MCP server to Claude Code (needs Claude Code installed).
+  for (const a of want.filter((x) => more.BUILDERS[x])) {
+    steps.push('mcpadd', a, more.BUILDERS[a].mcp, LABEL[a]);
+    plan.push(LABEL[a]);
+  }
+  if (want.includes('ollama') || want.includes('phi')) {
     steps.push('ollama');
     plan.push(LABEL.ollama);
+  }
+  if (want.includes('phi')) {
+    steps.push('ollamapull', 'phi', more.LOCAL.phi.model, LABEL.phi);
+    plan.push(LABEL.phi);
   }
   return { ok: true, agents: want, plan, args: [appDir(), userPrefix(), ...steps] };
 }
@@ -281,6 +308,53 @@ while [ $# -gt 0 ]; do
         done_fail "$label" "$agent"
       fi
       ;;
+    uvtoolpy)
+      agent=$1; pkg=$2; py=$3; label=$4; shift 4
+      mark "$agent" running
+      say "$label: uv tool install $pkg with Python $py (no password)"
+      if [ "$UV_FAILED" = 1 ] || ! command -v uv >/dev/null 2>&1; then
+        echo "Skipped because uv is not available (see above)."
+        done_fail "$label" "$agent"
+      elif env UV_TOOL_BIN_DIR="$PREFIX/bin" uv tool install --python "$py" "$pkg"; then
+        done_ok "$label" "$agent"
+      else
+        done_fail "$label" "$agent"
+      fi
+      ;;
+    script)
+      agent=$1; url=$2; envs=$3; label=$4; shift 4
+      mark "$agent" running
+      say "$label: its official installer ($url), into your own folder (no password)"
+      if fetch "$url" "$TMP/$agent-install.sh"; then
+        if [ "$envs" = "-" ]; then envs=""; fi
+        set +f
+        # shellcheck disable=SC2086
+        if env $envs sh "$TMP/$agent-install.sh"; then done_ok "$label" "$agent"; else done_fail "$label" "$agent"; fi
+        set -f
+      else
+        done_fail "$label" "$agent"
+      fi
+      ;;
+    mcpadd)
+      agent=$1; url=$2; label=$3; shift 3
+      mark "$agent" running
+      say "$label: adds its official MCP server ($url) to Claude Code"
+      if ! command -v claude >/dev/null 2>&1; then
+        echo "Claude Code isn't installed yet: install Claude first, then press Install again."
+        done_fail "$label" "$agent"
+      elif claude mcp get "$agent" >/dev/null 2>&1 || claude mcp add --scope user --transport http "$agent" "$url"; then
+        echo "Next: press Sign in next to it in Settings › Accounts. In Claude Code, type /mcp, pick $agent and sign in with your own account."
+        done_ok "$label" "$agent"
+      else
+        done_fail "$label" "$agent"
+      fi
+      ;;
+    ollamapull)
+      agent=$1; model=$2; label=$3; shift 3
+      mark "$agent" running
+      say "$label: ollama pull $model"
+      if command -v ollama >/dev/null 2>&1 && ollama pull "$model"; then done_ok "$label" "$agent"; else done_fail "$label" "$agent"; fi
+      ;;
     ollama)
       mark ollama running
       say "Ollama: its official installer ($OLLAMA_URL)"
@@ -290,6 +364,9 @@ while [ $# -gt 0 ]; do
       if ! command -v curl >/dev/null 2>&1; then
         echo "Ollama's installer needs curl. Install it first (for example: sudo apt install curl), then press Install again."
         done_fail "Ollama" ollama
+      elif command -v ollama >/dev/null 2>&1; then
+        echo "Ollama is already installed."
+        done_ok "Ollama" ollama
       elif fetch "$OLLAMA_URL" "$TMP/ollama-install.sh" && sh "$TMP/ollama-install.sh"; then
         done_ok "Ollama" ollama
         echo "Next: download a model, for example: ollama pull llama3.2"

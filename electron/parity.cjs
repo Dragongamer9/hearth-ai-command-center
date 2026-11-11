@@ -27,7 +27,7 @@ const hnet = require('./hearth-net.cjs');
 const { createStudio, NOT_REAL_TEXT } = require('./studio.cjs');
 
 // elevenlabs: voice chat's most realistic voices (electron/voice-chat.cjs).
-const KEY_NAMES = ['google', 'openai', 'xai', 'mistral', 'elevenlabs'];
+const KEY_NAMES = ['google', 'openai', 'xai', 'mistral', 'elevenlabs', ...require('./more-ais.cjs').MAKER_KEYS];
 const whoName = { owner: 'Owner', system: 'App', anthropic: 'Claude', openai: 'ChatGPT', google: 'Gemini', xai: 'Grok', mistral: 'Mistral', qwen: 'Qwen', perplexity: 'Perplexity', deepseek: 'DeepSeek', ollama: 'Local AI', venice: 'Venice', civitai: 'Civitai', gpu: 'Your GPU server', hearth: 'Hearth devices', free: 'Free AI' };
 // Teammates whose output never reaches the other AIs (the same rule as src/app/brief.mjs).
 const UNFILTERED = ['venice', 'civitai', 'gpu', 'hearth'];
@@ -210,7 +210,7 @@ function register(d) {
     const ctl = new AbortController();
     videoJobs.set(String(chatId), ctl);
     try {
-      const r = await makers.generateVideo({ provider, key: secrets.get(provider), prompt: o.prompt, signal: ctl.signal });
+      const r = await makers.generateVideo({ provider, key: secrets.get(provider), secret: provider === 'kling' ? secrets.get('kling.secret') : null, prompt: o.prompt, signal: ctl.signal });
       if (!r.ok) return { ...r, provider };
       return { ok: true, provider, via: r.via, item: media.storeBuffer(root, String(chatId), `video-${Date.now()}.mp4`, r.buf) };
     } finally { videoJobs.delete(String(chatId)); }

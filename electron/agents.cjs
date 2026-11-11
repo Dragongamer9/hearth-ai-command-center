@@ -21,8 +21,11 @@ const crypto = require('node:crypto');
 const installer = require('./installer.cjs');
 const { claudeUsage } = require('./ops/usage.cjs');
 const perms = require('./permissions.cjs');
+const more = require('./more-ais.cjs');
 
-const BIN = { anthropic: 'claude', openai: 'codex', google: 'gemini', xai: 'grok', mistral: 'vibe', qwen: 'qwen', freebuff: 'freebuff', ollama: 'ollama' };
+const BIN = { anthropic: 'claude', openai: 'codex', google: 'gemini', xai: 'grok', mistral: 'vibe', qwen: 'qwen', freebuff: 'freebuff', ollama: 'ollama',
+  // 3.3: the new command-line agents, and the app builders (run through Claude Code).
+  ...Object.fromEntries(more.CLI_IDS.map((a) => [a, more.CLI[a].bin[0]])), ...Object.fromEntries(more.BUILDER_IDS.map((a) => [a, 'claude'])) };
 const CLI_AGENTS = ['anthropic', 'openai', 'google', 'xai', 'mistral', 'qwen'];
 // Each tool's own sign-in. hold: keep the terminal open afterwards to read the result.
 const LOGIN = { anthropic: ['auth', 'login'], openai: ['login'], google: [], xai: ['login'], mistral: ['--setup'], qwen: [], freebuff: [] };
@@ -90,7 +93,7 @@ function childEnv() {
 // search path, otherwise the older Gemini CLI.
 function findBinary(agent, custom) {
   if (custom) return fs.existsSync(custom) ? custom : null;
-  for (const name of agent === 'google' ? ['agy', 'gemini'] : [BIN[agent]]) {
+  for (const name of agent === 'google' ? ['agy', 'gemini'] : more.CLI[agent] ? more.CLI[agent].bin : [BIN[agent]]) {
     for (const dir of searchDirs()) {
       const p = path.join(dir, name);
       try {
@@ -364,6 +367,93 @@ function lineSplitter(fn) {
     if (buf.length > 4e6) buf = '';
   };
 }
+// ---- 3.3: the new command-line agents (electron/more-ais.cjs), one runner for all of them ----
+const ANSI = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07/g;
+function jsonLines(stdout) {
+  const out = [];
+  for (const l of String(stdout || '').split('\n')) {
+    const t = l.trim();
+    if (t.startsWith('{')) { try { out.push(JSON.parse(t)); } catch {} }
+  }
+  return out;
+}
+// What the agent answered, from its own output: kind is the CLI's parse ('claude', 'events', 'cline', 'text').
+function parseCli(kind, stdout) {
+  const raw = String(stdout || '');
+  if (kind === 'claude') {
+    // One JSON object, or JSON lines ending in {type:"result"} (Cursor, Amp, Droid).
+    const lines = jsonLines(raw);
+    const res = [...lines].reverse().find((e) => e && (e.type === 'result' || typeof e.result === 'string'));
+    const j = res || lastJson(raw);
+    if (j && typeof j === 'object') {
+      const text = typeof j.result === 'string' ? j.result : typeof j.text === 'string' ? j.text : typeof j.response === 'string' ? j.response : textOf(j.message ?? j.content ?? '');
+      return { text: (text || '').trim(), isError: Boolean(j.is_error || j.isError || j.error && !text), error: typeof j.error === 'string' ? j.error : null, sessionId: j.session_id || j.sessionId || j.chatId || j.chat_id || null };
+    }
+    return { text: raw.replace(ANSI, '').trim(), isError: false, error: null, sessionId: null };
+  }
+  if (kind === 'cline') {
+    const ev = [...jsonLines(raw)].reverse().find((e) => e && e.type === 'run_result');
+    return { text: typeof ev?.text === 'string' ? ev.text.trim() : raw.replace(ANSI, '').trim(), isError: Boolean(ev?.error), error: ev?.error || null, sessionId: ev?.taskId || null };
+  }
+  if (kind === 'events') {
+    // OpenCode: {type:"text", part:{text}} events with sessionID; Goose: one JSON with messages.
+    const whole = lastJson(raw);
+    if (whole && !Array.isArray(whole) && Array.isArray(whole.messages)) {
+      const last = [...whole.messages].reverse().find((m) => m && m.role === 'assistant');
+      return { text: last ? textOf(last.content).trim() : '', isError: false, error: null, sessionId: whole.session_id || null };
+    }
+    const lines = jsonLines(raw);
+    let sessionId = null;
+    const parts = [];
+    for (const e of lines) {
+      sessionId = sessionId || e.sessionID || e.sessionId || e.session_id || e.part?.sessionID || null;
+      if ((e.type === 'text' || e.part?.type === 'text') && typeof e.part?.text === 'string') parts.push(e.part.text);
+      else if (e.type === 'message' && e.role === 'assistant') parts.push(textOf(e.content));
+    }
+    const err = lines.find((e) => e.type === 'error');
+    return { text: parts.join('').trim() || (lines.length ? '' : raw.replace(ANSI, '').trim()), isError: Boolean(err && !parts.length), error: err ? textOf(err.error ?? err.message ?? '') : null, sessionId };
+  }
+  // Plain text: drop colour codes and tool chatter we know (Augment's "Request ID" line).
+  const text = raw.replace(ANSI, '').split('\n').filter((l) => !/^\s*Request ID:/i.test(l)).join('\n').trim();
+  return { text, isError: false, error: null, sessionId: null };
+}
+
+async function runMoreCli({ agent, file, prompt, mode, resume, model, workdir, timeoutMs, signal, run }) {
+  const c = more.CLI[agent];
+  // A tool that can't be held back from changing files in print mode is told so in read-only turns.
+  const p = mode === 'read' && !c.readOnly ? `Only look and answer: don't change, create or delete any files, and don't run commands that change anything.\n\n${prompt}` : prompt;
+  const args = c.args({ prompt: c.input === 'arg' ? capArgPrompt(p) : p, mode, resume, model });
+  const res = await run(file, args, { cwd: workdir, input: c.input === 'stdin' ? p : undefined, timeoutMs, signal, ...(c.env ? { extraEnv: c.env({ mode }) } : {}) });
+  const parsed = parseCli(c.parse, res.out);
+  const via = c.name;
+  if (res.code === 0 && parsed.text && !parsed.isError) return { ok: true, text: parsed.text, via, sessionId: parsed.sessionId || resume || null };
+  return { ok: false, error: classify(agent, res, `${parsed.error || ''}\n${parsed.text}`), partial: parsed.text || null, resumeFailed: Boolean(resume) };
+}
+
+// The app builders (Lovable, Replit): Claude Code does the job with only that builder's MCP tools
+// (its official server, added once by "Set up", signed in with the owner's own account).
+function builderPrompt(agent, prompt) {
+  const b = more.BUILDERS[agent];
+  return `You are working as ${b.name}, the app builder, for a team of AIs. Do the job below using only the ${b.name} tools (mcp__${agent}__…): create or update the app there, wait for ${b.name} to finish, and reply with what was built, what's left, and the app's links (editor and preview or live URL). Don't change files on this computer.\n\n${prompt}`;
+}
+async function runBuilder({ agent, file, prompt, resume, workdir, timeoutMs, signal, run }) {
+  const sid = resume || uuid();
+  const args = ['-p', '--output-format', 'json', '--permission-mode', 'default', '--allowedTools', `mcp__${agent}`];
+  args.push(...(resume ? ['--resume', resume] : ['--session-id', sid]));
+  const settingsFile = claudeSettingsFile();
+  if (settingsFile) args.push('--settings', settingsFile);
+  const res = await run(file, args, { cwd: workdir, input: builderPrompt(agent, prompt), timeoutMs, signal });
+  const parsed = parseClaude(res.out);
+  if (res.code === 0 && parsed.text && !parsed.isError) return { ok: true, text: parsed.text, via: `${more.BUILDERS[agent].name} (through Claude Code)`, sessionId: parsed.raw?.session_id || sid };
+  const error = classify(agent, res, parsed.text);
+  if (error.kind === 'auth' || /mcp|not connected|needs auth/i.test(parsed.text + res.err)) { error.kind = 'auth'; error.message = `${more.BUILDERS[agent].name} isn't connected yet: press Sign in next to it in Settings › Accounts, then type /mcp in Claude Code and sign in to ${more.BUILDERS[agent].name}.`; }
+  return { ok: false, error, partial: parsed.text || null, resumeFailed: Boolean(resume) };
+}
+// Builders are set up when Claude Code has their MCP server (claude mcp add, user scope).
+function builderReady(agent) {
+  try { const j = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.claude.json'), 'utf8')); return Boolean(j?.mcpServers?.[agent]); } catch { return false; }
+}
+
 async function runAgent({ agent, prompt, cwd, mode = 'read', model, timeoutMs, signal, bin, extraDirs = [], resumeId = null, images = [], onData, extraEnv = null, onEvent = null, claude = null, web = null, mcp = null, quickChecks = [], test = false, runDir = null }) {
   // quickChecks: the owner's quick checks (Gemini and Mistral get them as their allow-list).
   // test: the Test Team button's run (may also remove the one file it made).
@@ -373,13 +463,15 @@ async function runAgent({ agent, prompt, cwd, mode = 'read', model, timeoutMs, s
   let resultEvent = null;
   const lines = typeof onEvent === 'function' ? lineSplitter((ev) => { if (ev && ev.type === 'result') resultEvent = ev; try { onEvent(ev); } catch {} }) : null;
   const feed = lines ? (d) => { lines(d); onData?.(d); } : onData;
-  const run = (f, a, o) => runTool(f, a, { ...o, onData: feed, extraEnv });
+  const run = (f, a, o) => runTool(f, a, { ...o, onData: feed, extraEnv: o?.extraEnv ? { ...(extraEnv || {}), ...o.extraEnv } : extraEnv });
   if (mode === 'edit') mode = 'standard';
   const file = agent === 'ollama' ? null : bin || findBinary(agent);
   const img = imageInputs(agent, images, { agy: agent === 'google' && isAgy(file) });
   prompt = `${prompt}${img.prompt}`;
   const dirs = [...extraDirs, ...img.dirs].filter((d, i, a) => typeof d === 'string' && path.isAbsolute(d) && fs.existsSync(d) && a.indexOf(d) === i);
   if (agent === 'ollama') return runOllama({ prompt, model, timeoutMs, signal });
+  // Phi: Microsoft's small model, on this PC through Ollama.
+  if (more.LOCAL[agent]) return runOllama({ prompt, model: model || more.LOCAL[agent].model, timeoutMs, signal }).then((r) => (r.ok ? { ...r, via: `${more.LOCAL[agent].name} (Ollama)` } : r));
   if (!file) return { ok: false, error: { kind: 'not_installed', message: `${BIN[agent] || agent} is not installed.` } };
   if (agent === 'freebuff') {
     return { ok: false, error: { kind: 'interactive', message: 'FreeBuff only runs interactively — open it in a terminal from the task.' } };
@@ -511,6 +603,8 @@ async function runAgent({ agent, prompt, cwd, mode = 'read', model, timeoutMs, s
     if (res.code === 0 && parsed.text) return { ok: true, text: parsed.text, via: 'Mistral Vibe', sessionId: parsed.sessionId || resume || null };
     return { ok: false, error: classify(agent, res, parsed.text), partial: parsed.text || null, resumeFailed: Boolean(resume) };
   }
+  if (more.CLI[agent]) return runMoreCli({ agent, file, prompt, mode, resume, model, workdir, timeoutMs, signal, run });
+  if (more.BUILDERS[agent]) return runBuilder({ agent, file, prompt, resume, workdir, timeoutMs, signal, run });
   return { ok: false, error: { kind: 'unsupported', message: 'Unknown agent.' } };
 }
 
@@ -551,7 +645,7 @@ async function status(agent, bin) {
 }
 
 async function toolStatus(agent, bin) {
-  if (agent === 'ollama') return ollamaStatus();
+  if (agent === 'ollama' || more.LOCAL[agent]) return ollamaStatus();
   const file = bin || findBinary(agent);
   if (!file) return { installed: false, signedIn: false, path: null };
   if (agent === 'anthropic') {
@@ -576,7 +670,9 @@ async function toolStatus(agent, bin) {
   // Vibe keeps a browser sign-in in the OS keyring, which can't be checked
   // without reading it; null = installed, sign-in state unknown.
   if (agent === 'mistral') return { installed: true, signedIn: process.env.MISTRAL_API_KEY || fileHas(path.join(os.homedir(), '.vibe', '.env'), 'MISTRAL_API_KEY') ? true : null, path: file };
-  // FreeBuff has no status command; signing in happens inside its own session.
+  // Builders: ready once Claude Code has their MCP server (the sign-in itself happens in Claude Code).
+  if (more.BUILDERS[agent]) return { installed: builderReady(agent), signedIn: builderReady(agent) ? null : false, path: file, needsSetup: !builderReady(agent) };
+  // FreeBuff and the 3.3 CLIs: signing in happens inside their own session (or with their key).
   return { installed: true, signedIn: null, path: file };
 }
 
@@ -618,6 +714,9 @@ function openTerminal(file, args, cwd, { hold = false } = {}) {
 function login(agent, bin, cwd) {
   const file = bin || findBinary(agent);
   if (!file) return { ok: false, message: `${BIN[agent]} is not installed.` };
+  // Builders: Claude Code with that builder's MCP server; /mcp signs in to it.
+  if (more.BUILDERS[agent]) return openTerminal(file, [], cwd);
+  if (more.CLI[agent]) return { ...openTerminal(file, more.CLI[agent].login || [], cwd, { hold: (more.CLI[agent].login || []).length > 0 }), note: more.CLI[agent].loginNote || null };
   // Gemini, Qwen and FreeBuff sign in inside their own first session, so no hold wrapper.
   return openTerminal(file, LOGIN[agent] || [], cwd, { hold: LOGIN_HOLD.includes(agent) || agent === 'mistral' });
 }
@@ -669,4 +768,4 @@ async function install(list, { fetchImpl } = {}) {
   return r.ok ? { ...r, agents: plan.agents, plan: plan.plan } : r;
 }
 
-module.exports = { agyRefusalDetail, isAgy, capArgPrompt, ARG_PROMPT_LIMIT, imageInputs, runAgent, status, login, logout, install, openTerminal, findBinary, isLimit, resetHint, parseClaude, parseGemini, parseCodexEvents, parseGrok, parseVibe, lastJson, run, searchDirs, BIN, CLI_AGENTS, NPM_PACKAGE, execFile };
+module.exports = { parseCli, builderPrompt, builderReady, agyRefusalDetail, isAgy, capArgPrompt, ARG_PROMPT_LIMIT, imageInputs, runAgent, status, login, logout, install, openTerminal, findBinary, isLimit, resetHint, parseClaude, parseGemini, parseCodexEvents, parseGrok, parseVibe, lastJson, run, searchDirs, BIN, CLI_AGENTS, NPM_PACKAGE, execFile };
