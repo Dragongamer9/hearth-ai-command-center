@@ -33,7 +33,9 @@ function safeUrl(provider, u) {
   try {
     const x = new URL(String(u));
     if (x.protocol !== 'https:') return null;
-    return (HOSTS[provider] || []).some((re) => re.test(x.hostname)) ? x.href : null;
+    // ".ideogram.ai" also matches "ideogram.ai" itself.
+    const host = `.${x.hostname}`;
+    return (HOSTS[provider] || []).some((re) => re.test(host) || re.test(x.hostname)) ? x.href : null;
   } catch { return null; }
 }
 async function download(provider, url, fetchImpl, signal, fallbackMime) {

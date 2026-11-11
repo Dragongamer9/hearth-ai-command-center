@@ -43,7 +43,7 @@ const CLI = Object.freeze({
     args: ({ prompt, mode, resume, model }) => ['-p', '--output-format', 'json', '--trust', ...(mode === 'read' ? [] : ['--force']), ...(resume ? ['--resume', resume] : []), ...(model ? ['--model', model] : []), prompt],
     login: ['login'], install: { script: 'https://cursor.com/install' },
   },
-  copilot: {
+  ghcopilot: {
     name: 'GitHub Copilot', bin: ['copilot'], input: 'arg', parse: 'text', readOnly: true, keyEnv: 'COPILOT_GITHUB_TOKEN',
     args: ({ prompt, mode, model }) => ['-p', prompt, '-s', ...(mode === 'read' ? ['--deny-tool=write', '--deny-tool=shell'] : mode === 'full' ? ['--allow-all-tools'] : ['--allow-tool=write', '--allow-tool=shell(git:*)', '--allow-tool=shell(npm test)']), ...(model ? ['--model', model] : [])],
     login: [], loginNote: 'Type /login in Copilot and follow the steps.', install: { npm: '@github/copilot' },

@@ -137,7 +137,7 @@ test('Keys never land in plain text: encrypted in secrets.json, never in setting
   const s = vc.mergeSettings({}, { tts: 'openai', apiKey: 'sk-SECRET', voices: { default: { openai: 'nova', key: 'sk-SECRET' } } });
   assert.ok(!JSON.stringify(s).includes('SECRET'));
   // The main window saves the ElevenLabs key through the same encrypted media key path.
-  assert.match(read('electron/parity.cjs'), /const KEY_NAMES = \['google', 'openai', 'xai', 'mistral', 'elevenlabs'\];/);
+  assert.match(read('electron/parity.cjs'), /const KEY_NAMES = \['google', 'openai', 'xai', 'mistral', 'elevenlabs', \.\.\.require\('\.\/more-ais\.cjs'\)\.MAKER_KEYS\];/);
   assert.match(read('electron/parity.cjs'), /await secrets\.set\(name, k\);/);
 });
 
