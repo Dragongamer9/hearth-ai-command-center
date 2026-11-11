@@ -24,12 +24,12 @@ test('Combining branches refuses workspaces with unsaved changes (main process)'
 });
 
 test('text size is opt-in, validated, persisted and restored on renderer load', () => {
-  assert.match(main, /const TEXT_SIZES = \[100, 115, 130, 150\]/);
+  assert.match(main, /const TEXT_SIZES = \[67, 75, 80, 90, 100, 115, 130, 150\]/);
   assert.match(main, /textSize: TEXT_SIZES.includes\(s.textSize\) \? s.textSize : 100/);
   assert.match(main, /on\('did-finish-load', \(\) => \{\s*mainWindow.webContents.setZoomFactor\(readSettings\(\).textSize \/ 100\)/);
   const setter = between(main, "handle('settings:set',", "handle('settings:addDir'");
   assert.match(setter, /if \(!TEXT_SIZES.includes\(patch.textSize\)\) throw/);
-  assert.ok(setter.indexOf('writeSettings(s)') < setter.indexOf('setZoomFactor'));
+  assert.ok(setter.indexOf('writeSettings(s)') < setter.indexOf('applyZoom(s)'));
 });
 
 test('saved text size survives unrelated edits and is reapplied on renderer recovery', () => {
@@ -37,16 +37,21 @@ test('saved text size survives unrelated edits and is reapplied on renderer reco
   let zoom = 1;
   let setSettings;
   let restore;
+  const zoomSrc = between(main, 'function zoomFor(', 'async function apiCall(');
+  let scale = 1;
   const context = {
-    TEXT_SIZES: [100, 115, 130, 150], THEMES: ['hearth'],
+    TEXT_SIZES: [67, 75, 80, 90, 100, 115, 130, 150], THEMES: ['hearth'],
+    screen: { on() {}, removeListener() {} }, setTimeout, clearTimeout,
+    screenScale: () => scale,
     readSettings: () => structuredClone(saved),
     writeSettings: (value) => { saved = structuredClone(value); },
     handle: (_name, handler) => { setSettings = handler; },
-    mainWindow: { webContents: {
+    mainWindow: { isDestroyed: () => false, on() {}, webContents: {
       setZoomFactor: (value) => { zoom = value; },
       on: (_event, handler) => { restore = handler; },
     } },
   };
+  runInNewContext(`${zoomSrc.replace(/function screenScale[^]*?\n}\n/, '')}\nthis.applyZoom = applyZoom; this.zoomFor = zoomFor;`, context);
   runInNewContext(between(main, "handle('settings:set',", "handle('settings:addDir'"), context);
   for (const size of [100, 115, 130, 150]) {
     setSettings({ textSize: size });
@@ -65,5 +70,17 @@ test('saved text size survives unrelated edits and is reapplied on renderer reco
   restore();
   assert.equal(zoom, 1.5);
   assert.equal(saved.textSize, 150);
+  // 3.4.1: "Draw the app at 100%" undoes the desktop's screen scale (150% here), and is off unless he turns it on.
+  scale = 1.5;
+  setSettings({ textSize: 100 });
+  assert.equal(zoom, 1, 'off: the app follows the screen scale');
+  setSettings({ fitScreen: true });
+  assert.equal(saved.fitScreen, true);
+  assert.equal(zoom, 0.667);
+  setSettings({ textSize: 90 });
+  assert.equal(zoom, 0.6);
+  setSettings({ chatResume: true });
+  assert.equal(saved.fitScreen, true, 'kept through other changes');
+  assert.match(main, /fitScreen: s\.fitScreen === true,/);
 });
 

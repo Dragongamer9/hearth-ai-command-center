@@ -56,6 +56,8 @@ const IMAGE_MAKERS = ['openai', 'google', 'xai', 'venice', 'civitai', 'gpu', 'he
 const VIDEO_MAKERS = ['openai', 'google', 'runway', 'luma', 'kling', 'pika'];
 const makerName = (a) => MAKERS[a] || aiName(a);
 const MODEL_PRESETS = { anthropic: ['opus', 'sonnet', 'haiku'], openai: ['gpt-5', 'gpt-5-codex', 'o4-mini'], google: ['gemini-2.5-pro', 'gemini-2.5-flash'], xai: ['grok-4', 'grok-code-fast-1'], mistral: ['mistral-large-latest', 'codestral-latest'], perplexity: ['sonar', 'sonar-pro', 'sonar-reasoning-pro'], deepseek: ['deepseek-chat', 'deepseek-reasoner'], qwen: [], ollama: [], venice: [], civitai: [], gpu: [] };
+// 3.4.1: the app's size (the window's zoom), smaller ones too. electron/main.cjs TEXT_SIZES is the same list.
+const APP_SIZES = [67, 75, 80, 90, 100, 115, 130, 150];
 const MEDIA_KEYS = [['google', 'Gemini API key', 'pictures (Gemini image model), Veo videos'], ['openai', 'OpenAI API key', 'pictures and edits (OpenAI Images), Sora videos; the same key as ChatGPT by API'], ['xai', 'xAI API key', 'Grok pictures'], ['mistral', 'Mistral API key', 'reading PDFs and scans (Mistral OCR)']];
 
 const S = {
@@ -2082,7 +2084,8 @@ function section(k) {
       <div class="srow">Design<span class="d">${holo ? 'gold hologram: living cores, always dark, its own colours' : 'classic: calm and warm, follows the theme below'}</span><span class="grow"></span>${[['hologram', 'Gold hologram'], ['classic', 'Classic']].map(([v, l]) => `<button class="seg ${(holo ? 'hologram' : 'classic') === v ? 'on' : ''}" data-a="design" data-v="${v}">${l}</button>`).join('')}</div>
       ${holo ? '<div class="note sub">Theme and your Hearth OS colours apply when Design is Classic.</div>' : ''}
       <div class="srow">Theme<span class="grow"></span>${['hearth', 'dark', 'light', 'system'].map((v) => `<button class="seg ${s.theme === v ? 'on' : ''}" data-a="theme" data-v="${v}">${{ hearth: 'Follow Hearth OS', dark: 'Dark', light: 'Light', system: 'System' }[v]}</button>`).join('')}</div>
-      <div class="srow">Text size<span class="grow"></span>${[100, 115, 130, 150].map((v) => `<button class="seg ${s.textSize === v ? 'on' : ''}" data-a="text-size" data-v="${v}">${v}%</button>`).join('')}</div>
+      <div class="srow">Draw the app at 100%<span class="d">${S.screen && S.screen.scale > 1.01 ? `your desktop scales this screen to ${Math.round(S.screen.scale * 100)}%, and the app follows it unless this is on` : 'for a screen your desktop scales up (125%, 150%…): the app then ignores that scale'}</span><span class="grow"></span>${tog(s.fitScreen === true, 'fit-screen')}</div>
+      <div class="srow">App size<span class="d">everything: text, buttons and panels · Ctrl − and Ctrl + change it, Ctrl 0 goes back to 100%</span><span class="grow"></span>${APP_SIZES.map((v) => `<button class="seg ${s.textSize === v ? 'on' : ''}" data-a="text-size" data-v="${v}">${v}%</button>`).join('')}</div>
       <div class="srow">Reduce motion<span class="grow"></span>${tog(s.reduceMotion === true, 'reduce-motion')}</div></div>`;
   }
   if (k === 'updates') {
@@ -2234,6 +2237,7 @@ function foundHtml() {
 async function loadCopies() { S.copies = await call('copiesList'); render(); }
 async function loadSection(t) {
   if (t === 'voice') { await voice.loadLists(); return render(); }
+  if (t === 'look') S.screen = (await call('screenInfo')) || null;
   if (t === 'data') { loadCopies(); S.boards = await call('savedBoards'); S.slog = await call('settingsLog'); }
   if (t === 'perms') { refreshAgents(); loadPerms(); }
   if (t === 'tools') loadMissing();
@@ -3000,6 +3004,7 @@ document.addEventListener('click', async (ev) => {
     case 'full-access': return setSettings({ access: S.settings.access === 'full' ? 'standard' : 'full' });
     case 'theme': return setSettings({ theme: d.v });
     case 'text-size': return setSettings({ textSize: Number(d.v) });
+    case 'fit-screen': await setSettings({ fitScreen: S.settings.fitScreen !== true }); S.screen = (await call('screenInfo')) || S.screen; return render();
     case 'reduce-motion': return setSettings({ reduceMotion: !S.settings.reduceMotion });
     case 'notify-toggle': return setSettings({ notify: S.settings.notify === false });
     case 'auto-read': return setSettings({ autoRead: !S.settings.autoRead });
@@ -3141,6 +3146,20 @@ document.addEventListener('change', (ev) => {
 });
 
 let searchTimer = null;
+// 3.4.1: Ctrl − / Ctrl + / Ctrl 0 change the app's size (his own keypress, saved like the buttons in Appearance).
+document.addEventListener('keydown', (ev) => {
+  if (!(ev.ctrlKey || ev.metaKey) || ev.altKey || ev.shiftKey && ev.key !== '+') return;
+  const k = ev.key;
+  const dir = k === '-' || k === '_' ? -1 : k === '=' || k === '+' ? 1 : k === '0' ? 0 : null;
+  if (dir === null) return;
+  ev.preventDefault();
+  const now = APP_SIZES.includes(S.settings.textSize) ? S.settings.textSize : 100;
+  const i = APP_SIZES.indexOf(now);
+  const next = dir === 0 ? 100 : APP_SIZES[Math.min(APP_SIZES.length - 1, Math.max(0, i + dir))];
+  if (next === now) return;
+  setSettings({ textSize: next }).then(() => toast(`App size ${next}% (Settings › Appearance)`));
+});
+
 document.addEventListener('input', (ev) => {
   const t = ev.target;
   if (t.id === 'composer') { S.draft = t.value; fitComposer(); return; }
