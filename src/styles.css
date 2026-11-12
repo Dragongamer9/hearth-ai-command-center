@@ -1046,3 +1046,5 @@ table.perms tr.off td { color: var(--faint); }
 .mft.fixes { flex-wrap: wrap; gap: 6px; }
 .ocheck { align-items: center; gap: 8px; flex-wrap: wrap; }
 @media (max-width: 760px) { .wa-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.ac-amt small { display: block; color: var(--faint); font-size: 11px; }
+a.mini.btnlink { text-decoration: none; display: inline-flex; align-items: center; }
