@@ -1048,3 +1048,34 @@ table.perms tr.off td { color: var(--faint); }
 @media (max-width: 760px) { .wa-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .ac-amt small { display: block; color: var(--faint); font-size: 11px; }
 a.mini.btnlink { text-decoration: none; display: inline-flex; align-items: center; }
+
+/* ---- Live mesh (3.6, src/mesh.mjs): the AIs working now in the middle, the stations their work goes to around them ---- */
+.mesh { position: relative; height: clamp(360px, 52vh, 560px); border: 1px solid var(--line-2); border-radius: 16px; overflow: hidden;
+  background: radial-gradient(60% 60% at 50% 50%, rgba(236, 117, 82, .10), transparent 70%), linear-gradient(180deg, var(--panel-2), var(--bg-2));
+  background-size: auto, auto; }
+.mesh::before { content: ""; position: absolute; inset: 0; background-image: linear-gradient(rgba(255,255,255,.035) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.035) 1px, transparent 1px); background-size: 32px 32px; pointer-events: none; }
+.mesh-lines { position: absolute; inset: 0; width: 100%; height: 100%; }
+.mesh-lines line { stroke: var(--line-2); stroke-width: .25; stroke-dasharray: .8 .8; vector-effect: non-scaling-stroke; }
+.mesh-lines line { stroke-width: 1px; }
+.mesh-lines line.hot { stroke-dasharray: none; stroke-width: 2px; filter: drop-shadow(0 0 4px currentColor); opacity: .9; }
+.mesh-st { position: absolute; transform: translate(-50%, -50%); min-width: 116px; padding: 8px 12px; border-radius: 12px; border: 1px solid var(--line-2);
+  background: color-mix(in srgb, var(--panel) 92%, transparent); display: grid; grid-template-columns: 1fr auto; gap: 1px 10px; align-items: baseline; z-index: 2;
+  transition: border-color .4s, box-shadow .4s; --c: var(--accent); }
+.mesh-st b { font-size: 13px; color: var(--strong); letter-spacing: .02em; }
+.mesh-st em { font-style: normal; font-size: 13px; font-weight: 700; color: var(--muted); font-variant-numeric: tabular-nums; }
+.mesh-st span { grid-column: 1 / -1; font-size: 11px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 160px; }
+.mesh-st.idle { opacity: .55; }
+.mesh-st.hot { border-color: var(--c); box-shadow: 0 0 0 1px var(--c), 0 0 22px color-mix(in srgb, var(--c) 45%, transparent); opacity: 1; }
+.mesh-st.hot em { color: var(--c); }
+.mesh-st.hot span { color: var(--text); }
+.mesh-bus { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); display: flex; gap: 18px; padding: 16px 20px; border-radius: 999px; z-index: 3;
+  border: 1px solid var(--line-2); background: radial-gradient(circle, var(--panel), var(--bg-2)); box-shadow: 0 0 40px rgba(236, 117, 82, .18); }
+.mesh-bus.empty { flex-direction: column; gap: 2px; align-items: center; padding: 18px 26px; }
+.mesh-bus.empty b { color: var(--strong); font-size: 14px; } .mesh-bus.empty span { color: var(--faint); font-size: 12px; }
+.mesh-core { display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 84px; }
+.mesh-core b { font-size: 12px; color: var(--strong); } .mesh-core span { font-size: 11px; color: var(--muted); max-width: 120px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mesh-pulse { position: absolute; left: 50%; top: 50%; width: 10px; height: 10px; margin: -5px 0 0 -5px; border-radius: 50%; background: var(--c); z-index: 2;
+  box-shadow: 0 0 12px var(--c), 0 0 24px var(--c); animation: meshPulse 1.6s cubic-bezier(.4, .0, .2, 1) forwards; }
+@keyframes meshPulse { 0% { left: 50%; top: 50%; opacity: 0; transform: scale(.6); } 12% { opacity: 1; } 85% { opacity: 1; } 100% { left: var(--x); top: var(--y); opacity: 0; transform: scale(1.4); } }
+@media (prefers-reduced-motion: reduce) { .mesh-pulse { display: none; } }
+@media (max-width: 760px) { .mesh { height: 520px; } .mesh-st { min-width: 92px; padding: 6px 8px; } .mesh-st span { display: none; } }
