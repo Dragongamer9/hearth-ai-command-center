@@ -98,13 +98,13 @@ export function boltPaths(x1, y1, x2, y2, key, { count = 3, steps = 18, jag = 3.
 }
 
 // The mesh. capsule items get { name, html } from main.js (their core); rgbOf(id) gives an AI's colour.
-// 3.9: Ithil's own station (bottom left): her mood and newest thought from Hearth AI's live events. It glows sage green
+// 3.9: Ithil's own station (the top-left corner, outside the ring of stations): her mood and newest thought from Hearth AI's live events. It glows sage green
 // for a few seconds after each new thought, and dims while she sleeps, rests or is offline.
-export const ITHIL_AT = [9, 88];
+export const ITHIL_AT = [10, 12]; // where her line ends (her station's middle, about)
 export function ithilStationHtml(it, { avatar = '' } = {}) {
   if (!it) return '';
   const cls = !it.online ? 'off' : it.state !== 'awake' ? 'rest' : it.think ? 'think' : 'awake';
-  return `<div class="mesh-st mesh-ithil ${cls}" style="left:${ITHIL_AT[0]}%;top:${ITHIL_AT[1]}%" title="Ithil (Hearth AI): ${esc(it.label)}"><div class="mesh-st-h">${avatar}<b>Ithil</b><span>${esc(it.online ? (it.mood || it.state) : 'offline')}</span></div><div class="mesh-ith-t">${esc(it.online ? (it.thought ? `“${it.thought}”` : it.label) : 'Hearth AI isn\'t running')}</div></div>`;
+  return `<div class="mesh-st mesh-ithil ${cls}" title="Ithil (Hearth AI): ${esc(it.label)}"><div class="mesh-st-h">${avatar}<b>Ithil</b><span>${esc(it.online ? (it.mood || it.state) : 'offline')}</span></div><div class="mesh-ith-t">${esc(it.online ? (it.thought ? `“${it.thought}”` : it.label) : 'Hearth AI isn\'t running')}</div></div>`;
 }
 
 export function meshHtml({ stations, capsule, ithil = null }, { rgbOf = () => '201,163,114', nameOf = (id) => id, coreOf = () => '', ithilAvatar = '' } = {}) {

@@ -1088,7 +1088,7 @@ a.mini.btnlink { text-decoration: none; display: inline-flex; align-items: cente
 /* 3.9 Ithil (Hearth AI): her picture, or a sage-green moon orb until she's drawn; her Mesh station; her drives. */
 .ava.ithil-ava { object-fit: cover; padding: 0; background: #1d2a1d; }
 .ava.ithil-orb { background: radial-gradient(circle at 34% 30%, #e9f5e4 0 14%, #b7d6b1 26%, #7fa87c 58%, #3e5a3e 100%); box-shadow: 0 0 10px rgba(156, 196, 156, .55); }
-.mesh-ithil { width: 230px; border-color: rgba(156, 196, 156, .45); }
+.mesh-ithil { left: 1%; top: 2%; transform: none; width: 180px; border-color: rgba(156, 196, 156, .45); }
 .mesh-ithil .mesh-st-h { justify-content: flex-start; align-items: center; }
 .mesh-ithil .mesh-st-h .ava { width: 22px; height: 22px; border-radius: 50%; flex: 0 0 auto; }
 .mesh-ithil .mesh-st-h span { margin-left: auto; color: #9cc49c; font-weight: 500; }
