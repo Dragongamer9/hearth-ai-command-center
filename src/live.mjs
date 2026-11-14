@@ -138,7 +138,9 @@ export function miniCore(id, name, size = 34, state = 'ready') {
 
 // The whole stage (3.4). who: [{ id, name, state, status, big? }]; lead at the top with what the team is doing,
 // then every AI as a card in its group. counts: { total, working, team, credit? }.
-export function liveStageHtml({ who, caption, chatTitle, counts, canTalk }) {
+// 3.7: mode 'mesh' (the default; Live › Mesh, src/live-mesh.mjs) draws the mesh where the lead and caption go;
+// 'cores' is the 3.4 stage. mesh is the mesh's HTML from main.js.
+export function liveStageHtml({ who, caption, chatTitle, counts, canTalk, mode = 'cores', mesh = '' }) {
   const byId = new Map(who.map((w) => [w.id, w]));
   const lead = who.find((w) => w.big) || null;
   const busy = who.filter((w) => !w.big && (w.state === 'working' || w.state === 'speaking'));
@@ -155,5 +157,7 @@ export function liveStageHtml({ who, caption, chatTitle, counts, canTalk }) {
   const cap = caption
     ? `<div class="live-cap" aria-live="polite"><span class="live-bars" style="--c:rgb(${rgb(caption.id)})"><b></b><b></b><b></b><b></b><b></b></span><div class="grow"><div><b style="color:rgb(${rgb(caption.id)})">${esc(caption.name)}</b>${caption.note ? `<span class="faint"> · ${esc(caption.note)}</span>` : ''}</div><div class="live-line">${esc(caption.line)}</div></div>${canTalk ? '<button class="live-mic" data-a="talk" title="Talk to the team" aria-label="Talk to the team"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"></rect><path d="M5 11a7 7 0 0 0 14 0M12 18v3"></path></svg></button>' : ''}</div>`
     : '';
-  return `<div class="live-stage"><div class="live-top"><span class="live-tag">◢ LIVE · ${counts.total} AIs · ${counts.working} working</span><b class="live-title">${esc(chatTitle || 'No chat open')}</b><span class="grow"></span><span class="fine">lit up = working · dim = not set up</span></div>${head}${cap}${groups}<div class="fine live-hint">Click a core to hear its newest line${canTalk ? ' · the mic talks to the whole team' : ''}</div></div>`;
+  const isMesh = mode === 'mesh';
+  const seg = `<span class="live-seg" role="group" aria-label="How Live looks"><button class="${isMesh ? 'on' : ''}" data-a="live-mode" data-v="mesh" aria-pressed="${isMesh}">Mesh</button><button class="${isMesh ? '' : 'on'}" data-a="live-mode" data-v="cores" aria-pressed="${!isMesh}">Cores</button></span>`;
+  return `<div class="live-stage ${isMesh ? 'is-mesh' : ''}"><div class="live-top"><span class="live-tag">◢ LIVE · ${counts.total} AIs · ${counts.working} working</span><b class="live-title">${esc(chatTitle || 'No chat open')}</b><span class="grow"></span>${seg}<span class="fine">lit up = working · dim = not set up</span></div>${isMesh ? mesh : head + cap}${groups}<div class="fine live-hint">Click a core to hear its newest line${canTalk ? ' · the mic talks to the whole team' : ''}</div></div>`;
 }

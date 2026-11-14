@@ -30,7 +30,8 @@ import { applyHabitatLines, habitatSection, stripHabitatLines } from './habitat/
 import { teamHabitatLine } from './habitat/status.mjs';
 import { activateLore, nextSpeakers, rpPrompt, addSwipe, moveSwipe, isSexual, fill, spriteFor } from './app/roleplay.mjs';
 import { createVoice } from './voice.mjs';
-import { liveStageHtml, miniCore, LIVE_AIS, MAKER_IDS } from './live.mjs';
+import { liveStageHtml, miniCore, coreHtml as liveCoreHtml, coreOf as liveCoreOf, LIVE_AIS, MAKER_IDS } from './live.mjs';
+import { meshState, meshHtml } from './live-mesh.mjs';
 import { checkWord, CHECK_PROMPT, planCheck, runCheck, CHECK_ORDER, CHECK_LABEL, summary as checkSummary } from './app/rollcall.mjs';
 import { creditsHtml } from './app/credits.mjs';
 import { voiceSettings, routeFor, isServer, serverIdOf, idOf, providerName } from './app/voice-logic.mjs';
@@ -61,7 +62,7 @@ const APP_SIZES = [67, 75, 80, 90, 100, 115, 130, 150];
 const MEDIA_KEYS = [['google', 'Gemini API key', 'pictures (Gemini image model), Veo videos'], ['openai', 'OpenAI API key', 'pictures and edits (OpenAI Images), Sora videos; the same key as ChatGPT by API'], ['xai', 'xAI API key', 'Grok pictures'], ['mistral', 'Mistral API key', 'reading PDFs and scans (Mistral OCR)']];
 
 const S = {
-  view: 'home', tab: 'team', liveDrawer: (() => { try { return localStorage.getItem('hearth.v2.liveDrawer') !== '0'; } catch { return true; } })(),
+  view: 'home', tab: 'team', liveDrawer: (() => { try { return localStorage.getItem('hearth.v2.liveDrawer') !== '0'; } catch { return true; } })(), liveMode: (() => { try { return localStorage.getItem('hearth.v2.liveMode') === 'cores' ? 'cores' : 'mesh'; } catch { return 'mesh'; } })(),
   // Images & Videos (src/app/studio.mjs): the form, what the main process reported, the PC's status.
   studio: { f: { kind: 'image', count: 1 }, data: null, st: null, filter: 'all', shown: new Set(), models: null },
   chats: [], temps: [], trash: [], notices: [], broken: false,
@@ -1269,12 +1270,18 @@ function liveCaption() {
   if (R) for (let i = R.msgs.length - 1; i >= 0; i--) { const m = R.msgs[i]; if (AGENTS[m.who] && m.text && !m.err) return { id: m.who, name: aiName(m.who), note: 'said', line: shortLine(m.text) }; }
   return null;
 }
+// 3.7: Live › Mesh: the AIs working now in the middle, the stations they use around them (src/live-mesh.mjs).
+function liveMesh(R) {
+  const m = meshState(R, { isAgent: (w) => Boolean(AGENTS[w]), lead: team().lead });
+  return meshHtml(m, { rgbOf: (id) => liveCoreOf(id).rgb, nameOf: (id) => aiName(id), coreOf: (c) => liveCoreHtml({ id: c.id, name: aiName(c.id), size: 64, state: c.state, status: c.status }) });
+}
 function liveView() {
   const R = liveChat();
   const who = liveWho();
   const cr = S.credit;
   const counts = { total: who.length, team: team().members.length, working: who.filter((w) => w.state === 'working' || w.state === 'speaking').length, credit: cr?.on ? `$${Number(cr.spent || 0).toFixed(2)} / $${cr.budget || 200}` : '' };
-  const stage = liveStageHtml({ who, caption: liveCaption(), chatTitle: entry()?.title || '', counts, canTalk: Boolean(S.open) });
+  const mesh = S.liveMode === 'mesh' ? liveMesh(R) : '';
+  const stage = liveStageHtml({ who, caption: liveCaption(), chatTitle: entry()?.title || '', counts, canTalk: Boolean(S.open), mode: S.liveMode, mesh });
   const msgs = (R?.msgs || []).filter((m) => m.text && (m.who === 'owner' || AGENTS[m.who])).slice(-40);
   const list = msgs.length ? msgs.map((m) => `<div class="live-msg ${m.who === 'owner' ? 'owner' : ''}"><b style="color:${m.who === 'owner' ? 'var(--muted)' : (COLORS[m.who] || 'var(--accent)')}">${esc(m.who === 'owner' ? ownerName() : aiName(m.who))}</b><div>${esc(shortLine(m.text, 900))}</div></div>`).join('') : `<div class="fine">${S.open ? 'Nothing said in this chat yet.' : 'Type below to start a chat; the team shows up here as it works.'}</div>`;
   return `<div class="live">${stage}<aside class="live-drawer" ${S.liveDrawer ? '' : 'hidden'} aria-label="Chat"><div class="dh">◢ Chat<span class="grow"></span>${S.open ? '<button class="mini" data-a="live-full">Full chat</button>' : ''}<button class="mini" data-a="live-drawer">Hide</button></div><div class="live-msgs" id="live-msgs">${list}</div></aside></div>`;
@@ -2727,6 +2734,7 @@ document.addEventListener('click', async (ev) => {
     case 'new-chat': return goHome();
     case 'live': return openLive();
     case 'live-pick': return livePick(d.v);
+    case 'live-mode': S.liveMode = d.v === 'cores' ? 'cores' : 'mesh'; try { localStorage.setItem('hearth.v2.liveMode', S.liveMode); } catch {} return renderMain();
     case 'live-drawer': S.liveDrawer = !S.liveDrawer; try { localStorage.setItem('hearth.v2.liveDrawer', S.liveDrawer ? '1' : '0'); } catch {} return renderMain();
     case 'live-full': if (S.open) return openChat(S.open); return;
     case 'open-freebuff': { const r = await call('openWeb', 'freebuff'); if (r && r.ok === false) toast(r.message || 'FreeBuff couldn\'t open.'); return; }

@@ -54,6 +54,7 @@ function stateFile(dataDir, legacyDir, legacyList = []) {
 
 function register(d) {
   const { settingsDisk, handle, dataDir, readSettings, useProject, setStore, taskDir, worktreeRoot, gitops, workspace, agents, attachments, redact, send, dialog, getWindow } = d;
+  const hearthOf = typeof d.hearth === 'function' ? d.hearth : () => d.hearth || null;
   projects = projects || createProjects(dataDir());
   const gh = () => gitops.find('gh');
   const ghApi = (args, timeoutMs = 30000) => {
@@ -445,7 +446,7 @@ function register(d) {
     return { ok: true, repo: s.logsRepo, baseline, skipped: baseline ? fresh.length : 0, created };
   });
 
-  // ---- voice notes (local transcription only) ----
+  // ---- voice notes (whisper on this computer, else Speech to text on his Hearth devices) ----
   const voiceTools = () => voice.detect({ find: gitops.find, list: voice.listDir });
   handle('ops:voiceTools', () => voiceTools());
   handle('ops:voiceSave', async (data) => {
@@ -458,7 +459,16 @@ function register(d) {
     fs.writeFileSync(file, buf, { mode: 0o600 });
     const att = { id, kind: 'audio', name: 'voice-note.webm', size: buf.length, path: file, url: pathToFileURL(file).href };
     const tool = voiceTools();
-    if (!tool.tool) return { ok: true, att, transcript: '', note: tool.missing };
+    if (!tool.tool) {
+      // 3.7: no whisper on this computer: Speech to text on his Hearth devices (the PC's whisper) does it.
+      const h = hearthOf();
+      if (h?.configured?.()) {
+        const r = await h.transcribe({ buf, mime: 'audio/webm' }).catch((e) => ({ ok: false, message: e.message }));
+        if (r?.ok) return { ok: true, att, transcript: String(r.text || ''), note: r.text ? '' : 'transcription came back empty' };
+        return { ok: true, att, transcript: '', note: `transcription unavailable: Hearth devices: ${r?.message || 'no Speech to text answered'}` };
+      }
+      return { ok: true, att, transcript: '', note: `${tool.missing}, or set up Hearth devices (Settings › Accounts) to use your PC's Speech to text` };
+    }
     const env = tests.cleanEnv(process.env, os.tmpdir());
     try {
       if (tool.tool === 'whisper.cpp') {
