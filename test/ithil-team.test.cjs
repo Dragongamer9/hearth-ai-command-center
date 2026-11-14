@@ -1,4 +1,4 @@
-// 3.9.1: "Add Ithil to the team" and her switch in Settings › AI team were dropped when the settings were saved
+// 3.10: "Add Ithil to the team" and her switch in Settings › AI team were dropped when the settings were saved
 // (cleanTeam only kept TEAM_IDS, which hadn't got her). She's kept as a member, never as the lead or reviewer.
 const { test } = require('node:test');
 const assert = require('node:assert/strict');

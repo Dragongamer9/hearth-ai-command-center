@@ -216,7 +216,7 @@ const TEAM_IDS = ['anthropic', 'openai', 'google', 'xai', 'mistral', 'qwen', 'pe
 // Teammates by key or URL (electron/teammates.cjs; Hearth devices: electron/hearth-devices.cjs):
 // answered through their own API.
 const TEAMMATES = ['venice', 'civitai', 'gpu', 'hearth', 'free', 'ithil'];
-// 3.9.1: Ithil can be in the team (never its lead or reviewer: she never merges or releases). She was missing here,
+// 3.10: Ithil can be in the team (never its lead or reviewer: she never merges or releases). She was missing here,
 // so adding her was dropped every time the settings were saved.
 const MEMBER_IDS = [...TEAM_IDS, 'ithil'];
 function cleanTeam(t) {
