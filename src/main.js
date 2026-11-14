@@ -1946,9 +1946,11 @@ function accountsList() {
   const spent = Number(cr.spent || 0);
   const budget = Number(cr.budget || 200);
   const credit = `<div class="ac-credit ${cr.on ? 'on' : ''}"><div class="grow"><b>Claude API credit</b><div class="fine">Your monthly API credit from your Claude account. Claude stays on your plan's sign-in unless this is on; then Claude Code uses your API key and the app keeps count of what it spends.${cr.key ? '' : ' Add your Claude API key (from your Claude account\'s API keys page) to use it.'}</div></div>
-    <div class="ac-bar" aria-hidden="true"><i style="width:${Math.min(100, Math.round((spent / Math.max(1, budget)) * 100))}%"></i></div><span class="ac-amt"><b>$${spent.toFixed(2)}</b> of $${budget} this month</span>
+    <div class="ac-bar" aria-hidden="true"><i style="width:${Math.min(100, Math.round((spent / Math.max(1, budget)) * 100))}%"></i></div><span class="ac-amt"><b>$${spent.toFixed(2)}</b> of $${budget} this month<small>${(cr.apiRuns || 0) + (cr.planRuns || 0) ? `${cr.apiRuns || 0} run${cr.apiRuns === 1 ? '' : 's'} on the API key · ${cr.planRuns || 0} on your plan (not from the credit)` : 'counted by the app'}</small></span>
+    <a class="mini btnlink" href="https://claude.ai/settings/billing" target="_blank" rel="noopener" title="Your real balance, on claude.ai">Real balance</a><button class="mini" data-a="credit-reset" title="Start the app's count again at $0">Reset count</button>
     ${cr.key ? '' : '<button class="mini" data-a="set-key" data-v="anthropic">Add key</button>'}${tog(cr.on === true, 'credit-toggle', `aria-label="Use my API credit for Claude" ${cr.key ? '' : 'disabled'}`)}</div>`;
-  return `<div class="ac-sum"><span><b>${ready}</b> of ${total} ready${need ? ` · ${need} need you` : ''}</span><span class="grow"></span><input id="acct-q" class="ac-q" placeholder="Search AIs…" value="${esc(S.acctQ || '')}" aria-label="Search AIs"></div>${credit}${groups || '<div class="fine">No AI matches that.</div>'}
+  const oldNote = cr.oldCount ? `<div class="note sub">The app used to count Claude Code's cost estimate for every run, also the ones your plan paid for, so it showed $${Number(cr.oldCount).toFixed(2)}. That count was wrong and starts again here: now only runs that really used your API key count. Your real balance is on claude.ai (Real balance).</div>` : '';
+  return `${oldNote}<div class="ac-sum"><span><b>${ready}</b> of ${total} ready${need ? ` · ${need} need you` : ''}</span><span class="grow"></span><input id="acct-q" class="ac-q" placeholder="Search AIs…" value="${esc(S.acctQ || '')}" aria-label="Search AIs"></div>${credit}${groups || '<div class="fine">No AI matches that.</div>'}
     <div class="note sub">Web sign-in uses that AI's own website, signed in as you, in a hidden window that keeps your sign-in to itself. It's against those sites' terms and your account could be suspended, so each one is off until you turn it on.</div>`;
 }
 const tog = (on, a, extra = '') => `<button class="tog ${on ? 'on' : ''}" role="switch" aria-checked="${on}" data-a="${a}" ${extra}></button>`;
@@ -3044,6 +3046,7 @@ document.addEventListener('click', async (ev) => {
     case 'acct-web': { const r = await call('openWeb', d.v); if (r && r.ok === false) toast(r.message || 'That site couldn\'t open.'); return; }
     case 'cli-key': { const key = await secretPrompt(`Paste your ${CLI_KEY[d.v] || 'API key'} (optional: signing in works without it)`); if (key) { const r = await call('cliSetKey', d.v, key); if (r?.ok === false) toast(r.message); S.clik = (await call('cliKeys')) || S.clik; render(); } return; }
     case 'cli-unkey': await call('cliRemoveKey', d.v); S.clik = (await call('cliKeys')) || S.clik; return render();
+    case 'credit-reset': { if (!confirm('Start the app\'s count of your API credit again at $0?\n\nThis only resets the app\'s own count; your real balance on claude.ai doesn\'t change.')) return; await call('creditReset'); S.credit = (await call('creditStatus')) || S.credit; return render(); }
     case 'credit-toggle': {
       const on = S.credit?.on === true;
       if (!on && !confirm('Use your Claude API credit for Claude?\n\nClaude Code will use your API key instead of your plan\'s sign-in, so its work is paid from your monthly API credit. The app counts what it spends. You can turn this off any time.')) return;

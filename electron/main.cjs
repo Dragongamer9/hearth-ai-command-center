@@ -452,7 +452,8 @@ function registerIpc() {
   });
 
   // 3.3: keys for the command-line agents that take one (KIRO_API_KEY, WARP_API_KEY, …).
-  handle('credit:status', () => { const s = readSettings(); const c = credit.read(); return { on: s.claudeApiCredit, budget: s.creditBudget, month: c.month, spent: c.usd, key: secrets.has('anthropic') }; });
+  handle('credit:status', () => { const s = readSettings(); const c = credit.read(); return { on: s.claudeApiCredit, budget: s.creditBudget, month: c.month, spent: c.usd, apiRuns: c.apiRuns, planRuns: c.planRuns, unknownRuns: c.unknownRuns, oldCount: c.oldCount, key: secrets.has('anthropic') }; });
+  handle('credit:reset', () => { credit.reset(); return { ok: true }; });
   handle('cli:keys', () => Object.fromEntries(more.CLI_IDS.filter((a) => more.CLI[a].keyEnv).map((a) => [a, secrets.has(`cli.${a}`)])));
   handle('cli:setKey', async (agent, key) => {
     if (!more.CLI[agent]?.keyEnv) throw new Error('bad agent');
@@ -1189,23 +1190,33 @@ function registerParity() {
 }
 
 // The app's own API path for one AI (teammates, API-only AIs, AIs switched to an API key).
-// 3.3: what's been spent of his monthly Claude API credit this month (Claude Code's own cost report,
-// and Claude API chat turns from the tokens Anthropic reports). One small file; a new month starts at 0.
+// What's been spent of his monthly Claude API credit this month, by the app's count. 3.5.1: only runs where Claude Code
+// itself said it used his API key count (it reports a cost for every run, also the ones his plan's sign-in paid for,
+// which made 3.4/3.5 show $241 when he'd used about $10). The runs his plan paid for are counted separately.
+// One small file; a new month starts at 0; the old (wrong) count from before 3.5.1 isn't carried over.
 const credit = (() => {
   const file = () => path.join(dataDir(), 'api-credit.json');
   const month = () => new Date().toISOString().slice(0, 7);
-  const read = () => { try { const j = JSON.parse(fs.readFileSync(file(), 'utf8')); return j && j.month === month() && Number.isFinite(j.usd) ? j : { month: month(), usd: 0 }; } catch { return { month: month(), usd: 0 }; } };
+  const fresh = () => ({ v: 2, month: month(), usd: 0, apiRuns: 0, planRuns: 0, unknownRuns: 0 });
+  const read = () => {
+    try {
+      const j = JSON.parse(fs.readFileSync(file(), 'utf8'));
+      if (!j || j.v !== 2 || j.month !== month() || !Number.isFinite(j.usd)) return { ...fresh(), oldCount: j && j.v !== 2 && Number.isFinite(j.usd) ? j.usd : undefined };
+      return { ...fresh(), ...j };
+    } catch { return fresh(); }
+  };
+  const write = (j) => { const tmp = `${file()}.tmp`; fs.writeFileSync(tmp, JSON.stringify(j), { mode: 0o600 }); fs.renameSync(tmp, file()); };
   return {
     read,
-    add(usd) {
+    add(usd, billedTo = 'unknown') {
       const n = Number(usd);
-      if (!Number.isFinite(n) || n <= 0 || n > 10000) return;
-      const j = read();
-      j.usd = Math.round((j.usd + n) * 10000) / 10000;
-      const tmp = `${file()}.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify(j), { mode: 0o600 });
-      fs.renameSync(tmp, file());
+      if (!Number.isFinite(n) || n < 0 || n > 10000) return;
+      const { oldCount, ...j } = read();
+      if (billedTo === 'api') { j.usd = Math.round((j.usd + n) * 10000) / 10000; j.apiRuns += 1; } else if (billedTo === 'plan') j.planRuns += 1; else j.unknownRuns += 1;
+      write(j);
     },
+    // His own "Reset the count" click.
+    reset() { write(fresh()); },
   };
 })();
 
@@ -1261,7 +1272,7 @@ function registerV2() {
       if (agent === 'anthropic') return readSettings().claudeApiCredit && secrets.has('anthropic') ? { ANTHROPIC_API_KEY: secrets.get('anthropic') } : {};
       const c = more.CLI[agent]; const k = c?.keyEnv && secrets.get(`cli.${agent}`); return k ? { [c.keyEnv]: k } : {};
     },
-    onCost: (agent, usd) => { if (agent === 'anthropic' && readSettings().claudeApiCredit) credit.add(usd); },
+    onCost: (agent, usd, billedTo) => { if (agent === 'anthropic' && readSettings().claudeApiCredit) credit.add(usd, billedTo); },
   });
 }
 

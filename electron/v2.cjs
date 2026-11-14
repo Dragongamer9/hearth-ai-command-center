@@ -243,7 +243,7 @@ function register(d) {
         }
       }
       // 3.3: what Claude Code says a turn cost, counted against the owner's monthly API credit (when it ran on it).
-      if (r.ok && r.usage?.costUsd != null && d.onCost) { try { d.onCost(agent, r.usage.costUsd); } catch {} }
+      if (r.ok && r.usage?.costUsd != null && d.onCost) { try { d.onCost(agent, r.usage.costUsd, r.usage.billedTo || 'unknown'); } catch {} }
       // Settings never change by themselves: an AI's change to settings.json is undone at once.
       const undone = d.guardSettings ? d.guardSettings(agent) : null;
       if (r.text) r.text = redact(r.text);
