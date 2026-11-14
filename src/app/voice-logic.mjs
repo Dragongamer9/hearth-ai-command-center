@@ -125,7 +125,18 @@ export function speechParts(text, { narration = 'same' } = {}) {
 }
 
 // The spoken plan for a set of replies: [{ msgId, who, char, kind, text, provider, voice, ... }].
-export function speechPlan({ msgs, cards = [], settings, keys = {}, lists = {}, names = {}, hosts = {} }) {
+// chatVoice: this chat's own choice (the chat window's Voice button): { provider, voice, speed }. Its voice speaks for the
+// AI teammates (a character keeps its own); its speed is for everyone in the chat.
+export function withChatVoice(sel, msg, chatVoice) {
+  if (!chatVoice) return sel;
+  const out = { ...sel };
+  if (chatVoice.voice && !msg?.char) { out.provider = chatVoice.provider || out.provider; out.voice = chatVoice.voice; out.auto = false; }
+  const sp = Number(chatVoice.speed);
+  if (sp >= 0.5 && sp <= 2) out.speed = sp;
+  return out;
+}
+
+export function speechPlan({ msgs, cards = [], settings, keys = {}, lists = {}, names = {}, hosts = {}, chatVoice = null }) {
   const v = voiceSettings(settings);
   const plan = [];
   const notices = new Set();
@@ -135,7 +146,7 @@ export function speechPlan({ msgs, cards = [], settings, keys = {}, lists = {}, 
     if (r.notice) notices.add(r.notice);
     const canUse = (p) => serverAllowed(p, { who: m.who, settings, hosts });
     for (const p of speechParts(m.text, { narration: v.narration })) {
-      const sel = voiceFor({ msg: m, part: p.kind, cards, settings, provider: r.provider, list: lists[r.provider] || [], canUse });
+      const sel = withChatVoice(voiceFor({ msg: m, part: p.kind, cards, settings, provider: r.provider, list: lists[r.provider] || [], canUse }), m, chatVoice);
       plan.push({ msgId: m.id, who: m.who, char: m.char || null, kind: p.kind, text: p.text, ...sel });
     }
   }
