@@ -658,6 +658,17 @@ function register(d) {
 
   // ---- voice chat: speech to text, voices, cloning (electron/voice-chat.cjs) ----
   // CosyVoice2 voice clips (his, with consent) live in voice-clips/<server id>/, never in settings.
+  // 3.7: the voice each AI picked for itself (VOICE: lines). Kept apart from his settings: his own choice for an AI in
+  // Settings › Voice always wins, and nothing here ever changes his settings.
+  const aiVoices = createJsonFile(path.join(dataDir(), 'ai-voices.json'), { empty: () => ({ picks: {} }), check: (j) => j.picks && typeof j.picks === 'object', label: 'The AIs\' voice picks' });
+  handle('voice:aiPicks', () => ({ ...(aiVoices.read().picks || {}) }));
+  handle('voice:aiPick', (who, provider, voice) => {
+    const w = String(who || ''); const p = String(provider || ''); const v = String(voice || '');
+    if (!/^[a-z0-9]{2,24}$/.test(w) || !/^(elevenlabs|openai|local|hearth|server:[a-z0-9]{6,16})$/.test(p) || !v || v.length > 200 || /[\0\r\n]/.test(v)) return { ok: false, message: 'That voice pick doesn\'t look right.' };
+    const cur = aiVoices.read();
+    try { aiVoices.write({ ...cur, picks: { ...cur.picks, [w]: { provider: p, voice: v, at: new Date().toISOString() } } }); } catch (e) { return { ok: false, message: e.message }; }
+    return { ok: true };
+  });
   const voice = voiceChat.register({ handle, secrets, readSettings, send, which: makers.which, media, mediaRoot: root, dialog, getWindow, clipsDir: path.join(dataDir(), 'voice-clips'), hearth });
 
   return { studio, memory, scheduler, connectors, teammates, hearth, makeScene, cards, rpGuard, docText, mcpForRun: (dir, chatId) => connectors.forRun(dir, [reverse.serverFor(chatId), desktop.serverFor(chatId)].filter(Boolean)), stop() { desktop.stop(); scheduler.stop(); makers.stopSpeaking(); voice.stop(); } };

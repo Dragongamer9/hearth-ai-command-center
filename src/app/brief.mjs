@@ -128,7 +128,9 @@ export function messageText(m) {
   const files = (m.attachments || []).map((a) => `[attached ${a.kind === 'file' ? 'file' : a.kind} ${a.name}: ${a.path}]${a.text ? `\n--- ${a.name} ---\n${String(a.text).slice(0, 60000)}\n--- end of ${a.name} ---` : ''}`);
   const made = (m.media || []).map((x) => `[${x.kind === 'file' ? 'file' : x.kind} made in this chat: ${x.name}]`);
   const tool = m.toolResult ? [`[app result]\n${String(m.toolResult).slice(0, 20000)}`] : [];
-  return [String(m.text || ''), ...files, ...made, ...tool].filter(Boolean).join('\n');
+  // 3.7: he said this out loud in voice chat, and the reply is read to him (no limit on length).
+  const said = m.voice && m.who === 'owner' ? ['[He said this out loud in voice chat. Your reply is read aloud to him: write it to be heard, in plain spoken sentences; leave out tables, code blocks and links unless he asks for them. Say as much as the answer needs.]'] : [];
+  return [String(m.text || ''), ...said, ...files, ...made, ...tool].filter(Boolean).join('\n');
 }
 
 // 3.4.1: the owner's own check of an uncensored teammate's reply ("Looks right" / "Not right"), the only thing about it

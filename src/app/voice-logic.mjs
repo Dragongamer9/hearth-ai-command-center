@@ -59,13 +59,61 @@ export function autoPick(key, list) {
   for (const ch of String(key)) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619); }
   return list[Math.abs(h) % list.length];
 }
+// 3.7: an AI's own pick ({ provider, voice }) as a voice choice; it counts only while that provider speaks.
+export function pickEntry(pick) {
+  if (!pick?.provider || !pick.voice) return null;
+  if (pick.provider === 'elevenlabs') return { elevenlabs: { id: pick.voice } };
+  if (isServer(pick.provider)) return { servers: { [serverIdOf(pick.provider)]: pick.voice } };
+  return { [pick.provider]: pick.voice };
+}
+// 3.7: "VOICE: <id>" lines in an AI's reply: its pick (the last one), and the text without them.
+export function voiceLines(text) {
+  let pick = null;
+  const kept = [];
+  for (const line of String(text || '').split('\n')) {
+    const m = line.replace(/^[\s*\-•`>]+/, '').replace(/[`*]+$/, '').match(/^VOICE:\s*(.{1,200}?)\s*$/i);
+    if (m) pick = m[1].replace(/^["'`]|["'`]$/g, ''); else kept.push(line);
+  }
+  return { text: pick === null ? String(text || '') : kept.join('\n').trim(), pick };
+}
+// 3.7: what an AI is told about picking its voice: the voices it can pick from (by id), unless he picked one for it.
+export function voiceMenu({ who, settings, provider, list = [], picks = {}, max = 40 }) {
+  const v = voiceSettings(settings);
+  if (idOf(v.voices[who], provider)) return '';
+  const mine = picks[who]?.provider === provider ? picks[who].voice : null;
+  const opts = list.slice(0, max).map((x) => `${x.id}${x.name && x.name !== x.id ? ` (${x.name})` : ''}`).join('; ');
+  if (!opts) return '';
+  return `YOUR VOICE: your replies are read aloud. You may pick the voice you speak with: put one line VOICE: <id> in a reply (it isn't shown in the chat), from these: ${opts}.${mine ? ` You picked ${mine}; pick again any time to change it.` : ''} The owner can always change it to another one.`;
+}
+// 3.7: who he's talking to in Talk: "Gemini, …", "Hey Codex …", "Claude and Grok: …" at the start. A name needs a
+// greeting before it or a comma, colon or question mark after it, so "Claude Code broke" isn't a name. aliasOf(word)
+// gives an AI's id or null.
+export function spokenTo(text, aliasOf) {
+  const words = String(text || '').trim().split(/\s+/).slice(0, 8);
+  const ids = [];
+  let greeted = false;
+  for (let i = 0; i < words.length; i++) {
+    const raw = words[i];
+    const w = raw.toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (!ids.length && !greeted && /^(hey|hi|hello|ok|okay|yo|so)$/.test(w)) { greeted = true; continue; }
+    if (ids.length && (w === 'and' || w === '&')) continue;
+    const id = w ? aliasOf(w) : null;
+    if (!id) break;
+    const marked = /[,:?!]$/.test(raw);
+    const next = words[i + 1] ? words[i + 1].toLowerCase().replace(/[^a-z0-9&]/g, '') : '';
+    if (!greeted && !marked && !(next === 'and' || next === '&')) break;
+    if (!ids.includes(id)) ids.push(id);
+    if (marked) break;
+  }
+  return ids;
+}
 export const idOf = (v, provider) => (provider === 'elevenlabs' ? v?.elevenlabs?.id : isServer(provider) ? v?.servers?.[serverIdOf(provider)] : v?.[provider]) || null;
 
 // The voice for one message part. msg: { who, char }; cards: the chat's characters.
 // Order: the character's own voice, then the teammate's voice, then the default voice, then an
 // automatic pick from the provider's list.
 // A voice choice that names its own speech server (use) speaks there when canUse allows it.
-export function voiceFor({ msg, part = 'speech', cards = [], settings, provider, list = [], canUse = () => false }) {
+export function voiceFor({ msg, part = 'speech', cards = [], settings, provider, list = [], canUse = () => false, picks = {} }) {
   const v = voiceSettings(settings);
   const card = msg?.char ? cards.find((c) => c.id === msg.char) : null;
   const own = card?.ownerVoice || null;
@@ -78,7 +126,8 @@ export function voiceFor({ msg, part = 'speech', cards = [], settings, provider,
   }
   // A character with no voice of its own gets an automatic one (so a group never sounds alike);
   // an AI teammate falls back to the default voice first.
-  const chain = card ? [own] : [v.voices[msg?.who], v.voices.default];
+  // 3.7: his voice for this AI, then the voice the AI picked for itself, then his default.
+  const chain = card ? [own] : [v.voices[msg?.who], pickEntry(picks[msg?.who]), v.voices.default];
   for (const c of chain.filter(Boolean)) {
     const p = provOf(c);
     const id = idOf(c, p);
@@ -90,9 +139,42 @@ export function voiceFor({ msg, part = 'speech', cards = [], settings, provider,
   return { provider, voice: auto, speed: own?.speed ?? v.voices.default?.speed, pitch: own?.pitch ?? v.voices.default?.pitch, auto: true };
 }
 
-// Text cut into spoken parts: *narration* and the rest (speech). Code and links are left out.
+// 3.7: what is read aloud. Code blocks and tables are skipped, links say only their words, bare addresses are
+// left out, and Markdown's symbols (headings, bullets, bold, quotes, rules) go; a line without an end gets one, so a
+// list is read as separate sentences. *Narration* stays for speechParts.
+export function speakable(text) {
+  let t = String(text || '').replace(/\r/g, '');
+  t = t.replace(/```[\s\S]*?(```|$)/g, '\n').replace(/~~~[\s\S]*?(~~~|$)/g, '\n');
+  t = t.replace(/^[ \t]*\|.*\|?[ \t]*$/gm, '').replace(/^[ \t]*:?-{3,}:?([ \t]*\|[ \t]*:?-{3,}:?)+[ \t]*$/gm, '');
+  t = t.replace(/<\/[a-z][^>]*>|<[a-z]+\s[^>]*>|<(br|hr|p|div|span)\s*\/?>/gi, ' ');
+  t = t.replace(/!\[[^\]]*\]\([^)]*\)/g, ' ').replace(/\[([^\]]+)\]\([^)]*\)/g, '$1').replace(/<https?:[^>]+>/g, ' ').replace(/\bhttps?:\/\/\S+/g, ' ').replace(/\bwww\.\S+/g, ' ');
+  t = t.replace(/`([^`\n]+)`/g, '$1');
+  t = t.replace(/^[ \t]{0,3}#{1,6}[ \t]+/gm, '').replace(/^[ \t]*>[ \t]?/gm, '').replace(/^[ \t]*(?:[-*_][ \t]*){3,}$/gm, '');
+  t = t.replace(/^[ \t]*[-+•][ \t]+/gm, '').replace(/^[ \t]*\*[ \t]+/gm, '').replace(/^[ \t]*\d{1,3}[.)][ \t]+/gm, '').replace(/^[ \t]*\[[ xX]\][ \t]+/gm, '');
+  t = t.replace(/(\*\*|__)(?=\S)([\s\S]*?\S)\1/g, '$2').replace(/~~(?=\S)([^~]*?\S)~~/g, '$1');
+  const lines = t.split('\n').map((l) => l.trim()).filter(Boolean);
+  return lines.map((l, i) => (i === lines.length - 1 || /[.!?…:;,]["')\]]*$/.test(l) || /\*$/.test(l) ? l : `${l}.`)).join('\n');
+}
+
+// 3.7: a part cut into sentences, so the first one goes to the voice while the rest are still being made. Short bits
+// ("Yes.", "Mr.") join the next sentence.
+const ABBR = /\b(?:Mr|Mrs|Ms|Dr|St|Jr|Sr|vs|etc|approx|no|e\.g|i\.e)\.$/i;
+export function sentences(text) {
+  const raw = String(text || '').split(/(?<=[.!?…]["')\]]*)\s+(?=["'(\[<]?[\p{Lu}\p{N}])/u);
+  const out = [];
+  let buf = '';
+  for (const r of raw) {
+    buf = buf ? `${buf} ${r}` : r;
+    if (buf.length < 24 || ABBR.test(buf)) continue;
+    out.push(buf.trim()); buf = '';
+  }
+  if (buf.trim()) { if (out.length && buf.length < 24) out[out.length - 1] = `${out[out.length - 1]} ${buf.trim()}`; else out.push(buf.trim()); }
+  return out;
+}
+
+// Text cut into spoken parts: *narration* and the rest (speech), one sentence each (3.7).
 export function speechParts(text, { narration = 'same' } = {}) {
-  const t = String(text || '').replace(/```[\s\S]*?```/g, ' ').replace(/!\[[^\]]*\]\([^)]*\)/g, ' ').replace(/\[([^\]]+)\]\([^)]*\)/g, '$1').replace(/https?:\/\/\S+/g, ' ').replace(/\*\*([^*]+)\*\*/g, '$1');
+  const t = speakable(text);
   const out = [];
   const push = (kind, s) => {
     // Expressive tags like <laugh> survive for the engines that perform them (Orpheus).
@@ -101,7 +183,7 @@ export function speechParts(text, { narration = 'same' } = {}) {
     if (kind === 'narration' && narration === 'skip') return;
     const k = narration === 'same' ? 'speech' : kind;
     const last = out[out.length - 1];
-    if (last && last.kind === k && (last.text.length + x.length) < 600) last.text = `${last.text} ${x}`;
+    if (last && last.kind === k) last.text = `${last.text} ${x}`;
     else out.push({ kind: k, text: x });
   };
   let rest = t;
@@ -110,18 +192,8 @@ export function speechParts(text, { narration = 'same' } = {}) {
   let at = 0;
   while ((m = re.exec(rest))) { push('speech', rest.slice(at, m.index)); push('narration', m[1]); at = m.index + m[0].length; }
   push('speech', rest.slice(at));
-  // Long parts are cut at sentence ends, so speaking starts sooner.
-  const split = [];
-  for (const p of out) {
-    if (p.text.length <= 400) { split.push(p); continue; }
-    let buf = '';
-    for (const s of p.text.match(/[^.!?…]+[.!?…]+["')\]]*\s*|[^.!?…]+$/g) || [p.text]) {
-      if ((buf + s).length > 400 && buf) { split.push({ kind: p.kind, text: buf.trim() }); buf = ''; }
-      buf += s;
-    }
-    if (buf.trim()) split.push({ kind: p.kind, text: buf.trim() });
-  }
-  return split;
+  // 3.7: every part is cut into sentences, so speaking starts after the first one (the rest are made meanwhile).
+  return out.flatMap((p) => sentences(p.text).map((x) => ({ kind: p.kind, text: x })));
 }
 
 // The spoken plan for a set of replies: [{ msgId, who, char, kind, text, provider, voice, ... }].
@@ -136,7 +208,7 @@ export function withChatVoice(sel, msg, chatVoice) {
   return out;
 }
 
-export function speechPlan({ msgs, cards = [], settings, keys = {}, lists = {}, names = {}, hosts = {}, chatVoice = null }) {
+export function speechPlan({ msgs, cards = [], settings, keys = {}, lists = {}, names = {}, hosts = {}, chatVoice = null, picks = {} }) {
   const v = voiceSettings(settings);
   const plan = [];
   const notices = new Set();
@@ -146,7 +218,7 @@ export function speechPlan({ msgs, cards = [], settings, keys = {}, lists = {}, 
     if (r.notice) notices.add(r.notice);
     const canUse = (p) => serverAllowed(p, { who: m.who, settings, hosts });
     for (const p of speechParts(m.text, { narration: v.narration })) {
-      const sel = withChatVoice(voiceFor({ msg: m, part: p.kind, cards, settings, provider: r.provider, list: lists[r.provider] || [], canUse }), m, chatVoice);
+      const sel = withChatVoice(voiceFor({ msg: m, part: p.kind, cards, settings, provider: r.provider, list: lists[r.provider] || [], canUse, picks }), m, chatVoice);
       plan.push({ msgId: m.id, who: m.who, char: m.char || null, kind: p.kind, text: p.text, ...sel });
     }
   }
@@ -185,7 +257,7 @@ export function createTurnTaker({ threshold = 0.035, startMs = 160, endMs = 900,
         if (t - st.belowSince >= endMs) {
           const long = st.belowSince - st.speechSince >= minSpeechMs;
           st.inSpeech = false; st.aboveSince = null; st.belowSince = null;
-          if (long) { onEnd(t); return 'end'; }
+          if (long) { onEnd(t, t - endMs); return 'end'; }
           return 'short';
         }
       } else st.belowSince = null;
@@ -196,24 +268,51 @@ export function createTurnTaker({ threshold = 0.035, startMs = 160, endMs = 900,
 
 // The queue of parts being spoken. stop() (a barge-in, Stop, closing the view) ends the current
 // part and drops the rest at once.
-export function createSpeechQueue({ play, cancel = () => {}, onState = () => {} }) {
+// 3.7: prepare(item) starts making a part's audio (the voice server's request) before its turn: the current part and
+// the next `ahead` ones, so the next sentence is ready when this one ends. play(item, prepared) plays it; discard(item,
+// prepared) drops audio made for a part that was never played (a stop).
+export function createSpeechQueue({ play, prepare = null, discard = () => {}, cancel = () => {}, onState = () => {}, ahead = 2 }) {
   let items = [];
   let current = null;
   let gen = 0;
+  const ready = new Map(); // item -> Promise of what prepare made
+  const warm = () => { if (!prepare) return; for (const it of [current, ...items.slice(0, ahead)]) if (it && !ready.has(it)) ready.set(it, Promise.resolve().then(() => prepare(it)).catch(() => null)); };
   async function next(g) {
     if (g !== gen) return;
     current = items.shift() || null;
     if (!current) { onState('idle'); return; }
+    warm();
     onState('speaking', current);
-    try { await play(current); } catch {}
+    const it = current;
+    try { const made = ready.has(it) ? await ready.get(it) : undefined; ready.delete(it); if (g === gen) await play(it, made); } catch {}
     if (g === gen) next(g);
   }
   return {
     get current() { return current; },
     get pending() { return items.length; },
     get busy() { return Boolean(current) || items.length > 0; },
-    enqueue(parts) { const was = Boolean(current) || items.length > 0; items.push(...parts); if (!was) next(gen); },
-    stop() { gen++; items = []; const c = current; current = null; if (c) cancel(c); onState('idle'); return Boolean(c); },
+    enqueue(parts) { const was = Boolean(current) || items.length > 0; items.push(...parts); if (!was) next(gen); else warm(); },
+    stop() {
+      gen++;
+      for (const [it, p] of ready) p.then((made) => { if (made) discard(it, made); });
+      ready.clear();
+      items = []; const c = current; current = null; if (c) cancel(c); onState('idle'); return Boolean(c);
+    },
+  };
+}
+
+// 3.7: time from the end of his speech to the first sound, per turn (kept in memory, shown in the Talk view).
+export function createLatencyMeter({ keep = 20, now = () => performance.now() } = {}) {
+  let start = null;
+  const list = [];
+  return {
+    endOfSpeech(t = now()) { start = t; },
+    firstSound(t = now()) { if (start === null) return null; const ms = Math.max(0, Math.round(t - start)); start = null; list.push(ms); if (list.length > keep) list.shift(); return ms; },
+    cancel() { start = null; },
+    get waiting() { return start !== null; },
+    get last() { return list.length ? list[list.length - 1] : null; },
+    get list() { return list.slice(); },
+    get median() { if (!list.length) return null; const a = list.slice().sort((x, y) => x - y); const m = a.length >> 1; return a.length % 2 ? a[m] : Math.round((a[m - 1] + a[m]) / 2); },
   };
 }
 

@@ -8,7 +8,7 @@
 import './styles.css';
 import './vendor/katex/katex.min.css';
 import './vendor/highlight/github-dark.min.css';
-import { AGENTS, COLORS, TEAMMATE_IDS, UNFILTERED, MORE_IDS, MAKERS, BRIDGE, MORE_GROUPS } from './registry.mjs';
+import { AGENTS, COLORS, TEAMMATE_IDS, UNFILTERED, MORE_IDS, MAKERS, BRIDGE, MORE_GROUPS, aliasOf } from './registry.mjs';
 import { icon } from './icons.mjs';
 import { tokensToCss, pickMode } from './theme.mjs';
 import { autoTitle, moveInGroup, dropInGroup } from './chats.mjs';
@@ -34,7 +34,7 @@ import { liveStageHtml, miniCore, coreHtml as liveCoreHtml, coreOf as liveCoreOf
 import { meshState, meshHtml } from './live-mesh.mjs';
 import { checkWord, CHECK_PROMPT, planCheck, runCheck, CHECK_ORDER, CHECK_LABEL, summary as checkSummary } from './app/rollcall.mjs';
 import { creditsHtml } from './app/credits.mjs';
-import { voiceSettings, routeFor, isServer, serverIdOf, idOf, providerName } from './app/voice-logic.mjs';
+import { voiceSettings, routeFor, isServer, serverIdOf, idOf, providerName, voiceLines, voiceMenu } from './app/voice-logic.mjs';
 import { studioView, queueHtml, requestFrom } from './app/studio.mjs';
 import { defaultsFrom, prefsFor, prefsOf, samePrefs, applyPrefs, rememberPrefs } from './app/chat-prefs.mjs';
 import { FIND_FIELDS, searchFields, stepIndex, replaceAllFields, snippet, cardMatches, matchedIn } from './app/card-find.mjs';
@@ -143,7 +143,7 @@ const runner = createTeamRunner({
   modelFor: (R, a) => { const m = R.sessions?._models?.[a]; return m && m !== 'default' ? m : null; },
   refsFor: (R) => (entry(R.id)?.refs || []),
   briefExtra: (R, agent, role, resumed) => briefExtra(R, agent, role, resumed),
-  afterReply: (R, agent, text) => habitatLines(R, agent, text),
+  afterReply: (R, agent, text) => voicePickLines(agent, habitatLines(R, agent, text)),
   onTools: (R, msg, tools, agent) => onTools(R, msg, tools, agent),
   onPreview: (R, msg) => { if (R.id === S.open && S.view === 'chat') openPane(msg.id, msg.previews[0].id); },
   beforeRound: async () => { S.memPrompt = (await call('memoryPrompt')) || ''; },
@@ -391,7 +391,8 @@ function targetsOf(text) {
   return S.mode !== 'team' ? [S.mode] : [];
 }
 
-async function send(textIn) {
+async function send(textIn, opts = {}) {
+  const said = opts.voice === true ? { voice: true } : {};
   const text = String(textIn ?? S.draft).trim();
   if (!text && !S.attach.length) return;
   const R0 = cur();
@@ -400,7 +401,7 @@ async function send(textIn) {
   if (S.busy || S.working) {
     if (S.readOnly || !S.open) return;
     const to = entry()?.rp ? rpShield(entry(), text) : targetsOf(text);
-    R0.msgs.push({ id: uid(), who: 'owner', text, at: now(), attachments: S.attach.slice(), ...(to.length && to.every((a) => UNFILTERED.includes(a)) ? { to } : {}) });
+    R0.msgs.push({ id: uid(), who: 'owner', text, at: now(), attachments: S.attach.slice(), ...said, ...(to.length && to.every((a) => UNFILTERED.includes(a)) ? { to } : {}) });
     S.draft = '';
     S.attach = [];
     runner.start(R0, text);
@@ -416,7 +417,7 @@ async function send(textIn) {
   if (!c) return;
   const R = rt(c.id);
   const to = c.rp ? rpShield(c, text) : targetsOf(text);
-  const msg = { id: uid(), who: 'owner', text, at: now(), attachments: S.attach.slice(), ...(to.length && to.every((a) => UNFILTERED.includes(a)) ? { to } : {}) };
+  const msg = { id: uid(), who: 'owner', text, at: now(), attachments: S.attach.slice(), ...said, ...(to.length && to.every((a) => UNFILTERED.includes(a)) ? { to } : {}) };
   R.msgs.push(msg);
   S.draft = '';
   S.attach = [];
@@ -522,6 +523,12 @@ async function briefExtra(R, agent, role, resumed) {
   if (re?.ok && re.project) L.push(reverseBrief({ agent, role, project: re.project, on: re.on === true, team: team(), live: live(), method }));
   const hab = habitatPrompt(agent, resumed);
   if (hab) L.push('', hab);
+  // 3.7: when replies are read aloud (Talk, or Read every answer aloud), each AI may pick its own voice.
+  if (voice.isOpen() || S.settings.autoRead === true || R.msgs.some((m) => m.voice)) {
+    const prov = voiceSettings(S.settings).tts;
+    const menu = voiceMenu({ who: agent, settings: S.settings, provider: prov, list: voice.listFor(prov) || [], picks: S.aiVoices || {} });
+    if (menu) L.push('', menu);
+  }
   return L.join('\n');
 }
 
@@ -554,6 +561,20 @@ const habitatHooks = {
 };
 let habMounted = false;
 function pokeHabitat() { /* the Habitat polls habitatHooks.snapshot() itself */ }
+// 3.7: an AI picks its own voice with a VOICE: line (kept apart from his settings; his choice for it always wins).
+function voicePickLines(agent, text) {
+  const { text: rest, pick } = voiceLines(text);
+  if (pick === null) return text;
+  const provider = voiceSettings(S.settings).tts;
+  const list = voice.listFor(provider) || [];
+  const hit = list.find((x) => x.id === pick) || list.find((x) => String(x.name || '').toLowerCase() === pick.toLowerCase());
+  if (hit) {
+    S.aiVoices = { ...(S.aiVoices || {}), [agent]: { provider, voice: hit.id, at: now() } };
+    call('voiceAiPick', agent, provider, hit.id).then((r) => { if (r && r.ok === false) toast(r.message || 'The voice pick wasn\'t saved.'); });
+    toast(`${aiName(agent)} picked the voice ${hit.name || hit.id}. You can change it in Settings › Voice.`);
+  }
+  return rest;
+}
 function habitatLines(R, agent, text) {
   if (!/HABITAT:/i.test(text)) return text;
   const ids = habitatAgents().map((a) => a.id);
@@ -965,7 +986,9 @@ const voice = createVoice({
   lead: () => team().lead,
   members: () => team().members.filter((a) => !AGENTS[a]?.imagesOnly),
   // What he said, sent as his message in the chat the Talk view belongs to.
-  send: async (text) => { if (S.open !== voice.chatId()) return; await send(text); },
+  send: async (text, o) => { if (S.open !== voice.chatId()) return; await send(text, { voice: o?.voice === true }); },
+  aiPicks: () => S.aiVoices || {},
+  aliasOf: (w) => aliasOf(w),
   addDraft: (t, via) => { S.draft = `${S.draft ? `${S.draft} ` : ''}${t}`; render(true); focusComposer(); if (via) toast(`Heard with ${via}.`); },
 });
 function toggleVoice() { return voice.dictate(); }
@@ -3538,6 +3561,7 @@ async function boot() {
   if (remembered && entry(remembered)) await openChat(remembered); else render(true);
   refreshAgents();
   call('gitTools').then((g) => { if (g) { S.gh = g; renderSide(); } });
+  call('voiceAiPicks').then((p) => { if (p && typeof p === 'object' && !p.message) S.aiVoices = p; });
   loadMissing();
 }
 async function loadMissing() { const r = await call('toolsMissing'); if (Array.isArray(r)) { S.missing = r; render(); } }

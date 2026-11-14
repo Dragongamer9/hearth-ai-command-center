@@ -3,7 +3,7 @@
 // voice picker. The logic without the DOM is in src/app/voice-logic.mjs; the main process side
 // (speech to text, voices, keys) is electron/voice-chat.cjs.
 // Nothing here writes settings: saving is done only by main.js, from the owner's clicks.
-import { voiceSettings, speechPlan, createTurnTaker, createSpeechQueue, newReplies, uncensoredOnly, PROVIDER_NAMES, UNCENSORED, voiceFor, routeFor, isServer, serverFor, providerName, serverAllowed, idOf } from './app/voice-logic.mjs';
+import { voiceSettings, speechPlan, createTurnTaker, createSpeechQueue, createLatencyMeter, spokenTo, newReplies, uncensoredOnly, PROVIDER_NAMES, UNCENSORED, voiceFor, routeFor, isServer, serverFor, providerName, serverAllowed, idOf } from './app/voice-logic.mjs';
 
 const PHASE_TEXT = { off: 'Microphone off', listening: 'Listening…', hearing: 'Hearing you…', transcribing: 'Turning your words into text…', thinking: 'Waiting for the reply…', speaking: 'Speaking', ptt: 'Hold the mic (or Space) to talk' };
 
@@ -39,6 +39,7 @@ export function createVoice(ctx) {
       if (ac) { try { const src = ac.createMediaElementSource(audio); analyser = ac.createAnalyser(); analyser.fftSize = 1024; src.connect(analyser); analyser.connect(ac.destination); ac.resume?.(); } catch { analyser = null; } }
       const done = () => { if (playing?.audio === audio) playing = null; try { URL.revokeObjectURL(audio.src); } catch {} resolve(); };
       playing = { audio, analyser, token, done };
+      audio.onplaying = () => soundStarted();
       audio.onended = done;
       audio.onerror = done;
       audio.play().catch(done);
@@ -80,6 +81,7 @@ export function createVoice(ctx) {
         if (v) u.voice = v;
         if (part?.speed) u.rate = part.speed;
         if (part?.pitch) u.pitch = part.pitch;
+        u.onstart = () => soundStarted();
         u.onend = resolve; u.onerror = resolve;
         playing = { system: true, done: resolve };
         synth.speak(u);
@@ -88,17 +90,29 @@ export function createVoice(ctx) {
     // speech-dispatcher / espeak by themselves (no waveform; ends after a rough time).
     return call('ttsSpeak', text).then((r) => {
       if (!r?.ok) { V.notice = r?.message || 'No voice on this PC: install espeak-ng, Piper or Kokoro, or pick ElevenLabs or OpenAI in Settings › Voice.'; ctx.renderOverlay(); return null; }
+      soundStarted();
       return new Promise((resolve) => { const t = setTimeout(resolve, Math.min(60000, 800 + text.split(/\s+/).length * 380)); playing = { system: true, done: () => { clearTimeout(t); resolve(); } }; });
     });
   }
   let stops = 0; // bumped on every stop, so audio that arrives after a stop is never played
-  async function playPart(part) {
+  // 3.7: the time from the end of his speech to the first sound of the reply, every turn.
+  const meter = createLatencyMeter();
+  function soundStarted() {
+    const ms = meter.firstSound();
+    if (ms !== null) { V.latency = { last: ms, median: meter.median, count: meter.list.length, list: meter.list }; ctx.renderOverlay(); }
+  }
+  // 3.7: a part's audio is asked for before its turn (the queue prepares the next sentences while one plays).
+  function preparePart(part) {
+    return call('voiceSpeak', { provider: part.provider, voice: part.voice, speed: part.speed, pitch: part.pitch, text: part.text, who: part.who, chatId: V.chatId || ctx.openId() });
+  }
+  function discardPart(_part, r) { if (r?.token) call('voiceCancel', r.token); }
+  async function playPart(part, prepared) {
     const myStop = stops;
     V.speakingWho = part.who; V.speakingChar = part.char || null;
     V.speakingName = part.narrator ? 'Narrator' : part.char ? (ctx.cardById(part.char)?.name || '') : ctx.aiName(part.who);
     if (part.kind === 'narration' && !part.narrator) V.speakingName = `${V.speakingName} (narration)`;
     ctx.renderOverlay();
-    const r = await call('voiceSpeak', { provider: part.provider, voice: part.voice, speed: part.speed, pitch: part.pitch, text: part.text, who: part.who, chatId: V.chatId || ctx.openId() });
+    const r = prepared !== undefined && prepared !== null ? prepared : await preparePart(part);
     if (myStop !== stops) { if (r?.token) call('voiceCancel', r.token); return; }
     if (!r?.ok) { V.notice = r?.message || 'Couldn\'t speak this part.'; ctx.renderOverlay(); return; }
     V.ttsLabel = r.system ? 'your system voice' : pname(part.provider);
@@ -118,12 +132,15 @@ export function createVoice(ctx) {
   }
   const queue = createSpeechQueue({
     play: playPart,
+    prepare: preparePart,
+    discard: discardPart,
     cancel: cancelPart,
     onState: (s) => {
       if (s === 'idle') {
         V.speakingWho = null; V.speakingChar = null; V.speakingName = ''; V.readingId = null;
         turn.setSpeaking(false);
-        if (V.open && V.phase === 'speaking') { stopRecording(true).then(() => { if (V.open && V.phase !== 'hearing') resumeListening(); }); V.phase = settings().turn === 'ptt' ? 'ptt' : 'listening'; }
+        if (V.open && V.phase === 'speaking' && thinking) V.phase = 'thinking';
+        else if (V.open && V.phase === 'speaking') { stopRecording(true).then(() => { if (V.open && V.phase !== 'hearing') resumeListening(); }); V.phase = settings().turn === 'ptt' ? 'ptt' : 'listening'; }
         ctx.rerender();
       } else if (V.open) {
         V.phase = 'speaking'; turn.setSpeaking(true);
@@ -136,7 +153,7 @@ export function createVoice(ctx) {
   // ---------- turn taking ----------
   const turn = createTurnTaker({
     onStart: () => { if (V.open && V.phase === 'listening') { V.phase = 'hearing'; ctx.renderOverlay(); } },
-    onEnd: () => { if (V.open && V.phase === 'hearing') finishRecording(); },
+    onEnd: (_t, endedAt) => { if (V.open && V.phase === 'hearing') { meter.endOfSpeech(endedAt ?? performance.now()); finishRecording(); } },
     // Phase first, so stopping the reply keeps the recording that holds his first words.
     onBarge: () => { if (!V.open) return; V.phase = 'hearing'; queue.stop(); if (!rec) startRecording(); V.notice = ''; ctx.renderOverlay(); },
   });
@@ -204,17 +221,30 @@ export function createVoice(ctx) {
     V.error = '';
     V.heard = r.text;
     const R = ctx.rt(V.chatId);
-    thinking = { chatId: V.chatId, since: R ? R.msgs.length : 0, at: Date.now(), idleAt: null };
+    thinking = { chatId: V.chatId, since: R ? R.msgs.length : 0, spoken: R ? R.msgs.length : 0, said: 0, at: Date.now(), idleAt: null };
     V.phase = 'thinking';
+    // 3.7: "Gemini, …" talks to Gemini (an @mention), not just the lead.
+    const to = ctx.aliasOf ? spokenTo(r.text, ctx.aliasOf) : [];
+    const text = to.length ? `${to.map((a) => `@${ctx.aiName(a).replace(/[^A-Za-z0-9]/g, '')}`).join(' ')} ${r.text}` : r.text;
+    if (to.length) V.heard = `${to.map((a) => ctx.aiName(a)).join(' & ')} ← ${r.text}`;
     ctx.renderOverlay();
-    await ctx.send(r.text, r.item ? { media: [r.item] } : null);
+    await ctx.send(text, { voice: true });
   }
-  // A reply round is over: speak every new reply (all characters in a group, in order).
+  // 3.7: every reply is spoken as soon as it lands (sentence by sentence), not after the whole round.
+  function speakLanded(R) {
+    if (!thinking || !V.open || !R || R.id !== thinking.chatId || R.msgs.length <= thinking.spoken) return;
+    const msgs = newReplies(R.msgs, thinking.spoken);
+    thinking.spoken = R.msgs.length;
+    if (msgs.length && speak(msgs)) thinking.said += msgs.length;
+  }
+  // A reply round is over: speak what hasn't been spoken yet, then listen again.
   function roundDone(R) {
     if (!thinking || !V.open || R.id !== thinking.chatId) return false;
-    const msgs = newReplies(R.msgs, thinking.since);
+    speakLanded(R);
+    const said = thinking.said;
     thinking = null;
-    if (!msgs.length || !speak(msgs)) { resumeListening(); ctx.renderOverlay(); return true; }
+    if (!said) { meter.cancel(); resumeListening(); ctx.renderOverlay(); return true; }
+    if (!queue.busy && V.phase === 'thinking') { resumeListening(); ctx.renderOverlay(); }
     return true;
   }
 
@@ -228,6 +258,7 @@ export function createVoice(ctx) {
     // Nothing said for a while: start a fresh recording so it never grows large.
     if (V.phase === 'listening' && rec && Date.now() - rec.at > 30000 && !turn.state.inSpeech) { stopRecording(true); startRecording(); }
     // A round that ended without the runner telling us (an error, nothing to say).
+    if (thinking) speakLanded(ctx.rt(thinking.chatId));
     if (thinking && Date.now() - thinking.at > 1500) {
       const R = ctx.rt(thinking.chatId);
       const idle = R && !R.round && !R.waiting && !R.busy;
@@ -271,7 +302,7 @@ export function createVoice(ctx) {
   async function loadLists() { await loadStatus(); await Promise.all(['local', 'openai', ...(keys().elevenlabs ? ['elevenlabs'] : []), ...(V.status?.hearth?.configured ? ['hearth'] : []), ...settings().servers.map((x) => `server:${x.id}`)].map((p) => loadList(p))); }
   function speak(msgs) {
     const s = ctx.settings();
-    const { plan, notices } = speechPlan({ msgs, cards: ctx.cards(), settings: s, keys: keys(), lists: V.lists, hosts: hosts(), names: Object.fromEntries(UNCENSORED.map((a) => [a, ctx.aiName(a)])), chatVoice: ctx.chatVoice ? ctx.chatVoice(V.chatId || ctx.openId()) : null });
+    const { plan, notices } = speechPlan({ msgs, cards: ctx.cards(), settings: s, keys: keys(), lists: V.lists, hosts: hosts(), names: Object.fromEntries(UNCENSORED.map((a) => [a, ctx.aiName(a)])), chatVoice: ctx.chatVoice ? ctx.chatVoice(V.chatId || ctx.openId()) : null, picks: ctx.aiPicks ? ctx.aiPicks() : {} });
     if (notices.length) { V.notice = notices[0]; if (!V.open) toast(notices[0]); }
     if (!plan.length) return false;
     queue.enqueue(plan);
@@ -310,7 +341,7 @@ export function createVoice(ctx) {
     startRecording();
     ctx.renderOverlay();
   }
-  function pttUp() { if (V.open && V.phase === 'hearing' && settings().turn === 'ptt') finishRecording(); }
+  function pttUp() { if (V.open && V.phase === 'hearing' && settings().turn === 'ptt') { meter.endOfSpeech(); finishRecording(); } }
   // The composer's mic: what he says goes into the message box.
   async function dictate() {
     if (V.dictating) { const blob = await stopRecordingDictation(); return blob; }
@@ -373,6 +404,13 @@ export function createVoice(ctx) {
     else for (const a of ctx.members()) add({ who: a }, ctx.aiName(a), ctx.mono(a));
     return rows.length ? `<div class="vcast" id="vcast">${rows.join('')}</div>` : '';
   }
+  // 3.7: the voice an AI picked for itself, shown on its row until he picks one for it.
+  function aiPickNote(a, prov) {
+    const pk = ctx.aiPicks ? ctx.aiPicks()[a] : null;
+    if (!pk || pk.provider !== prov || idOf(settings().voices[a], prov)) return '';
+    const name = (V.lists[prov] || []).find((x) => x.id === pk.voice)?.name || pk.voice;
+    return `<span class="d">picked ${esc(name)} itself · choose another here to change it</span>`;
+  }
   function viewHtml() {
     if (!V.open) return '';
     const s = settings();
@@ -394,6 +432,7 @@ export function createVoice(ctx) {
         <button class="vmic ${V.phase}" id="vmic" data-vptt="1" aria-label="${ptt ? 'Hold to talk' : 'Microphone'}" title="${ptt ? 'Hold to talk' : V.phase === 'speaking' ? 'Click to stop the reply' : 'Listening'}">${icon(V.phase === 'speaking' ? 'stop' : 'mic')}</button>
         <canvas id="vwave" class="vwave" aria-hidden="true"></canvas>
         <div class="vphase" id="vphase">${esc(phaseText)}</div>
+        ${V.latency ? `<div class="fine vlat" title="From the end of your words to the first sound of the reply">First sound ${(V.latency.last / 1000).toFixed(1)} s after you stopped talking${V.latency.count > 1 ? ` · middle of the last ${V.latency.count}: ${(V.latency.median / 1000).toFixed(1)} s` : ''}</div>` : ''}
         ${V.heard ? `<div class="vheard">“${esc(V.heard.slice(0, 300))}”</div>` : ''}
         ${V.error ? `<div class="note bad">${esc(V.error)}</div>` : ''}${V.notice ? `<div class="note warn">${esc(V.notice)}</div>` : ''}
       </div>
@@ -454,7 +493,7 @@ export function createVoice(ctx) {
         ${s.narration === 'narrator' ? `<div class="srow">Narrator voice<span class="grow"></span>${pickerHtml('set:narrator', prov, s.voices.narrator)}</div>` : ''}
         ${isServer(prov) ? hintHtml(serverFor(prov, ctx.settings())) : ''}
         <div class="mh">A voice per AI teammate (normal chats)</div>
-        ${team.members.map((a) => `<div class="srow mem">${mono(a)}<b>${esc(aiName(a))}</b>${UNCENSORED.includes(a) && prov === 'openai' && !s.openaiForUncensored ? `<span class="d">spoken by ${k.elevenlabs ? 'ElevenLabs' : 'this PC'}, not OpenAI</span>` : ''}<span class="grow"></span>${pickerHtml(`set:${a}`, UNCENSORED.includes(a) ? routeFor({ who: a, settings: ctx.settings(), keys: k, hosts: hosts() }).provider : prov, s.voices[a], { who: a })}</div>`).join('')}
+        ${team.members.map((a) => `<div class="srow mem">${mono(a)}<b>${esc(aiName(a))}</b>${aiPickNote(a, prov)}${UNCENSORED.includes(a) && prov === 'openai' && !s.openaiForUncensored ? `<span class="d">spoken by ${k.elevenlabs ? 'ElevenLabs' : 'this PC'}, not OpenAI</span>` : ''}<span class="grow"></span>${pickerHtml(`set:${a}`, UNCENSORED.includes(a) ? routeFor({ who: a, settings: ctx.settings(), keys: k, hosts: hosts() }).provider : prov, s.voices[a], { who: a })}</div>`).join('')}
         <div class="fine">Characters' voices are picked in each character's editor (Characters › Edit) and kept with the character in this app, never in exported card files.</div></div>
       <div class="box" id="voice-privacy-box"><h3>${icon('eye', 'sm')}Privacy and cost</h3>
         <div class="srow">Who gets what<span class="d">your voice: ${esc(st.stt?.using || 'whisper.cpp on this PC, or OpenAI')} · reply text to speak: ${esc(prov === 'local' ? 'nobody (this PC)' : PROVIDER_NAMES[prov])}</span></div>
@@ -586,7 +625,7 @@ export function createVoice(ctx) {
   }
 
   return {
-    state: V, isOpen: () => V.open, chatId: () => V.chatId, openView, closeView, roundDone, speak, readAloud, stopSpeaking, dictate, preview, pttDown, pttUp,
+    state: V, isOpen: () => V.open, listFor: (p) => V.lists[p] || null, chatId: () => V.chatId, openView, closeView, roundDone, speak, readAloud, stopSpeaking, dictate, preview, pttDown, pttUp,
     loadStatus, loadList, loadLists, viewHtml, settingsHtml, cardHtml, pickerHtml, readServerForm, serverPatch, presetOf, playAudio: (buf, mime) => { queue.stop(); return playAudioEl(new Audio(URL.createObjectURL(new Blob([buf], { type: mime || 'audio/wav' }))), null); }, isReading: (id) => V.readingId === id, dictating: () => Boolean(V.dictating),
     queue, turn, setTurn(mode) { turn.setMode(mode); if (V.open && !queue.busy && !thinking) { stopRecording(true).then(() => { if (V.open) { resumeListening(); ctx.renderOverlay(); } }); } }, setBarge(on) { turn.setBargeIn(on); },
   };

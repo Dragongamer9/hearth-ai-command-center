@@ -84,6 +84,8 @@ contextBridge.exposeInMainWorld('hearth', {
   voiceStatus: () => ipcRenderer.invoke('voice:status'),
   voiceVoices: (provider, fresh) => ipcRenderer.invoke('voice:voices', provider, Boolean(fresh)),
   voiceTranscribe: (data, o) => ipcRenderer.invoke('voice:transcribe', data, o || {}),
+  voiceAiPicks: () => ipcRenderer.invoke('voice:aiPicks'),
+  voiceAiPick: (who, provider, voice) => ipcRenderer.invoke('voice:aiPick', who, provider, voice),
   voiceSpeak: (o) => ipcRenderer.invoke('voice:speak', o || {}),
   voiceCancel: (token) => ipcRenderer.invoke('voice:cancel', token),
   voiceStopAll: () => ipcRenderer.invoke('voice:stopAll'),

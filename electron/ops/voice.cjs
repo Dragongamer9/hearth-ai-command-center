@@ -5,7 +5,8 @@ const os = require('node:os');
 const path = require('node:path');
 
 const CPP_BINS = ['whisper-cli', 'whisper-cpp', 'whisper.cpp'];
-const MODEL_PREF = ['base.en', 'base', 'small.en', 'small', 'tiny.en', 'tiny', 'medium.en', 'medium'];
+// 3.7: the most accurate model he has downloaded wins (it used to pick base.en even with a better one beside it).
+const MODEL_PREF = ['large-v3-turbo', 'large-v3-turbo-q8_0', 'large-v3-turbo-q5_0', 'large-v3', 'large-v2', 'medium.en', 'medium', 'small.en', 'small', 'base.en', 'base', 'tiny.en', 'tiny'];
 
 function modelDirs(home = os.homedir()) {
   return [
