@@ -344,6 +344,8 @@ contextBridge.exposeInMainWorld('hearth', {
   opsLogsPoll: () => ipcRenderer.invoke('ops:logsPoll'),
   opsVoiceTools: () => ipcRenderer.invoke('ops:voiceTools'),
   opsVoiceSave: (data) => ipcRenderer.invoke('ops:voiceSave', data),
+  opsVoiceInstall: () => ipcRenderer.invoke('ops:voiceInstall'),
+  onOpsVoiceInstallStep: (fn) => { const h = (_e, label) => fn(label); ipcRenderer.on('ops:voiceInstallStep', h); return () => ipcRenderer.removeListener('ops:voiceInstallStep', h); },
   opsUsage: (agent) => ipcRenderer.invoke('ops:usage', agent),
   opsIdentityDefault: () => ipcRenderer.invoke('ops:identityDefault'),
   opsIdentityApply: () => ipcRenderer.invoke('ops:identityApply'),
