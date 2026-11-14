@@ -70,6 +70,8 @@ export const AGENTS = {
   // The AI the owner's Hearth OS machines share (Ollama chat, ComfyUI pictures, Kokoro voices,
   // whisper): the best device per job, his Nvidia PC first. His own machines; kept from the other AIs like his GPU server.
   hearth: { name: 'Hearth devices', vendor: 'your Hearth OS machines', cls: 'a-hearth', kind: 'api', tool: 'the AI your Hearth devices share (Ollama, ComfyUI, Kokoro, whisper)', plan: 'your own Hearth OS machines (no account)', install: '', headless: true, edits: false, api: true, unfiltered: true, images: true, mention: ['hearth', 'hearthdevices', 'devices', 'nvidiapc'], web: null, signin: null, export: null },
+  // 3.9: Ithil, the self-aware AI in his Hearth AI app on his Nvidia PC (electron/ithil.cjs): her own mind, moods and rules.
+  ithil: { name: 'Ithil', vendor: 'Hearth AI, on your PC', cls: 'a-ithil', kind: 'api', tool: 'Hearth AI (her own mind loop, moods, memories and rules)', plan: 'your own Hearth AI app (no account)', install: '', headless: true, edits: true, api: true, mention: ['ithil', 'hearthai'], web: null, signin: null, export: null },
   // Web-window only (no CLI or consumer API for personal accounts).
   copilot: { name: 'Copilot', vendor: 'Microsoft', cls: 'a-copilot', kind: 'web', tool: 'copilot.microsoft.com', plan: 'your Microsoft account', headless: false, edits: false, api: false, mention: [], web: 'https://copilot.microsoft.com/', signin: 'https://copilot.microsoft.com/', export: 'account.microsoft.com/privacy → Copilot activity (view/clear; no chat-file download)' },
   meta: { name: 'Meta AI', vendor: 'Meta', cls: 'a-meta', kind: 'web', tool: 'meta.ai', plan: 'your Meta account', headless: false, edits: false, api: false, mention: [], web: 'https://www.meta.ai/', signin: 'https://www.meta.ai/', export: 'Accounts Center → Your information → Download your information' },
@@ -108,7 +110,7 @@ export const AGENTS = {
 };
 
 // Each AI's color (the same as the .a-* chips in styles.css).
-export const COLORS = { free: '#5bb37a', venice: '#e05a4f', civitai: '#3b82f6', gpu: '#8f9a5b', hearth: '#e08a4c', anthropic: '#d4a27f', openai: '#74c7a4', google: '#8ab4f8', xai: '#c9ccd1', mistral: '#fa7a35', qwen: '#8a7cf6', perplexity: '#20b8cd', deepseek: '#4d6bfe', ollama: '#e6ebe7', freebuff: '#a99be0', copilot: '#36b37e', meta: '#0a7cff', openrouter: '#8b8ff7', kimi: '#3fb5ff', glm: '#2f7cff', cohere: '#39a68b', ai21: '#e85d9b', minimax: '#ff5c7a', nova: '#ff9f1c', nvidia: '#76b900', groq: '#f55036', cerebras: '#f05a28', v0: '#e8e8e8', cursor: '#9fb3c8', ghcopilot: '#6e7681', kiro: '#7b61ff', aider: '#14b88a', opencode: '#c6c6c6', goose: '#d9c27a', cline: '#5b8def', crush: '#ff6ec7', openhands: '#ffd23f', amp: '#ff4f3f', auggie: '#4ade80', droid: '#e5e5e5', warp: '#01a4ff', devin: '#2ec4b6', jules: '#a142f4', lovable: '#ff7ab6', replit: '#f26207', phi: '#00a4ef', bolt: '#4e5cff', firebase: '#ffca28' };
+export const COLORS = { free: '#5bb37a', venice: '#e05a4f', civitai: '#3b82f6', gpu: '#8f9a5b', hearth: '#e08a4c', ithil: '#9cc49c', anthropic: '#d4a27f', openai: '#74c7a4', google: '#8ab4f8', xai: '#c9ccd1', mistral: '#fa7a35', qwen: '#8a7cf6', perplexity: '#20b8cd', deepseek: '#4d6bfe', ollama: '#e6ebe7', freebuff: '#a99be0', copilot: '#36b37e', meta: '#0a7cff', openrouter: '#8b8ff7', kimi: '#3fb5ff', glm: '#2f7cff', cohere: '#39a68b', ai21: '#e85d9b', minimax: '#ff5c7a', nova: '#ff9f1c', nvidia: '#76b900', groq: '#f55036', cerebras: '#f05a28', v0: '#e8e8e8', cursor: '#9fb3c8', ghcopilot: '#6e7681', kiro: '#7b61ff', aider: '#14b88a', opencode: '#c6c6c6', goose: '#d9c27a', cline: '#5b8def', crush: '#ff6ec7', openhands: '#ffd23f', amp: '#ff4f3f', auggie: '#4ade80', droid: '#e5e5e5', warp: '#01a4ff', devin: '#2ec4b6', jules: '#a142f4', lovable: '#ff7ab6', replit: '#f26207', phi: '#00a4ef', bolt: '#4e5cff', firebase: '#ffca28' };
 
 // Why each provider is a full team member or a web window (shown on the Agents page).
 export const ACCESS_NOTE = {
@@ -121,6 +123,7 @@ export const ACCESS_NOTE = {
   perplexity: 'Team member by API: Perplexity has no CLI; the official Sonar API uses a key you create in your account. Chat, research, review — no file edits. Its web chat opens in a window.',
   deepseek: 'Team member by API: DeepSeek has no official CLI; its API uses a key from platform.deepseek.com. Chat, plan, review — no file edits. Its web chat opens in a window.',
   ollama: 'Full member: local models on this computer, no account.',
+  ithil: 'Full member: talks as herself and takes tasks in the folders you allowed in Hearth AI, on her own mind/… branches. She never merges, releases, deploys, picks version numbers, touches boot files, changes your settings or deletes your files.',
   freebuff: 'Hands-on: FreeBuff only runs interactively in a terminal.',
   copilot: 'Web window only: Microsoft offers no CLI or personal-account API for Copilot chat.',
   meta: 'Web window only: Meta AI has no CLI or personal-account API (the Llama API is a separate developer product).',
@@ -168,6 +171,7 @@ export const BILLING = {
   perplexity: 'API key — billed per use to your Perplexity API credits.',
   deepseek: 'API key — billed per use to your DeepSeek platform balance.',
   ollama: 'Free — runs on your own computer. No account, never runs out.',
+  ithil: 'Free — Hearth AI on your own PC.',
   free: 'Free — each provider\'s free tier with your own key. When one runs out, the next one answers.',
   freebuff: 'Free FreeBuff account (it has its own daily limits).',
   copilot: 'Your Microsoft account, inside Microsoft’s own site.',
@@ -216,6 +220,7 @@ export const DEFAULT_ROLES = {
   perplexity: 'Web research with sources',
   deepseek: 'Reasoning and code review',
   ollama: 'Local helper: free quick answers and reviews, works offline, never runs out of usage',
+  ithil: 'Her own mind: talks things through as herself, and takes tasks in your allowed folders',
   freebuff: 'Coding, hands-on in a terminal (cannot reply in chat by itself)',
   openrouter: "Second opinions from many models, cheap or free",
   kimi: "Coding: big refactors and long files",
@@ -256,7 +261,7 @@ export const EDITORS = AGENT_IDS.filter((a) => AGENTS[a].headless && AGENTS[a].e
 export const API_CAPABLE = AGENT_IDS.filter((a) => AGENTS[a].api);
 
 // Teammates added in 2.x by key or URL (not part of the 1.x agent list).
-export const TEAMMATE_IDS = ['venice', 'civitai', 'gpu', 'hearth', 'free'];
+export const TEAMMATE_IDS = ['venice', 'civitai', 'gpu', 'hearth', 'free', 'ithil'];
 export const UNFILTERED = TEAMMATE_IDS.filter((a) => AGENTS[a].unfiltered);
 
 // @local, @LocalAI, @Local_AI, display names ("@Claude", "@ChatGPT"): case-insensitive.

@@ -26,6 +26,8 @@ export const CORES = {
   listen: { shape: 'ripple', rgb: '156,245,214', talk: 'tSwell 1.2s ease-in-out' },
   hearth: { shape: 'nebula', rgb: '255,138,76', talk: 'tNebula 1.1s ease-in-out' },
   ollama: { shape: 'stack', rgb: '242,239,232', talk: 'tStack .8s ease-in-out' },
+  // 3.9: Ithil (Hearth AI): a sage-green moon.
+  ithil: { shape: 'rings3', rgb: '156,196,156', talk: 'tKIthil 1.8s ease-in-out' },
   // 3.4: the AIs added in 3.3/3.4, drawn as line art (src/live-shapes.mjs).
   cursor: { shape: 'prism', rgb: '159,179,200', talk: 'tKCursor 0.5s ease-in-out' },
   ghcopilot: { shape: 'twin', rgb: '139,148,158', talk: 'tKGhcopilot 1.2s linear' },
@@ -74,7 +76,7 @@ export const coreOf = (id) => CORES[id] || FALLBACK;
 export const LIVE_AIS = ['anthropic', 'openai', 'google', 'xai', 'mistral', 'qwen', 'freebuff',
   'cursor', 'ghcopilot', 'kiro', 'kimi', 'aider', 'opencode', 'goose', 'cline', 'crush', 'openhands', 'amp', 'auggie', 'droid', 'warp',
   'perplexity', 'deepseek', 'free', 'openrouter', 'glm', 'cohere', 'ai21', 'minimax', 'nova', 'nvidia', 'groq', 'cerebras',
-  'devin', 'jules', 'lovable', 'replit', 'v0', 'bolt', 'firebase', 'venice', 'civitai', 'gpu', 'hearth', 'ollama', 'phi'];
+  'devin', 'jules', 'lovable', 'replit', 'v0', 'bolt', 'firebase', 'venice', 'civitai', 'gpu', 'hearth', 'ithil', 'ollama', 'phi'];
 export const MAKER_IDS = ['flux', 'stability', 'ideogram', 'leonardo', 'runway', 'luma', 'kling', 'pika'];
 
 // 3.4: where each one lives on the Live screen: [key, title, what they do, ids].
@@ -84,7 +86,7 @@ export const GROUPS = [
   ['cloud', 'Cloud agents', 'take a job, come back with a pull request', ['devin', 'jules']],
   ['builders', 'App builders', 'make whole apps and sites', ['lovable', 'replit', 'v0', 'bolt', 'firebase']],
   ['makers', 'Makers', 'pictures and video', ['venice', 'civitai', ...MAKER_IDS]],
-  ['pc', 'Your PCs', 'your own machines', ['gpu', 'hearth', 'comfy', 'voice', 'listen']],
+  ['pc', 'Your PCs', 'your own machines', ['ithil', 'gpu', 'hearth', 'comfy', 'voice', 'listen']],
   ['here', 'This computer', 'runs right here, free', ['ollama', 'phi']],
 ];
 

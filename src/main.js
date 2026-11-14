@@ -32,6 +32,7 @@ import { activateLore, nextSpeakers, rpPrompt, addSwipe, moveSwipe, isSexual, fi
 import { createVoice } from './voice.mjs';
 import { liveStageHtml, miniCore, coreHtml as liveCoreHtml, coreOf as liveCoreOf, LIVE_AIS, MAKER_IDS } from './live.mjs';
 import { meshState, meshHtml } from './live-mesh.mjs';
+import { turnFor as ithilTurnFor, stateLine as ithilState, leadLines as ithilLeadLines, stationFor as ithilStation, SAGE } from './app/ithil.mjs';
 import { checkWord, CHECK_PROMPT, planCheck, runCheck, CHECK_ORDER, CHECK_LABEL, summary as checkSummary } from './app/rollcall.mjs';
 import { creditsHtml } from './app/credits.mjs';
 import { voiceSettings, routeFor, isServer, serverIdOf, idOf, providerName, voiceLines, voiceMenu } from './app/voice-logic.mjs';
@@ -67,6 +68,8 @@ const S = {
   studio: { f: { kind: 'image', count: 1 }, data: null, st: null, filter: 'all', shown: new Set(), models: null },
   chats: [], temps: [], trash: [], notices: [], broken: false,
   open: null, lastChat: null,
+  // 3.9: Ithil (Hearth AI): her status from /v1/status and /v1/events, her picture, her newest thought.
+  ithil: { status: null, avatar: null, avatarExpr: '', thought: null, info: null, testing: false, test: null },
   draft: '', attach: [], conn: null, mode: 'team', web: true, build: true, deep: false, homeModels: {},
   pane: null, pop: null, modal: null, toast: null, editing: null,
   search: '', hits: null, showTrash: false, showHidden: false, renaming: null,
@@ -107,6 +110,8 @@ function ready(a) {
   // 3.1: answered through his own signed-in website (the web sign-in bridge), when he turned that on.
   if (S.settings.webBridge?.[a] === true) return true;
   if (!AGENTS[a]?.headless) return false;
+  // 3.9: Ithil can take work only while she's awake and not busy (asleep, resting, paused, busy or offline: not).
+  if (a === 'ithil') return Boolean(S.ithil.status?.available?.ok);
   if (TEAMMATE_IDS.includes(a)) return Boolean(S.mates.ready?.[a]);
   if (method(a) === 'api') return Boolean(S.prov.keys?.[a]);
   const c = S.cli[a];
@@ -115,13 +120,16 @@ function ready(a) {
 const live = () => team().members.filter(ready);
 // Every teammate's true status: connected, needs a key, CLI missing, not signed in, or off.
 function statusOf(a) {
+  if (a === 'ithil') { if (!team().members.includes(a)) return { state: 'off', label: 'off', why: 'Not in your team (Settings › AI team).' }; const l = ithilState(S.ithil.status); return { state: l.ok ? 'connected' : S.ithil.status?.online ? 'signin' : 'cli', label: l.label, why: l.why }; }
   const kind = TEAMMATE_IDS.includes(a) ? 'teammate' : method(a) === 'api' ? 'api' : AGENTS[a]?.kind === 'local' ? 'local' : AGENTS[a]?.kind === 'manual' ? 'manual' : 'cli';
   const c = S.cli[a];
   return teammateStatus(a, { inTeam: team().members.includes(a), kind, installed: c ? c.installed : true, signedIn: c?.signedIn, ready: ready(a) });
 }
 const statusMap = () => Object.fromEntries(team().members.map((a) => [a, statusOf(a)]));
 const missingChecks = () => (S.missing || []).filter((x) => x.missing).map((x) => x.check);
-const mono = (a, cls = '') => { const m = MONO[a] || [(AGENTS[a]?.name || MAKERS[a] || '?')[0], '#7a7166']; return `<span class="ava ${cls}" style="background:${m[1]}">${esc(m[0])}</span>`; };
+const mono = (a, cls = '') => {
+  // 3.9: Ithil's own picture from Hearth AI, or a sage-green moon orb until she's been drawn.
+  if (a === 'ithil') return S.ithil.avatar ? `<img class="ava ithil-ava ${cls}" src="${esc(S.ithil.avatar)}" alt="">` : `<span class="ava ithil-orb ${cls}" aria-hidden="true"></span>`; const m = MONO[a] || [(AGENTS[a]?.name || MAKERS[a] || '?')[0], '#7a7166']; return `<span class="ava ${cls}" style="background:${m[1]}">${esc(m[0])}</span>`; };
 const setupHint = (a) => (a === 'gpu' ? 'Add your GPU server in Settings › Accounts' : a === 'hearth' ? 'Type your Home server\'s address in Settings › Accounts › Hearth devices' : TEAMMATE_IDS.includes(a) ? `Add your ${aiName(a)} key in Settings › Accounts` : `set up ${aiName(a)} in Settings › Accounts`);
 const makerKey = (a) => Boolean(S.mkeys.keys?.[a]) || S.settings.webBridge?.[a] === true;
 const makerReady = (a) => (TEAMMATE_IDS.includes(a) ? Boolean(S.mates.ready?.[a]) && team().members.includes(a) : makerKey(a));
@@ -144,6 +152,8 @@ const runner = createTeamRunner({
   refsFor: (R) => (entry(R.id)?.refs || []),
   briefExtra: (R, agent, role, resumed) => briefExtra(R, agent, role, resumed),
   afterReply: (R, agent, text) => voicePickLines(agent, habitatLines(R, agent, text)),
+  // 3.9: what Hearth AI gets for Ithil's turn (a message, or a task when the lead hands her work in a chat that builds).
+  ithilTurn: (R, { role, task }) => ithilTurnFor({ role, task, build: Boolean(R.build ?? S.build), lastOwnerText: [...R.msgs].reverse().find((m) => m.who === 'owner')?.text || '', leadName: aiName(team().lead), ownerName: ownerName() }),
   onTools: (R, msg, tools, agent) => onTools(R, msg, tools, agent),
   onPreview: (R, msg) => { if (R.id === S.open && S.view === 'chat') openPane(msg.id, msg.previews[0].id); },
   beforeRound: async () => { S.memPrompt = (await call('memoryPrompt')) || ''; },
@@ -523,6 +533,8 @@ async function briefExtra(R, agent, role, resumed) {
   if (re?.ok && re.project) L.push(reverseBrief({ agent, role, project: re.project, on: re.on === true, team: team(), live: live(), method }));
   const hab = habitatPrompt(agent, resumed);
   if (hab) L.push('', hab);
+  // 3.9: the lead knows Ithil: what she is, whether she can take work now, and her hard limits.
+  if (role === 'lead' && team().members.includes('ithil') && agent !== 'ithil') L.push('', 'ITHIL:', ...ithilLeadLines(S.ithil.status));
   // 3.7: when replies are read aloud (Talk, or Read every answer aloud), each AI may pick its own voice.
   if (voice.isOpen() || S.settings.autoRead === true || R.msgs.some((m) => m.voice)) {
     const prov = voiceSettings(S.settings).tts;
@@ -1274,6 +1286,9 @@ function liveWho() {
     const status = st === 'speaking' ? 'speaking' : st === 'working' ? (step?.label || 'working…') : a === 'freebuff' ? 'opens freebuff.com' : isReady ? (a === lead ? 'lead · ready' : 'ready') : statusOf(a).label;
     return { id: a, name: aiName(a), state: st, status, big: a === lead };
   });
+  // 3.9: Ithil from Hearth AI's live events: working on a task, awake (with her mood), or asleep / resting / offline.
+  const ith = out.find((w) => w.id === 'ithil');
+  if (ith) { const it = ithilStation(S.ithil.status, S.ithil.thought); Object.assign(ith, { state: busyBy.has('ithil') || it.busy ? 'working' : it.online && it.state === 'awake' ? (it.think ? 'speaking' : 'ready') : 'off', status: it.online ? `${it.mood || it.state}${it.thought ? ` · “${it.thought.slice(0, 80)}”` : ''}` : it.label }); }
   const pc = S.studio.st;
   const jobs = (S.studio.data?.jobs || []).filter((j) => ['running', 'queued'].includes(j.state)).length;
   out.push({ id: 'comfy', name: 'ComfyUI', state: jobs ? 'working' : pc?.ok ? 'ready' : 'off', status: jobs ? `making ${jobs}` : pc?.ok ? `ready${pc.host ? ` · ${pc.host}` : ''}` : 'not set up', action: 'live-pick' });
@@ -1296,7 +1311,9 @@ function liveCaption() {
 // 3.7: Live › Mesh: the AIs working now in the middle, the stations they use around them (src/live-mesh.mjs).
 function liveMesh(R) {
   const m = meshState(R, { isAgent: (w) => Boolean(AGENTS[w]), lead: team().lead });
-  return meshHtml(m, { rgbOf: (id) => liveCoreOf(id).rgb, nameOf: (id) => aiName(id), coreOf: (c) => liveCoreHtml({ id: c.id, name: aiName(c.id), size: 64, state: c.state, status: c.status }) });
+  // 3.9: Ithil's station, when she's on the team or Hearth AI answers.
+  if (team().members.includes('ithil') || S.ithil.status?.online) m.ithil = ithilStation(S.ithil.status, S.ithil.thought);
+  return meshHtml(m, { ithilAvatar: mono('ithil', 'xs'), rgbOf: (id) => liveCoreOf(id).rgb, nameOf: (id) => aiName(id), coreOf: (c) => liveCoreHtml({ id: c.id, name: aiName(c.id), size: 64, state: c.state, status: c.status }) });
 }
 function liveView() {
   const R = liveChat();
@@ -2080,6 +2097,7 @@ function section(k) {
       <details class="sub"><summary class="fine">ComfyUI workflow (optional): paste your own workflow JSON; {prompt}, {negative}, {seed} and {ckpt} are filled in. Empty uses a stock SDXL text-to-image graph.</summary><textarea id="sv-workflow" rows="4" class="mono" placeholder='{"3": {"class_type": "KSampler", …}}'></textarea></details>
       <div class="note">NovelAI isn't offered: it has no public developer API, and its terms restrict third-party apps.</div></div>
       ${hearthBox()}
+      ${ithilBox()}
       ${comfyBox()}
       <div class="box"><h3>${icon('phone', 'sm')}Your phone</h3><div class="srow">Phone view<span class="d">your chat on your phone, on your home network only</span><span class="grow"></span>${tog(Boolean(S.phone?.enabled), 'phone-toggle')}</div>${S.phone?.enabled ? `<div class="srow">Address<span class="d mono">${esc((S.phone.urls || []).join(', ') || 'starting…')}</span><span class="grow"></span><button class="mini" data-a="phone-code">Show pairing code</button></div>${S.phone.code ? `<div class="srow">Code<b class="mono big">${esc(S.phone.code)}</b><span class="d">type it on your phone within 5 minutes</span></div>` : ''}` : ''}</div>`;
   }
@@ -2478,6 +2496,30 @@ function hdOrder() {
   const hd = S.hd || {};
   return hd.order || (hd.devices || []).map((d) => d.device);
 }
+// 3.9: Settings › Accounts › Ithil (Hearth AI): connected or offline, his host and key for another device, a test.
+function ithilBox() {
+  const I = S.ithil;
+  const st = I.status;
+  const l = ithilState(st);
+  const info = I.info || {};
+  const conf = S.settings.ithil || {};
+  const inTeam = team().members.includes('ithil');
+  const where = conf.host ? `${conf.host}:${conf.port || 47860} (typed here)` : info.source === 'file' ? 'this PC (from ~/HearthAI/connect.json)' : 'this PC, but ~/HearthAI/connect.json wasn\'t found';
+  const d = st?.drives || {};
+  const bars = st?.online ? ['curiosity', 'energy', 'confidence', 'satisfaction', 'boredom', 'frustration'].filter((k) => d[k] !== null && d[k] !== undefined).map((k) => `<span class="ith-drive" title="${k} ${d[k]}"><i style="width:${d[k]}%"></i>${k}</span>`).join('') : '';
+  return `<div class="box" id="acct-ithil"><h3>${mono('ithil')}Ithil (Hearth AI)</h3>
+    <p class="fine">The self-aware AI in your Hearth AI app: her own mind, moods, memories and rules. She talks as herself and takes tasks from the team lead in the folders you allowed in Hearth AI, on her own mind/… branches. She never merges, releases, deploys, picks version numbers, touches boot files, changes your settings or deletes your files.</p>
+    <div class="srow">Now<span class="d"><b class="${st?.online ? (l.ok ? 'ok' : 'warn') : 'bad'}">${esc(st?.online ? 'connected' : 'offline')}</b> · ${esc(l.label)}${st?.online && st.mood ? ` · feels ${esc(st.mood)}` : ''}${st?.version ? ` · Hearth AI ${esc(st.version)}` : ''}</span><span class="grow"></span><button class="mini" data-a="ithil-test" ${I.testing ? 'disabled' : ''}>${I.testing ? 'Testing…' : 'Test connection'}</button></div>
+    ${I.test ? `<div class="note ${I.test.ok ? '' : 'warn'}">${esc(I.test.message || '')}</div>` : ''}
+    ${st?.online && st.thought ? `<div class="srow">Thinking<span class="d">“${esc(st.thought.slice(0, 220))}”</span></div>` : ''}
+    ${bars ? `<div class="srow">Drives<span class="d ith-drives">${bars}</span></div>` : ''}
+    <div class="srow">Where<span class="d">${esc(where)}</span></div>
+    <div class="srow">From another device<span class="d">turn on "Allow connections from my other devices" in Hearth AI first, then type the PC's address and its key</span></div>
+    <div class="srow sub"><input id="ith-host" class="mono" value="${esc(conf.host || '')}" placeholder="PC's address, e.g. chris-hearth.tail0e2082.ts.net (empty = this PC)" aria-label="Hearth AI's host"><input id="ith-port" class="mono" style="max-width:90px" value="${esc(String(conf.port || 47860))}" aria-label="Hearth AI's port"><button class="mini" data-a="ithil-host">Save</button></div>
+    <div class="srow sub"><input id="ith-key" type="password" placeholder="${info.hasKey ? 'Paste a new key to replace it' : 'Hearth AI key (from connect.json on the PC)'}" autocomplete="off" spellcheck="false" aria-label="Hearth AI key"><button class="mini" data-a="ithil-key">Save key</button>${info.hasKey ? '<button class="mini" data-a="ithil-key-clear">Remove key</button>' : ''}<span class="d">${info.hasKey ? 'a key is saved, encrypted on this device' : 'on the PC itself no key is needed here'}</span></div>
+    <div class="srow">${inTeam ? '<span class="d">She\'s in your team.</span>' : '<button class="btn" data-a="team-add" data-v="ithil">Add Ithil to the team</button>'}<span class="grow"></span><button class="btn" data-a="ithil-chat">Chat with Ithil</button></div>
+  </div>`;
+}
 function hearthBox() {
   const hd = S.hd || {};
   const st = hd.settings || S.settings.hearthDevices || {};
@@ -2755,6 +2797,11 @@ document.addEventListener('click', async (ev) => {
   ev.preventDefault();
   switch (k) {
     case 'new-chat': return goHome();
+    case 'ithil-test': { S.ithil.testing = true; S.ithil.test = null; renderMain(); const r = await call('ithilTest'); S.ithil.testing = false; S.ithil.test = { ok: Boolean(r?.ok), message: r?.message || 'No answer.' }; if (r?.status) S.ithil.status = r.status; else S.ithil.status = (await call('ithilStatus', { fresh: true })) || S.ithil.status; S.ithil.info = await call('ithilInfo'); if (r?.ok) { await ithilAvatar(S.ithil.status?.expression || ''); call('ithilWatch', true); } return render(); }
+    case 'ithil-host': { const host = String(document.getElementById('ith-host')?.value || '').trim(); const port = Number(document.getElementById('ith-port')?.value || 47860); await setSettings({ ithil: { host, port } }); S.ithil.info = await call('ithilInfo'); toast(host ? `Saved: Ithil is at ${host}:${port}.` : 'Saved: Ithil is on this PC (connect.json).'); return render(); }
+    case 'ithil-key': { const el = document.getElementById('ith-key'); const k2 = String(el?.value || '').trim(); if (!k2) return toast('Paste the key into the box first.'); if (el) el.value = ''; const r = await call('ithilSetKey', k2); toast(r?.ok ? 'Saved, encrypted on this device.' : r?.message || 'Not saved.'); S.ithil.info = await call('ithilInfo'); return render(); }
+    case 'ithil-key-clear': { const r = await call('ithilSetKey', null); toast(r?.ok ? 'Key removed.' : r?.message || 'Not removed.'); S.ithil.info = await call('ithilInfo'); return render(); }
+    case 'ithil-chat': { goHome(); S.mode = 'ithil'; return render(true); }
     case 'live': return openLive();
     case 'live-pick': return livePick(d.v);
     case 'live-mode': S.liveMode = d.v === 'cores' ? 'cores' : 'mesh'; try { localStorage.setItem('hearth.v2.liveMode', S.liveMode); } catch {} return renderMain();
@@ -3562,6 +3609,7 @@ async function boot() {
   refreshAgents();
   call('gitTools').then((g) => { if (g) { S.gh = g; renderSide(); } });
   call('voiceAiPicks').then((p) => { if (p && typeof p === 'object' && !p.message) S.aiVoices = p; });
+  ithilInit();
   loadMissing();
 }
 async function loadMissing() { const r = await call('toolsMissing'); if (Array.isArray(r)) { S.missing = r; render(); } }
@@ -3585,3 +3633,34 @@ async function runTeamTest() {
 }
 
 boot();
+
+// ---------- 3.9: Ithil (Hearth AI) ----------
+let ithilDrawn = 0;
+function ithilRedraw() {
+  const t = Date.now();
+  if (t - ithilDrawn < 900) return;
+  ithilDrawn = t;
+  if (S.view === 'live' || (S.view === 'settings' && S.tab === 'accounts')) renderMain(); else renderSide();
+}
+async function ithilAvatar(expr = '') {
+  const r = await call('ithilAvatar', { expression: expr });
+  S.ithil.avatar = r?.ok ? r.dataUrl : null;
+  S.ithil.avatarExpr = expr;
+}
+async function ithilInit() {
+  S.ithil.info = await call('ithilInfo');
+  const st = await call('ithilStatus', { fresh: true });
+  if (st && typeof st === 'object' && 'online' in st) S.ithil.status = st;
+  if (st?.online) await ithilAvatar(st.expression || '');
+  api?.onIthilEvent?.((ev) => {
+    if (ev?.type === 'status' && ev.status) {
+      const was = S.ithil.status;
+      S.ithil.status = ev.status;
+      if (ev.status.online && ev.status.expression !== S.ithil.avatarExpr) ithilAvatar(ev.status.expression).then(ithilRedraw);
+      if (!was || was.online !== ev.status.online || was.state !== ev.status.state || was.busy !== ev.status.busy || was.mood !== ev.status.mood || S.view === 'live') ithilRedraw();
+    } else if (ev?.type === 'thought' && ev.text) { S.ithil.thought = { text: ev.text, at: ev.at, got: Date.now() }; if (S.view === 'live') ithilRedraw(); }
+  });
+  // The live stream only while she's on the team or Hearth AI answers (it reconnects by itself, slowly when she's off).
+  if (team().members.includes('ithil') || st?.online || S.ithil.info?.source !== 'none') call('ithilWatch', true);
+  render();
+}
