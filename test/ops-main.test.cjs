@@ -120,7 +120,7 @@ test('Hearth logs: paths, new ones only, and a summary of device, version and er
 // 12. Voice
 test('voice: whisper.cpp needs a model, python whisper works alone, otherwise the install note', () => {
   const list = (d) => (d.endsWith(path.join('.cache', 'whisper.cpp')) ? ['ggml-tiny.bin', 'ggml-base.en.bin', 'notes.txt'] : []);
-  assert.deepEqual(voice.detect({ find: (b) => (b === 'whisper-cli' ? '/usr/bin/whisper-cli' : null), list, home: '/h' }), { tool: 'whisper.cpp', bin: '/usr/bin/whisper-cli', model: path.join('/h', '.cache', 'whisper.cpp', 'ggml-base.en.bin') });
+  { const d = voice.detect({ find: (b) => (b === 'whisper-cli' ? '/usr/bin/whisper-cli' : null), list, home: '/h' }); assert.deepEqual({ tool: d.tool, bin: d.bin, model: d.model }, { tool: 'whisper.cpp', bin: '/usr/bin/whisper-cli', model: path.join('/h', '.cache', 'whisper.cpp', 'ggml-base.en.bin') }); }
   assert.equal(voice.detect({ find: (b) => (b === 'whisper-cli' ? '/x' : null), list: () => [], home: '/h' }).tool, null);
   assert.equal(voice.detect({ find: (b) => (b === 'whisper' ? '/usr/bin/whisper' : null), list: () => [], home: '/h' }).tool, 'whisper');
   assert.match(voice.detect({ find: () => null, list: () => [], home: '/h' }).missing, /^transcription unavailable: install whisper.cpp/);

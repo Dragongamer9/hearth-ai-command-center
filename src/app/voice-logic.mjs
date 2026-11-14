@@ -10,7 +10,7 @@
 export const PROVIDERS = ['elevenlabs', 'openai', 'local', 'hearth'];
 export const PROVIDER_NAMES = { elevenlabs: 'ElevenLabs', openai: 'OpenAI', local: 'this PC', hearth: 'Hearth devices' };
 export const UNCENSORED = ['venice', 'civitai', 'gpu', 'hearth'];
-export const VOICE_DEFAULTS = Object.freeze({ stt: 'auto', tts: 'local', turn: 'auto', bargeIn: true, narration: 'same', openaiForUncensored: false, keepAudio: false, elevenModel: 'eleven_flash_v2_5', openaiModel: 'gpt-4o-mini-tts', sttModel: 'gpt-transcribe' });
+export const VOICE_DEFAULTS = Object.freeze({ stt: 'auto', tts: 'local', turn: 'auto', bargeIn: true, narration: 'same', openaiForUncensored: false, keepAudio: false, elevenModel: 'eleven_flash_v2_5', openaiModel: 'gpt-4o-mini-tts', sttModel: 'gpt-transcribe', sttLocal: 'fast' });
 
 // The voice settings as the main process gives them (its defaults, if they are missing).
 export function voiceSettings(settings) {

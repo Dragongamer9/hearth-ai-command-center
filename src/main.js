@@ -2322,7 +2322,7 @@ function foundHtml() {
 
 async function loadCopies() { S.copies = await call('copiesList'); render(); }
 async function loadSection(t) {
-  if (t === 'voice') { await voice.loadLists(); return render(); }
+  if (t === 'voice') { await voice.loadLists(true); return render(); }
   if (t === 'look') S.screen = (await call('screenInfo')) || null;
   if (t === 'data') { loadCopies(); S.boards = await call('savedBoards'); S.slog = await call('settingsLog'); }
   if (t === 'perms') { refreshAgents(); loadPerms(); }

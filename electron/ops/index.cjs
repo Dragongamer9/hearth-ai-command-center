@@ -447,7 +447,7 @@ function register(d) {
   });
 
   // ---- voice notes (whisper on this computer, else Speech to text on his Hearth devices) ----
-  const voiceTools = () => voice.detect({ find: gitops.find, list: voice.listDir });
+  const voiceTools = () => voice.detect({ find: gitops.find, list: voice.listDir, prefer: readSettings().voice?.sttLocal || 'fast' });
   handle('ops:voiceTools', () => voiceTools());
   // 3.7: Install speech to text (the button beside the mic): faster-whisper into ~/.local/share/hearth-ai/whisper.
   let installing = null;
@@ -493,7 +493,7 @@ function register(d) {
         const wav = path.join(os.tmpdir(), `hearth-voice-${id}.wav`);
         const c = await exec(ffmpeg, ['-y', '-i', file, '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', wav], { timeoutMs: 60000, env });
         if (!c.ok) return { ok: true, att, transcript: '', note: 'transcription unavailable: ffmpeg could not read the recording' };
-        const r = await exec(tool.bin, voice.cppArgs(tool.model, wav), { timeoutMs: 180000, env });
+        const r = await exec(tool.bin, voice.cppArgs(tool.model, wav, { fast: tool.fast !== false }), { timeoutMs: 180000, env });
         try { fs.unlinkSync(wav); } catch {}
         const text = voice.cleanTranscript(r.out);
         return { ok: true, att, transcript: text, note: text ? '' : 'transcription came back empty' };

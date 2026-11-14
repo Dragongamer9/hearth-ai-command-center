@@ -299,7 +299,8 @@ export function createVoice(ctx) {
     }
     return V.lists[provider];
   }
-  async function loadLists() { await loadStatus(); await Promise.all(['local', 'openai', ...(keys().elevenlabs ? ['elevenlabs'] : []), ...(V.status?.hearth?.configured ? ['hearth'] : []), ...settings().servers.map((x) => `server:${x.id}`)].map((p) => loadList(p))); }
+  // 3.8: fresh asks the speech servers again (voices made in Voice Studio since show up); Settings › Voice and Talk do.
+  async function loadLists(fresh = false) { await loadStatus(); await Promise.all(['local', 'openai', ...(keys().elevenlabs ? ['elevenlabs'] : []), ...(V.status?.hearth?.configured ? ['hearth'] : []), ...settings().servers.map((x) => `server:${x.id}`)].map((p) => loadList(p, fresh && isServer(p)))); }
   function speak(msgs) {
     const s = ctx.settings();
     const { plan, notices } = speechPlan({ msgs, cards: ctx.cards(), settings: s, keys: keys(), lists: V.lists, hosts: hosts(), names: Object.fromEntries(UNCENSORED.map((a) => [a, ctx.aiName(a)])), chatVoice: ctx.chatVoice ? ctx.chatVoice(V.chatId || ctx.openId()) : null, picks: ctx.aiPicks ? ctx.aiPicks() : {} });
@@ -317,7 +318,7 @@ export function createVoice(ctx) {
     turn.setMode(settings().turn); turn.setBargeIn(settings().bargeIn); turn.reset();
     if (V.phase !== 'off') resumeListening();
     if (!raf) raf = requestAnimationFrame(frame);
-    loadLists().then(() => ctx.renderOverlay());
+    loadLists(true).then(() => ctx.renderOverlay());
     ctx.renderOverlay();
   }
   function closeView() {
@@ -478,6 +479,7 @@ export function createVoice(ctx) {
       <div class="box" id="voice-stt"><h3>${icon('doc', 'sm')}Speech to text</h3>
         <div class="srow">Use<span class="d">whisper.cpp on this PC is free and private; OpenAI uses your OpenAI key</span><span class="grow"></span><select data-a="voice-set" data-k="stt"><option value="auto" ${s.stt === 'auto' ? 'selected' : ''}>Automatic (${st.hearth?.configured ? 'a Hearth device\'s whisper, then ' : ''}this PC when installed)</option><option value="local" ${s.stt === 'local' ? 'selected' : ''}>This PC only (whisper.cpp)</option><option value="openai" ${s.stt === 'openai' ? 'selected' : ''}>OpenAI</option></select></div>
         <div class="srow">Now in use<span class="d"><b>${esc(st.stt?.using || st.stt?.problem || 'checking…')}</b></span></div>
+        ${st.stt?.local?.tool === 'whisper.cpp' ? `<div class="srow">whisper on this PC<span class="d">using <b>${esc(st.stt.local.model || '?')}</b> · Fast is quick on a laptop; Most accurate uses your biggest model and is slower without a graphics card</span><span class="grow"></span><select data-a="voice-set" data-k="sttLocal"><option value="fast" ${s.sttLocal === 'fast' || !s.sttLocal ? 'selected' : ''}>Fast</option><option value="accurate" ${s.sttLocal === 'accurate' ? 'selected' : ''}>Most accurate</option>${(st.stt.local.models || []).map((m) => `<option value="${esc(m)}" ${s.sttLocal === m ? 'selected' : ''}>${esc(m)} only</option>`).join('')}</select></div>` : ''}
         <div class="srow">On this PC<span class="d">${esc(sttLocal)}${st.stt?.local?.tool === 'whisper.cpp' && !st.stt?.ffmpeg ? ' · ffmpeg is missing (needed to read recordings)' : ''}</span></div>
         <div class="srow">OpenAI model<span class="d">used only when OpenAI does the speech to text</span><span class="grow"></span><select data-a="voice-set" data-k="sttModel">${(st.sttModels || ['gpt-transcribe']).map((m) => `<option ${s.sttModel === m ? 'selected' : ''}>${esc(m)}</option>`).join('')}</select></div></div>
       <div class="box" id="voice-tts"><h3>${icon('users', 'sm')}Voices</h3>
