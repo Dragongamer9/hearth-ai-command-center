@@ -10,7 +10,7 @@
 export const PROVIDERS = ['elevenlabs', 'openai', 'local', 'hearth'];
 export const PROVIDER_NAMES = { elevenlabs: 'ElevenLabs', openai: 'OpenAI', local: 'this PC', hearth: 'Hearth devices' };
 export const UNCENSORED = ['venice', 'civitai', 'gpu', 'hearth'];
-export const VOICE_DEFAULTS = Object.freeze({ stt: 'auto', tts: 'local', turn: 'auto', bargeIn: true, narration: 'same', openaiForUncensored: false, keepAudio: false, elevenModel: 'eleven_flash_v2_5', openaiModel: 'gpt-4o-mini-tts', sttModel: 'gpt-transcribe', sttLocal: 'fast' });
+export const VOICE_DEFAULTS = Object.freeze({ stt: 'auto', tts: 'local', turn: 'auto', bargeIn: true, narration: 'same', openaiForUncensored: false, keepAudio: false, elevenModel: 'eleven_flash_v2_5', openaiModel: 'gpt-4o-mini-tts', sttModel: 'gpt-transcribe', sttLocal: 'fast', speed: 1 });
 
 // The voice settings as the main process gives them (its defaults, if they are missing).
 export function voiceSettings(settings) {
@@ -219,6 +219,8 @@ export function speechPlan({ msgs, cards = [], settings, keys = {}, lists = {}, 
     const canUse = (p) => serverAllowed(p, { who: m.who, settings, hosts });
     for (const p of speechParts(m.text, { narration: v.narration })) {
       const sel = withChatVoice(voiceFor({ msg: m, part: p.kind, cards, settings, provider: r.provider, list: lists[r.provider] || [], canUse, picks }), m, chatVoice);
+      // 3.8: his default speed for everyone, unless the voice or this chat has its own.
+      if (!(Number(sel.speed) >= 0.5 && Number(sel.speed) <= 2) && Number(v.speed) !== 1 && Number(v.speed) >= 0.5 && Number(v.speed) <= 2) sel.speed = Number(v.speed);
       plan.push({ msgId: m.id, who: m.who, char: m.char || null, kind: p.kind, text: p.text, ...sel });
     }
   }

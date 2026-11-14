@@ -61,6 +61,7 @@ const DEFAULTS = Object.freeze({
   openaiModel: 'gpt-4o-mini-tts',
   sttModel: 'gpt-transcribe',
   sttLocal: 'fast', // 3.8: whisper on this PC: fast, accurate, or one model by name
+  speed: 1, // 3.8: how fast everyone speaks unless a voice or a chat has its own speed
 });
 const ELEVEN_ID = /^[A-Za-z0-9]{6,40}$/;
 const LOCAL_ID = /^(kokoro|piper|espeak|system):[^\0\r\n]{1,300}$/;
@@ -108,6 +109,7 @@ function cleanSettings(v) {
     elevenModel: ELEVEN_MODELS.includes(s.elevenModel) ? s.elevenModel : DEFAULTS.elevenModel,
     openaiModel: OPENAI_TTS_MODELS.includes(s.openaiModel) ? s.openaiModel : DEFAULTS.openaiModel,
     sttModel: OPENAI_STT_MODELS.includes(s.sttModel) ? s.sttModel : DEFAULTS.sttModel,
+    speed: Number.isFinite(Number(s.speed)) && Number(s.speed) >= 0.5 && Number(s.speed) <= 2 ? Math.round(Number(s.speed) * 100) / 100 : DEFAULTS.speed,
     sttLocal: typeof s.sttLocal === 'string' && /^(fast|accurate|[a-z0-9][a-z0-9._-]{1,40})$/.test(s.sttLocal) ? s.sttLocal : DEFAULTS.sttLocal,
     voices: cleanVoices(s.voices),
     servers: list,

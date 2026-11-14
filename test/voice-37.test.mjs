@@ -93,3 +93,16 @@ test('3.8: Hearth Voice Studio is a ready-made speech server', async () => {
   const p = servers.presets().apis.find((x) => x.id === 'hearth-voice-studio');
   assert.equal(p.label, 'Hearth Voice Studio'); assert.equal(p.port, 8890); assert.equal(p.engine, 'omnivoice');
 });
+
+test('3.8: one default speaking speed for everyone; a voice or a chat with its own speed keeps it', async () => {
+  const { speechPlan } = await import('../src/app/voice-logic.mjs');
+  const msgs = [{ id: 'm', who: 'anthropic', text: 'Hello there, this is a reply.' }];
+  const base = { tts: 'local', voices: { default: { local: 'kokoro:af_heart' } }, speed: 1.25 };
+  assert.equal(speechPlan({ msgs, settings: { voice: base } }).plan[0].speed, 1.25);
+  assert.equal(speechPlan({ msgs, settings: { voice: { ...base, voices: { anthropic: { local: 'kokoro:am_adam', speed: 0.9 } } } } }).plan[0].speed, 0.9);
+  assert.equal(speechPlan({ msgs, settings: { voice: base }, chatVoice: { speed: 1.5 } }).plan[0].speed, 1.5);
+  assert.equal(speechPlan({ msgs, settings: { voice: { ...base, speed: 1 } } }).plan[0].speed, undefined);
+  const { default: vc } = await import('../electron/voice-chat.cjs');
+  assert.equal(vc.cleanSettings({ speed: '1.4' }).speed, 1.4);
+  assert.equal(vc.cleanSettings({ speed: 9 }).speed, 1);
+});
