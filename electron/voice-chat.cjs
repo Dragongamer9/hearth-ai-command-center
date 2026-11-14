@@ -60,6 +60,8 @@ const DEFAULTS = Object.freeze({
   elevenModel: 'eleven_flash_v2_5',
   openaiModel: 'gpt-4o-mini-tts',
   sttModel: 'gpt-transcribe',
+  sttLocal: 'fast', // 3.8: whisper on this PC: fast, accurate, or one model by name
+  speed: 1, // 3.8: how fast everyone speaks unless a voice or a chat has its own speed
 });
 const ELEVEN_ID = /^[A-Za-z0-9]{6,40}$/;
 const LOCAL_ID = /^(kokoro|piper|espeak|system):[^\0\r\n]{1,300}$/;
@@ -107,6 +109,8 @@ function cleanSettings(v) {
     elevenModel: ELEVEN_MODELS.includes(s.elevenModel) ? s.elevenModel : DEFAULTS.elevenModel,
     openaiModel: OPENAI_TTS_MODELS.includes(s.openaiModel) ? s.openaiModel : DEFAULTS.openaiModel,
     sttModel: OPENAI_STT_MODELS.includes(s.sttModel) ? s.sttModel : DEFAULTS.sttModel,
+    speed: Number.isFinite(Number(s.speed)) && Number(s.speed) >= 0.5 && Number(s.speed) <= 2 ? Math.round(Number(s.speed) * 100) / 100 : DEFAULTS.speed,
+    sttLocal: typeof s.sttLocal === 'string' && /^(fast|accurate|[a-z0-9][a-z0-9._-]{1,40})$/.test(s.sttLocal) ? s.sttLocal : DEFAULTS.sttLocal,
     voices: cleanVoices(s.voices),
     servers: list,
   };
@@ -357,7 +361,7 @@ async function transcribeLocal({ buf, tool, ffmpeg, run = execFile }) {
       const wav = path.join(dir, 'speech.wav');
       const c = await run(ffmpeg, ['-y', '-loglevel', 'error', '-i', src, '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', wav], { timeoutMs: 60000 });
       if (!c.ok) return fail('ffmpeg couldn\'t read the recording.');
-      const r = await run(tool.bin, whisper.cppArgs(tool.model, wav), { timeoutMs: 180000 });
+      const r = await run(tool.bin, whisper.cppArgs(tool.model, wav, { fast: tool.fast !== false }), { timeoutMs: 180000 });
       return { ok: true, text: whisper.cleanTranscript(r.out) };
     }
     const r = await run(tool.bin, whisper.pyArgs(src, dir), { timeoutMs: 300000 });
@@ -389,7 +393,7 @@ function register(d) {
   const find = (b) => which([b]);
   let toolsCache = null;
   const tools = (fresh = false) => { if (fresh || !toolsCache || Date.now() - toolsCache.at > 60000) toolsCache = { at: Date.now(), t: localTools({ find }) }; return toolsCache.t; };
-  const whisperTool = () => whisper.detect({ find, list: listDir });
+  const whisperTool = () => whisper.detect({ find, list: listDir, prefer: settings().sttLocal });
   let elevenCache = null;
   const streams = new Map();
 
@@ -401,7 +405,7 @@ function register(d) {
     return {
       encryption: await secrets.available(),
       keys: { elevenlabs: secrets.has('elevenlabs'), openai: secrets.has('openai') },
-      stt: { local: w.tool ? { tool: w.tool } : { tool: null, missing: w.missing }, using: st.ok ? st.label : null, problem: st.ok ? null : st.message, ffmpeg: Boolean(find('ffmpeg')) },
+      stt: { local: w.tool ? { tool: w.tool, model: w.name || null, models: w.models || [] } : { tool: null, missing: w.missing }, using: st.ok ? st.label : null, problem: st.ok ? null : st.message, ffmpeg: Boolean(find('ffmpeg')) },
       local: { kokoro: Boolean(t.kokoro), piper: t.piper ? t.piper.models.length : 0, espeak: t.espeak ? path.basename(t.espeak.bin) : null, spd: Boolean(t.spd), notes: t.notes },
       openaiVoices: OPENAI_VOICES, elevenModels: ELEVEN_MODELS, openaiModels: OPENAI_TTS_MODELS, sttModels: OPENAI_STT_MODELS,
       // Speech servers: whether each has its own key saved (never the key), and the presets.

@@ -76,6 +76,27 @@ export function meshState(R, { isAgent = (w) => w && w !== 'owner', lead = null 
   return { stations: [...st.values()], capsule };
 }
 
+// 3.8: little electric currents on a lit line: three jagged sparks from the AI to the station, seeded by the station so
+// a redraw looks the same, shown one after another (CSS) so they crackle.
+function seedOf(s) { let h = 2166136261; for (const c of String(s)) { h ^= c.charCodeAt(0); h = Math.imul(h, 16777619); } return h >>> 0; }
+export function boltPaths(x1, y1, x2, y2, key, { count = 3, steps = 18, jag = 3.2 } = {}) {
+  const dx = x2 - x1; const dy = y2 - y1; const len = Math.hypot(dx, dy) || 1;
+  const nx = -dy / len; const ny = dx / len;
+  const out = [];
+  let r = seedOf(key);
+  const rnd = () => { r = (Math.imul(r ^ (r >>> 15), 2246822507) + 0x9e3779b9) >>> 0; return r / 4294967296; };
+  for (let b = 0; b < count; b++) {
+    const pts = [[x1, y1]];
+    for (let i = 1; i < steps; i++) {
+      const t = i / steps; const o = (rnd() - 0.5) * 2 * jag * Math.min(1, Math.sin(Math.PI * t) * 1.6);
+      pts.push([x1 + dx * t + nx * o, y1 + dy * t + ny * o]);
+    }
+    pts.push([x2, y2]);
+    out.push(`M${pts.map(([x, y]) => `${x.toFixed(2)} ${y.toFixed(2)}`).join(' L')}`);
+  }
+  return out;
+}
+
 // The mesh. capsule items get { name, html } from main.js (their core); rgbOf(id) gives an AI's colour.
 export function meshHtml({ stations, capsule }, { rgbOf = () => '201,163,114', nameOf = (id) => id, coreOf = () => '' } = {}) {
   const n = capsule.length;
@@ -86,6 +107,10 @@ export function meshHtml({ stations, capsule }, { rgbOf = () => '201,163,114', n
     const col = s.active ? `rgb(${rgbOf(s.by)})` : 'rgba(201,163,114,.16)';
     return `<line x1="${from}" y1="50" x2="${s.x}" y2="${s.y}" stroke="${col}" stroke-width="${s.active ? 2 : 1}" vector-effect="non-scaling-stroke"></line>`;
   }).join('');
+  const bolts = stations.filter((s) => s.active).map((s) => {
+    const from = at.has(s.by) ? at.get(s.by) : 50;
+    return boltPaths(from, 50, s.x, s.y, `${s.id}:${s.by}`).map((d, k) => `<path class="mesh-bolt b${k}" d="${d}" style="color:rgb(${rgbOf(s.by)})" vector-effect="non-scaling-stroke"></path>`).join('');
+  }).join('');
   const pulses = stations.filter((s) => s.active && s.pulse).map((s) => `<i class="mesh-pulse" style="--c:rgb(${rgbOf(s.by)});--x1:${at.get(s.by) ?? 50}%;--y1:50%;--x2:${s.x}%;--y2:${s.y}%"></i>`).join('');
   const boxes = stations.map((s) => {
     const lit = s.active;
@@ -95,5 +120,5 @@ export function meshHtml({ stations, capsule }, { rgbOf = () => '201,163,114', n
   const caps = n
     ? capsule.map((c) => `<div class="mesh-ai" style="--c:rgb(${rgbOf(c.id)})">${coreOf(c)}<b>${esc(nameOf(c.id))}</b><span>${esc(c.status)}</span></div>`).join('')
     : '<div class="mesh-none">Nobody is working right now</div>';
-  return `<div class="mesh" role="img" aria-label="Live mesh: ${n} AI${n === 1 ? '' : 's'} working; ${stations.filter((s) => s.active).map((s) => s.title).join(', ') || 'no station'} lit"><svg class="mesh-lines" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">${lines}</svg>${pulses}<div class="mesh-cap">${caps}</div>${boxes}</div>`;
+  return `<div class="mesh" role="img" aria-label="Live mesh: ${n} AI${n === 1 ? '' : 's'} working; ${stations.filter((s) => s.active).map((s) => s.title).join(', ') || 'no station'} lit"><svg class="mesh-lines" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">${lines}<g class="mesh-bolts">${bolts}</g></svg>${pulses}<div class="mesh-cap">${caps}</div>${boxes}</div>`;
 }

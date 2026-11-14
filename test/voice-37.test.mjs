@@ -72,3 +72,37 @@ test('each AI picks its own voice; his choice wins', () => {
   assert.match(voiceMenu({ who: 'anthropic', settings, provider: 'local', list, picks }), /VOICE: <id>.*af_heart \(Heart\).*The owner can always change it/);
   assert.deepEqual(pickEntry({ provider: 'elevenlabs', voice: 'abc123' }), { elevenlabs: { id: 'abc123' } });
 });
+
+test('3.8: whisper on this PC is Fast by default, skips the test files, uses every thread', async () => {
+  const { default: voice } = await import('../electron/ops/voice.cjs');
+  const list = (d) => (d.endsWith('models') && d.includes('whisper.cpp') ? ['for-tests-ggml-small.en.bin', 'ggml-base.en.bin', 'ggml-small.en.bin'] : []);
+  const find = (b) => (b === 'whisper-cli' ? '/x/whisper-cli' : null);
+  assert.equal(voice.detect({ find, list, home: '/h' }).name, 'base.en');
+  assert.equal(voice.detect({ find, list, home: '/h', prefer: 'accurate' }).name, 'small.en');
+  assert.equal(voice.detect({ find, list, home: '/h', prefer: 'small.en' }).name, 'small.en');
+  assert.deepEqual(voice.detect({ find, list, home: '/h' }).models.sort(), ['base.en', 'small.en']);
+  const only = voice.detect({ find, list: (d) => (d.endsWith('models') && d.includes('whisper.cpp') ? ['for-tests-ggml-tiny.bin'] : []), home: '/h' });
+  assert.equal(only.tool, null);
+  const a = voice.cppArgs('/m.bin', '/a.wav', { n: 8 });
+  assert.deepEqual(a.slice(-6), ['-t', '8', '-bs', '1', '-bo', '1']);
+  assert.ok(!voice.cppArgs('/m.bin', '/a.wav', { fast: false, n: 8 }).includes('-bs'));
+});
+
+test('3.8: Hearth Voice Studio is a ready-made speech server', async () => {
+  const { default: servers } = await import('../electron/speech-servers.cjs');
+  const p = servers.presets().apis.find((x) => x.id === 'hearth-voice-studio');
+  assert.equal(p.label, 'Hearth Voice Studio'); assert.equal(p.port, 8890); assert.equal(p.engine, 'omnivoice');
+});
+
+test('3.8: one default speaking speed for everyone; a voice or a chat with its own speed keeps it', async () => {
+  const { speechPlan } = await import('../src/app/voice-logic.mjs');
+  const msgs = [{ id: 'm', who: 'anthropic', text: 'Hello there, this is a reply.' }];
+  const base = { tts: 'local', voices: { default: { local: 'kokoro:af_heart' } }, speed: 1.25 };
+  assert.equal(speechPlan({ msgs, settings: { voice: base } }).plan[0].speed, 1.25);
+  assert.equal(speechPlan({ msgs, settings: { voice: { ...base, voices: { anthropic: { local: 'kokoro:am_adam', speed: 0.9 } } } } }).plan[0].speed, 0.9);
+  assert.equal(speechPlan({ msgs, settings: { voice: base }, chatVoice: { speed: 1.5 } }).plan[0].speed, 1.5);
+  assert.equal(speechPlan({ msgs, settings: { voice: { ...base, speed: 1 } } }).plan[0].speed, undefined);
+  const { default: vc } = await import('../electron/voice-chat.cjs');
+  assert.equal(vc.cleanSettings({ speed: '1.4' }).speed, 1.4);
+  assert.equal(vc.cleanSettings({ speed: 9 }).speed, 1);
+});

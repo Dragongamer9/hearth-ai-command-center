@@ -5,8 +5,13 @@ const os = require('node:os');
 const path = require('node:path');
 
 const CPP_BINS = ['whisper-cli', 'whisper-cpp', 'whisper.cpp'];
-// 3.7: the most accurate model he has downloaded wins (it used to pick base.en even with a better one beside it).
-const MODEL_PREF = ['large-v3-turbo', 'large-v3-turbo-q8_0', 'large-v3-turbo-q5_0', 'large-v3', 'large-v2', 'medium.en', 'medium', 'small.en', 'small', 'base.en', 'base', 'tiny.en', 'tiny'];
+// 3.8: Fast (the default: base first, quick on a laptop's processor) or Most accurate (the biggest model he has), or one
+// model he named. whisper.cpp's own test files (for-tests-…) are never used.
+const MODEL_ACCURATE = ['large-v3-turbo', 'large-v3-turbo-q8_0', 'large-v3-turbo-q5_0', 'large-v3', 'large-v2', 'medium.en', 'medium', 'small.en', 'small', 'base.en', 'base', 'tiny.en', 'tiny'];
+const MODEL_FAST = ['base.en', 'base', 'small.en', 'small', 'tiny.en', 'tiny', 'large-v3-turbo-q5_0', 'large-v3-turbo-q8_0', 'large-v3-turbo', 'medium.en', 'medium', 'large-v3', 'large-v2'];
+const MODEL_PREF = MODEL_FAST;
+const modelName = (f) => path.basename(String(f || '')).replace(/^ggml-/, '').replace(/\.bin$/, '');
+const threads = () => Math.max(1, Math.min(16, (os.cpus?.() || []).length || 4));
 
 function modelDirs(home = os.homedir()) {
   return [
@@ -20,9 +25,11 @@ function modelDirs(home = os.homedir()) {
   ];
 }
 
-function pickModel(files) {
-  const ggml = files.filter((f) => /ggml-[\w.-]+\.bin$/.test(path.basename(f)));
-  for (const p of MODEL_PREF) {
+function pickModel(files, prefer = 'fast') {
+  const ggml = files.filter((f) => /^ggml-[\w.-]+\.bin$/.test(path.basename(f)));
+  const named = prefer && !['fast', 'accurate'].includes(prefer) ? ggml.find((f) => modelName(f) === prefer) : null;
+  if (named) return named;
+  for (const p of prefer === 'accurate' ? MODEL_ACCURATE : MODEL_FAST) {
     const hit = ggml.find((f) => path.basename(f) === `ggml-${p}.bin`);
     if (hit) return hit;
   }
@@ -71,13 +78,14 @@ async function fwInstall({ run, home, python = '/usr/bin/python3', writeFile = f
   return { ok: true };
 }
 
-function detect({ find, list, home, exists } = {}) {
+function detect({ find, list, home, exists, prefer = 'fast' } = {}) {
   const models = [];
   for (const d of modelDirs(home)) for (const f of list(d)) models.push(path.join(d, f));
-  const model = pickModel(models);
+  const model = pickModel(models, prefer);
+  const have = [...new Set(models.filter((f) => /^ggml-[\w.-]+\.bin$/.test(path.basename(f))).map(modelName))];
   for (const b of CPP_BINS) {
     const bin = find(b);
-    if (bin) return model ? { tool: 'whisper.cpp', bin, model } : { tool: null, missing: `whisper.cpp is installed (${b}) but no ggml model was found; download one (e.g. ggml-base.en.bin) into ~/.cache/whisper.cpp` };
+    if (bin) return model ? { tool: 'whisper.cpp', bin, model, name: modelName(model), models: have, fast: prefer !== 'accurate' } : { tool: null, missing: `whisper.cpp is installed (${b}) but no ggml model was found; download one (e.g. ggml-base.en.bin) into ~/.cache/whisper.cpp` };
   }
   const fw = fwInstalled({ home, exists });
   if (fw) return { tool: 'faster-whisper', bin: fw.py, script: fw.script };
@@ -86,8 +94,9 @@ function detect({ find, list, home, exists } = {}) {
   return { tool: null, canInstall: true, missing: 'transcription unavailable: install whisper.cpp, or press Install speech to text beside the mic' };
 }
 
-function cppArgs(model, wav) {
-  return ['-m', model, '-f', wav, '-nt', '-np', '-l', 'auto'];
+// 3.8: every processor thread (it used 4), and Fast decodes greedily (one guess instead of five).
+function cppArgs(model, wav, { fast = true, n = threads() } = {}) {
+  return ['-m', model, '-f', wav, '-nt', '-np', '-l', 'auto', '-t', String(n), ...(fast ? ['-bs', '1', '-bo', '1'] : [])];
 }
 function pyArgs(file, outDir) {
   return [file, '--model', 'base', '--output_format', 'txt', '--output_dir', outDir, '--fp16', 'False', '--verbose', 'False'];
@@ -104,4 +113,4 @@ function cleanTranscript(text) {
 
 const listDir = (d) => { try { return fs.readdirSync(d); } catch { return []; } };
 
-module.exports = { detect, fwInstall, fwInstalled, fwDir, FW_SCRIPT, FW_VERSION, cppArgs, pyArgs, cleanTranscript, pickModel, modelDirs, listDir, CPP_BINS };
+module.exports = { modelName, MODEL_FAST, MODEL_ACCURATE, threads, detect, fwInstall, fwInstalled, fwDir, FW_SCRIPT, FW_VERSION, cppArgs, pyArgs, cleanTranscript, pickModel, modelDirs, listDir, CPP_BINS };

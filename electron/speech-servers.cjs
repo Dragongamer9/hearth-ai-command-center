@@ -42,8 +42,8 @@ const ID_RE = /^[a-z0-9]{6,16}$/;
 const MAX_SERVERS = 8;
 const VOICE_RE = /^[^\0\r\n]{1,200}$/;
 const MODEL_RE = /^[A-Za-z0-9._:/-]{1,80}$/;
-const ENGINES = ['kokoro', 'chatterbox', 'sesame', 'dia', 'cosyvoice', 'orpheus', 'other'];
-const ENGINE_NAMES = { kokoro: 'Kokoro', chatterbox: 'Chatterbox', sesame: 'Sesame CSM', dia: 'Dia', cosyvoice: 'CosyVoice2', orpheus: 'Orpheus', other: 'Another engine' };
+const ENGINES = ['kokoro', 'chatterbox', 'sesame', 'dia', 'cosyvoice', 'orpheus', 'omnivoice', 'other'];
+const ENGINE_NAMES = { kokoro: 'Kokoro', chatterbox: 'Chatterbox', sesame: 'Sesame CSM', dia: 'Dia', cosyvoice: 'CosyVoice2', orpheus: 'Orpheus', omnivoice: 'OmniVoice (Hearth Voice Studio)', other: 'Another engine' };
 const ORPHEUS_EN = ['tara', 'leah', 'jess', 'leo', 'dan', 'mia', 'zac', 'zoe'];
 const ORPHEUS_MORE = ['pierre', 'amelie', 'marie', 'jana', 'thomas', 'max', 'javi', 'sergio', 'maria', 'pietro', 'giulia', 'carlo'];
 // Size caps and timeouts (the owner's rule for anything that reaches another machine).
@@ -57,6 +57,8 @@ const TIMEOUT = { list: 10000, speak: 180000, clone: 180000, test: 60000 };
 // documented default port. clone: how it learns a voice (null = not from the app).
 const APIS = {
   openai: { label: 'OpenAI-compatible speech API', engine: null, model: 'tts-1', format: 'mp3', voices: ['/v1/audio/voices'], clone: null },
+  // 3.8: Hearth's Voice Studio on his PC (port 8890): every voice he made or designed there, by its own API key.
+  'hearth-voice-studio': { label: 'Hearth Voice Studio', engine: 'omnivoice', model: 'hearth-voice-studio', format: 'mp3', voices: ['/v1/audio/voices'], port: 8890, clone: null },
   'kokoro-fastapi': { label: 'Kokoro-FastAPI', engine: 'kokoro', model: 'kokoro', format: 'mp3', voices: ['/v1/audio/voices'], port: 8880, clone: null },
   'chatterbox-api': { label: 'chatterbox-tts-api', engine: 'chatterbox', model: 'chatterbox', format: null, voices: ['/v1/voices', '/voices'], port: 4123, clone: 'library', extras: ['exaggeration', 'cfgWeight', 'temperature'] },
   'chatterbox-server': { label: 'Chatterbox-TTS-Server', engine: 'chatterbox', model: 'chatterbox', format: 'wav', voices: ['/get_predefined_voices', '/get_reference_files'], port: 8004, clone: null, extras: ['exaggeration', 'cfgWeight', 'temperature'] },

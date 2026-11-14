@@ -54,3 +54,13 @@ test('the mesh and the Mesh / Cores switch', () => {
   assert.match(stage, /class="mesh"/);
   assert.doesNotMatch(liveStageHtml({ who: [], caption: null, chatTitle: '', counts: { total: 0, working: 0 }, canTalk: false }), /class="mesh"/);
 });
+
+test('3.8: a lit line gets three jagged electric sparks, the same on every redraw', async () => {
+  const { boltPaths } = await import('../src/live-mesh.mjs');
+  const a = boltPaths(50, 50, 86, 31, 'files:anthropic'); const b = boltPaths(50, 50, 86, 31, 'files:anthropic');
+  assert.equal(a.length, 3); assert.deepEqual(a, b);
+  assert.match(a[0], /^M50\.00 50\.00 L.* L86\.00 31\.00$/);
+  assert.notEqual(a[0], a[1]);
+  const m = meshState({ msgs: [], working: [{ agent: 'x', steps: [{ kind: 'run', label: 'Ran' }] }] });
+  assert.equal((meshHtml(m).match(/class="mesh-bolt b/g) || []).length, 3);
+});
