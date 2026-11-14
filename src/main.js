@@ -33,7 +33,7 @@ import { createVoice } from './voice.mjs';
 import { liveStageHtml, miniCore, LIVE_AIS, MAKER_IDS } from './live.mjs';
 import { checkWord, CHECK_PROMPT, planCheck, runCheck, CHECK_ORDER, CHECK_LABEL, summary as checkSummary } from './app/rollcall.mjs';
 import { creditsHtml } from './app/credits.mjs';
-import { voiceSettings, routeFor, isServer, serverIdOf, idOf } from './app/voice-logic.mjs';
+import { voiceSettings, routeFor, isServer, serverIdOf, idOf, providerName } from './app/voice-logic.mjs';
 import { studioView, queueHtml, requestFrom } from './app/studio.mjs';
 import { defaultsFrom, prefsFor, prefsOf, samePrefs, applyPrefs, rememberPrefs } from './app/chat-prefs.mjs';
 import { FIND_FIELDS, searchFields, stepIndex, replaceAllFields, snippet, cardMatches, matchedIn } from './app/card-find.mjs';
@@ -953,6 +953,8 @@ const voice = createVoice({
   entry: (id) => entry(id),
   rt: (id) => (id ? rt(id) : null),
   openId: () => S.open,
+  // This chat's own voice and speed (its Voice button), kept with the chat.
+  chatVoice: (id) => (id ? rt(id)?.sessions?._voice || null : null),
   mode: () => S.mode,
   cards: () => S.cards || [],
   cardById: (id) => cardById(id),
@@ -1046,8 +1048,35 @@ function setRegion(id, html, force = false) {
   if (!el) return false;
   if (!force && regions[id] === html) return false;
   regions[id] = html;
+  const kept = keepScroll(el);
   el.innerHTML = html;
+  putScroll(el, kept);
   return true;
+}
+
+// A redraw keeps every scrolled part where it was (the region itself and any list or panel inside it), so clicking
+// anything never sends a page back to the top. A part is found again by its id, else by where it sits in the region.
+function scrollPath(root, n) {
+  if (n.id) return `#${n.id}`;
+  const path = [];
+  for (let x = n; x && x !== root; x = x.parentElement) path.push(`${x.tagName}:${x.parentElement ? Array.prototype.indexOf.call(x.parentElement.children, x) : 0}`);
+  return path.reverse().join('>');
+}
+function keepScroll(el) {
+  const out = [];
+  if (el.scrollTop || el.scrollLeft) out.push(['', el.scrollTop, el.scrollLeft]);
+  for (const n of el.querySelectorAll('*')) if (n.scrollTop || n.scrollLeft) out.push([scrollPath(el, n), n.scrollTop, n.scrollLeft]);
+  return out;
+}
+function putScroll(el, kept) {
+  for (const [k, top, left] of kept) {
+    let n = el;
+    if (k.startsWith('#')) n = document.getElementById(k.slice(1));
+    else if (k) {
+      for (const step of k.split('>')) { const i = Number(step.split(':')[1]); n = n?.children?.[i]; if (!n) break; }
+    }
+    if (n && el.contains(n)) { n.scrollTop = top; n.scrollLeft = left; }
+  }
 }
 
 function shell() {
@@ -1127,6 +1156,7 @@ function topbar() {
   if (S.view === 'habitat') return `<span class="ttl">Habitat</span><span class="faint hab-sub">${S.lastChat && entry(S.lastChat) ? `the team of “${esc(entry(S.lastChat).title)}”` : 'your AI team'}</span><span class="grow"></span>`;
   return `<span class="ttl">${esc(title)}</span>${S.view === 'chat' ? workStack(cur(), 26) : ''}${chip}${temp}<span class="grow"></span>${know}
     ${S.view === 'chat' ? `<button class="tb" data-a="live" title="See this chat's team as living cores">${icon('eye', 'sm')}Live</button>` : ''}
+    ${S.view === 'chat' && cur() ? `<button class="tb" data-a="chat-voice" title="This chat's voice and speed">${icon('mic', 'sm')}Voice${cur().sessions?._voice ? ' ✓' : ''}</button>` : ''}
     <button class="tb" data-a="team-pop" title="Who's in this chat">${icon('users', 'sm')}Team</button>
     ${S.view === 'chat' && S.msgs.some((m) => (m.media || []).some((x) => x.kind === 'image')) ? `<button class="tb" data-a="gallery" data-m="" data-i="0" title="Every picture in this chat">${icon('eye', 'sm')}Gallery</button>` : ''}
     <button class="tb" data-a="toggle-pane" title="Live preview and canvas panel" ${S.view !== 'chat' ? 'disabled' : ''}>${icon('panel', 'sm')}</button>`;
@@ -1136,6 +1166,10 @@ function renderMain(scroll = false) {
   setRegion('top', topbar());
   const body = document.getElementById('body');
   const atBottom = body ? body.scrollHeight - body.scrollTop - body.clientHeight < 120 : true;
+  const lastMsg = S.msgs[S.msgs.length - 1];
+  const sig = S.view === 'chat' ? `${S.open}|${S.msgs.length}|${lastMsg?.id || ''}|${String(lastMsg?.text || '').length}` : '';
+  const grew = sig !== renderMain.sig;
+  renderMain.sig = sig;
   let html = '';
   let dock = '';
   if (S.view !== 'habitat' && habMounted) { stopHabitat(); stopHabitat3d(); habMounted = false; }
@@ -1169,7 +1203,9 @@ function renderMain(scroll = false) {
   if (S.view === 'home' && focused) focusComposer(caret);
   fitComposer();
   if (S.editing) { const el = document.getElementById('edit-text'); if (el && document.activeElement !== el) { el.focus(); } }
-  if (body && (scroll || atBottom) && S.view === 'chat') body.scrollTop = body.scrollHeight;
+  // To the bottom when a chat opens or you send (scroll), or when new words arrive while you're already at the bottom;
+  // never just because you clicked something.
+  if (body && (scroll || (atBottom && grew)) && S.view === 'chat') body.scrollTop = body.scrollHeight;
   if (S.view === 'chat' && changed) drawDiagrams();
 }
 
@@ -1703,6 +1739,24 @@ function popHtml() {
       ${c.hasCopy ? it('close', 'x', 'Close (remove its temporary copy)') : ''}
       ${it('hide', 'eyeoff', 'Hide')}<div class="sep"></div>${it('delete', 'trash', 'Delete')}</div>`;
   }
+  if (p.kind === 'chatvoice') {
+    // This chat's own voice and speed: the engine (your main voice provider or one of your speech servers), the voice
+    // for the AI teammates (a character keeps its own) and the speed for everyone in the chat. Kept with the chat.
+    const R = cur();
+    if (!R) return '';
+    const vs = voiceSettings(S.settings);
+    const cv = R.sessions?._voice || {};
+    const prov = cv.provider || vs.tts;
+    const provs = [vs.tts, ...(vs.servers || []).map((x) => `server:${x.id}`).filter((x) => x !== vs.tts)];
+    const list = voice.state.lists[prov];
+    const sp = Number(cv.speed) || 1;
+    return `<div class="scrim" data-a="close-pop"></div><div class="pop chatvoice" style="right:20px;top:52px;width:340px"><div class="mh">${icon('mic', 'sm')}This chat's voice</div>
+      <label class="field">Voices from<select data-chatvoice="provider">${provs.map((x) => `<option value="${esc(x)}" ${x === prov ? 'selected' : ''}>${esc(providerName(x, S.settings))}${x === vs.tts ? ' (main)' : ''}</option>`).join('')}</select></label>
+      <label class="field">Voice<select data-chatvoice="voice"><option value="">${list ? 'as in Settings › Voice' : 'loading…'}</option>${(list || []).map((v) => `<option value="${esc(v.id)}" ${v.id === cv.voice ? 'selected' : ''}>${esc(v.name)}</option>`).join('')}</select></label>
+      <label class="field">Speed <span class="faint">${sp.toFixed(2)}×</span><input type="range" min="0.5" max="2" step="0.05" value="${sp}" data-chatvoice="speed"></label>
+      <div class="fine">For the AI teammates in this chat. Characters keep their own voices; the speed is for everyone here.</div>
+      <div class="mft left"><button class="btn" data-a="chat-voice-try">${icon('play', 'sm')}Hear it</button>${R.sessions?._voice ? `<button class="btn ghost" data-a="chat-voice-reset">Back to my default</button>` : ''}</div></div>`;
+  }
   if (p.kind === 'team') {
     const t = team();
     const opt = (v, label, sub) => `<button class="it ${S.mode === v ? 'on' : ''}" data-a="set-mode" data-v="${v}">${label}<small>${sub}</small></button>`;
@@ -1946,9 +2000,11 @@ function accountsList() {
   const spent = Number(cr.spent || 0);
   const budget = Number(cr.budget || 200);
   const credit = `<div class="ac-credit ${cr.on ? 'on' : ''}"><div class="grow"><b>Claude API credit</b><div class="fine">Your monthly API credit from your Claude account. Claude stays on your plan's sign-in unless this is on; then Claude Code uses your API key and the app keeps count of what it spends.${cr.key ? '' : ' Add your Claude API key (from your Claude account\'s API keys page) to use it.'}</div></div>
-    <div class="ac-bar" aria-hidden="true"><i style="width:${Math.min(100, Math.round((spent / Math.max(1, budget)) * 100))}%"></i></div><span class="ac-amt"><b>$${spent.toFixed(2)}</b> of $${budget} this month</span>
+    <div class="ac-bar" aria-hidden="true"><i style="width:${Math.min(100, Math.round((spent / Math.max(1, budget)) * 100))}%"></i></div><span class="ac-amt"><b>$${spent.toFixed(2)}</b> of $${budget} this month<small>${(cr.apiRuns || 0) + (cr.planRuns || 0) ? `${cr.apiRuns || 0} run${cr.apiRuns === 1 ? '' : 's'} on the API key · ${cr.planRuns || 0} on your plan (not from the credit)` : 'counted by the app'}</small></span>
+    <a class="mini btnlink" href="https://claude.ai/settings/billing" target="_blank" rel="noopener" title="Your real balance, on claude.ai">Real balance</a><button class="mini" data-a="credit-reset" title="Start the app's count again at $0">Reset count</button>
     ${cr.key ? '' : '<button class="mini" data-a="set-key" data-v="anthropic">Add key</button>'}${tog(cr.on === true, 'credit-toggle', `aria-label="Use my API credit for Claude" ${cr.key ? '' : 'disabled'}`)}</div>`;
-  return `<div class="ac-sum"><span><b>${ready}</b> of ${total} ready${need ? ` · ${need} need you` : ''}</span><span class="grow"></span><input id="acct-q" class="ac-q" placeholder="Search AIs…" value="${esc(S.acctQ || '')}" aria-label="Search AIs"></div>${credit}${groups || '<div class="fine">No AI matches that.</div>'}
+  const oldNote = cr.oldCount ? `<div class="note sub">The app used to count Claude Code's cost estimate for every run, also the ones your plan paid for, so it showed $${Number(cr.oldCount).toFixed(2)}. That count was wrong and starts again here: now only runs that really used your API key count. Your real balance is on claude.ai (Real balance).</div>` : '';
+  return `${oldNote}<div class="ac-sum"><span><b>${ready}</b> of ${total} ready${need ? ` · ${need} need you` : ''}</span><span class="grow"></span><input id="acct-q" class="ac-q" placeholder="Search AIs…" value="${esc(S.acctQ || '')}" aria-label="Search AIs"></div>${credit}${groups || '<div class="fine">No AI matches that.</div>'}
     <div class="note sub">Web sign-in uses that AI's own website, signed in as you, in a hidden window that keeps your sign-in to itself. It's against those sites' terms and your account could be suspended, so each one is off until you turn it on.</div>`;
 }
 const tog = (on, a, extra = '') => `<button class="tog ${on ? 'on' : ''}" role="switch" aria-checked="${on}" data-a="${a}" ${extra}></button>`;
@@ -2810,6 +2866,21 @@ document.addEventListener('click', async (ev) => {
     case 'chat-menu': ev.stopPropagation(); { const r = a.getBoundingClientRect(); S.pop = { kind: 'menu', id: d.id, x: Math.min(r.left, window.innerWidth - 260), y: Math.min(r.bottom + 4, window.innerHeight - 400) }; } return renderOverlay();
     case 'chat-act': return chatAction(d.k, d.id);
     case 'close-pop': S.pop = null; S.pickRepo = null; S.pickBranch = null; return renderOverlay();
+    case 'chat-voice': {
+      popAt(a, 'chatvoice', { top: true });
+      const cv = cur()?.sessions?._voice || {};
+      const prov = cv.provider || voiceSettings(S.settings).tts;
+      renderOverlay();
+      voice.loadStatus?.().then?.(() => renderOverlay());
+      voice.loadList(prov).then(() => renderOverlay());
+      return;
+    }
+    case 'chat-voice-reset': { const R = cur(); if (!R) return; delete R.sessions._voice; await saveRt(R); toast('This chat uses your voice settings again.'); render(); return renderOverlay(); }
+    case 'chat-voice-try': {
+      const cv = cur()?.sessions?._voice || {};
+      const prov = cv.provider || voiceSettings(S.settings).tts;
+      return voice.preview({ provider: prov, voice: cv.voice || (voice.state.lists[prov] || [])[0]?.id || '', speed: cv.speed || 1, who: 'owner' }, `Hello, ${ownerName()}. This is how this chat sounds.`);
+    }
     case 'close-modal': S.modal = null; return renderOverlay();
     case 'humanize-draft': return openHumanize('draft', document.getElementById('composer')?.value ?? S.draft);
     case 'humanize-msg': { const m = msgById(d.m); return m ? openHumanize('msg', m.text, m.who, m.id) : undefined; }
@@ -3044,6 +3115,7 @@ document.addEventListener('click', async (ev) => {
     case 'acct-web': { const r = await call('openWeb', d.v); if (r && r.ok === false) toast(r.message || 'That site couldn\'t open.'); return; }
     case 'cli-key': { const key = await secretPrompt(`Paste your ${CLI_KEY[d.v] || 'API key'} (optional: signing in works without it)`); if (key) { const r = await call('cliSetKey', d.v, key); if (r?.ok === false) toast(r.message); S.clik = (await call('cliKeys')) || S.clik; render(); } return; }
     case 'cli-unkey': await call('cliRemoveKey', d.v); S.clik = (await call('cliKeys')) || S.clik; return render();
+    case 'credit-reset': { if (!confirm('Start the app\'s count of your API credit again at $0?\n\nThis only resets the app\'s own count; your real balance on claude.ai doesn\'t change.')) return; await call('creditReset'); S.credit = (await call('creditStatus')) || S.credit; return render(); }
     case 'credit-toggle': {
       const on = S.credit?.on === true;
       if (!on && !confirm('Use your Claude API credit for Claude?\n\nClaude Code will use your API key instead of your plan\'s sign-in, so its work is paid from your monthly API credit. The app counts what it spends. You can turn this off any time.')) return;
@@ -3105,6 +3177,20 @@ document.addEventListener('change', (ev) => {
   if (t.matches?.('[data-a="max-chats"]')) setSettings({ maxChats: Number(t.value) });
   if (t.matches?.('select[data-a="voice-set"]')) setSettings({ voice: { [t.dataset.k]: t.value } }).then(() => loadSection('voice'));
   if (t.matches?.('[data-vpick]')) { const vp = pickVoice(t.dataset.vpick, t.dataset.prov, t.value); if (vp) setSettings({ voice: vp }); }
+  if (t.matches?.('[data-chatvoice]')) {
+    const R = cur();
+    if (R) {
+      const k = t.dataset.chatvoice;
+      const cv = { ...(R.sessions._voice || {}) };
+      if (k === 'provider') { cv.provider = t.value; delete cv.voice; voice.loadList(t.value).then(() => renderOverlay()); }
+      if (k === 'voice') { if (t.value) cv.voice = t.value; else delete cv.voice; if (!cv.provider) cv.provider = voiceSettings(S.settings).tts; }
+      if (k === 'speed') cv.speed = Math.max(0.5, Math.min(2, Number(t.value) || 1));
+      R.sessions._voice = cv;
+      saveRt(R);
+      renderOverlay();
+      setRegion('top', topbar());
+    }
+  }
   // Which engine a voice uses: the main provider ('') or one of his speech servers.
   if (t.matches?.('[data-vuse]')) {
     const k = t.dataset.vuse;

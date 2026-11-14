@@ -482,7 +482,10 @@ async function runAgent({ agent, prompt, cwd, mode = 'read', model, timeoutMs, s
   // Output activity feeds the stall watchdog (electron/ops/watchdog.cjs).
   // extraEnv: e.g. HEARTH_AI_ASSETS, the AI's own folder for generated files.
   let resultEvent = null;
-  const lines = typeof onEvent === 'function' ? lineSplitter((ev) => { if (ev && ev.type === 'result') resultEvent = ev; try { onEvent(ev); } catch {} }) : null;
+  // 3.5.1: which login Claude Code really used (its first event says): "ANTHROPIC_API_KEY" = his API credit,
+  // "none" = his plan's sign-in. Only the first counts toward the credit.
+  let keySource = null;
+  const lines = typeof onEvent === 'function' ? lineSplitter((ev) => { if (ev && ev.type === 'result') resultEvent = ev; if (ev && ev.type === 'system' && ev.subtype === 'init' && typeof ev.apiKeySource === 'string') keySource = ev.apiKeySource; try { onEvent(ev); } catch {} }) : null;
   const feed = lines ? (d) => { lines(d); onData?.(d); } : onData;
   const run = (f, a, o) => runTool(f, a, { ...o, onData: feed, extraEnv: o?.extraEnv ? { ...(extraEnv || {}), ...o.extraEnv } : extraEnv });
   if (mode === 'edit') mode = 'standard';
@@ -519,7 +522,10 @@ async function runAgent({ agent, prompt, cwd, mode = 'read', model, timeoutMs, s
     // stream-json: the final "result" event (caught while streaming, so a long transcript can't push it out).
     const parsed = resultEvent ? { text: typeof resultEvent.result === 'string' ? resultEvent.result : '', isError: Boolean(resultEvent.is_error), raw: resultEvent } : parseClaude(res.out);
     const sessionId = (parsed.raw && parsed.raw.session_id) || sid;
-    if (res.code === 0 && !parsed.isError && parsed.text) return { ok: true, text: parsed.text, via: 'Claude Code', sessionId, usage: claudeUsage(parsed.raw) };
+    if (res.code === 0 && !parsed.isError && parsed.text) {
+      const u = claudeUsage(parsed.raw);
+      return { ok: true, text: parsed.text, via: 'Claude Code', sessionId, usage: u ? { ...u, billedTo: keySource === null ? 'unknown' : /API_KEY/i.test(keySource) ? 'api' : 'plan' } : null };
+    }
     return { ok: false, error: classify(agent, res, parsed.text), partial: parsed.text || null, resumeFailed: Boolean(resume) };
   }
 

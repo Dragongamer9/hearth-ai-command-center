@@ -315,3 +315,27 @@ test('the team lead is told what each kind of new AI is for', async () => {
   const member = brief({ agent: 'cursor', role: 'member', chat: { title: 'T' }, team, live: team.members, status: {} });
   assert.doesNotMatch(member, /CLOUD AGENTS/, 'only the lead gets the hand-out rules');
 });
+
+// 3.5.1: the API credit count only counts runs Claude Code itself says used his API key (3.4/3.5 showed $241.47 when
+// he'd used about $10: Claude Code reports a cost for every run, also the ones his plan's sign-in paid for).
+test('3.5.1: only runs on the API key count toward the credit; plan runs are counted apart; the old count is not carried over', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
+  const src = main.slice(main.indexOf('const credit = (() => {'), main.indexOf("// 3.4.1: the screen's scale"));
+  const dir = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'credit-'));
+  fs.writeFileSync(path.join(dir, 'api-credit.json'), JSON.stringify({ month: new Date().toISOString().slice(0, 7), usd: 241.47 }));
+  const credit = new Function('fs', 'path', 'dataDir', `${src}; return credit;`)(fs, path, () => dir);
+  assert.equal(credit.read().usd, 0, 'the old wrong count starts again');
+  assert.equal(credit.read().oldCount, 241.47, 'and is mentioned once');
+  credit.add(1.25, 'plan');
+  credit.add(0.5, 'api');
+  credit.add(2, 'unknown');
+  const c = credit.read();
+  assert.deepEqual([c.usd, c.apiRuns, c.planRuns, c.unknownRuns, c.oldCount], [0.5, 1, 1, 1, undefined]);
+  credit.reset();
+  assert.equal(credit.read().usd, 0);
+  const agents = fs.readFileSync(path.join(__dirname, '..', 'electron', 'agents.cjs'), 'utf8');
+  assert.match(agents, /ev\.type === 'system' && ev\.subtype === 'init' && typeof ev\.apiKeySource === 'string'/);
+  assert.match(agents, /billedTo: keySource === null \? 'unknown' : \/API_KEY\/i\.test\(keySource\) \? 'api' : 'plan'/);
+});

@@ -271,7 +271,7 @@ export function createVoice(ctx) {
   async function loadLists() { await loadStatus(); await Promise.all(['local', 'openai', ...(keys().elevenlabs ? ['elevenlabs'] : []), ...(V.status?.hearth?.configured ? ['hearth'] : []), ...settings().servers.map((x) => `server:${x.id}`)].map((p) => loadList(p))); }
   function speak(msgs) {
     const s = ctx.settings();
-    const { plan, notices } = speechPlan({ msgs, cards: ctx.cards(), settings: s, keys: keys(), lists: V.lists, hosts: hosts(), names: Object.fromEntries(UNCENSORED.map((a) => [a, ctx.aiName(a)])) });
+    const { plan, notices } = speechPlan({ msgs, cards: ctx.cards(), settings: s, keys: keys(), lists: V.lists, hosts: hosts(), names: Object.fromEntries(UNCENSORED.map((a) => [a, ctx.aiName(a)])), chatVoice: ctx.chatVoice ? ctx.chatVoice(V.chatId || ctx.openId()) : null });
     if (notices.length) { V.notice = notices[0]; if (!V.open) toast(notices[0]); }
     if (!plan.length) return false;
     queue.enqueue(plan);
