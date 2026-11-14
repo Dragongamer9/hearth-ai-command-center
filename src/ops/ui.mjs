@@ -359,7 +359,25 @@ function levelsCard() {
 }
 
 function voiceButton() {
-  return `<button class="btn ghost ops-mic ${local.rec ? 'rec' : ''}" data-opsmic title="Hold to record a voice note (transcribed on this computer only)">${local.rec ? '● Recording… release to send' : icon('mic', 'sm')}</button>`;
+  const mic = `<button class="btn ghost ops-mic ${local.rec ? 'rec' : ''}" data-opsmic title="Hold to record a voice note (transcribed on this computer only)">${local.rec ? '● Recording… release to send' : icon('mic', 'sm')}</button>`;
+  // 3.7: when nothing here can turn speech into text, an Install button sits beside the mic.
+  if (!local.voiceMissing && !local.voiceInstalling) return mic;
+  const inst = local.voiceInstalling
+    ? `<button class="btn ghost ops-voice-install" disabled title="Installing faster-whisper into this app's folder">${esc(local.voiceInstalling)}…</button>`
+    : '<button class="btn ops-voice-install" data-ops="voice-install" title="Installs faster-whisper for this app (about 250 MB, no password needed); your voice stays on this computer">Install speech to text</button>';
+  return mic + inst;
+}
+async function voiceInstall() {
+  if (local.voiceInstalling) return;
+  local.voiceInstalling = 'Starting';
+  C.render();
+  const off = C.api?.onOpsVoiceInstallStep?.((label) => { local.voiceInstalling = label; C.render(); });
+  const r = await call('opsVoiceInstall');
+  if (typeof off === 'function') off();
+  local.voiceInstalling = null;
+  if (r?.ok) { local.voiceMissing = false; C.toast('Speech to text is installed. Hold the mic to record a voice note.'); }
+  else C.toast(r?.message || 'Speech to text couldn\'t be installed.');
+  C.render();
 }
 
 function suggestHint() {
@@ -458,9 +476,10 @@ async function startRec() {
       C.toast('Transcribing on this computer…');
       const r = await call('opsVoiceSave', await blob.arrayBuffer());
       if (!r?.ok) return C.toast(r?.message || 'Could not save the voice note.');
+      if (r.canInstall && !r.transcript) local.voiceMissing = true;
       const u = C.ui();
       u.attach.push(r.att);
-      const line = r.transcript ? `(voice note) ${r.transcript}` : `(voice note: ${r.note || 'transcription unavailable: install whisper.cpp'})`;
+      const line = r.transcript ? `(voice note) ${r.transcript}` : `(voice note: ${r.note || 'transcription unavailable: press Install speech to text beside the mic'})`;
       u.draft = u.draft ? `${u.draft}\n${line}` : line;
       C.render();
     };
@@ -750,6 +769,7 @@ async function onClick(e) {
   if (!el) return;
   const { ops: op, arg, val } = el.dataset;
   if (op === 'card') return answerCard(arg, val);
+  if (op === 'voice-install') return voiceInstall();
   if (op === 'identity') {
     const name = document.getElementById(`${arg}-name`)?.value.trim() || '';
     const emails = (document.getElementById(`${arg}-emails`)?.value || '').split(/[\s,]+/).filter((e) => /^[^\s<>@]+@[^\s<>@]+\.[^\s<>@]+$/.test(e));
@@ -940,6 +960,7 @@ export function createOps(ctx) {
       C.api?.onOpsPhoneAction?.((a) => onPhone(a));
       await refreshProjects();
       syncPowers();
+      { const vt = await call('opsVoiceTools'); if (vt && !vt.tool && vt.canInstall) local.voiceMissing = true; }
       local.identity = await call('opsIdentityDefault');
       const dp = await call('opsDiskPending');
       if (dp) { local.disk = { settings: Boolean(dp.settings), projects: Boolean(dp.projects) }; local.diskNotice = dp.notice || null; }

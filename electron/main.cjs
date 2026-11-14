@@ -1281,6 +1281,7 @@ function registerOps() {
   opsApi = ops.register({
     handle, dataDir, readSettings, useProject, settingsDisk, taskDir, worktreeRoot, gitops, workspace, agents, attachments, redact, send, dialog,
     getWindow: () => mainWindow,
+    hearth: () => parityApi?.hearth || null,
     // The store swaps first and the binding with it: any save still on its way from the
     // window (which shows the previous project until it reloads) is refused.
     setStore: (file, id) => { store = createStore(file); lastLoad = { recoveredFrom: null }; binding.setActive(id); },

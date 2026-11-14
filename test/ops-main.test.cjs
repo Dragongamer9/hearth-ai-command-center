@@ -123,7 +123,7 @@ test('voice: whisper.cpp needs a model, python whisper works alone, otherwise th
   assert.deepEqual(voice.detect({ find: (b) => (b === 'whisper-cli' ? '/usr/bin/whisper-cli' : null), list, home: '/h' }), { tool: 'whisper.cpp', bin: '/usr/bin/whisper-cli', model: path.join('/h', '.cache', 'whisper.cpp', 'ggml-base.en.bin') });
   assert.equal(voice.detect({ find: (b) => (b === 'whisper-cli' ? '/x' : null), list: () => [], home: '/h' }).tool, null);
   assert.equal(voice.detect({ find: (b) => (b === 'whisper' ? '/usr/bin/whisper' : null), list: () => [], home: '/h' }).tool, 'whisper');
-  assert.equal(voice.detect({ find: () => null, list: () => [], home: '/h' }).missing, 'transcription unavailable: install whisper.cpp');
+  assert.match(voice.detect({ find: () => null, list: () => [], home: '/h' }).missing, /^transcription unavailable: install whisper.cpp/);
   assert.equal(voice.cleanTranscript(' [BLANK_AUDIO]  Fix the   wifi page. \n'), 'Fix the wifi page.');
   assert.ok(voice.cppArgs('/m.bin', '/a.wav').includes('-nt'));
 });

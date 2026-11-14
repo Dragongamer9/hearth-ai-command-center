@@ -54,6 +54,7 @@ function stateFile(dataDir, legacyDir, legacyList = []) {
 
 function register(d) {
   const { settingsDisk, handle, dataDir, readSettings, useProject, setStore, taskDir, worktreeRoot, gitops, workspace, agents, attachments, redact, send, dialog, getWindow } = d;
+  const hearthOf = typeof d.hearth === 'function' ? d.hearth : () => d.hearth || null;
   projects = projects || createProjects(dataDir());
   const gh = () => gitops.find('gh');
   const ghApi = (args, timeoutMs = 30000) => {
@@ -445,9 +446,20 @@ function register(d) {
     return { ok: true, repo: s.logsRepo, baseline, skipped: baseline ? fresh.length : 0, created };
   });
 
-  // ---- voice notes (local transcription only) ----
+  // ---- voice notes (whisper on this computer, else Speech to text on his Hearth devices) ----
   const voiceTools = () => voice.detect({ find: gitops.find, list: voice.listDir });
   handle('ops:voiceTools', () => voiceTools());
+  // 3.7: Install speech to text (the button beside the mic): faster-whisper into ~/.local/share/hearth-ai/whisper.
+  let installing = null;
+  handle('ops:voiceInstall', async () => {
+    if (voiceTools().tool) return { ok: true, already: true };
+    if (installing) return installing;
+    const proxy = Object.fromEntries(['HTTPS_PROXY', 'HTTP_PROXY', 'NO_PROXY', 'https_proxy', 'http_proxy', 'no_proxy'].filter((k) => typeof process.env[k] === 'string').map((k) => [k, process.env[k]]));
+    installing = voice.fwInstall({ run: (bin, args, o) => exec(bin, args, { ...o, env: { ...tests.cleanEnv(process.env, os.tmpdir()), ...proxy, HOME: os.homedir() } }), onStep: (label) => send('ops:voiceInstallStep', label) })
+      .catch((e) => ({ ok: false, message: e.message }))
+      .finally(() => { installing = null; });
+    return installing;
+  });
   handle('ops:voiceSave', async (data) => {
     const buf = Buffer.from(data instanceof ArrayBuffer ? new Uint8Array(data) : data || []);
     if (!buf.length || buf.length > 50 * 1024 * 1024) return { ok: false, message: 'Voice note is empty or too long.' };
@@ -458,9 +470,23 @@ function register(d) {
     fs.writeFileSync(file, buf, { mode: 0o600 });
     const att = { id, kind: 'audio', name: 'voice-note.webm', size: buf.length, path: file, url: pathToFileURL(file).href };
     const tool = voiceTools();
-    if (!tool.tool) return { ok: true, att, transcript: '', note: tool.missing };
+    if (!tool.tool) {
+      // 3.7: no whisper on this computer: Speech to text on his Hearth devices (the PC's whisper) does it.
+      const h = hearthOf();
+      if (h?.configured?.()) {
+        const r = await h.transcribe({ buf, mime: 'audio/webm' }).catch((e) => ({ ok: false, message: e.message }));
+        if (r?.ok) return { ok: true, att, transcript: String(r.text || ''), note: r.text ? '' : 'transcription came back empty' };
+        return { ok: true, att, transcript: '', canInstall: true, note: `transcription unavailable: Hearth devices: ${r?.message || 'no Speech to text answered'}` };
+      }
+      return { ok: true, att, transcript: '', canInstall: true, note: tool.missing };
+    }
     const env = tests.cleanEnv(process.env, os.tmpdir());
     try {
+      if (tool.tool === 'faster-whisper') {
+        const r = await exec(tool.bin, [tool.script, file], { timeoutMs: 300000, env: { ...env, HOME: os.homedir() } });
+        const text = voice.cleanTranscript(r.out);
+        return { ok: true, att, transcript: text, note: text ? '' : `transcription failed: ${String(r.err || '').split('\n').slice(-1)[0] || 'no text'}` };
+      }
       if (tool.tool === 'whisper.cpp') {
         const ffmpeg = gitops.find('ffmpeg');
         if (!ffmpeg) return { ok: true, att, transcript: '', note: 'transcription unavailable: install ffmpeg (whisper.cpp needs a WAV file)' };
