@@ -98,7 +98,16 @@ export function boltPaths(x1, y1, x2, y2, key, { count = 3, steps = 18, jag = 3.
 }
 
 // The mesh. capsule items get { name, html } from main.js (their core); rgbOf(id) gives an AI's colour.
-export function meshHtml({ stations, capsule }, { rgbOf = () => '201,163,114', nameOf = (id) => id, coreOf = () => '' } = {}) {
+// 3.9: Ithil's own station (the top-left corner, outside the ring of stations): her mood and newest thought from Hearth AI's live events. It glows sage green
+// for a few seconds after each new thought, and dims while she sleeps, rests or is offline.
+export const ITHIL_AT = [10, 12]; // where her line ends (her station's middle, about)
+export function ithilStationHtml(it, { avatar = '' } = {}) {
+  if (!it) return '';
+  const cls = !it.online ? 'off' : it.state !== 'awake' ? 'rest' : it.think ? 'think' : 'awake';
+  return `<div class="mesh-st mesh-ithil ${cls}" title="Ithil (Hearth AI): ${esc(it.label)}"><div class="mesh-st-h">${avatar}<b>Ithil</b><span>${esc(it.online ? (it.mood || it.state) : 'offline')}</span></div><div class="mesh-ith-t">${esc(it.online ? (it.thought ? `“${it.thought}”` : it.label) : 'Hearth AI isn\'t running')}</div></div>`;
+}
+
+export function meshHtml({ stations, capsule, ithil = null }, { rgbOf = () => '201,163,114', nameOf = (id) => id, coreOf = () => '', ithilAvatar = '' } = {}) {
   const n = capsule.length;
   const spot = (i) => (n <= 1 ? 50 : 50 + (i - (n - 1) / 2) * Math.min(9, 36 / n));
   const at = new Map(capsule.map((c, i) => [c.id, spot(i)]));
@@ -120,5 +129,8 @@ export function meshHtml({ stations, capsule }, { rgbOf = () => '201,163,114', n
   const caps = n
     ? capsule.map((c) => `<div class="mesh-ai" style="--c:rgb(${rgbOf(c.id)})">${coreOf(c)}<b>${esc(nameOf(c.id))}</b><span>${esc(c.status)}</span></div>`).join('')
     : '<div class="mesh-none">Nobody is working right now</div>';
-  return `<div class="mesh" role="img" aria-label="Live mesh: ${n} AI${n === 1 ? '' : 's'} working; ${stations.filter((s) => s.active).map((s) => s.title).join(', ') || 'no station'} lit"><svg class="mesh-lines" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">${lines}<g class="mesh-bolts">${bolts}</g></svg>${pulses}<div class="mesh-cap">${caps}</div>${boxes}</div>`;
+  const ith = ithil ? ithilStationHtml(ithil, { avatar: ithilAvatar }) : '';
+  const ithLine = ithil && ithil.online ? `<line x1="50" y1="50" x2="${ITHIL_AT[0]}" y2="${ITHIL_AT[1]}" stroke="${ithil.think || ithil.busy ? 'rgb(156,196,156)' : 'rgba(156,196,156,.22)'}" stroke-width="${ithil.think || ithil.busy ? 2 : 1}" stroke-dasharray="${ithil.state === 'awake' ? '' : '3 4'}" vector-effect="non-scaling-stroke"></line>` : '';
+  const ithBolts = ithil && ithil.online && (ithil.think || ithil.busy) ? boltPaths(50, 50, ITHIL_AT[0], ITHIL_AT[1], 'ithil').map((dd, k) => `<path class="mesh-bolt b${k}" d="${dd}" style="color:rgb(156,196,156)" vector-effect="non-scaling-stroke"></path>`).join('') : '';
+  return `<div class="mesh" role="img" aria-label="Live mesh: ${n} AI${n === 1 ? '' : 's'} working; ${stations.filter((s) => s.active).map((s) => s.title).join(', ') || 'no station'} lit"><svg class="mesh-lines" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">${lines}${ithLine}<g class="mesh-bolts">${bolts}${ithBolts}</g></svg>${pulses}<div class="mesh-cap">${caps}</div>${boxes}${ith}</div>`;
 }

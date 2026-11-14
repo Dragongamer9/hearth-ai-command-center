@@ -29,6 +29,8 @@ export function plainError(agent, error = {}) {
 function plainErrorOnly(agent, error = {}) {
   const raw = String(error?.message || error || '').trim();
   const kind = error?.kind;
+  // 3.9: Hearth AI words its own errors (not running, key not accepted, connections off, already busy, her limits).
+  if (agent === 'ithil' && raw && kind !== 'cancelled') return { state: ['auth', 'busy', 'off', 'offline', 'refused'].includes(kind) ? 'blocked' : 'failed', reason: raw, raw };
   // The web sign-in bridge words its own errors (signed out vs. no chat box vs. no answer, and where it got to).
   if (error?.fix === 'open' && raw) return { state: kind === 'auth' ? 'blocked' : 'failed', reason: raw, raw };
   if (kind === 'page') return { state: 'failed', reason: raw || `${nm(agent)}'s page didn't show its chat box.`, raw };

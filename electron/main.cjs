@@ -35,6 +35,7 @@ const teamCheck = require('./team-check.cjs');
 const voiceChat = require('./voice-chat.cjs');
 const voicePerms = require('./voice-perms.cjs');
 const hearthDevices = require('./hearth-devices.cjs');
+const ithilLib = require('./ithil.cjs');
 const comfy = require('./comfy.cjs');
 const studioLib = require('./studio.cjs');
 
@@ -190,6 +191,8 @@ function normalSettings(s) {
     // Hearth devices (Settings › Accounts): the Home server's address, the device order and the
     // skip rules. Defaults filled in here at read time; only what he changes is saved.
     hearthDevices: hearthDevices.cleanSettings(s.hearthDevices),
+    // 3.9: Ithil (Hearth AI): a host and port he typed for another device; empty = this PC (connect.json).
+    ithil: ithilLib.cleanSettings(s.ithil),
     // His ComfyUI server for Characters chat scene pictures (address and default checkpoint).
     comfy: comfy.cleanSettings(s.comfy),
     // Uncensored mode (2.2.1, electron/studio.cjs): off until the owner turns it on; the hard
@@ -212,7 +215,7 @@ function cleanInstructions(c) {
 const TEAM_IDS = ['anthropic', 'openai', 'google', 'xai', 'mistral', 'qwen', 'perplexity', 'deepseek', 'ollama', 'venice', 'civitai', 'gpu', 'hearth', 'free', 'freebuff', ...more.TEAM.filter((a) => !more.WEB_IDS.includes(a))];
 // Teammates by key or URL (electron/teammates.cjs; Hearth devices: electron/hearth-devices.cjs):
 // answered through their own API.
-const TEAMMATES = ['venice', 'civitai', 'gpu', 'hearth', 'free'];
+const TEAMMATES = ['venice', 'civitai', 'gpu', 'hearth', 'free', 'ithil'];
 function cleanTeam(t) {
   if (!t || typeof t !== 'object' || Array.isArray(t)) return null;
   const members = [...new Set((Array.isArray(t.members) ? t.members : []).filter((a) => TEAM_IDS.includes(a)))];
@@ -572,6 +575,7 @@ function registerIpc() {
     if ('customInstructions' in patch) s.customInstructions = cleanInstructions(patch.customInstructions);
     if ('voice' in patch) s.voice = voiceChat.mergeSettings(s.voice, patch.voice);
     if ('hearthDevices' in patch) s.hearthDevices = hearthDevices.mergeSettings(s.hearthDevices, patch.hearthDevices);
+    if ('ithil' in patch) s.ithil = ithilLib.mergeSettings(s.ithil, patch.ithil);
     if ('comfy' in patch) s.comfy = comfy.mergeSettings(s.comfy, patch.comfy);
     if ('uncensored' in patch) {
       const next = studioLib.mergeUncensored(s.uncensored, patch.uncensored);
@@ -1159,6 +1163,13 @@ function registerIpc() {
   registerOps();
   registerV2();
   registerParity();
+  // 3.9: Ithil (Hearth AI): her status, avatar, live events and the connection settings (Settings › Accounts).
+  handle('ithil:status', (o = {}) => ithilApi().status({ fresh: o?.fresh === true }));
+  handle('ithil:test', () => ithilApi().test());
+  handle('ithil:avatar', (o = {}) => ithilApi().avatar({ expression: String(o?.expression || ''), framing: o?.framing === 'full' ? 'full' : 'portrait' }));
+  handle('ithil:watch', (on) => ithilApi().watch(on === true));
+  handle('ithil:setKey', (key) => ithilApi().setKey(key === null ? null : String(key ?? '')));
+  handle('ithil:info', () => { const c = ithilApi().conn(); return { source: c.source, host: c.host, port: c.port, hasKey: ithilApi().hasKey(), hasFileKey: c.source === 'file' && Boolean(c.token) }; });
   // "Make it sound human" (electron/humanizer.cjs) through the AI he picks, on its API path.
   handle('humanize:run', (q) => {
     const agent = String(q?.agent || '');
@@ -1238,6 +1249,7 @@ async function apiCall(agent, model, prompt, signal, opts = {}) {
   // 3.1: his own signed-in website instead of a paid key, only when he turned the bridge on for this AI.
   if (webBridge && readSettings().webBridge[agent] === true && !['image', 'video'].includes(webBridgeLib.kindOf(agent))) return webBridge.ask(agent, prompt, signal);
   if (agent === 'hearth') return parityApi ? parityApi.hearth.chat({ prompt, model, signal }) : { ok: false, error: { kind: 'auth', message: 'Not ready.' } };
+  if (agent === 'ithil') return ithilTurn(prompt, signal, opts);
   if (TEAMMATES.includes(agent)) return parityApi ? parityApi.teammates.chat(agent, { prompt, model, signal }) : { ok: false, error: { kind: 'auth', message: 'Not ready.' } };
   const r = await callProvider({ provider: agent, apiKey: secrets.get(agent), model: validateModel(model || DEFAULT_MODELS[agent]), prompt, signal, repo: opts?.repo || null, timeoutMs: 180000 });
   if (!r.ok) {
@@ -1246,6 +1258,21 @@ async function apiCall(agent, model, prompt, signal, opts = {}) {
     else if (r.error.kind === 'no_key') r.error.kind = 'auth';
   }
   return r.ok ? { ...r, via: 'API' } : r;
+}
+
+// 3.9: Ithil (electron/ithil.cjs). A turn is a message through /v1/talk, or, when the lead hands her work in a chat
+// that builds, a task through /v1/tasks that's checked every 10 s until it's done or failed. She's never asked to cross
+// her hard limits; while she's asleep, resting or busy the lead isn't offered her (the window's readiness).
+let ithil = null;
+const ithilApi = () => (ithil ||= ithilLib.createIthil({ settings: () => readSettings().ithil, secrets, send }));
+async function ithilTurn(prompt, signal, opts = {}) {
+  const o = opts.ithil && typeof opts.ithil === 'object' ? opts.ithil : {};
+  const text = String(o.text || '').slice(0, 20000);
+  if (!text.trim()) return { ok: false, error: { kind: 'refused', message: 'There was nothing to ask Ithil.' } };
+  const from = typeof o.from === 'string' ? o.from : 'AI Command Center';
+  const done = (r) => (r.ok ? { ok: true, text: r.text, via: 'Hearth AI' } : { ok: false, error: { kind: r.kind === 'limit' ? 'refused' : r.kind, message: r.message } });
+  if (o.mode === 'task') return done(await ithilApi().runTask({ goal: text, from, folder: opts.repoDir || undefined, signal, onStep: (label, detail) => opts.step?.({ kind: 'task', label, detail: String(detail || '').slice(0, 300) }) }));
+  return done(await ithilApi().talk({ text, from, signal }));
 }
 
 // 2.x chats (electron/v2.cjs): runs in temporary copies, GitHub, previews, saved data.

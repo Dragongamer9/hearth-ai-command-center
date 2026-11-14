@@ -213,7 +213,9 @@ function register(d) {
       const files = (Array.isArray(o.files) ? o.files : []).filter((f) => typeof f === 'string' && attachments.inside(f, [attachments.attachDir(worktreeRoot())])).slice(0, 8);
       let r;
       if (apiOnly) {
-        r = await callApi(agent, o.model ? validateModel(o.model) : undefined, prompt, controller.signal, { repo: e.repo || null });
+        // 3.9: Ithil's turn: a message, or a task in the chat's own folder (electron/ithil.cjs).
+        const ith = agent === 'ithil' && o.ithil && typeof o.ithil === 'object' ? { mode: o.ithil.mode === 'task' && build ? 'task' : 'talk', text: typeof o.ithil.text === 'string' ? o.ithil.text.slice(0, 20000) : '', from: typeof o.ithil.from === 'string' ? o.ithil.from.slice(0, 60) : '' } : null;
+        r = await callApi(agent, o.model ? validateModel(o.model) : undefined, prompt, controller.signal, { repo: e.repo || null, ...(ith ? { ithil: ith, repoDir: e.repoDir || null, step } : {}) });
       } else {
         try { mcp = d.mcpForRun ? d.mcpForRun(path.join(dataDir(), 'run'), e.id) : null; } catch { mcp = null; }
         const base = {

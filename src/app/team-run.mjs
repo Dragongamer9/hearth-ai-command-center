@@ -335,7 +335,7 @@ export function createTeamRunner(ctx) {
         chatId: R.id, agent, runId, prompt: prompt.slice(-58000), fallbackPrompt: fallbackPrompt.slice(-58000), resumeId,
         images: atts.filter((a) => a.kind === 'image').map((a) => a.path).concat(atts.filter((a) => a.kind === 'video').flatMap((a) => a.frames || [])),
         files: atts.filter((a) => a.kind === 'file' || (a.kind === 'video' && agent === 'google')).map((a) => a.path),
-        web, build, title: c.title, historyText: lastOwner?.text || '', ...(model ? { model } : {}), ...(lane ? { lane: true } : {}), ...(quick ? { helper: true } : {}),
+        web, build, title: c.title, historyText: lastOwner?.text || '', ...(model ? { model } : {}), ...(agent === 'ithil' && ctx.ithilTurn ? { ithil: ctx.ithilTurn(R, { role, task }) } : {}), ...(lane ? { lane: true } : {}), ...(quick ? { helper: true } : {}),
       }) || { ok: false, error: { message: 'The app could not start the AI.' } };
       // A scheduled task took the last free slot: wait for it, then go on.
       if (r.ok || r.error?.kind !== 'queue' || R.stop || tries > 90) break;
