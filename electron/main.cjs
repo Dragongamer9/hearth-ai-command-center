@@ -216,9 +216,12 @@ const TEAM_IDS = ['anthropic', 'openai', 'google', 'xai', 'mistral', 'qwen', 'pe
 // Teammates by key or URL (electron/teammates.cjs; Hearth devices: electron/hearth-devices.cjs):
 // answered through their own API.
 const TEAMMATES = ['venice', 'civitai', 'gpu', 'hearth', 'free', 'ithil'];
+// 3.10: Ithil can be in the team (never its lead or reviewer: she never merges or releases). She was missing here,
+// so adding her was dropped every time the settings were saved.
+const MEMBER_IDS = [...TEAM_IDS, 'ithil'];
 function cleanTeam(t) {
   if (!t || typeof t !== 'object' || Array.isArray(t)) return null;
-  const members = [...new Set((Array.isArray(t.members) ? t.members : []).filter((a) => TEAM_IDS.includes(a)))];
+  const members = [...new Set((Array.isArray(t.members) ? t.members : []).filter((a) => MEMBER_IDS.includes(a)))];
   return { lead: TEAM_IDS.includes(t.lead) ? t.lead : 'anthropic', reviewer: TEAM_IDS.includes(t.reviewer) ? t.reviewer : t.reviewer === null ? null : 'openai', members };
 }
 // Plain JSON only, small; the window normalises the fields (src/habitat3d/map.mjs normPrefs).
