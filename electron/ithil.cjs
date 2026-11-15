@@ -24,8 +24,13 @@ const num = (v) => (Number.isFinite(Number(v)) ? Math.max(0, Math.min(100, Math.
 // What he set in Settings › Accounts › Ithil: a host (empty = this PC, from connect.json) and a port.
 function cleanSettings(v) {
   const s = v && typeof v === 'object' && !Array.isArray(v) ? v : {};
-  const host = typeof s.host === 'string' && HOST_RE.test(s.host.trim()) ? s.host.trim() : '';
-  const port = Number.isInteger(Number(s.port)) && Number(s.port) > 0 && Number(s.port) < 65536 ? Number(s.port) : PORT;
+  // 3.10.1: a full address typed in the host box (http://100.72.99.97:47860) is understood, not thrown away.
+  let h = typeof s.host === 'string' ? s.host.trim() : '';
+  let p = s.port;
+  const m = h.match(/^(?:https?:\/\/)?(\[[^\]]+\]|[^/:]+)(?::(\d{1,5}))?\/?(?:v1\/?)?$/i);
+  if (m && h !== m[1]) { h = m[1]; if (m[2]) p = m[2]; }
+  const host = HOST_RE.test(h) ? h : '';
+  const port = Number.isInteger(Number(p)) && Number(p) > 0 && Number(p) < 65536 ? Number(p) : PORT;
   return { host, port };
 }
 function mergeSettings(cur, patch) { return cleanSettings({ ...cleanSettings(cur), ...(patch && typeof patch === 'object' ? patch : {}) }); }
