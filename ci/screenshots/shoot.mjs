@@ -369,10 +369,12 @@ const browser = await chromium.launch({ args: ['--use-gl=angle', '--use-angle=sw
 let failed = 0;
 const ONLY = process.env.ONLY ? new RegExp(process.env.ONLY) : null;
 // A shot that throws (a click on something that moved) is reported and the rest still run.
+let lastPage = null; let lastErrors = [];
 async function shootOne(s) {
   const page = await browser.newPage({ viewport: s.viewport || { width: 1600, height: 1000 }, bypassCSP: Boolean(s.bypassCSP) });
   page.setDefaultTimeout(8000);
   const errors = [];
+  lastPage = page; lastErrors = errors;
   page.on('pageerror', (e) => errors.push(String(e.message || e)));
   await page.addInitScript(stub, { ...s.opts, pics: PICS });
   await page.goto(BASE, { waitUntil: 'networkidle' });
@@ -497,7 +499,12 @@ async function shootOne(s) {
 }
 for (const s of SHOTS) {
   if (ONLY && !ONLY.test(s.file)) continue;
-  try { await shootOne(s); } catch (e) { failed++; console.log(`::error::${s.file}: crashed: ${String(e?.message || e).split('\n')[0].slice(0, 300)}`); }
+  try { await shootOne(s); } catch (e) {
+    failed++;
+    const where = lastPage ? await lastPage.evaluate(() => `view: ${document.querySelector('#main')?.className} · tabs: ${[...document.querySelectorAll('[data-a="tab"]')].map((x) => x.dataset.t).join(',')} · text: ${document.body.innerText.slice(0, 160).replace(/\s+/g, ' ')}`).catch(() => '') : '';
+    console.log(`::error::${s.file}: crashed: ${String(e?.message || e).split('\n')[0].slice(0, 200)} · errors ${JSON.stringify(lastErrors).slice(0, 300)} · ${where}`);
+    try { await lastPage?.close(); } catch {}
+  }
 }
 await browser.close();
 process.exit(failed ? 1 : 0);
