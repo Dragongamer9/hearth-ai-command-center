@@ -2269,7 +2269,7 @@ function section(k) {
     return `${hearthBox()}
       ${comfyBox()}
       <div class="box"><h3>${icon('phone', 'sm')}Your phone</h3><div class="srow">Phone view<span class="d">your chat on your phone, on your home network only</span><span class="grow"></span>${tog(Boolean(S.phone?.enabled), 'phone-toggle')}</div>${S.phone?.enabled ? `<div class="srow">Address<span class="d mono">${esc((S.phone.urls || []).join(', ') || 'starting…')}</span><span class="grow"></span><button class="mini" data-a="phone-code">Show pairing code</button></div>${S.phone.code ? `<div class="srow">Code<b class="mono big">${esc(S.phone.code)}</b><span class="d">type it on your phone within 5 minutes</span></div>` : ''}` : ''}</div>
-      <details class="more-acct"><summary>More account settings</summary><div class="box ac">${accountsList()}</div>
+      <details class="more-acct" ${S.moreAcct ? 'open' : ''}><summary data-a="more-acct">More account settings</summary><div class="box ac">${accountsList()}</div>
       <div class="box"><h3>FreeBuff on the web</h3><div class="srow">${mono('freebuff')}<b>FreeBuff</b><span class="d">opens freebuff.com in its own window here. Sign in there once with your FreeBuff account; it stays signed in. Your FreeBuff chats live in FreeBuff's cloud, so the ones from your phone are there too.</span><span class="grow"></span><button class="mini" data-a="open-freebuff">Open FreeBuff</button></div>
       <div class="note sub">FreeBuff has no official way for other apps to drive it yet. To have it in team chats, turn on its web sign-in bridge above. The Command Center never reads or copies your FreeBuff login; its windows are sandboxed and get nothing from this app.</div></div>
       <div class="box"><h3>${icon('eye', 'sm')}Pictures, videos and documents</h3><p class="fine">The AIs' own picture and video tools through their official APIs, with your own keys (saved encrypted on this PC). Each use is billed to that account.</p>
@@ -2548,6 +2548,7 @@ async function loadSection(t) {
   if (t === 'voice') { await voice.loadLists(true); return render(); }
   if (t === 'look') S.screen = (await call('screenInfo')) || null;
   if (t === 'data') { loadCopies(); S.boards = await call('savedBoards'); S.slog = await call('settingsLog'); }
+  if (t === 'changes') { S.slog = await call('settingsLog'); renderMain(); }
   if (t === 'perms') { refreshAgents(); loadPerms(); }
   if (t === 'tools') loadMissing();
   if (t === 'uncensored') { refreshAgents(); if (!S.studio.models) { const l = await call('comfyCheckpoints'); S.studio.models = l?.ok ? l.checkpoints : null; } }
@@ -3160,6 +3161,7 @@ document.addEventListener('click', async (ev) => {
     case 'settings': S.view = 'settings'; S.pane = null; render(true); return loadSection(S.tab);
     case 'tab': { S.tab = d.t; renderMain.lastTab = null; render(); const parts = (STABS.find(([t]) => t === tabOf(d.t)) || STABS[0])[3]; for (const k of parts) await loadSection(k); return; }
     case 'set-close': return goHome();
+    case 'more-acct': S.moreAcct = !S.moreAcct; return;
     case 'set-search': return toast('Type to search: Ctrl+F finds a setting on this page.');
     case 'missing-hide': { try { localStorage.setItem('hearth.v2.missingHidden', missingList().join(',')); } catch {} render(); return; }
     case 'chat-menu': ev.stopPropagation(); { const r = a.getBoundingClientRect(); S.pop = { kind: 'menu', id: d.id, x: Math.min(r.left, window.innerWidth - 260), y: Math.min(r.bottom + 4, window.innerHeight - 400) }; } return renderOverlay();
