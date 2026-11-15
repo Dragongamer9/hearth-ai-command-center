@@ -2282,6 +2282,7 @@ async function mountStage(el, key, ch) {
   el.replaceChildren(f);
   stages.set(key, { url: ch.url, el, frame: f });
 }
+function charPreview() { const m = S.modal; if (!m || m.kind !== 'character') return; const ch = characterOf({ [m.agent]: m.draft }, m.agent); if (ch?.kind === 'stage') mountStage(document.getElementById('char-stage'), 'preview', ch); }
 function setStageMood(mood, level = 0) { for (const r of stages.values()) { try { r.frame?.contentWindow?.postMessage({ mood, level }, '*'); } catch {} } }
 
 const cols = (...g) => `<div class="cols">${g.join('')}</div>`;
@@ -2317,15 +2318,24 @@ const PAGES = {
   },
   ithil: () => {
     const html = ithilBox();
-    const boxes = html.split(/(?=<div class="box")/).filter((x) => x.trim().startsWith('<div class="box"'));
     const more = html.includes('<details') ? html.slice(html.indexOf('<details')) : '';
+    const boxes = (more ? html.slice(0, html.indexOf('<details')) : html).split(/(?=<div class="box")/).filter((x) => x.trim().startsWith('<div class="box"'));
     return cols(boxes[0] || '', (boxes[1] || '')) + cols(boxes[2] || '', boxes[3] || '') + more;
   },
   tools: () => TAB_TOP.tools().replace(/^/, '<div class="cols">').replace(/$/, '</div>').replace(/moreBtn/g, ''),
   memory: () => { const h = TAB_TOP.memory(); const k = h.indexOf('<div class="box"><h3>Memory across chats'); return h.slice(0, k) + cols(h.slice(k, h.indexOf('<div class="box"><h3>Saved data')), h.slice(h.indexOf('<div class="box"><h3>Saved data'))); },
   voice: () => {
-    const h = TAB_TOP.voice();
-    return cols(h, charactersBox());
+    const st = S.settings;
+    const v = TAB_TOP.voice();
+    const voiceGrp = v.slice(0, v.indexOf('<div class="box"><h3>Avatar'));
+    const avatar = grp('Avatar panel', [
+      row('Show the panel', 'full body', tog(st.avatarPanel !== false, 'av-panel')),
+      row('Who stands there', '', sel('av-who', st.avatarWho === 'ithil' ? 'ithil' : 'answering', [['answering', 'Who\'s answering'], ['ithil', 'Always Ithil']])),
+      row('Lip sync and expressions', '', tog(st.avatarLipSync !== false, 'av-lips')),
+      row('Mini window', 'Super + I', `${tog(st.miniWindow !== false, 'mini-on')}<button class="mini" data-a="mini-open">Open</button>`),
+      row('Mini window on top', '', tog(st.miniOnTop !== false, 'mini-top')),
+    ]);
+    return cols(voiceGrp, avatar) + charactersBox();
   },
   general: () => `<div class="cols">${TAB_TOP.general()}</div>`,
 };
@@ -2382,10 +2392,10 @@ function acctDetail(a) {
 }
 // 3.12 (settings-2): every AI as one row, grouped by how it connects: its state on the right, or its one button.
 const CONNECT_GROUPS = [
-  ['Signed in with your account', 'Your own accounts: the Command Center never sees your password.', (a) => !['freebuff'].includes(a) && method(a) !== 'api' && !['ollama', 'gpu', 'ithil', 'hearth'].includes(a) && !AGENTS[a]?.web && AGENTS[a]?.kind !== 'local' && !MAKER_IDS.includes(a) && !BUILDER_IDS.includes(a)],
-  ['With a key', 'Keys are saved encrypted on this device.', (a) => (method(a) === 'api' || MAKER_IDS.includes(a)) && !['gpu', 'ithil', 'hearth'].includes(a) && !AGENTS[a]?.web],
+  ['Signed in with your account', 'Your own accounts: the Command Center never sees your password.', (a) => !['freebuff'].includes(a) && method(a) !== 'api' && !['ollama', 'gpu', 'ithil', 'hearth'].includes(a) && !['web', 'manual', 'local'].includes(AGENTS[a]?.kind) && !MAKER_IDS.includes(a) && !BUILDER_IDS.includes(a)],
+  ['With a key', 'Keys are saved encrypted on this device.', (a) => (method(a) === 'api' || MAKER_IDS.includes(a)) && !['gpu', 'ithil', 'hearth'].includes(a) && AGENTS[a]?.kind !== 'web'],
   ['Your own', '', (a) => ['ollama', 'gpu', 'ithil', 'hearth'].includes(a) || AGENTS[a]?.kind === 'local'],
-  ['On the web (signed in in a window)', '', (a) => a === 'freebuff' || Boolean(AGENTS[a]?.web) || BUILDER_IDS.includes(a)],
+  ['On the web (signed in in a window)', '', (a) => a === 'freebuff' || ['web', 'manual'].includes(AGENTS[a]?.kind) || BUILDER_IDS.includes(a)],
 ];
 function accountsGroups() {
   const all = [...new Set([...ACCT_GROUPS.flatMap((g) => g[2]), 'gpu', 'hearth', 'ithil', 'free', 'venice', 'civitai', 'copilot', 'meta'])].filter((a) => AGENTS[a] || MAKER_IDS.includes(a));

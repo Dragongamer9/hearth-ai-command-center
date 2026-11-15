@@ -263,7 +263,7 @@ const SHOTS = [
   // 3.12: the approved mockups (docs/mockups/nyarch-*.png, settings-*.png), each shot to put next to its picture.
   { file: '3.12-n1-chat-avatar.png', opts: { open: 'c0000000001', more: true, ithil: true }, wait: 900, expect: ['History', 'New Chat', 'You:', 'Clear', 'Regenerate', 'Send a message'], selector: ['.hist-h', '.newchat-big', '.model-pill', '.warnline', '.nrow .lbl', '.crow', '.nbar .bluesq', '.pane.rpanel', '.rp-top [data-a="win"]'] },
   { file: '3.12-n2-team-tools.png', opts: { open: 'c0000000001', more: true, ithil: true }, click: '[data-a="rpanel"][data-v="tools"]', wait: 900, expect: ['Files', 'Terminal', 'Browser', 'Changes', 'Ithil'], selector: ['.rtabs', '.rt-body'] },
-  ...[['team', 'Who\'s in your chats'], ['accounts', 'GitHub'], ['ithil', 'Ithil (Hearth AI)'], ['tools', 'Connectors (MCP servers)'], ['memory', 'Custom instructions'], ['voice', 'Mini window'], ['general', 'App updates']].map(([t, e], n) => ({ file: `3.12-s${n + 1}-settings-${t}.png`, opts: { more: true, ithil: true }, click: '[data-a="settings"]', then: `[data-a="tab"][data-t="${t}"]`, wait: 700, expect: [e], selector: ['.set.dlg', '.stabs', `.stabs [data-t="${t}"].on`] })),
+  ...[['team', 'Who\'s in your chats'], ['accounts', 'GitHub'], ['ithil', 'Ithil (Hearth AI)'], ['tools', 'Connectors (MCP servers)'], ['memory', 'Custom instructions'], ['voice', 'Mini window'], ['general', 'App updates']].map(([t, e], n) => ({ file: `3.12-s${n + 1}-settings-${t}.png`, opts: { more: true, ithil: true }, click: '[data-a="settings"]', then: `[data-a="tab"][data-t="${t}"]`, wait: 700, expect: [e], selector: ['.set.dlg', '.snav2', `.snav2 [data-t="${t}"].on`] })),
   // 3.4: the new Live page (lead on top, every AI in its group) and the compact Accounts page.
   // 3.9: Ithil (Hearth AI) in Settings › Accounts and on Live › Mesh (her station with her mood and newest thought).
   { file: '70b-ithil-accounts.png', opts: { more: true, ithil: true }, click: '[data-a="settings"]', then: '[data-a="tab"][data-t="ithil"]', wait: 600, scrollTo: '#acct-ithil', expect: ['Ithil (Hearth AI)', 'connected', 'awake · curious', 'Test connection', 'Test connection', 'Open chat', 'Her hard limits'], selector: ['#acct-ithil', '#acct-ithil .ithil-orb', '#ith-host', '#ith-key'] },
@@ -401,6 +401,8 @@ async function shootOne(s) {
   if (s.click) { await page.click(s.click); await page.waitForTimeout(500); }
   if (s.then) { await page.click(s.then); await page.waitForTimeout(500); }
   // 3.12: the older Accounts shots look inside "More account settings".
+  // 3.13: the older Accounts shots look in Accounts' full page (Devices, ComfyUI and your phone › More account settings).
+  if (!/^3\.1[23]/.test(s.file) && s.then?.includes('data-t="accounts"') && await page.$('[data-a="sub-open"][data-p="accounts2"]')) { await page.click('[data-a="sub-open"][data-p="accounts2"]'); await page.waitForTimeout(300); }
   if (!s.file.startsWith('3.12') && s.then?.includes('data-a="tab"')) { await page.evaluate(() => document.querySelectorAll('details.more-acct:not([open]) summary').forEach((x) => x.click())); await page.waitForTimeout(250); }
   if (s.then2) { await page.click(s.then2); await page.waitForTimeout(500); }
   if (s.run === 'multi') {
