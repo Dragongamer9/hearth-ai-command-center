@@ -368,9 +368,10 @@ const SHOTS = [
 const browser = await chromium.launch({ args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', '--autoplay-policy=no-user-gesture-required'] });
 let failed = 0;
 const ONLY = process.env.ONLY ? new RegExp(process.env.ONLY) : null;
-for (const s of SHOTS) {
-  if (ONLY && !ONLY.test(s.file)) continue;
+// A shot that throws (a click on something that moved) is reported and the rest still run.
+async function shootOne(s) {
   const page = await browser.newPage({ viewport: s.viewport || { width: 1600, height: 1000 }, bypassCSP: Boolean(s.bypassCSP) });
+  page.setDefaultTimeout(8000);
   const errors = [];
   page.on('pageerror', (e) => errors.push(String(e.message || e)));
   await page.addInitScript(stub, { ...s.opts, pics: PICS });
@@ -491,6 +492,10 @@ for (const s of SHOTS) {
   if (missing.length || errors.length) { failed++; console.log(`::error::${s.file}: missing ${JSON.stringify(missing)} errors ${JSON.stringify(errors)}`); }
   else console.log(`ok ${s.file}`);
   await page.close();
+}
+for (const s of SHOTS) {
+  if (ONLY && !ONLY.test(s.file)) continue;
+  try { await shootOne(s); } catch (e) { failed++; console.log(`::error::${s.file}: crashed: ${String(e?.message || e).split('\n')[0].slice(0, 300)}`); }
 }
 await browser.close();
 process.exit(failed ? 1 : 0);
