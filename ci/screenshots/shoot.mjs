@@ -403,8 +403,16 @@ async function shootOne(s) {
   // 3.12: the older Accounts shots look inside "More account settings".
   // 3.13: the older Accounts shots look in Accounts' full page (Devices, ComfyUI and your phone › More account settings).
   // 3.13: older shots that show a whole section open it as a sub-page (the same page "More…" opens).
-  if (s.full) { await page.evaluate(([tab, parts]) => { const b = document.createElement('button'); b.dataset.a = 'sub-open'; b.dataset.v = tab; b.dataset.p = parts; b.style.display = 'none'; (document.getElementById('spage') || document.body).appendChild(b); b.click(); }, [s.then.match(/data-t="(\w+)"/)[1], s.full]); await page.waitForTimeout(500); }
-  if (!s.full && !/^3\.1[23]/.test(s.file) && s.then?.includes('data-t="accounts"') && await page.$('[data-a="sub-open"][data-p="accounts2"]')) { await page.click('[data-a="sub-open"][data-p="accounts2"]'); await page.waitForTimeout(300); }
+  // Every older Settings shot (before 3.12) shows a tab's whole page: the one "More…" opens.
+  const FULL = { team: 'team', accounts: 'accounts,github,accounts2', ithil: 'ithil', tools: 'tools,connectors,perms', memory: 'memory,scheduled,data', voice: 'voice', general: 'look,alerts,updates,uncensored,changes' };
+  const tabOfShot = s.then?.match(/data-a="tab"\]\[data-t="(\w+)"/)?.[1];
+  const full = s.full || (tabOfShot && !/^3\.1[23]/.test(s.file) ? FULL[tabOfShot] : null);
+  if (full) {
+    await page.evaluate(([tab, parts]) => { const b = document.createElement('button'); b.dataset.a = 'sub-open'; b.dataset.v = tab; b.dataset.p = parts; b.style.display = 'none'; (document.getElementById('spage') || document.body).appendChild(b); b.click(); }, [tabOfShot, full]);
+    await page.waitForSelector('.subpage', { timeout: 15000 }).catch(() => {});
+    await page.waitForTimeout(700);
+  }
+  if (!full && !/^3\.1[23]/.test(s.file) && s.then?.includes('data-t="accounts"') && await page.$('[data-a="sub-open"][data-p="accounts2"]')) { await page.click('[data-a="sub-open"][data-p="accounts2"]'); await page.waitForTimeout(300); }
   if (!s.file.startsWith('3.12') && s.then?.includes('data-a="tab"')) { await page.evaluate(() => document.querySelectorAll('details.more-acct:not([open]) summary').forEach((x) => x.click())); await page.waitForTimeout(250); }
   if (s.then2) { await page.click(s.then2); await page.waitForTimeout(500); }
   if (s.run === 'multi') {
