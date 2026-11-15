@@ -1208,3 +1208,26 @@ html.mini, html.mini body { height: 100%; background: #1e1e1e; }
 .mini-body .body-orb { width: 140px; height: 140px; border-radius: 50%; margin-top: 50px; background: radial-gradient(circle at 40% 35%, #dfeedd, #9cc49c 55%, #3a5244); }
 .mini-msgs { flex: 1; overflow: auto; }
 .mini-win .nrow { grid-template-columns: 64px minmax(0, 1fr); }
+/* Settings as a dialog with tabs (settings-1…7) */
+.main.settings-mode .body { background: rgba(0,0,0,.55); display: flex; justify-content: center; align-items: flex-start; padding: 24px; overflow: auto; }
+.set.dlg { flex: none; width: min(940px, 100%); height: auto; min-height: calc(100% - 20px); display: flex; flex-direction: column; background: #242428; border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.8), 0 0 0 1px rgba(255,255,255,.1); }
+.dlg-h { height: 56px; display: flex; align-items: center; justify-content: center; position: relative; flex: none; }
+.dlg-h b { font-size: 16px; color: var(--strong); }
+.dlg-h .ib { position: absolute; left: 14px; }
+.dlg-h .xb { position: absolute; right: 14px; background: rgba(255,255,255,.1); }
+.stabs { display: flex; justify-content: center; gap: 4px; padding: 0 10px 10px; flex-wrap: wrap; }
+.stabs button { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 6px 14px; border-radius: 8px; color: rgba(255,255,255,.67); font-size: 13px; font-weight: 600; }
+.stabs button.on { background: rgba(255,255,255,.08); color: #fff; }
+.set.dlg .spage { padding: 6px 30px 24px; overflow: visible; }
+.set.dlg .spage h1 { display: none; }
+.set.dlg .box { max-width: none; border: 0; background: none; padding: 0; margin: 16px 0 0; }
+.set.dlg .box > h3 { margin: 0 4px 4px; font-size: 15px; }
+.set.dlg .box > .fine, .set.dlg .box > p { margin: 0 4px 8px; color: rgba(255,255,255,.53); font-size: 13px; }
+.set.dlg .box > .srow, .set.dlg .box > .note { background: #2e2e32; margin: 0; padding: 11px 16px; min-height: 52px; border-top: 1px solid rgba(255,255,255,.06); }
+.set.dlg .box > .srow:first-of-type { border-top-left-radius: 12px; border-top-right-radius: 12px; border-top: 0; }
+.set.dlg .box > .srow:last-of-type { border-bottom-left-radius: 12px; border-bottom-right-radius: 12px; }
+.set.dlg .srow .d { display: block; width: 100%; order: 2; color: rgba(255,255,255,.53); font-size: 13px; }
+.set.dlg .tog { background: rgba(255,255,255,.15); }
+.set.dlg .tog.on { background: var(--accent); }
+.set.dlg select { background: rgba(255,255,255,.07); border: 0; border-radius: 8px; padding: 6px 12px; color: var(--strong); }
+.set.dlg .btn.p, .set.dlg .mini.p { background: var(--accent); color: #fff; }

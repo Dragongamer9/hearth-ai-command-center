@@ -2121,9 +2121,14 @@ function modalHtml() {
 }
 
 // ---------- settings ----------
+// 3.12 (settings-1…7): seven tabs with icons across the top; each tab holds the sections it had before.
+const STABS = [['team', 'users', 'AI team', ['team']], ['accounts', 'key', 'Accounts', ['accounts', 'github']], ['ithil', 'moon', 'Ithil', ['ithil']], ['tools', 'cpu', 'Tools', ['tools', 'connectors', 'perms']], ['memory', 'brain', 'Memory', ['memory', 'scheduled', 'data']], ['voice', 'speaker', 'Voice & avatar', ['voice', 'avatar']], ['general', 'gear', 'General', ['look', 'alerts', 'updates', 'uncensored', 'changes']]];
+function tabOf(k) { return (STABS.find(([t, , , ks]) => t === k || ks.includes(k)) || STABS[0])[0]; }
 function settingsView() {
-  const nav = SECTIONS.map(([k, label]) => `<button class="${S.tab === k ? 'on' : ''}" data-a="tab" data-t="${k}">${esc(label)}</button>`).join('');
-  return `<div class="set"><nav class="snav">${nav}</nav><div class="spage">${section(S.tab)}</div></div>`;
+  const tab = tabOf(S.tab);
+  const nav = STABS.map(([k, ic, label]) => `<button class="${tab === k ? 'on' : ''}" data-a="tab" data-t="${k}">${icon(ic, 'sm')}<span>${esc(label)}</span></button>`).join('');
+  const parts = STABS.find(([t]) => t === tab)[3];
+  return `<div class="set dlg"><div class="dlg-h"><button class="ib ghost" data-a="set-search" title="Search settings" aria-label="Search settings">${icon('search', 'sm')}</button><b>Settings</b><button class="xb" data-a="set-close" title="Close" aria-label="Close settings">${icon('x', 'sm')}</button></div><nav class="stabs">${nav}</nav><div class="spage">${parts.map((k) => section(k)).join('')}</div></div>`;
 }
 // ---------- 3.4 Settings › Accounts: one short row per AI, grouped and folding ----------
 const ACCT_GROUPS = [
@@ -2247,7 +2252,6 @@ function section(k) {
       <details class="sub"><summary class="fine">ComfyUI workflow (optional): paste your own workflow JSON; {prompt}, {negative}, {seed} and {ckpt} are filled in. Empty uses a stock SDXL text-to-image graph.</summary><textarea id="sv-workflow" rows="4" class="mono" placeholder='{"3": {"class_type": "KSampler", …}}'></textarea></details>
       <div class="note">NovelAI isn't offered: it has no public developer API, and its terms restrict third-party apps.</div></div>
       ${hearthBox()}
-      ${ithilBox()}
       ${comfyBox()}
       <div class="box"><h3>${icon('phone', 'sm')}Your phone</h3><div class="srow">Phone view<span class="d">your chat on your phone, on your home network only</span><span class="grow"></span>${tog(Boolean(S.phone?.enabled), 'phone-toggle')}</div>${S.phone?.enabled ? `<div class="srow">Address<span class="d mono">${esc((S.phone.urls || []).join(', ') || 'starting…')}</span><span class="grow"></span><button class="mini" data-a="phone-code">Show pairing code</button></div>${S.phone.code ? `<div class="srow">Code<b class="mono big">${esc(S.phone.code)}</b><span class="d">type it on your phone within 5 minutes</span></div>` : ''}` : ''}</div>`;
   }
@@ -2332,6 +2336,20 @@ function section(k) {
   }
   if (k === 'voice') return voice.settingsHtml({ tog, team: t, mono, aiName });
   if (k === 'uncensored') return uncensoredSection();
+  if (k === 'ithil') return `<h1>Ithil</h1>${ithilBox()}`;
+  if (k === 'changes') return settingsLogBox();
+  // 3.12 (settings-6): the avatar panel and the mini window.
+  if (k === 'avatar') {
+    const body = s.ithilBody === 'live2d' ? 'Live2D' : '3D (VRM)';
+    return `<div class="box"><h3>Avatar</h3>
+      <div class="srow">Show the avatar panel<span class="d">On the right of the chat, full body</span><span class="grow"></span>${tog(s.avatarPanel !== false, 'av-panel')}</div>
+      <div class="srow">Who stands there<span class="d">The AI that's answering, or always Ithil</span><span class="grow"></span><select data-a="av-who"><option value="answering" ${s.avatarWho !== 'ithil' ? 'selected' : ''}>Who's answering</option><option value="ithil" ${s.avatarWho === 'ithil' ? 'selected' : ''}>Always Ithil</option></select></div>
+      <div class="srow">Ithil's body<span class="d">From Hearth AI: Live2D or her 3D VRM</span><span class="grow"></span><select data-a="av-body"><option value="vrm" ${body !== 'Live2D' ? 'selected' : ''}>3D (VRM)</option><option value="live2d" ${body === 'Live2D' ? 'selected' : ''}>Live2D</option></select></div>
+      <div class="srow">Lip sync and expressions<span class="d">Moves with her voice and mood</span><span class="grow"></span>${tog(s.avatarLipSync !== false, 'av-lips')}</div></div>
+      <div class="box"><h3>Mini window</h3>
+      <div class="srow">Open the mini window<span class="d">Super + I anywhere · hold ☰ + Y in Game Mode</span><span class="grow"></span>${tog(s.miniWindow !== false, 'mini-on')}<button class="mini" data-a="mini-open">Open now</button></div>
+      <div class="srow">Stay on top<span class="d"></span><span class="grow"></span>${tog(s.miniOnTop !== false, 'mini-top')}</div></div>`;
+  }
   if (k === 'look') {
     const holo = s.design !== 'classic';
     return `<h1>Appearance</h1><div class="box"><h3>Look</h3>
@@ -2364,7 +2382,6 @@ function section(k) {
         <div class="srow">Space used<b>${cp ? fmtBytes(total) : '…'}</b><span class="d">${cp ? `${cp.list.length} cop${cp.list.length === 1 ? 'y' : 'ies'} · removed after ${esc(IDLE.find(([v]) => v === S.settings.copyIdleHours)?.[1] || '1 day')} idle` : ''}</span><span class="grow"></span><button class="btn" data-a="cleanup" ${cp?.list?.length ? '' : 'disabled'}>Clean up</button></div>
         ${(cp?.list || []).map((c) => `<div class="srow copy">${icon('gh', 'sm')}<b>${esc(c.repo || c.dir || '?')}</b><span class="d">${esc(entry(c.chatId)?.title || 'deleted chat')} · ${esc(c.work || c.branch || '')} · ${fmtBytes(c.size)} · used ${esc(ago(c.lastUsedAt) || 'never')}</span><span class="grow"></span>${c.unpushed ? `<span class="chip b">not on GitHub</span><button class="mini" data-a="copy-push" data-id="${esc(c.chatId)}">Push to a branch</button>` : ''}<button class="mini" data-a="copy-remove" data-id="${esc(c.chatId)}">Remove</button></div>`).join('') || '<div class="fine">No temporary copies right now.</div>'}
         <div class="note">Copies holding work that isn't on GitHub are never deleted without asking you. ${cp?.root ? `They live in ${esc(cp.root)}.` : ''}</div></div>
-      ${settingsLogBox()}
       <div class="box"><h3>Backups</h3><div class="srow">Your chats list keeps its last good copy as a backup, and the list from before 2.0 is kept as index.json.pre-2. Memory, scheduled tasks, connectors and the Habitat keep a .bak too.<span class="grow"></span><button class="mini" data-a="open-data-folder">Open the data folder</button></div></div>
       <div class="box"><h3>Old boards (read-only)</h3><p class="fine">The task boards, approvals and audit logs from 1.x are kept on disk exactly as they were. They're not used any more.</p>
         ${(S.boards || []).map((b) => `<div class="srow">${icon('board', 'sm')}<b>${esc(b.name)}</b><span class="d">${b.ok ? `${b.tasks.length} tasks · ${b.approvals} approvals · ${b.audit} audit entries` : 'couldn\'t be read (left as it is)'}</span><span class="grow"></span>${b.ok ? `<button class="mini" data-a="view-board" data-id="${esc(b.id)}">View</button>` : ''}</div>`).join('') || '<div class="fine">No old boards.</div>'}</div>`;
@@ -3090,7 +3107,9 @@ document.addEventListener('click', async (ev) => {
     }
     case 'habitat': S.view = 'habitat'; S.pane = null; S.pop = null; if (!S.habitat) { const h = await call('habitatGet'); S.habitat = h?.store || null; } return render(true);
     case 'settings': S.view = 'settings'; S.pane = null; render(true); return loadSection(S.tab);
-    case 'tab': S.tab = d.t; render(); return loadSection(d.t);
+    case 'tab': { S.tab = d.t; render(); const parts = (STABS.find(([t]) => t === tabOf(d.t)) || STABS[0])[3]; for (const k of parts) await loadSection(k); return; }
+    case 'set-close': return goHome();
+    case 'set-search': return toast('Type to search: Ctrl+F finds a setting on this page.');
     case 'missing-hide': { try { localStorage.setItem('hearth.v2.missingHidden', missingList().join(',')); } catch {} render(); return; }
     case 'chat-menu': ev.stopPropagation(); { const r = a.getBoundingClientRect(); S.pop = { kind: 'menu', id: d.id, x: Math.min(r.left, window.innerWidth - 260), y: Math.min(r.bottom + 4, window.innerHeight - 400) }; } return renderOverlay();
     case 'chat-act': return chatAction(d.k, d.id);
@@ -3313,6 +3332,11 @@ document.addEventListener('click', async (ev) => {
     case 'make-reviewer': return setSettings({ team: { ...team(), reviewer: d.v } });
     case 'no-reviewer': return setSettings({ team: { ...team(), reviewer: null } });
     case 'tool-web': return setSettings({ tools: { web: !(S.settings.tools?.web !== false) } });
+    case 'av-panel': await setSettings({ avatarPanel: !(S.settings.avatarPanel !== false) }); return render();
+    case 'av-lips': return setSettings({ avatarLipSync: !(S.settings.avatarLipSync !== false) });
+    case 'mini-on': await setSettings({ miniWindow: !(S.settings.miniWindow !== false) }); return toast('Takes effect the next time the app starts.');
+    case 'mini-top': return setSettings({ miniOnTop: !(S.settings.miniOnTop !== false) });
+    case 'mini-open': return call('miniOpen');
     case 'tool-build': return setSettings({ tools: { build: !(S.settings.tools?.build !== false) } });
     case 'save-checks': return setSettings({ tools: { quickChecks: String(document.getElementById('quick-checks')?.value || '').split('\n').map((x) => x.trim()).filter(Boolean) } });
     case 'preview-net': return setSettings({ previewNetwork: !S.settings.previewNetwork });
@@ -3420,6 +3444,8 @@ document.addEventListener('change', (ev) => {
   if (t.matches?.('select[data-a="unc-pic"]')) setSettings({ uncensored: { pictureModel: t.value } });
   if (t.matches?.('[data-a="idle-hours"]')) setSettings({ copyIdleHours: Number(t.value) });
   if (t.matches?.('[data-a="max-chats"]')) setSettings({ maxChats: Number(t.value) });
+  if (t.matches?.('select[data-a="av-who"]')) setSettings({ avatarWho: t.value === 'ithil' ? 'ithil' : 'answering' }).then(() => renderPane(true));
+  if (t.matches?.('select[data-a="av-body"]')) setSettings({ ithilBody: t.value === 'live2d' ? 'live2d' : 'vrm' });
   if (t.matches?.('select[data-a="voice-set"]')) setSettings({ voice: { [t.dataset.k]: t.value } }).then(() => loadSection('voice'));
   if (t.matches?.('[data-vpick]')) { const vp = pickVoice(t.dataset.vpick, t.dataset.prov, t.value); if (vp) setSettings({ voice: vp }); }
   if (t.matches?.('[data-chatvoice]')) {
