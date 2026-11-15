@@ -105,10 +105,16 @@ export function createTeamRunner(ctx) {
   async function runTeam(R, text, opts = {}) {
     await ctx.beforeRound?.(R);
     const t = ctx.team();
-    const L = ctx.live();
+    const L0 = ctx.live();
     const mode = opts.mode || ctx.modeFor(R);
+    // 3.11: an AI he picked to answer on its own (her own chat, "who answers") needn't be on the team: Ithil talks
+    // whenever she's connected, even asleep or busy (only tasks wait for her to be free).
+    const solo = opts.only || (mode !== 'team' ? mode : null);
+    const L = solo && !L0.includes(solo) && ctx.readyAlone?.(solo) ? [...L0, solo] : L0;
     const order = opts.only ? [opts.only].filter((a) => L.includes(a)) : planTurn({ text, mode, team: t, live: L });
     if (!order.length) {
+      const why = solo && !L.includes(solo) ? ctx.whyNot?.(solo) : '';
+      if (why) { post(R, { who: 'system', text: why }); await ctx.save(R); return false; }
       const named = mentionsIn(text).find((a) => !L.includes(a));
       post(R, { who: 'system', text: named && AGENTS[named]?.kind === 'api' ? `${aiName(named)} isn't set up: ${ctx.setupHint?.(named) || `add your ${aiName(named)} key in Settings › Accounts`}.` : L.length ? 'The AI you picked isn\'t ready. Set it up in Settings › Accounts, or pick another one.' : 'No AI is ready yet. Sign in to Claude (or another AI) in Settings › Accounts.' });
       await ctx.save(R);
