@@ -93,6 +93,8 @@ contextBridge.exposeInMainWorld('hearth', {
   ithilWatch: (on) => ipcRenderer.invoke('ithil:watch', on === true),
   ithilSetKey: (key) => ipcRenderer.invoke('ithil:setKey', key),
   ithilInfo: () => ipcRenderer.invoke('ithil:info'),
+  ithilTalk: (text) => ipcRenderer.invoke('ithil:talk', text),
+  miniOpen: () => ipcRenderer.invoke('mini:open'),
   onIthilEvent: (fn) => { const h = (_e, ev) => fn(ev); ipcRenderer.on('ithil:event', h); return () => ipcRenderer.removeListener('ithil:event', h); },
   voiceAiPick: (who, provider, voice) => ipcRenderer.invoke('voice:aiPick', who, provider, voice),
   voiceSpeak: (o) => ipcRenderer.invoke('voice:speak', o || {}),

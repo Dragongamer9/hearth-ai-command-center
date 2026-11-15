@@ -1,7 +1,7 @@
 // Hearth AI Command Center — Electron main process.
 // All privileged work (files, secrets, provider APIs, updates) happens here.
 // The renderer only gets the narrow API exposed in preload.cjs.
-const { app, BrowserWindow, Notification, ipcMain, shell, Menu, safeStorage, dialog, clipboard, protocol, screen } = require('electron');
+const { app, BrowserWindow, Notification, ipcMain, shell, Menu, safeStorage, dialog, clipboard, protocol, screen, globalShortcut } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -396,7 +396,7 @@ function registerIpc() {
   const stateApi = guard.stateIpc({ binding, read: () => readState(), write: (st) => writeState(st) });
   // The window asks the main process to reload it (always works, whatever the page's own navigation rules).
   // 3.12: the window buttons drawn in the right panel's bar (the window has no system frame now).
-  handle('win:act', (what) => { const w = mainWindow; if (!w || w.isDestroyed()) return false; if (what === 'min') w.minimize(); else if (what === 'max') { if (w.isMaximized()) w.unmaximize(); else w.maximize(); } else if (what === 'close') w.close(); return true; });
+  ipcMain.handle('win:act', (event, what) => { if (!trusted(event)) return false; const w = BrowserWindow.fromWebContents(event.sender); if (!w || w.isDestroyed()) return false; if (what === 'min') w.minimize(); else if (what === 'max') { if (w.isMaximized()) w.unmaximize(); else w.maximize(); } else if (what === 'close') w.close(); return true; });
   handle('app:reload', () => { setImmediate(() => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.reload(); }); return true; });
   handle('state:load', () => stateApi.load());
   handle('state:save', (state) => stateApi.save(state));
@@ -1173,6 +1173,9 @@ function registerIpc() {
   // 3.9: Ithil (Hearth AI): her status, avatar, live events and the connection settings (Settings › Accounts).
   handle('ithil:status', (o = {}) => ithilApi().status({ fresh: o?.fresh === true }));
   handle('ithil:test', () => ithilApi().test());
+  // 3.12 (nyarch-3): the mini window talks to Ithil straight through Hearth AI (her own chat, short).
+  handle('ithil:talk', (text) => ithilApi().talk({ text: String(text || '').slice(0, 8000), from: 'Mini window' }));
+  handle('mini:open', () => openMini());
   handle('ithil:avatar', (o = {}) => ithilApi().avatar({ expression: String(o?.expression || ''), framing: o?.framing === 'full' ? 'full' : 'portrait' }));
   handle('ithil:watch', (on) => ithilApi().watch(on === true));
   handle('ithil:setKey', (key) => ithilApi().setKey(key === null ? null : String(key ?? '')));
@@ -1322,7 +1325,25 @@ function registerOps() {
   });
 }
 
-app.on('second-instance', () => {
+// 3.12 (nyarch-3): the mini window. Super + I on Hearth OS runs `hearth-ai-command-center --mini`, which reaches
+// the running app here; a global shortcut does the same where the desktop allows one.
+let miniWindow = null;
+function openMini() {
+  if (miniWindow && !miniWindow.isDestroyed()) { if (miniWindow.isVisible() && miniWindow.isFocused()) miniWindow.hide(); else { miniWindow.show(); miniWindow.focus(); } return true; }
+  const onTop = readSettings()?.miniOnTop !== false;
+  miniWindow = new BrowserWindow({ width: 480, height: 640, minWidth: 380, minHeight: 480, frame: false, alwaysOnTop: onTop, skipTaskbar: false, backgroundColor: '#1e1e1e', title: 'Ithil', show: false,
+    webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true } });
+  miniWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  miniWindow.webContents.on('will-navigate', (e) => e.preventDefault());
+  const devUrl = process.env.VITE_DEV_SERVER_URL;
+  const load = devUrl ? miniWindow.loadURL(`${devUrl}#mini`) : miniWindow.loadFile(path.join(__dirname, '..', 'dist', 'index.html'), { hash: 'mini' });
+  load.then(() => { if (miniWindow && !miniWindow.isDestroyed()) miniWindow.show(); }).catch(() => {});
+  miniWindow.on('closed', () => { miniWindow = null; });
+  return true;
+}
+
+app.on('second-instance', (_e, argv = []) => {
+  if (argv.includes('--mini')) { openMini(); return; }
   if (mainWindow) {
     if (mainWindow.isMinimized()) mainWindow.restore();
     mainWindow.focus();
@@ -1349,6 +1370,10 @@ app.whenReady().then(async () => {
   updater = createUpdater({ app, send });
   registerIpc();
   createWindow();
+  if (process.argv.includes('--mini')) openMini();
+  // Super + I opens the mini window where the desktop lets apps take a shortcut (Hearth OS's own keybind runs --mini).
+  if (readSettings().miniWindow !== false) { try { globalShortcut.register('Super+I', () => openMini()); } catch {} }
+  app.on('will-quit', () => { try { globalShortcut.unregisterAll(); } catch {} });
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });

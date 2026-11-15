@@ -3719,7 +3719,67 @@ async function refreshAgents() {
   render();
 }
 
+// 3.12 (nyarch-3): the mini window: Ithil at the top, a short talk with her, Clear and Regenerate, the input bar.
+// It talks straight to Hearth AI (her own chat there remembers it); nothing here touches the main window's chats.
+const MINI = { msgs: [], busy: false, last: '' };
+function miniHtml() {
+  const st = S.ithil.status;
+  const line = st?.online ? `${esc(aiName('ithil'))} · ${esc(st.state || 'awake')} · ${esc(st.mood || 'calm')}` : `${esc(aiName('ithil'))} · Hearth AI isn't running`;
+  const rows = MINI.msgs.map((m) => m.who === 'owner' ? `<div class="uwrap nrow"><div class="lbl you">You:</div><div class="msg-u">${rich(m.text)}</div></div>`
+    : `<div class="msg-a nrow ${m.err ? 'err' : ''}"><div class="lbl" style="color:${nameColor('ithil')}">${esc(aiName('ithil'))}:</div><div class="mbody">${m.steps?.length ? stepsHtml(m.steps) : ''}<div class="text">${rich(m.text)}</div></div></div>`).join('');
+  return `<div class="mini-win"><div class="mini-av"><span class="mini-st">${line}</span><span class="grow"></span><button class="xb ${S.settings.autoRead ? 'on' : ''}" data-a="toggle-autoread" title="Read answers aloud">${icon('speaker', 'sm')}</button><button class="xb" data-a="win-mini-close" title="Close">${icon('x', 'sm')}</button>
+    <div class="mini-body">${S.ithil.body ? `<img src="${esc(S.ithil.body)}" alt="Ithil">` : '<div class="body-orb"></div>'}</div></div>
+    <div class="mini-msgs" id="mini-msgs">${rows || '<div class="rt-empty">Say something to Ithil.</div>'}${MINI.busy ? `<div class="msg-a nrow"><div class="lbl" style="color:${nameColor('ithil')}">${esc(aiName('ithil'))}:</div><div class="mbody"><span class="faint">thinking…</span></div></div>` : ''}</div>
+    ${MINI.msgs.length ? `<div class="crow"><button data-a="mini-clear">${icon('copy', 'sm')}Clear</button><button data-a="mini-regen">${icon('refresh', 'sm')}Regenerate</button></div>` : ''}
+    <div class="dock"><div class="composer"><div class="nbar"><button class="ib" data-a="mini-full" title="Open the full Command Center">${icon('gear', 'sm')}</button><button class="ib" data-a="mini-full" title="Attach in the full window">${icon('clip', 'sm')}</button><textarea id="mini-in" rows="2" placeholder="Send a message…" aria-label="Message"></textarea><button class="bluesq ${voice.dictating() ? 'rec' : ''}" data-a="mini-voice" title="Dictate">${icon('mic', 'sm')}</button><button class="bluesq" data-a="mini-send" title="Send (Enter)">${icon('chevr', 'sm')}</button></div></div></div></div>`;
+}
+function renderMini() {
+  const box = document.getElementById('mini-in');
+  const draft = box ? box.value : '';
+  document.getElementById('app').innerHTML = miniHtml();
+  const el = document.getElementById('mini-in');
+  if (el) { el.value = draft; el.focus(); }
+  const list = document.getElementById('mini-msgs');
+  if (list) list.scrollTop = list.scrollHeight;
+}
+async function miniSend(text) {
+  const t = String(text || '').trim();
+  if (!t || MINI.busy) return;
+  MINI.last = t; MINI.msgs.push({ who: 'owner', text: t }); MINI.busy = true;
+  const el = document.getElementById('mini-in'); if (el) el.value = '';
+  renderMini();
+  const r = await call('ithilTalk', t);
+  MINI.busy = false;
+  MINI.msgs.push(r?.ok ? { who: 'ithil', text: r.text } : { who: 'ithil', err: true, text: r?.message || r?.error?.message || 'Ithil couldn\'t answer.' });
+  renderMini();
+  if (r?.ok && S.settings.autoRead) readAloud({ who: 'ithil', text: r.text });
+}
+async function bootMini() {
+  document.documentElement.classList.add('mini');
+  S.settings = { ...S.settings, ...((await call('settings')) || {}) };
+  S.theme = (await call('themeGet')) || S.theme;
+  applyTheme();
+  const st = await call('ithilStatus', { fresh: true });
+  if (st && typeof st === 'object' && 'online' in st) S.ithil.status = st;
+  const b = await call('ithilAvatar', { expression: st?.expression || '', framing: 'full' });
+  S.ithil.body = b?.ok ? b.dataUrl : null;
+  renderMini();
+  document.addEventListener('click', async (e) => {
+    const a = e.target.closest('[data-a]'); if (!a) return;
+    const k = a.dataset.a;
+    if (k === 'mini-send') return miniSend(document.getElementById('mini-in')?.value);
+    if (k === 'mini-clear') { MINI.msgs = []; return renderMini(); }
+    if (k === 'mini-regen') { if (!MINI.last || MINI.busy) return; const i = MINI.msgs.map((m) => m.who).lastIndexOf('owner'); MINI.msgs = MINI.msgs.slice(0, i); return miniSend(MINI.last); }
+    if (k === 'mini-voice') { await voice.dictate(); return; }
+    if (k === 'mini-full') return call('winAct', 'close');
+    if (k === 'win-mini-close') return call('winAct', 'close');
+    if (k === 'toggle-autoread') { await call('setSettings', { autoRead: !S.settings.autoRead }); S.settings.autoRead = !S.settings.autoRead; return renderMini(); }
+  });
+  document.addEventListener('keydown', (e) => { if (e.target?.id === 'mini-in' && e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); miniSend(e.target.value); } if (e.key === 'Escape') call('winAct', 'close'); });
+}
+
 async function boot() {
+  if (api && location.hash === '#mini') return bootMini();
   if (!api) { document.getElementById('app').innerHTML = '<div style="padding:40px">This interface must run inside the Hearth AI Command Center app.</div>'; return; }
   shell();
   try {
