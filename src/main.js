@@ -111,6 +111,7 @@ function ready(a) {
   if (S.settings.webBridge?.[a] === true) return true;
   if (!AGENTS[a]?.headless) return false;
   // 3.9: Ithil can take work only while she's awake and not busy (asleep, resting, paused, busy or offline: not).
+  if (a === 'hearth' && S.settings.homeServerAi === false) return false; // 3.12: General › Home server › AI chat on the home server
   if (a === 'ithil') return Boolean(S.ithil.status?.available?.ok);
   if (TEAMMATE_IDS.includes(a)) return Boolean(S.mates.ready?.[a]);
   if (method(a) === 'api') return Boolean(S.prov.keys?.[a]);
@@ -158,10 +159,10 @@ const runner = createTeamRunner({
   // 3.9: what Hearth AI gets for Ithil's turn (a message, or a task when the lead hands her work in a chat that builds).
   ithilTurn: (R, { role, task }) => ithilTurnFor({ role, task, build: Boolean(R.build ?? S.build), lastOwnerText: [...R.msgs].reverse().find((m) => m.who === 'owner')?.text || '', leadName: aiName(team().lead), ownerName: ownerName() }),
   onTools: (R, msg, tools, agent) => onTools(R, msg, tools, agent),
-  onPreview: (R, msg) => { if (R.id === S.open && S.view === 'chat') openPane(msg.id, msg.previews[0].id); },
-  beforeRound: async () => { S.memPrompt = (await call('memoryPrompt')) || ''; },
+  onPreview: (R, msg) => { if (R.id === S.open && S.view === 'chat' && S.settings.previews !== false) openPane(msg.id, msg.previews[0].id); },
+  beforeRound: async () => { S.memPrompt = S.settings.memoryOn === false ? '' : ((await call('memoryPrompt')) || ''); },
   afterSave: (R, msg) => { loadChats().then(renderSide); pushPhone(); if (msg && ((msg.acts || []).length || (msg.memo || []).length)) notify(R, 'needs your answer'); },
-  onRoundDone: (R, { stopped }) => { if (!stopped) { notify(R, 'reply is ready'); if (!voice.roundDone(R)) autoRead(R); } },
+  onRoundDone: (R, { stopped }) => { if (!stopped) { if (S.settings.notifyDone !== false) notify(R, 'reply is ready'); if (!voice.roundDone(R)) autoRead(R); } },
   isRoleplay: (R) => Boolean(entry(R.id)?.rp),
   roleplayTurn: (R, text, opts) => roleplayTurn(R, text, opts),
   uid, now,
@@ -210,6 +211,8 @@ function notify(R, what) {
   const c = entry(R.id);
   const last = [...R.msgs].reverse().find((m) => m.who !== 'owner' && m.who !== 'system');
   call('notifyShow', { title: `“${c?.title || 'Chat'}”: ${what}`, body: last ? `${aiName(last.who)}: ${plainText(last.text).slice(0, 140)}` : '', chatId: R.id });
+  // 3.12 (settings-7): "On my phone too": the phone view counts it as waiting and shows its own notification.
+  if (S.settings.notifyPhone === true) { S.phoneNotes = [...(S.phoneNotes || []), { id: `${R.id}-${Date.now()}`, title: `${c?.title || 'Chat'}: ${what}` }].slice(-10); pushPhone(); }
 }
 
 // ---------- chats ----------
@@ -1068,7 +1071,7 @@ function pushPhone() {
       names: Object.fromEntries(TEAM_IDS.map((a) => [a, aiName(a)])),
       team: t.members.map((a) => ({ id: a, lead: a === t.lead, dot: S.busy?.agent === a ? 'work' : ready(a) ? 'ok' : 'off' })),
       chat: S.msgs.filter((m) => !m.local).slice(-60).map((m) => ({ who: m.who, text: String(m.text || '').slice(0, 4000), at: m.at })),
-      waiting: { permissions: [], approvals: [], cards: [] },
+      waiting: { permissions: [], approvals: [], cards: (S.phoneNotes || []).map((n) => ({ id: n.id, title: n.title })) },
       board: [],
     });
   }, 600);
@@ -2125,13 +2128,71 @@ function modalHtml() {
 
 // ---------- settings ----------
 // 3.12 (settings-1…7): seven tabs with icons across the top; each tab holds the sections it had before.
-const STABS = [['team', 'users', 'AI team', ['team']], ['accounts', 'key', 'Accounts', ['accounts', 'github', 'accounts2']], ['ithil', 'moon', 'Ithil', ['ithil']], ['tools', 'cpu', 'Tools', ['tools', 'connectors', 'perms']], ['memory', 'brain', 'Memory', ['memory', 'scheduled', 'data']], ['voice', 'speaker', 'Voice & avatar', ['voice', 'avatar']], ['general', 'gear', 'General', ['look', 'alerts', 'updates', 'uncensored', 'changes']]];
+const STABS = [['team', 'users', 'AI team', ['team']], ['accounts', 'key', 'Accounts', ['accounts', 'github', 'accounts2']], ['ithil', 'moon', 'Ithil', ['ithil']], ['tools', 'cpu', 'Tools', ['tools', 'connectors', 'perms']], ['memory', 'brain', 'Memory', ['memory', 'scheduled', 'data']], ['voice', 'speaker', 'Voice & avatar', ['voice']], ['general', 'gear', 'General', ['look', 'alerts', 'updates', 'uncensored', 'changes']]];
+// 3.12: the compact groups each mockup shows (settings-4…7), wired to the real switches; the full pages stay under "More … settings".
+const row = (title, sub, right) => `<div class="srow"><span class="t2"><b>${title}</b>${sub ? `<span class="d">${sub}</span>` : ''}</span><span class="grow"></span>${right}</div>`;
+const grp = (title, rows, note = '') => `<div class="box"><h3>${title}</h3>${note ? `<p class="fine">${note}</p>` : ''}${rows.join('')}</div>`;
+const moreBtn = (tab, label) => `<button class="mini" data-a="more-open" data-v="${tab}">${label}</button>`;
+const TAB_TOP = {
+  memory: () => {
+    const s = S.settings;
+    const ci = s.customInstructions || {};
+    const facts = S.memory?.facts || [];
+    const sc = S.schedules?.list || [];
+    const cp = S.copies?.list || [];
+    const size = cp.reduce((n, c) => n + (c.size || 0), 0);
+    return [
+      grp('Custom instructions', [`<div class="srow"><textarea id="ci-about" rows="4" maxlength="3000" style="width:100%" placeholder="Write in plain words. I pick every version number…">${esc(ci.about || '')}</textarea><button class="mini" data-a="save-ci">Save</button></div>`]),
+      grp('Memory across chats', [row('Remember things between chats', 'What you tell the team, kept on this PC', tog(s.memoryOn !== false, 'memory-on')), row('What\'s remembered', `${facts.length} note${facts.length === 1 ? '' : 's'}`, moreBtn('memory', 'See and edit')), row('Forget everything', '', moreBtn('memory', 'Forget…').replace('class="mini"', 'class="mini red"'))]),
+      grp('Scheduled tasks', [...sc.map((x) => row(esc(whenText(x)), esc(x.title || ''), `${tog(x.enabled, 'sched-toggle', `data-id="${esc(x.id)}"`)}<button class="ib ghost trash" data-a="sched-del" data-id="${esc(x.id)}" title="Delete">${icon('trash', 'sm')}</button>`)), row('New scheduled task', '', moreBtn('memory', '＋ New'))]),
+      grp('Saved data', [row('Temporary copies', `Copies the AIs worked in · ${fmtBytes(size)}`, '<button class="mini" data-a="cleanup">Clean up</button>'), row('Backups', 'Chats and settings, kept every day', '<button class="mini" data-a="open-data-folder">Open folder</button>'), row('Old boards (read-only)', 'From before 2.0', moreBtn('memory', '›'))]),
+    ].join('');
+  },
+  voice: () => {
+    const s = S.settings;
+    const vs = voiceSettings(s);
+    return [
+      grp('Voice', [row('Read answers aloud', '', tog(s.autoRead === true, 'toggle-autoread')), row('Voice', esc(providerName(vs.tts, s)), moreBtn('voice', 'Change')), row('Each AI its own voice', 'Claude, ChatGPT and Gemini sound different', moreBtn('voice', 'Pick voices')), row('Talk to the team', 'Hold Space or the mic button', moreBtn('voice', vs.turn === 'ptt' ? 'Hold to talk' : 'Hands-free'))]),
+      section('avatar'),
+    ].join('');
+  },
+  general: () => {
+    const s = S.settings;
+    const design = ['hologram', 'classic'].includes(s.design) ? s.design : 'adwaita';
+    const ACC = [['blue', 'Blue'], ['teal', 'Teal'], ['green', 'Green'], ['yellow', 'Yellow'], ['orange', 'Orange'], ['red', 'Red'], ['pink', 'Pink'], ['purple', 'Purple'], ['slate', 'Slate']];
+    return [
+      grp('Look', [row('Style', '', `<select data-a="design-pick"><option value="adwaita" ${design === 'adwaita' ? 'selected' : ''}>Dark</option><option value="hologram" ${design === 'hologram' ? 'selected' : ''}>Gold hologram</option><option value="classic" ${design === 'classic' ? 'selected' : ''}>Classic</option></select>`), row('Accent colour', '', `<select data-a="accent-pick" ${design !== 'adwaita' ? 'disabled' : ''}>${ACC.map(([v, l]) => `<option value="${v}" ${(s.accent || 'blue') === v ? 'selected' : ''}>${l}</option>`).join('')}</select>`), row('Text size', '', moreBtn('general', `${s.textSize || 100}%`))]),
+      grp('Notifications', [row('When a chat needs my answer', '', tog(s.notify !== false, 'notify-toggle')), row('When a task finishes', '', tog(s.notifyDone !== false, 'notify-done')), row('On my phone too', '', tog(s.notifyPhone === true, 'notify-phone'))]),
+      grp('App updates', [row(`Hearth AI Command Center ${esc(S.info?.version || '')}`, esc(S.upd?.status?.message || (S.upd?.status?.state === 'available' ? `${S.upd.status.version} is available` : 'Checks for updates by itself')), '<button class="mini" data-a="upd" data-v="check">Check now</button>'), row('Install updates by themselves', 'Downloads each new version by itself; you press Install. Works for the AppImage and the .deb', tog(s.autoUpdate !== false, 'auto-update'))]),
+      grp('Home server', [row('AI chat on the home server', 'Your Hearth devices\' local AI (the home server first) can answer in chats', tog(s.homeServerAi !== false, 'home-ai'))]),
+      grp('Uncensored mode (18+)', [row('Let the AIs answer without their usual limits where they allow it', 'Ithil\'s hard limits still apply', moreBtn('general', s.uncensored?.on ? 'On' : 'Off'))]),
+      grp('Settings changes', [row('A list of every change to these settings', 'Who changed what and when; undo any of them', moreBtn('general', '›'))]),
+    ].join('');
+  },
+  tools: () => {
+    const s = S.settings;
+    const cn = S.connectors?.list || [];
+    return [
+      grp('Quick checks the AIs may run on this PC', [row(esc((s.tools?.quickChecks || []).join(' · ') || 'none yet'), 'Allowed without asking', tog(s.tools?.build !== false, 'tool-build')), row('Add a check', '', moreBtn('tools', '＋ Add'))]),
+      grp('Skills', [...(S.skills || []).map((x) => row(esc(x.name), esc(x.where || ''), '<span class="tagp">on</span>')), row('Install a skill from a file…', 'A folder with a SKILL.md in ~/.claude/skills or a repo\'s .claude/skills', moreBtn('tools', 'Install'))]),
+      grp('Connectors (MCP servers)', [...cn.map((x) => row(esc(x.name), esc(x.type === 'http' ? x.url : x.command || ''), `${tog(x.enabled, 'conn-toggle', `data-id="${esc(x.id)}"`)}<button class="ib ghost trash" data-a="conn-del" data-id="${esc(x.id)}" title="Remove">${icon('trash', 'sm')}</button>`)), row('Add a connector', 'A command or an address', moreBtn('tools', '＋ Add'))]),
+      grp('Let your AI use this desktop', [row('Screen, mouse and keyboard', 'Asks before every session; stops when you move the mouse', tog(S.desktop?.enabled === true, 'desk-toggle'))]),
+      grp('Permissions', [
+        row('Run commands', '', `<select data-a="perm-run"><option value="standard" ${s.access !== 'full' ? 'selected' : ''}>Ask each time</option><option value="full" ${s.access === 'full' ? 'selected' : ''}>Without asking</option></select>`),
+        row('Change files outside the project', 'The AIs work in their own copy of the repo', '<select disabled><option>Never</option></select>'),
+        row('Push to GitHub', 'Only to its own branch; never main', `<select data-a="perm-push"><option value="ask" ${s.autoPush === false ? 'selected' : ''}>Ask each time</option><option value="auto" ${s.autoPush !== false ? 'selected' : ''}>By itself</option></select>`),
+        row('Live previews', 'Show pages and apps the AIs make in a side panel', tog(s.previews !== false, 'previews-toggle')),
+      ]),
+    ].join('');
+  },
+};
 function tabOf(k) { return (STABS.find(([t, , , ks]) => t === k || ks.includes(k)) || STABS[0])[0]; }
 function settingsView() {
   const tab = tabOf(S.tab);
   const nav = STABS.map(([k, ic, label]) => `<button class="${tab === k ? 'on' : ''}" data-a="tab" data-t="${k}">${icon(ic, 'sm')}<span>${esc(label)}</span></button>`).join('');
   const parts = STABS.find(([t]) => t === tab)[3];
-  return `<div class="set dlg"><div class="dlg-h"><button class="ib ghost" data-a="set-search" title="Search settings" aria-label="Search settings">${icon('search', 'sm')}</button><b>Settings</b><button class="xb" data-a="set-close" title="Close" aria-label="Close settings">${icon('x', 'sm')}</button></div><nav class="stabs">${nav}</nav><div class="spage">${parts.map((k) => section(k)).join('')}</div></div>`;
+  const page = TAB_TOP[tab] ? `${TAB_TOP[tab]()}<details class="more-acct" ${S.moreSet?.[tab] ? 'open' : ''}><summary data-a="more-set" data-v="${tab}">More ${esc(STABS.find(([t]) => t === tab)[2].toLowerCase())} settings</summary>${parts.map((k) => section(k)).join('')}</details>` : parts.map((k) => section(k)).join('');
+  return `<div class="set dlg"><div class="dlg-h"><button class="ib ghost" data-a="set-search" title="Search settings" aria-label="Search settings">${icon('search', 'sm')}</button><b>Settings</b><button class="xb" data-a="set-close" title="Close" aria-label="Close settings">${icon('x', 'sm')}</button></div><nav class="stabs">${nav}</nav><div class="spage">${page}</div></div>`;
 }
 // ---------- 3.4 Settings › Accounts: one short row per AI, grouped and folding ----------
 const ACCT_GROUPS = [
@@ -3162,6 +3223,14 @@ document.addEventListener('click', async (ev) => {
     case 'tab': { S.tab = d.t; renderMain.lastTab = null; render(); const parts = (STABS.find(([t]) => t === tabOf(d.t)) || STABS[0])[3]; for (const k of parts) await loadSection(k); return; }
     case 'set-close': return goHome();
     case 'more-acct': S.moreAcct = !S.moreAcct; return;
+    case 'more-set': S.moreSet = { ...(S.moreSet || {}), [d.v]: !S.moreSet?.[d.v] }; return;
+    case 'more-open': { S.moreSet = { ...(S.moreSet || {}), [d.v]: true }; renderMain(); document.querySelector('details.more-acct')?.scrollIntoView({ behavior: 'smooth' }); return; }
+    case 'memory-on': return setSettings({ memoryOn: !(S.settings.memoryOn !== false) });
+    case 'notify-done': return setSettings({ notifyDone: !(S.settings.notifyDone !== false) });
+    case 'notify-phone': return setSettings({ notifyPhone: !(S.settings.notifyPhone === true) });
+    case 'auto-update': return setSettings({ autoUpdate: !(S.settings.autoUpdate !== false) });
+    case 'home-ai': return setSettings({ homeServerAi: !(S.settings.homeServerAi !== false) });
+    case 'previews-toggle': return setSettings({ previews: !(S.settings.previews !== false) });
     case 'set-search': return toast('Type to search: Ctrl+F finds a setting on this page.');
     case 'missing-hide': { try { localStorage.setItem('hearth.v2.missingHidden', missingList().join(',')); } catch {} render(); return; }
     case 'chat-menu': ev.stopPropagation(); { const r = a.getBoundingClientRect(); S.pop = { kind: 'menu', id: d.id, x: Math.min(r.left, window.innerWidth - 260), y: Math.min(r.bottom + 4, window.innerHeight - 400) }; } return renderOverlay();
@@ -3502,6 +3571,8 @@ document.addEventListener('change', (ev) => {
   if (t.matches?.('[data-a="max-chats"]')) setSettings({ maxChats: Number(t.value) });
   if (t.matches?.('select[data-a="design-pick"]') && ['hologram', 'classic', 'adwaita'].includes(t.value)) setSettings({ design: t.value }).then(() => { applyTheme(); render(); });
   if (t.matches?.('select[data-a="accent-pick"]')) setSettings({ accent: t.value }).then(() => applyTheme());
+  if (t.matches?.('select[data-a="perm-run"]')) setSettings({ access: t.value === 'full' ? 'full' : 'standard' });
+  if (t.matches?.('select[data-a="perm-push"]')) setSettings({ autoPush: t.value === 'auto' });
   if (t.matches?.('select[data-a="av-who"]')) setSettings({ avatarWho: t.value === 'ithil' ? 'ithil' : 'answering' }).then(() => renderPane(true));
   if (t.matches?.('select[data-a="av-body"]')) setSettings({ ithilBody: t.value === 'live2d' ? 'live2d' : 'vrm' });
   if (t.matches?.('select[data-a="voice-set"]')) setSettings({ voice: { [t.dataset.k]: t.value } }).then(() => loadSection('voice'));
@@ -3883,7 +3954,7 @@ async function boot() {
     await refreshMates();
     await loadCards();
     S.upd = (await call('updaterInfo')) || S.upd;
-    api.onUpdaterStatus?.((s) => { const prev = S.upd.status?.state; S.upd.status = s; if (s.state === 'available' && prev !== 'available') toast(`Update ${s.version} is available — see Settings › App updates.`); if (S.view === 'settings') render(); });
+    api.onUpdaterStatus?.((s) => { const prev = S.upd.status?.state; S.upd.status = s; if (s.state === 'available' && prev !== 'available' && S.settings.autoUpdate !== false) call('downloadUpdate'); if (s.state === 'available' && prev !== 'available') toast(`Update ${s.version} is available — see Settings › App updates.`); if (S.view === 'settings') render(); });
     // Steps carry their chat: only that chat's runtime gets them, open or not.
     api.onChatStep?.((e) => runner.onStep(e));
     api.onMediaProgress?.((p) => showCopy(p));

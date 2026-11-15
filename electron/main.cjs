@@ -188,6 +188,12 @@ function normalSettings(s) {
     ithilBody: s.ithilBody === 'live2d' ? 'live2d' : 'vrm',
     miniWindow: s.miniWindow !== false,
     miniOnTop: s.miniOnTop !== false,
+    previews: s.previews !== false,
+    memoryOn: s.memoryOn !== false,
+    notifyDone: s.notifyDone !== false,
+    notifyPhone: s.notifyPhone === true,
+    autoUpdate: s.autoUpdate !== false,
+    homeServerAi: s.homeServerAi !== false,
     // How many chats may have their team working at once.
     maxChats: v2.MAX_CHAT_CHOICES.includes(s.maxChats) ? s.maxChats : 3,
     // Custom instructions every AI gets in every chat (empty until he writes them).
@@ -585,7 +591,7 @@ function registerIpc() {
     if ('webBridge' in patch) s.webBridge = webBridgeLib.cleanBridge({ ...webBridgeLib.cleanBridge(s.webBridge), ...(patch.webBridge && typeof patch.webBridge === 'object' ? patch.webBridge : {}) });
     if ('notify' in patch) s.notify = patch.notify === true;
     if ('autoRead' in patch) s.autoRead = patch.autoRead === true;
-    for (const k of ['avatarPanel', 'avatarLipSync', 'miniWindow', 'miniOnTop']) if (k in patch) s[k] = patch[k] === true;
+    for (const k of ['avatarPanel', 'avatarLipSync', 'miniWindow', 'miniOnTop', 'previews', 'memoryOn', 'notifyDone', 'notifyPhone', 'autoUpdate', 'homeServerAi']) if (k in patch) s[k] = patch[k] === true;
     if ('avatarWho' in patch) s.avatarWho = patch.avatarWho === 'ithil' ? 'ithil' : 'answering';
     if ('ithilBody' in patch) s.ithilBody = patch.ithilBody === 'live2d' ? 'live2d' : 'vrm';
     if ('maxChats' in patch) {
