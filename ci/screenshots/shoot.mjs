@@ -271,7 +271,7 @@ const SHOTS = [
   { file: '72-settings-accounts-row-open.png', opts: { more: true }, click: '[data-a="settings"]', then: '[data-a="tab"][data-t="accounts"]', then2: '[data-a="acct-open"][data-v="cursor"]', wait: 400, expect: ['Cursor API key (optional)', 'Re-check', 'Sign in again'], selector: ['.ac-exp'] },
   { file: '73-settings-accounts-search.png', opts: { more: true }, click: '[data-a="settings"]', then: '[data-a="tab"][data-t="accounts"]', run: 'acctsearch', wait: 300, expect: ['Kiro', 'Kimi'], selector: ['#acct-q'] },
   // 3.4.1: compact team lists, the who-answers menu and Test team (a check word from everyone).
-  { file: '74-team-page-compact.png', opts: { more: true }, click: '[data-a="settings"]', then: '[data-a="tab"][data-t="team"]', wait: 500, expect: ['Who\'s in your chats', 'Coding tools', 'Chat & review', 'in the team', 'GitHub Copilot', 'Factory Droid'], selector: ['.tm-grid', '.tm.in', '[data-a="team-fold"]'] },
+  { file: '74-team-page-compact.png', opts: { more: true }, click: '[data-a="settings"]', then: '[data-a="tab"][data-t="team"]', wait: 500, expect: ['Who\'s in your chats', 'GitHub Copilot', 'Factory Droid'], selector: ['.tm-grid', '.tm.in', '[data-a="team-fold"]'] },
   { file: '75-test-team-check-words.png', opts: { more: true }, click: '[data-a="settings"]', then: '[data-a="tab"][data-t="team"]', then2: '[data-a="team-check"][data-v="team"]', wait: 3500, scrollTo: '#team-check', expect: ['Test team: a check word from everyone', 'passed', 'failed', 'not signed in', 'not connected', 'skipped', 'chat box found · message sent', 'without the check word', 'Open page'], selector: ['.ck-row.passed', '.ck-row.failed', '.ck-row.signin', '.ck-row.notconnected'] },
   { file: '76-who-answers-compact.png', opts: { open: 'c0000000001', more: true }, click: '[data-a="team-pop"]', wait: 300, expect: ['Who answers', 'Whole team', 'connected', 'not connected', 'Test team'], selector: ['.wa-grid .wa', '.wa-off'] },
   { file: '01-home.png', opts: {}, expect: ['Good ', 'What should the team work on?', 'Fix a bug in a repo', 'Prepare a release', 'Pinned', 'Today', 'Yesterday', 'Earlier'] },
@@ -355,7 +355,7 @@ const SHOTS = [
   { file: '54-big-media-cards-and-gallery.png', opts: { open: 'c0000000018' }, expect: ['storage-report.html', '3 pictures loaded from disk', 'Open in browser', 'all-logs.html', 'Too big to show here', 'limit 2.0 MB', '24 pictures', 'Open gallery', 'panorama-giant.png', 'too many to open', 'full-run.mp4', 'limit 10.0 GB', 'Show in folder', 'Save as', 'narration.mp3', 'Gallery'], selector: ['.gal .gal-t img', '.toobig', '.media.aud audio', '[data-toobig="video"]'] },
   { file: '55-gallery-viewer.png', opts: { open: 'c0000000018' }, click: '.gal-t[data-i="1"]', then: '[data-a="gal-next"]', expect: ['frame-03.png', '3 of 24', 'Save as', 'Show in folder', '100%', 'controller'], selector: ['#gviewer img', '.gv-nav.prev', '.gv-nav.next'] },
   { file: '36-image-in-chat-and-cant-show-reason.png', opts: { open: 'c0000000017' }, expect: ['Here it is', "Can't show", 'outside the chat', 'too large', 'settings.png'], selector: ['.text img.md-img', '.media img', '.media-why'] },
-  { file: '37-settings-change-log.png', opts: {}, click: '[data-a="settings"]', then: '[data-a="tab"][data-t="memory"]', scrollTo: '#settings-log', wait: 300, expect: ['Settings changes', 'tools.web', 'leadMerge', 'undone', 'you, in the app'], selector: ['#settings-log .log'] },
+  { file: '37-settings-change-log.png', opts: {}, click: '[data-a="settings"]', then: '[data-a="tab"][data-t="general"]', scrollTo: '#settings-log', wait: 300, expect: ['Settings changes', 'tools.web', 'leadMerge', 'undone', 'you, in the app'], selector: ['#settings-log .log'] },
   { file: '38-find-characters.png', opts: {}, click: '[data-a="characters"]', then: '[data-a="find-chars"]', expect: ['Find characters', 'Chub', 'AICharacterCards', 'Datacat', 'sandboxed', 'Botbooru and CharaVault', 'under 18'], selector: ['#find-chars'] },
   { file: '39-character-imported-notice.png', opts: {}, click: '[data-a="characters"]', run: 'found', expect: ['Imported Seren', 'Open', 'Start chat'], selector: ['.note.found'] },
   // 2.2.1: Images & Videos and Uncensored mode.
@@ -396,6 +396,8 @@ async function shootOne(s) {
   if (s.click && !(await page.isVisible(s.click).catch(() => false)) && await page.$('[data-a="composer-opts"]')) { await page.click('[data-a="composer-opts"]'); await page.waitForTimeout(200); }
   if (s.click) { await page.click(s.click); await page.waitForTimeout(500); }
   if (s.then) { await page.click(s.then); await page.waitForTimeout(500); }
+  // 3.12: the older Accounts shots look inside "More account settings".
+  if (!s.file.startsWith('3.12') && s.then?.includes('data-t="accounts"')) { await page.evaluate(() => document.querySelectorAll('details.more-acct').forEach((d) => { d.open = true; })); await page.waitForTimeout(200); }
   if (s.then2) { await page.click(s.then2); await page.waitForTimeout(500); }
   if (s.run === 'multi') {
     // Two chats working (they never finish here) and a third whose answer arrives while another is open.

@@ -1436,6 +1436,7 @@ function composerChips() {
   const teamLabel = S.mode === 'team' ? `Team <span class="faint">(${esc(aiName(t.lead))} ★ leads)</span>` : esc(aiName(S.mode));
   const models = c ? (cur()?.sessions?._models || {}) : S.homeModels;
   const picked = Object.entries(models).filter(([, v]) => v && v !== 'default').length;
+  const busy = Boolean(S.busy) || S.working;
   return `    <div class="row optrow">
       <button class="ib" data-a="attach" title="Attach files, images, videos, PDFs or spreadsheets (or paste a screenshot)" aria-label="Attach">${icon('plus', 'sm')}</button>
       <button class="ib" data-a="humanize-draft" title="Make it sound human (rewrites your draft so it reads less like AI)" aria-label="Make it sound human">${icon('user', 'sm')}</button>
@@ -2123,7 +2124,7 @@ function modalHtml() {
 
 // ---------- settings ----------
 // 3.12 (settings-1…7): seven tabs with icons across the top; each tab holds the sections it had before.
-const STABS = [['team', 'users', 'AI team', ['team']], ['accounts', 'key', 'Accounts', ['accounts', 'github']], ['ithil', 'moon', 'Ithil', ['ithil']], ['tools', 'cpu', 'Tools', ['tools', 'connectors', 'perms']], ['memory', 'brain', 'Memory', ['memory', 'scheduled', 'data']], ['voice', 'speaker', 'Voice & avatar', ['voice', 'avatar']], ['general', 'gear', 'General', ['look', 'alerts', 'updates', 'uncensored', 'changes']]];
+const STABS = [['team', 'users', 'AI team', ['team']], ['accounts', 'key', 'Accounts', ['accounts', 'github', 'accounts2']], ['ithil', 'moon', 'Ithil', ['ithil']], ['tools', 'cpu', 'Tools', ['tools', 'connectors', 'perms']], ['memory', 'brain', 'Memory', ['memory', 'scheduled', 'data']], ['voice', 'speaker', 'Voice & avatar', ['voice', 'avatar']], ['general', 'gear', 'General', ['look', 'alerts', 'updates', 'uncensored', 'changes']]];
 function tabOf(k) { return (STABS.find(([t, , , ks]) => t === k || ks.includes(k)) || STABS[0])[0]; }
 function settingsView() {
   const tab = tabOf(S.tab);
@@ -2182,6 +2183,30 @@ function acctDetail(a) {
   const what = BRIDGE.find(([x]) => x === a)?.[1] || AGENTS[a]?.tool || '';
   return `<div class="ac-exp"><span class="fine">${esc(what)}</span><span class="grow"></span>${bits.join('')}</div>`;
 }
+// 3.12 (settings-2): every AI as one row, grouped by how it connects: its state on the right, or its one button.
+const CONNECT_GROUPS = [
+  ['Signed in with your account', 'Your own accounts: the Command Center never sees your password.', (a) => !['freebuff'].includes(a) && method(a) !== 'api' && !['ollama', 'gpu', 'ithil', 'hearth'].includes(a) && !AGENTS[a]?.web && AGENTS[a]?.kind !== 'local' && !MAKER_IDS.includes(a) && !BUILDER_IDS.includes(a)],
+  ['With a key', 'Keys are saved encrypted on this device.', (a) => (method(a) === 'api' || MAKER_IDS.includes(a)) && !['gpu', 'ithil', 'hearth'].includes(a) && !AGENTS[a]?.web],
+  ['Your own', '', (a) => ['ollama', 'gpu', 'ithil', 'hearth'].includes(a) || AGENTS[a]?.kind === 'local'],
+  ['On the web (signed in in a window)', '', (a) => a === 'freebuff' || Boolean(AGENTS[a]?.web) || BUILDER_IDS.includes(a)],
+];
+function accountsGroups() {
+  const all = [...new Set([...ACCT_GROUPS.flatMap((g) => g[2]), 'gpu', 'hearth', 'ithil', 'free', 'venice', 'civitai', 'copilot', 'meta'])].filter((a) => AGENTS[a] || MAKER_IDS.includes(a));
+  const used = new Set();
+  return CONNECT_GROUPS.map(([label, note, fits]) => {
+    const ids = all.filter((a) => !used.has(a) && fits(a));
+    ids.forEach((a) => used.add(a));
+    if (!ids.length) return '';
+    const rows = ids.map((a) => {
+      const [good, status, , act] = a === 'ithil' ? [Boolean(S.ithil.status?.online), S.ithil.status?.online ? 'connected' : 'offline', '', null] : acctState(a);
+      const sub = a === 'ithil' ? 'Hearth AI · see the Ithil tab' : (AGENTS[a]?.vendor || (MAKER_IDS.includes(a) ? 'pictures and videos' : ''));
+      const right = act ? `${good ? `<span class="tagp">${esc(status.toLowerCase())}</span>` : ''}<button class="mini" data-a="${esc(act[0])}" data-v="${esc(a)}">${esc(act[1])}</button>` : `<span class="tagp ${good ? '' : 'w'}">${esc(status.toLowerCase())}</span>${/key/i.test(status) ? `<button class="mini" data-a="set-key" data-v="${esc(a)}">Change</button>` : ''}`;
+      return `<div class="srow">${mono(a, 'sm')}<span class="t2"><b>${esc(makerName(a))}</b><span class="d">${esc(sub)}</span></span><span class="grow"></span>${right}</div>`;
+    }).join('');
+    return `<div class="box"><h3>${esc(label)}</h3>${note ? `<p class="fine">${esc(note)}</p>` : ''}${rows}</div>`;
+  }).join('');
+}
+
 function accountsList() {
   const q = String(S.acctQ || '').trim().toLowerCase();
   const fold = S.acctFold || {};
@@ -2233,7 +2258,17 @@ function section(k) {
   if (k === 'accounts') {
     const M = S.mates;
     const c = M.conf || {};
-    return `<h1>Accounts</h1>${keyringNote()}<div class="box ac">${accountsList()}</div>
+    // 3.12 (settings-2): the AIs first, grouped by how they connect, then GitHub (its own section), then the rest
+    // (section 'accounts2'). Every older setting is still here, under "More account settings".
+    return `${keyringNote()}${accountsGroups()}`;
+  }
+  if (k === 'accounts2') {
+    const M = S.mates;
+    const c = M.conf || {};
+    return `${hearthBox()}
+      ${comfyBox()}
+      <div class="box"><h3>${icon('phone', 'sm')}Your phone</h3><div class="srow">Phone view<span class="d">your chat on your phone, on your home network only</span><span class="grow"></span>${tog(Boolean(S.phone?.enabled), 'phone-toggle')}</div>${S.phone?.enabled ? `<div class="srow">Address<span class="d mono">${esc((S.phone.urls || []).join(', ') || 'starting…')}</span><span class="grow"></span><button class="mini" data-a="phone-code">Show pairing code</button></div>${S.phone.code ? `<div class="srow">Code<b class="mono big">${esc(S.phone.code)}</b><span class="d">type it on your phone within 5 minutes</span></div>` : ''}` : ''}</div>
+      <details class="more-acct"><summary>More account settings</summary><div class="box ac">${accountsList()}</div>
       <div class="box"><h3>FreeBuff on the web</h3><div class="srow">${mono('freebuff')}<b>FreeBuff</b><span class="d">opens freebuff.com in its own window here. Sign in there once with your FreeBuff account; it stays signed in. Your FreeBuff chats live in FreeBuff's cloud, so the ones from your phone are there too.</span><span class="grow"></span><button class="mini" data-a="open-freebuff">Open FreeBuff</button></div>
       <div class="note sub">FreeBuff has no official way for other apps to drive it yet. To have it in team chats, turn on its web sign-in bridge above. The Command Center never reads or copies your FreeBuff login; its windows are sandboxed and get nothing from this app.</div></div>
       <div class="box"><h3>${icon('eye', 'sm')}Pictures, videos and documents</h3><p class="fine">The AIs' own picture and video tools through their official APIs, with your own keys (saved encrypted on this PC). Each use is billed to that account.</p>
@@ -2251,10 +2286,7 @@ function section(k) {
       ${(M.servers || []).map((sv) => `<div class="srow sub">${icon('cpu', 'sm')}<b>${esc(sv.name)}</b><span class="d mono">${esc(sv.type === 'comfy' ? 'ComfyUI' : 'OpenAI-compatible')} · ${esc(sv.url)}${sv.key ? ' · key saved' : ''}${sv.workflow ? ' · own workflow' : ''}</span><span class="grow"></span>${svModelPick(sv)}<button class="mini" data-a="server-models" data-id="${esc(sv.id)}" title="Look for the models on this server again">Refresh</button><button class="mini" data-a="server-remove" data-id="${esc(sv.id)}">Remove</button></div>`).join('')}
       <div class="srow sub form"><input id="sv-name" placeholder="Name (e.g. RunPod 4090)"><select id="sv-type"><option value="openai">OpenAI-compatible chat</option><option value="comfy">ComfyUI pictures</option></select><input id="sv-url" class="grow" placeholder="https://…/v1 or http://192.168.1.20:8188">${svAddModelPick()}<input id="sv-key" type="password" placeholder="Key (optional)"><button class="mini" data-a="server-add">Add server</button></div>
       <details class="sub"><summary class="fine">ComfyUI workflow (optional): paste your own workflow JSON; {prompt}, {negative}, {seed} and {ckpt} are filled in. Empty uses a stock SDXL text-to-image graph.</summary><textarea id="sv-workflow" rows="4" class="mono" placeholder='{"3": {"class_type": "KSampler", …}}'></textarea></details>
-      <div class="note">NovelAI isn't offered: it has no public developer API, and its terms restrict third-party apps.</div></div>
-      ${hearthBox()}
-      ${comfyBox()}
-      <div class="box"><h3>${icon('phone', 'sm')}Your phone</h3><div class="srow">Phone view<span class="d">your chat on your phone, on your home network only</span><span class="grow"></span>${tog(Boolean(S.phone?.enabled), 'phone-toggle')}</div>${S.phone?.enabled ? `<div class="srow">Address<span class="d mono">${esc((S.phone.urls || []).join(', ') || 'starting…')}</span><span class="grow"></span><button class="mini" data-a="phone-code">Show pairing code</button></div>${S.phone.code ? `<div class="srow">Code<b class="mono big">${esc(S.phone.code)}</b><span class="d">type it on your phone within 5 minutes</span></div>` : ''}` : ''}</div>`;
+      <div class="note">NovelAI isn't offered: it has no public developer API, and its terms restrict third-party apps.</div></div></details>`;
   }
   if (k === 'github') {
     const id = s.ownerIdentity;

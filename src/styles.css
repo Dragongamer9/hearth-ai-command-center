@@ -1260,3 +1260,9 @@ html.mini, html.mini body { height: 100%; background: #1e1e1e; }
 .set.dlg .tm-g:first-of-type .tm:first-child { border-top-left-radius: 12px; border-top-right-radius: 12px; }
 .set.dlg .tm-g:last-of-type .tm:last-child { border-bottom-left-radius: 12px; border-bottom-right-radius: 12px; }
 .set.dlg .tm { display: flex; align-items: center; gap: 12px; padding: 11px 16px; min-height: 52px; background: #2e2e32; border: 0; border-top: 1px solid rgba(255,255,255,.06); border-radius: 0; width: 100%; }
+.set.dlg .srow .t2 { display: flex; flex-direction: column; min-width: 0; }
+.set.dlg .srow .t2 .d { width: auto; order: 0; }
+.tagp { font-size: 12px; padding: 2px 8px; border-radius: 999px; background: rgba(47,191,113,.15); color: #8ff0b5; white-space: nowrap; }
+.tagp.w { background: rgba(246,195,68,.12); color: #f6d36a; }
+details.more-acct { margin-top: 22px; }
+details.more-acct > summary { cursor: pointer; font-weight: 700; color: var(--strong); padding: 10px 4px; }
