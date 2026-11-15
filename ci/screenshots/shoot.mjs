@@ -413,7 +413,7 @@ async function shootOne(s) {
     await page.waitForTimeout(700);
   }
   if (!full && !/^3\.1[23]/.test(s.file) && s.then?.includes('data-t="accounts"') && await page.$('[data-a="sub-open"][data-p="accounts2"]')) { await page.click('[data-a="sub-open"][data-p="accounts2"]'); await page.waitForTimeout(300); }
-  if (!s.file.startsWith('3.12') && s.then?.includes('data-a="tab"')) { await page.evaluate(() => document.querySelectorAll('details.more-acct:not([open]) summary').forEach((x) => x.click())); await page.waitForTimeout(250); }
+  if (!s.file.startsWith('3.12') && s.then?.includes('data-a="tab"')) { await page.evaluate(() => document.querySelectorAll('details.more-acct:not([open]) summary').forEach((x) => { x.click(); x.parentElement.open = true; })); await page.waitForTimeout(250); }
   if (s.then2) { await page.click(s.then2); await page.waitForTimeout(500); }
   if (s.run === 'multi') {
     // Two chats working (they never finish here) and a third whose answer arrives while another is open.

@@ -3383,7 +3383,7 @@ document.addEventListener('click', async (ev) => {
     case 'char-save': { const m = S.modal; await setSettings({ characters: { [m.agent]: m.draft } }); S.modal = null; renderOverlay(); toast(`${aiName(m.agent)}'s character is saved.`); renderPane(true); return renderMain(); }
     case 'sub-back': S.subpage = null; return renderMain();
     case 'sub-team-check': S.subpage = { tab: 'team', parts: ['team'], title: 'Check the team' }; renderMain(); return teamCheck('team');
-    case 'more-acct': S.moreAcct = !S.moreAcct; return;
+    case 'more-acct': S.moreAcct = !S.moreAcct; renderMain(); return;   // the click is prevented above, so the page opens it
     case 'more-set': S.moreSet = { ...(S.moreSet || {}), [d.v]: !S.moreSet?.[d.v] }; return;
     case 'more-open': { S.moreSet = { ...(S.moreSet || {}), [d.v]: true }; renderMain(); document.querySelector('details.more-acct')?.scrollIntoView({ behavior: 'smooth' }); return; }
     case 'memory-on': return setSettings({ memoryOn: !(S.settings.memoryOn !== false) });
