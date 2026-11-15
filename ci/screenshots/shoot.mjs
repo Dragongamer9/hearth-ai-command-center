@@ -388,6 +388,8 @@ async function shootOne(s) {
     await page.evaluate(async () => { const f = [new File(['x'], 'log.txt'), new File(['x'], 'crash.png')]; const ev = new Event('drop', { bubbles: true }); ev.dataTransfer = { files: f, types: ['Files'] }; document.dispatchEvent(ev); });
     await page.waitForTimeout(300);
   }
+  // 3.12: Settings, Live, Characters… are in History's ☰ menu: open it first when the button is hidden there.
+  if (s.click && !(await page.isVisible(s.click).catch(() => false)) && await page.$('[data-a="side-menu"]')) { await page.click('[data-a="side-menu"]'); await page.waitForTimeout(200); }
   if (s.click) { await page.click(s.click); await page.waitForTimeout(500); }
   if (s.then) { await page.click(s.then); await page.waitForTimeout(500); }
   if (s.then2) { await page.click(s.then2); await page.waitForTimeout(500); }
