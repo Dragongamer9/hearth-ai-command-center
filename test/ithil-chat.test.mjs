@@ -1,4 +1,4 @@
-// 3.10.1: Ithil's own chat said "The AI you picked isn't ready" unless she was on the team and awake and free.
+// 3.11: Ithil's own chat said "The AI you picked isn't ready" unless she was on the team and awake and free.
 // She talks whenever she's connected; when she isn't, the chat says why. A full address in the host box is understood.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

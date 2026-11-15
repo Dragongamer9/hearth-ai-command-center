@@ -24,7 +24,7 @@ const num = (v) => (Number.isFinite(Number(v)) ? Math.max(0, Math.min(100, Math.
 // What he set in Settings › Accounts › Ithil: a host (empty = this PC, from connect.json) and a port.
 function cleanSettings(v) {
   const s = v && typeof v === 'object' && !Array.isArray(v) ? v : {};
-  // 3.10.1: a full address typed in the host box (http://100.72.99.97:47860) is understood, not thrown away.
+  // 3.11: a full address typed in the host box (http://100.72.99.97:47860) is understood, not thrown away.
   let h = typeof s.host === 'string' ? s.host.trim() : '';
   let p = s.port;
   const m = h.match(/^(?:https?:\/\/)?(\[[^\]]+\]|[^/:]+)(?::(\d{1,5}))?\/?(?:v1\/?)?$/i);

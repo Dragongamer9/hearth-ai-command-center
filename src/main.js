@@ -143,7 +143,7 @@ const runner = createTeamRunner({
   entry: (id) => entry(id),
   settings: () => S.settings,
   team, live, method, setupHint, statusOf, statusMap, missingChecks,
-  // 3.10.1: picked on its own (Ithil's own chat): she answers whenever she's connected, team or not, asleep or not.
+  // 3.11: picked on its own (Ithil's own chat): she answers whenever she's connected, team or not, asleep or not.
   readyAlone: (a) => (a === 'ithil' ? Boolean(S.ithil.status?.online) : ready(a)),
   whyNot: (a) => (a === 'ithil' ? `Ithil can't answer: ${ithilState(S.ithil.status).why || 'she isn\'t connected yet'}. Check Settings › Accounts › Ithil (Hearth AI).` : ''),
   modeFor: (R) => R.mode || S.mode,

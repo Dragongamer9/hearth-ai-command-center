@@ -107,7 +107,7 @@ export function createTeamRunner(ctx) {
     const t = ctx.team();
     const L0 = ctx.live();
     const mode = opts.mode || ctx.modeFor(R);
-    // 3.10.1: an AI he picked to answer on its own (her own chat, "who answers") needn't be on the team: Ithil talks
+    // 3.11: an AI he picked to answer on its own (her own chat, "who answers") needn't be on the team: Ithil talks
     // whenever she's connected, even asleep or busy (only tasks wait for her to be free).
     const solo = opts.only || (mode !== 'team' ? mode : null);
     const L = solo && !L0.includes(solo) && ctx.readyAlone?.(solo) ? [...L0, solo] : L0;
