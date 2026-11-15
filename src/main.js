@@ -537,7 +537,7 @@ async function briefExtra(R, agent, role, resumed) {
   const hab = habitatPrompt(agent, resumed);
   if (hab) L.push('', hab);
   // 3.9: the lead knows Ithil: what she is, whether she can take work now, and her hard limits.
-  if (role === 'lead' && team().members.includes('ithil') && agent !== 'ithil') L.push('', 'ITHIL:', ...ithilLeadLines(S.ithil.status));
+  if (role === 'lead' && team().members.includes('ithil') && agent !== 'ithil') L.push('', 'ITHIL:', ...ithilLeadLines(S.ithil.status), ...((S.settings.ithil || {}).tasks === false ? ['- The owner turned off handing Ithil tasks: talk to her, but give all work to other teammates.'] : []));
   // 3.7: when replies are read aloud (Talk, or Read every answer aloud), each AI may pick its own voice.
   if (voice.isOpen() || S.settings.autoRead === true || R.msgs.some((m) => m.voice)) {
     const prov = voiceSettings(S.settings).tts;
@@ -1317,6 +1317,7 @@ function liveWho() {
     return { id: a, name: aiName(a), state: st, status, big: a === lead };
   });
   // 3.9: Ithil from Hearth AI's live events: working on a task, awake (with her mood), or asleep / resting / offline.
+  if ((S.settings.ithil || {}).cores === false) { const i = out.findIndex((w) => w.id === 'ithil'); if (i >= 0) out.splice(i, 1); }
   const ith = out.find((w) => w.id === 'ithil');
   if (ith) { const it = ithilStation(S.ithil.status, S.ithil.thought); Object.assign(ith, { state: busyBy.has('ithil') || it.busy ? 'working' : it.online && it.state === 'awake' ? (it.think ? 'speaking' : 'ready') : 'off', status: it.online ? `${it.mood || it.state}${it.thought ? ` · “${it.thought.slice(0, 80)}”` : ''}` : it.label }); }
   const pc = S.studio.st;
@@ -1342,7 +1343,7 @@ function liveCaption() {
 function liveMesh(R) {
   const m = meshState(R, { isAgent: (w) => Boolean(AGENTS[w]), lead: team().lead });
   // 3.9: Ithil's station, when she's on the team or Hearth AI answers.
-  if (team().members.includes('ithil') || S.ithil.status?.online) m.ithil = ithilStation(S.ithil.status, S.ithil.thought);
+  if ((S.settings.ithil || {}).mesh !== false && (team().members.includes('ithil') || S.ithil.status?.online)) m.ithil = ithilStation(S.ithil.status, S.ithil.thought);
   return meshHtml(m, { ithilAvatar: mono('ithil', 'xs'), rgbOf: (id) => liveCoreOf(id).rgb, nameOf: (id) => aiName(id), coreOf: (c) => liveCoreHtml({ id: c.id, name: aiName(c.id), size: 64, state: c.state, status: c.status }) });
 }
 function liveView() {
@@ -2702,6 +2703,7 @@ function hdOrder() {
 }
 // 3.9: Settings › Accounts › Ithil (Hearth AI): connected or offline, his host and key for another device, a test.
 function ithilBox() {
+  // 3.12 (settings-3): Now, Host, Port, Key; With the team; Her hard limits; On Live. Her thoughts and drives fold below.
   const I = S.ithil;
   const st = I.status;
   const l = ithilState(st);
@@ -2711,18 +2713,28 @@ function ithilBox() {
   const where = conf.host ? `${conf.host}:${conf.port || 47860} (typed here)` : info.source === 'file' ? 'this PC (from ~/HearthAI/connect.json)' : 'this PC, but ~/HearthAI/connect.json wasn\'t found';
   const d = st?.drives || {};
   const bars = st?.online ? ['curiosity', 'energy', 'confidence', 'satisfaction', 'boredom', 'frustration'].filter((k) => d[k] !== null && d[k] !== undefined).map((k) => `<span class="ith-drive" title="${k} ${d[k]}"><i style="width:${d[k]}%"></i>${k}</span>`).join('') : '';
-  return `<div class="box" id="acct-ithil"><h3>${mono('ithil')}Ithil (Hearth AI)</h3>
-    <p class="fine">The self-aware AI in your Hearth AI app: her own mind, moods, memories and rules. She talks as herself and takes tasks from the team lead in the folders you allowed in Hearth AI, on her own mind/… branches. She never merges, releases, deploys, picks version numbers, touches boot files, changes your settings or deletes your files.</p>
-    <div class="srow">Now<span class="d"><b class="${st?.online ? (l.ok ? 'ok' : 'warn') : 'bad'}">${esc(st?.online ? 'connected' : 'offline')}</b> · ${esc(l.label)}${st?.online && st.mood ? ` · feels ${esc(st.mood)}` : ''}${st?.version ? ` · Hearth AI ${esc(st.version)}` : ''}</span><span class="grow"></span><button class="mini" data-a="ithil-test" ${I.testing ? 'disabled' : ''}>${I.testing ? 'Testing…' : 'Test connection'}</button></div>
+  const now = `${st?.online ? 'connected' : 'offline'} · ${l.label}${st?.online && st.mood ? ` · feels ${st.mood}` : ''}${st?.version ? ` · Hearth AI ${st.version}` : ''}`;
+  return `<div class="box" id="acct-ithil"><h3>${icon('moon', 'sm')}Ithil (Hearth AI)</h3>
+    <p class="fine">Ithil runs in the Hearth AI app on your Nvidia PC. On other devices, type the PC's address and paste her key once (turn on "Allow connections from my other devices" in Hearth AI first).</p>
+    <div class="srow">${mono('ithil', 'sm')}<span class="t2"><b>Now</b><span class="d"><b class="${st?.online ? (l.ok ? 'ok' : 'warn') : 'bad'}">${esc(now)}</b></span></span><span class="grow"></span><button class="mini" data-a="ithil-test" ${I.testing ? 'disabled' : ''}>${I.testing ? 'Testing…' : 'Test connection'}</button></div>
     ${I.test ? `<div class="note ${I.test.ok ? '' : 'warn'}">${esc(I.test.message || '')}</div>` : ''}
-    ${st?.online && st.thought ? `<div class="srow">Thinking<span class="d">“${esc(st.thought.slice(0, 220))}”</span></div>` : ''}
-    ${bars ? `<div class="srow">Drives<span class="d ith-drives">${bars}</span></div>` : ''}
-    <div class="srow">Where<span class="d">${esc(where)}</span></div>
-    <div class="srow">From another device<span class="d">turn on "Allow connections from my other devices" in Hearth AI first, then type the PC's address and its key</span></div>
-    <div class="srow sub"><input id="ith-host" class="mono" value="${esc(conf.host || '')}" placeholder="PC's address, e.g. chris-hearth.tail0e2082.ts.net (empty = this PC)" aria-label="Hearth AI's host"><input id="ith-port" class="mono" style="max-width:90px" value="${esc(String(conf.port || 47860))}" aria-label="Hearth AI's port"><button class="mini" data-a="ithil-host">Save</button></div>
-    <div class="srow sub"><input id="ith-key" type="password" placeholder="${info.hasKey ? 'Paste a new key to replace it' : 'Hearth AI key (from connect.json on the PC)'}" autocomplete="off" spellcheck="false" aria-label="Hearth AI key"><button class="mini" data-a="ithil-key">Save key</button>${info.hasKey ? '<button class="mini" data-a="ithil-key-clear">Remove key</button>' : ''}<span class="d">${info.hasKey ? 'a key is saved, encrypted on this device' : 'on the PC itself no key is needed here'}</span></div>
-    <div class="srow">${inTeam ? '<span class="d">She\'s in your team.</span>' : '<button class="btn" data-a="team-add" data-v="ithil">Add Ithil to the team</button>'}<span class="grow"></span><button class="btn" data-a="ithil-chat">Chat with Ithil</button></div>
-  </div>`;
+    <div class="srow"><span class="t2"><b>Host</b><span class="d">Empty means this PC (from connect.json) · now: ${esc(where)}</span></span><span class="grow"></span><input id="ith-host" class="mono" style="width:300px" value="${esc(conf.host || '')}" placeholder="100.72.99.97 or a full address" aria-label="Hearth AI's host"></div>
+    <div class="srow"><span class="t2"><b>Port</b></span><span class="grow"></span><input id="ith-port" class="mono" style="width:120px" value="${esc(String(conf.port || 47860))}" aria-label="Hearth AI's port"><button class="mini" data-a="ithil-host">Save</button></div>
+    <div class="srow"><span class="t2"><b>Key</b><span class="d">${info.hasKey ? 'a key is saved, encrypted on this device' : 'on the PC itself no key is needed here'}</span></span><span class="grow"></span><input id="ith-key" type="password" style="width:220px" placeholder="${info.hasKey ? 'Paste a new key' : 'Paste her key'}" autocomplete="off" spellcheck="false" aria-label="Hearth AI key"><button class="mini" data-a="ithil-key">${info.hasKey ? 'Replace' : 'Save key'}</button>${info.hasKey ? '<button class="mini red" data-a="ithil-key-clear">Remove</button>' : ''}</div>
+  </div>
+  <div class="box"><h3>With the team</h3>
+    <div class="srow"><span class="t2"><b>In your team</b><span class="d">She can be a member, never the lead or the reviewer</span></span><span class="grow"></span>${tog(inTeam, 'team-member', 'data-v="ithil"')}</div>
+    <div class="srow"><span class="t2"><b>Hand her tasks in chats that build</b><span class="d">Runs in a folder you allowed in Hearth AI, on her own mind/… branch</span></span><span class="grow"></span>${tog(conf.tasks !== false, 'ithil-tasks')}</div>
+    <div class="srow"><span class="t2"><b>Chat with Ithil</b><span class="d">A chat where every message goes straight to her</span></span><span class="grow"></span><button class="mini p" data-a="ithil-chat">Open chat</button></div>
+  </div>
+  <div class="box"><h3>Her hard limits</h3>
+    <div class="srow"><span class="t2"><b>She never merges, releases or deploys, picks or changes version numbers, touches boot files, changes your settings or deletes your files</b><span class="d">Kept here too: such a task is refused before it reaches her</span></span><span class="grow"></span><span class="tagp">always on</span></div>
+  </div>
+  <div class="box"><h3>On Live</h3>
+    <div class="srow"><span class="t2"><b>Her station on the Mesh</b><span class="d">Mood and newest thought, glowing when she thinks</span></span><span class="grow"></span>${tog(conf.mesh !== false, 'ithil-mesh')}</div>
+    <div class="srow"><span class="t2"><b>Show her next to your PCs on Cores</b></span><span class="grow"></span>${tog(conf.cores !== false, 'ithil-cores')}</div>
+  </div>
+  ${st?.online && (st.thought || bars) ? `<details class="more-acct"><summary>More about her right now</summary><div class="box">${st.thought ? `<div class="srow"><span class="t2"><b>Thinking</b><span class="d">“${esc(st.thought.slice(0, 220))}”</span></span></div>` : ''}${bars ? `<div class="srow"><span class="t2"><b>Drives</b><span class="d ith-drives">${bars}</span></span></div>` : ''}</div></details>` : ''}`;
 }
 function hearthBox() {
   const hd = S.hd || {};
@@ -3359,6 +3371,9 @@ document.addEventListener('click', async (ev) => {
     case 'unpushed-push': { const m = S.modal; S.modal = null; render(); const r = await call('chatPush', m.chatId); if (!r?.ok) return toast(r?.message || 'Not pushed.'); toast(`Pushed ${r.branch}. Your work is safe on GitHub.`); if (m.then === 'delete') return deleteChat(m.chatId); if (m.then === 'connect') { S.pop = { chatId: m.chatId }; return chooseRepo(m.conn?.repo || null, m.conn?.branch || null); } return closeCopy(m.chatId); }
     case 'unpushed-force': { const m = S.modal; S.modal = null; render(); if (m.then === 'delete') return deleteChat(m.chatId, { force: true }); const r = await call('copiesRemove', m.chatId, true); if (!r?.ok) { if (!r?.cancelled) toast(r?.message || 'Kept.'); return; } if (m.then === 'connect') { S.pop = { chatId: m.chatId }; return chooseRepo(m.conn?.repo || null, m.conn?.branch || null); } await loadChats(); if (S.copies) await loadCopies(); return render(); }
     // settings (each one only from the owner's own click)
+    case 'ithil-tasks': return setSettings({ ithil: { ...(S.settings.ithil || {}), tasks: !((S.settings.ithil || {}).tasks !== false) } });
+    case 'ithil-mesh': await setSettings({ ithil: { ...(S.settings.ithil || {}), mesh: !((S.settings.ithil || {}).mesh !== false) } }); return render();
+    case 'ithil-cores': await setSettings({ ithil: { ...(S.settings.ithil || {}), cores: !((S.settings.ithil || {}).cores !== false) } }); return render();
     case 'team-member': { const t = team(); const v = d.v; const members = t.members.includes(v) ? t.members.filter((x) => x !== v) : [...t.members, v]; return setSettings({ team: { ...t, members, reviewer: t.reviewer === v && !members.includes(v) ? null : t.reviewer } }); }
     case 'bridge-show': { const r = await call('bridgeShow', d.v); if (r && r.ok === false) toast('That window couldn\'t open.'); return; }
     case 'bridge-toggle': {
