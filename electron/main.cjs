@@ -323,6 +323,8 @@ function createWindow() {
     title: 'Hearth AI Command Center',
     icon: path.join(__dirname, '..', 'dist', 'icon.png'),
     autoHideMenuBar: true,
+    // 3.12 (nyarch-1): the window draws its own headerbars and window buttons, like a GNOME app.
+    frame: false,
     show: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
@@ -393,6 +395,8 @@ function registerIpc() {
   // Refused (never written) when the state isn't the open project's: no cross-project saves.
   const stateApi = guard.stateIpc({ binding, read: () => readState(), write: (st) => writeState(st) });
   // The window asks the main process to reload it (always works, whatever the page's own navigation rules).
+  // 3.12: the window buttons drawn in the right panel's bar (the window has no system frame now).
+  handle('win:act', (what) => { const w = mainWindow; if (!w || w.isDestroyed()) return false; if (what === 'min') w.minimize(); else if (what === 'max') { if (w.isMaximized()) w.unmaximize(); else w.maximize(); } else if (what === 'close') w.close(); return true; });
   handle('app:reload', () => { setImmediate(() => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.reload(); }); return true; });
   handle('state:load', () => stateApi.load());
   handle('state:save', (state) => stateApi.save(state));

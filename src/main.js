@@ -1141,6 +1141,15 @@ function chatStatus(id) {
   return null;
 }
 
+// 3.12: each chat's mark in History (Nyarch-style): pinned, Ithil's own chat, a chat that builds, pictures, or a plain chat.
+function chatEmoji(c) {
+  if (c.pinned) return '📌';
+  if (c.mode === 'ithil' || c.who === 'ithil') return '🌙';
+  if (c.repo || c.repoDir) return '🛠';
+  if (c.studio || c.media) return '🖼';
+  return '💬';
+}
+
 function renderSide() {
   const groups = groupChats(S.chats, { query: S.search, hits: S.hits });
   const hidden = S.chats.filter((c) => c.hidden);
@@ -1151,15 +1160,15 @@ function renderSide() {
     if (S.renaming === c.id) return `<div class="item on renaming"><input id="rename-input" class="rename" value="${esc(c.title)}" maxlength="120" aria-label="Chat name"><button class="ib sm" data-a="rename-save" title="Save">${icon('check', 'sm')}</button></div>`;
     const st = chatStatus(c.id);
     return `<div class="item ${on ? 'on' : ''} ${R?.round ? 'busy' : ''}" draggable="true" data-chat="${esc(c.id)}" data-drag="${esc(c.id)}" title="${esc(c.title)}${c.repo ? ` · ${esc(c.repo)}` : ''}">
-      ${c.rp ? avatarHtml(cardById(c.rp.characters[0]), 'xs') : icon(c.pinned ? 'pin' : 'chat', 'sm')}<span class="t">${esc(c.title)}</span>
+      ${c.rp ? avatarHtml(cardById(c.rp.characters[0]), 'xs') : `<span class="emo" aria-hidden="true">${chatEmoji(c)}</span>`}<span class="t">${esc(c.title)}</span>
       ${st || (pend ? '<span class="dot"></span>' : repoHint(c) ? `<span class="repo">${esc(repoHint(c))}</span>` : '')}
       <button class="more" data-a="chat-menu" data-id="${esc(c.id)}" title="More" aria-label="More for ${esc(c.title)}">${icon('dots', 'sm')}</button>
     </div>${sideWork(R)}`;
   };
   const working = runner.busyIds().length;
   const html = `
-    <div class="brand"><img src="./icon.png" alt=""><div><b>Hearth AI</b><span>Command Center</span></div></div>
-    <button class="newchat" data-a="new-chat"><span class="plus">${icon('plus', 'sm')}</span>New chat</button>
+    <div class="hist-h"><b>History</b><button class="ib ghost" data-a="side-menu" aria-expanded="${S.sideMenu ? 'true' : 'false'}" title="Places and tools" aria-label="Places and tools">${icon('menu')}</button></div>
+    <div class="side-menu" ${S.sideMenu ? '' : 'hidden'}>
     <button class="navitem" data-a="temp-chat" title="Nothing is saved: no chat file, no history, no memory">${icon('eyeoff', 'sm')}Temporary chat</button>
     <label class="search">${icon('search', 'sm')}<input id="chat-search" placeholder="Search chats" value="${esc(S.search)}" aria-label="Search chats"></label>
     <button class="navitem ${S.view === 'live' ? 'on' : ''}" data-a="live" title="Every AI as a living core: who is working, who is speaking, what they say">${icon('eye', 'sm')}Live<span class="faint">${runner.busyIds().length ? `${runner.busyIds().length} working` : ''}</span></button>
@@ -1167,6 +1176,8 @@ function renderSide() {
     <button class="navitem ${S.view === 'studio' ? 'on' : ''}" data-a="studio" title="Pictures and videos made on your PC (ComfyUI)">${icon('pic', 'sm')}Images &amp; Videos<span class="faint">${S.studio.data?.jobs?.length ? `${S.studio.data.jobs.length} on your PC` : ''}</span></button>
     <button class="navitem ${S.view === 'reverse' ? 'on' : ''}" data-a="reverse" title="Look inside programs with REA and your AI">${icon('code', 'sm')}Reverse Engineering<span class="faint">${S.re?.projects?.length ? S.re.projects.length : ''}</span></button>
     <button class="navitem hab ${S.view === 'habitat' ? 'on' : ''}" data-a="habitat" title="Your AI team's Habitat">${icon('home', 'sm')}Habitat<span class="faint">${esc(S.lastChat && entry(S.lastChat) ? entry(S.lastChat).title.slice(0, 22) : 'your team')}</span></button>
+    <button class="navitem" data-a="settings" title="Settings">${icon('gear', 'sm')}Settings</button>
+    </div>
     <div class="list" id="chat-list">
       ${S.broken ? '<div class="note bad">Your chats list couldn\'t be read. It was left as it is; new chats can\'t be saved until it\'s fixed.</div>' : ''}
       ${working ? `<div class="sec">${working} working · up to ${S.settings.maxChats || 3} at once</div>` : ''}
@@ -1175,11 +1186,19 @@ function renderSide() {
       ${hidden.length ? `<button class="sec link" data-a="toggle-hidden">${icon(S.showHidden ? 'chev' : 'chevr', 'sm')}Hidden (${hidden.length})</button>${S.showHidden ? hidden.map((c) => `<div class="item dim"><span class="t">${esc(c.title)}</span><button class="mini" data-a="unhide" data-id="${esc(c.id)}">Show</button></div>`).join('') : ''}` : ''}
       ${S.trash.length ? `<button class="sec link" data-a="toggle-trash">${icon(S.showTrash ? 'chev' : 'chevr', 'sm')}Recently deleted (${S.trash.length})</button>${S.showTrash ? S.trash.map((t) => `<div class="item dim"><span class="t">${esc(t.title)}</span><button class="mini" data-a="restore" data-id="${esc(t.trashId)}">Restore</button></div>`).join('') : ''}` : ''}
     </div>
-    <div class="owner"><span class="av">${esc(ownerName()[0] || 'D')}</span><div><b>${esc(ownerName())}</b><span>${esc(team().members.filter(ready).map(aiName).join(' · ') || 'Set up your AI team')}</span></div><button class="ib ghost" data-a="settings" title="Settings" aria-label="Settings">${icon('gear')}</button></div>`;
+    <button class="newchat-big" data-a="new-chat">${icon('plus', 'sm')}New Chat</button>`;
   const focused = document.activeElement?.id;
   const sel = focused === 'chat-search' ? document.activeElement.selectionStart : null;
   if (setRegion('side', html) && focused === 'chat-search') { const el = document.getElementById('chat-search'); el.focus(); try { el.setSelectionRange(sel, sel); } catch {} }
   if (S.renaming) { const el = document.getElementById('rename-input'); if (el && document.activeElement !== el) { el.focus(); el.select(); } }
+}
+
+// 3.12: what the model button says: Ithil and her brain, the team and where it works, or the AI answering on its own.
+function modelLabel(c) {
+  if (S.mode === 'ithil') { const g = S.ithil.status?.brain?.generation; return `${esc(aiName('ithil'))} · her own mind${g ? ` (gen ${esc(String(g))})` : ''}`; }
+  if (S.mode === 'team') { const t = team(); const where = c && (c.repo || c.repoDir) ? ` · ${esc(String(c.repo || c.repoDir).split('/').pop())}${c.branch ? ` (${esc(c.branch)})` : ''}` : ''; return `Team · ${esc(aiName(t.lead))} leads${where}`; }
+  const m = cur()?.sessions?._models?.[S.mode];
+  return `${esc(aiName(S.mode))}${m && m !== 'default' ? ` · ${esc(m)}` : ''}`;
 }
 
 function topbar() {
@@ -1193,6 +1212,13 @@ function topbar() {
   const temp = S.view === 'chat' && c?.temp ? `<span class="chip">${icon('eyeoff', 'sm')}Temporary · nothing is saved</span><button class="mini" data-a="temp-end" data-id="${esc(c.id)}">End</button>` : '';
   const know = S.view === 'chat' && c?.rp ? `<span class="chip">${rpCards(c).map((x) => avatarHtml(x, 'xs')).join('')}Roleplay${c.rp.characters.length > 1 ? ` · group · ${c.rp.order === 'list' ? 'in order' : 'natural order'}` : ''}</span>` : S.view === 'chat' && c && !c.temp ? `<button class="tb" data-a="chat-act" data-k="knowledge" data-id="${esc(c.id)}" title="This chat's instructions and reference files">${icon('doc', 'sm')}${c.instructions || c.refs?.length ? 'Instructions ✓' : 'Instructions'}</button>` : '';
   if (S.view === 'habitat') return `<span class="ttl">Habitat</span><span class="faint hab-sub">${S.lastChat && entry(S.lastChat) ? `the team of “${esc(entry(S.lastChat).title)}”` : 'your AI team'}</span><span class="grow"></span>`;
+  // 3.12 (nyarch-1/-2): the chat's headerbar: the side panel toggle, who's answering, and the model button in the middle;
+  // ⚙ beside it opens everything the old top bar had (repo, instructions, Live, voice, team, gallery, panel).
+  if (S.view === 'chat' && !S.oldTop) {
+    const who = S.mode === 'team' ? team().lead : S.mode;
+    return `<button class="ib ghost" data-a="side-toggle" title="${S.sideHidden ? 'Show' : 'Hide'} History" aria-label="Show or hide History">${icon('panel', 'sm')}</button>${mono(who, 'sm')}${workStack(cur(), 22)}${temp}
+      <span class="grow"></span><button class="model-pill" data-a="team-pop" data-top="1" title="Who answers in this chat">${modelLabel(c)}</button><button class="ib ghost" data-a="chat-opts" title="This chat's options" aria-label="This chat's options">${icon('gear', 'sm')}</button><span class="grow"></span><span class="top-spacer"></span>`;
+  }
   return `<span class="ttl">${esc(title)}</span>${S.view === 'chat' ? workStack(cur(), 26) : ''}${chip}${temp}<span class="grow"></span>${know}
     ${S.view === 'chat' ? `<button class="tb" data-a="live" title="See this chat's team as living cores">${icon('eye', 'sm')}Live</button>` : ''}
     ${S.view === 'chat' && cur() ? `<button class="tb" data-a="chat-voice" title="This chat's voice and speed">${icon('mic', 'sm')}Voice${cur().sessions?._voice ? ' ✓' : ''}</button>` : ''}
@@ -1384,20 +1410,32 @@ function homeCores() {
 
 function composer(placeholder) {
   const c = ['chat', 'live'].includes(S.view) ? entry() : null;
-  const conn = c ? (c.repo ? { repo: c.repo, branch: c.branch } : c.repoDir ? { repo: c.repoDir } : null) : S.conn;
-  const t = team();
-  const teamLabel = S.mode === 'team' ? `Team <span class="faint">(${esc(aiName(t.lead))} ★ leads)</span>` : esc(aiName(S.mode));
   const thumbs = S.attach.map((a, i) => a.kind === 'image' && !a.huge ? `<div class="th" style="background-image:url('${esc(a.url || '')}')" title="${esc(a.name)}"><button class="x" data-a="unattach" data-i="${i}" aria-label="Remove">${icon('x', 'sm')}</button></div>` : `<div class="th f" title="${esc(a.name)}"><span>${esc(a.name)}</span><button class="x" data-a="unattach" data-i="${i}" aria-label="Remove">${icon('x', 'sm')}</button></div>`).join('');
   const busy = Boolean(S.busy) || S.working;
-  const models = c ? (cur()?.sessions?._models || {}) : S.homeModels;
-  const picked = Object.entries(models).filter(([, v]) => v && v !== 'default').length;
   return `${c?.rp ? rpBar(c) : ''}<div class="composer ${busy ? 'busy' : ''}" id="composer-box">
     ${thumbs ? `<div class="thumbs">${thumbs}</div>` : ''}
     ${c && !c.rp && !(c.repo || c.repoDir) ? `<div class="cnote" id="no-push-note">${icon('gh', 'sm')}<span>This chat has no repo, so the team can't commit or push anything. Connect a repo if the work should go to GitHub.</span><button class="mini" data-a="repo-pop">Connect a repo</button></div>` : ''}
     ${missingNote()}
     ${S.deep ? `<div class="modes"><button class="chip on" data-a="toggle-deep" title="Turn deep research off">${icon('globe', 'sm')}Deep research ×</button></div>` : ''}
-    <textarea id="composer" rows="1" placeholder="${esc(placeholder)}" aria-label="Message">${esc(S.draft)}</textarea>
-    <div class="row">
+    <div class="nbar">
+      <button class="ib" data-a="composer-opts" title="Who answers, repo, web, run &amp; build, models, talk" aria-label="Options">${icon('gear', 'sm')}</button>
+      <button class="ib" data-a="attach" title="Attach files, images, videos, PDFs or spreadsheets (or paste a screenshot)" aria-label="Attach">${icon('clip', 'sm')}</button>
+      <textarea id="composer" rows="2" placeholder="${esc(placeholder)}" aria-label="Message">${esc(S.draft)}</textarea>
+      <button class="bluesq ${voice.dictating() ? 'rec' : ''}" data-a="voice" title="${voice.dictating() ? 'Stop and turn it into text' : 'Dictate: say your message, it becomes text'}" aria-label="Dictate">${icon('mic', 'sm')}</button>
+      ${busy ? `<button class="bluesq stop" data-a="stop" title="Stop this chat" aria-label="Stop">${icon('stop', 'sm')}</button>` : `<button class="bluesq" data-a="send" title="Send (Enter)" aria-label="Send">${icon('chevr', 'sm')}</button>`}
+    </div>
+  </div>`;
+}
+
+// 3.12: the old composer's switches, behind ⚙ in the input bar (nyarch-1).
+function composerChips() {
+  const c = ['chat', 'live'].includes(S.view) ? entry() : null;
+  const conn = c ? (c.repo ? { repo: c.repo, branch: c.branch } : c.repoDir ? { repo: c.repoDir } : null) : S.conn;
+  const t = team();
+  const teamLabel = S.mode === 'team' ? `Team <span class="faint">(${esc(aiName(t.lead))} ★ leads)</span>` : esc(aiName(S.mode));
+  const models = c ? (cur()?.sessions?._models || {}) : S.homeModels;
+  const picked = Object.entries(models).filter(([, v]) => v && v !== 'default').length;
+  return `    <div class="row optrow">
       <button class="ib" data-a="attach" title="Attach files, images, videos, PDFs or spreadsheets (or paste a screenshot)" aria-label="Attach">${icon('plus', 'sm')}</button>
       <button class="ib" data-a="humanize-draft" title="Make it sound human (rewrites your draft so it reads less like AI)" aria-label="Make it sound human">${icon('user', 'sm')}</button>
       ${c?.rp ? '' : `<button class="chip ${conn ? '' : 'off'}" data-a="repo-pop" title="Connect a GitHub repo">${icon('gh', 'sm')}${conn ? `${esc(String(conn.repo).split('/').pop())} <span class="faint">· ${esc(conn.branch || 'main')}</span>` : 'No repo'}</button>
@@ -1409,8 +1447,7 @@ function composer(placeholder) {
       <button class="ib ${voice.dictating() ? 'rec' : ''}" data-a="voice" title="${voice.dictating() ? 'Stop and turn it into text' : 'Dictate: say your message, it becomes text'}" aria-label="Dictate">${icon('mic', 'sm')}</button>
       ${c ? `<button class="chip talk" data-a="talk" id="talk-btn" title="Voice chat: talk with ${c.rp ? 'the characters' : 'the team'} and hear the answers">${icon('wave', 'sm')}Talk</button>` : ''}
       ${busy ? `<button class="send stop" data-a="stop" title="Stop this chat" aria-label="Stop">${icon('stop', 'sm')}</button>` : ''}<button class="send" data-a="send" title="Send (Enter)" aria-label="Send">${icon('up', 'sm')}</button>
-    </div>
-  </div>`;
+`;
 }
 
 function focusComposer(caret) {
@@ -1427,6 +1464,13 @@ function fitComposer() {
   el.style.height = `${Math.min(el.scrollHeight, Math.round(window.innerHeight * 0.35))}px`;
 }
 
+// 3.12: the yellow line under the headerbar: what the AIs here can reach, and what never happens without you.
+function warnText(c) {
+  if (S.mode === 'ithil') return 'Ithil runs on your Nvidia PC. She never merges, releases, picks version numbers, touches boot files, changes your settings or deletes your files.';
+  if (c && (c.repo || c.repoDir)) return `The team can change files in ${esc(String(c.repo || c.repoDir).split('/').pop())} on its own branch. Nothing is merged or released without you.`;
+  return 'The AIs see this chat and anything you attach. Don\'t share passwords or keys here.';
+}
+
 function chatView() {
   const R = cur();
   const msgs = S.msgs.filter((m) => !m.deleted);
@@ -1441,7 +1485,9 @@ function chatView() {
   const c = entry();
   if (c?.rp && R?.vn) return `<div class="col vncol">${vnStage(R, c)}</div>`;
   const rpEmpty = c?.rp && !msgs.length && !b ? `<div class="chat-empty"><p>The story starts with your first line.</p></div>` : '';
-  return `<div class="col">${c?.rp ? rpEmpty : empty}${items}${working}${c?.rp ? sceneJobsHtml(R) : ''}${c?.rp ? '' : turnStrip(R)}</div>`;
+  const warn = c?.rp ? '' : `<div class="warnline"><span class="wi" aria-hidden="true">⚠</span><span>${warnText(c)}</span></div>`;
+  const acts = !c?.rp && msgs.length ? `<div class="crow"><button data-a="chat-clear">${icon('copy', 'sm')}Clear</button><button data-a="chat-regen">${icon('refresh', 'sm')}Regenerate</button>${R?.round && S.mode === 'team' ? `<button data-a="stop">${icon('stop', 'sm')}Stop the team</button>` : ''}</div>` : '';
+  return `<div class="col">${warn}${c?.rp ? rpEmpty : empty}${items}${working}${c?.rp ? sceneJobsHtml(R) : ''}${c?.rp ? '' : turnStrip(R)}${acts}</div>`;
 }
 
 // 3.4.1: the one fix for a teammate that couldn't answer, right where it says so.
@@ -1472,7 +1518,9 @@ function stepsHtml(steps = [], outcome = [], liveNow = false, actions = null) {
     rows.push({ icon: 'play', label: st === 'success' ? 'Ran the tests' : st === 'failure' ? 'Tests failed' : st === 'none' ? 'No tests ran' : 'Running the tests', detail: 'in GitHub Actions', note: st === 'success' ? `✓ passed${actions.runs?.length > 1 ? ` · ${actions.runs.length} workflows` : ''}` : st === 'failure' ? '✗ see below' : st === 'none' ? '' : 'running…', ok: st === 'success', bad: st === 'failure' });
   }
   if (!rows.length) return liveNow ? '<div class="steps"><div class="step"><span class="faint">Starting…</span></div></div>' : '';
-  return `<div class="steps">${rows.map((r) => `<div class="step ${r.bad ? 'bad' : ''}">${icon(r.icon || 'cpu', 'sm')}<b>${esc(r.label)}</b>${r.detail ? `<span class="d">${esc(r.detail)}</span>` : ''}${r.open ? `<button class="r link ok" data-a="open-preview-name" data-name="${esc(r.detail)}">${esc(r.note)}</button>` : r.note ? `<span class="r ${r.ok ? 'ok' : ''}">${esc(r.note)}</span>` : ''}</div>`).join('')}</div>`;
+  // 3.12 (nyarch-1): each row a rounded box; Thoughts opens to show the thinking.
+  const thought = (r) => `<details class="step thought"><summary>${icon('brain', 'sm')}<span class="st2"><b>Thoughts</b><span class="d">Expand to see details</span></span><span class="chev2">${icon('chev', 'sm')}</span></summary><div class="ttext">${rich(r.text || '')}</div></details>`;
+  return `<div class="steps">${rows.map((r) => r.kind === 'thought' ? thought(r) : `<div class="step ${r.bad ? 'bad' : ''}">${icon(r.icon || 'cpu', 'sm')}<b>${esc(r.label)}</b>${r.detail ? `<span class="d">${esc(r.detail)}</span>` : ''}${r.open ? `<button class="r link ok" data-a="open-preview-name" data-name="${esc(r.detail)}">${esc(r.note)}</button>` : r.note ? `<span class="r ${r.ok ? 'ok' : ''}">${esc(r.note)}</span>` : ''}</div>`).join('')}</div>`;
 }
 
 function helpersHtml(m) {
@@ -1504,12 +1552,13 @@ function message(m, latestChanges, last = false) {
   if (m.who === 'owner') {
     const atts = (m.attachments || []).map((a) => a.kind === 'image' && !a.huge ? `<img class="att" src="${esc(a.url || '')}" alt="${esc(a.name)}" loading="lazy" decoding="async">` : `<span class="att-f" ${a.huge ? `title="${esc(a.huge)}"` : ''}>${icon('doc', 'sm')}${esc(a.name)}${a.size > 50 * 1024 * 1024 ? ` <span class="faint">${fmtBytes(a.size)}</span>` : ''}</span>`).join('');
     if (S.editing === m.id) return `<div class="msg-u editing" data-msg="${esc(m.id)}"><textarea id="edit-text" rows="3">${esc(m.text)}</textarea><div class="mft"><button class="btn ghost" data-a="edit-cancel">Cancel</button><button class="btn p" data-a="edit-send" data-m="${esc(m.id)}">Save and send</button></div></div>`;
-    return `<div class="uwrap" data-msg="${esc(m.id)}"><div class="msg-u">${atts ? `<div class="atts">${atts}</div>` : ''}${rich(m.text)}${m.to ? `<div class="fine">only for ${esc(m.to.map(aiName).join(', '))}: not shown to your other AIs</div>` : ''}</div>${controlsHtml(m, true)}</div>`;
+    return `<div class="uwrap nrow" data-msg="${esc(m.id)}"><div class="lbl you">You:</div><div class="msg-u">${atts ? `<div class="atts">${atts}</div>` : ''}${rich(m.text)}${m.to ? `<div class="fine">only for ${esc(m.to.map(aiName).join(', '))}: not shown to your other AIs</div>` : ''}</div>${controlsHtml(m, true)}</div>`;
   }
   if (m.who === 'system') return `<div class="msg-s">${rich(m.text)}${mediaHtml(m)}${m.fixes?.length ? `<div class="mft left fixes">${m.fixes.map((f) => fixButton(f.agent, f.fix)).join('')}</div>` : ''}</div>`;
   const role = m.role === 'lead' ? '<span class="star">★ lead</span>' : m.role === 'reviewer' ? '<span>· reviewer</span>' : '';
   const when = ago(m.at);
-  return `<div class="msg-a ${m.err ? 'err' : ''}" data-msg="${esc(m.id)}">
+  // 3.12 (nyarch-1): a row with the AI's name on the left in its own colour, the answer on the right.
+  return `<div class="msg-a nrow ${m.err ? 'err' : ''}" data-msg="${esc(m.id)}"><div class="lbl" style="color:${esc(nameColor(m.who))}">${esc(aiName(m.who))}:</div><div class="mbody">
     <div class="who">${mono(m.who)}<b>${esc(aiName(m.who))}</b>${role}${when ? `<span>· ${esc(when)}</span>` : ''}${m.via ? `<span class="faint">· ${esc(m.via)}</span>` : ''}${UNFILTERED.includes(m.who) ? '<span class="faint">· not shown to your other AIs</span>' : ''}</div>
     ${stepsHtml(m.steps, m.outcome || [], false, m.actions)}
     ${helpersHtml(m)}
@@ -1528,8 +1577,12 @@ function message(m, latestChanges, last = false) {
     ${(m.refusedActs || []).map((r) => `<div class="msg-s">Claude asked to “${esc(r.kind)}”, which isn't allowed: ${esc(r.reason)}.</div>`).join('')}
     ${controlsHtml(m)}
     ${last && m.followUps?.length ? `<div class="chips">${m.followUps.map((f, i) => `<button class="sug" data-a="follow" data-m="${esc(m.id)}" data-i="${i}">${esc(f)}</button>`).join('')}</div>` : ''}
-  </div>`;
+  </div></div>`;
 }
+
+// 3.12: each AI's name colour in the chat (the owner's "You:" is blue; Ithil is yellow as in nyarch-1).
+const NAME_COLORS = { ithil: '#f6c344', anthropic: '#e8946f', openai: '#7fc7b0', google: '#8ab4f8', xai: '#c9c9c9', mistral: '#f0a35e', qwen: '#b39dfa', perplexity: '#5fc3cf', deepseek: '#8fa6ff', ollama: '#c3b8d6', freebuff: '#c39bf0', venice: '#f08f7a', civitai: '#7fa7f0', gpu: '#bdbdbd', free: '#86d39c', hearth: '#f0a845', copilot: '#7fb6f0', meta: '#7f9df0' };
+function nameColor(a) { return NAME_COLORS[a] || '#f6c344'; }
 
 function previewCard(m, p) {
   if (p.tooBig) return previewTooBig(p, icon);
@@ -1738,7 +1791,88 @@ function rpBar(c) {
 
 // ---------- the preview panel and canvas ----------
 let paneKey = '';
+// 3.12 (nyarch-1/-2): the right panel. The full-body avatar of whoever stands there (Ithil's body from Hearth AI),
+// or the tools: Files, Terminal, Browser, Changes and Ithil. A live preview or canvas still opens here (🖥).
+const RTABS = [['files', 'folder', 'Files'], ['terminal', 'code', 'Terminal'], ['browser', 'globe', 'Browser'], ['changes', 'branch', 'Changes'], ['ithil', 'moon', 'Ithil']];
+let rpanelKey = '';
+function winBtns() { return `<button class="xb" data-a="win" data-v="min" title="Minimise" aria-label="Minimise">${icon('minus', 'sm')}</button><button class="xb" data-a="win" data-v="close" title="Close" aria-label="Close">${icon('x', 'sm')}</button>`; }
+function avatarStage() {
+  const who = S.settings.avatarWho === 'ithil' || S.mode === 'ithil' ? 'ithil' : (S.busy?.agent || (S.mode === 'team' ? team().lead : S.mode));
+  const st = S.ithil.status;
+  if (who === 'ithil') {
+    const body = S.ithil.body ? `<img class="body" src="${esc(S.ithil.body)}" alt="Ithil">` : `<div class="body-orb" aria-hidden="true"></div>`;
+    const line = st?.online ? `feels ${esc(st.mood || 'calm')} · ${esc(st.state || 'awake')}` : 'Hearth AI isn\'t running';
+    return `<div class="stage">${body}</div><div class="mood">${line}</div>`;
+  }
+  return `<div class="stage"><div class="bigmono" style="background:${esc(nameColor(who))}">${esc(aiName(who).slice(0, 2))}</div></div><div class="mood">${esc(aiName(who))} · ${esc(statusOf(who)?.label || '')}</div>`;
+}
+function rtabBody(t) {
+  const c = entry();
+  if (t === 'ithil') return `<div class="rt-ithil">${avatarStage()}</div>`;
+  if (t === 'files') {
+    const f = S.rfiles;
+    if (!c || !(c.repo || c.repoDir)) return '<div class="rt-empty">Connect a repo to this chat to see its files.</div>';
+    if (!f) return '<div class="rt-empty">Loading…</div>';
+    if (!f.ok) return `<div class="rt-empty">${esc(f.message || 'No files yet.')}</div>`;
+    const crumbs = [esc(f.repo || ''), ...String(f.path || '').split('/').filter(Boolean).map(esc)].join(' / ');
+    const touched = new Map();
+    for (const m of S.msgs) for (const st of m.steps || []) if (st.file) touched.set(String(st.file).split('/').pop(), `${aiName(m.who)} · ${st.kind === 'edit' ? 'edited' : 'read'}`);
+    return `<div class="rt-path mono">${f.path ? '<button class="mini" data-a="rfiles-up">↑</button> ' : ''}${crumbs || '/'}</div>${f.items.map((x) => `<button class="rt-file" ${x.dir ? `data-a="rfiles-open" data-v="${esc(x.name)}"` : ''}>${x.dir ? '📁' : '📄'} <span class="mono">${esc(x.name)}${x.dir ? '/' : ''}</span><span class="d">${esc(touched.get(x.name) || (x.mtime ? ago(new Date(x.mtime).toISOString()) : ''))}</span></button>`).join('') || '<div class="rt-empty">This folder is empty.</div>'}`;
+  }
+  if (t === 'terminal') {
+    const runs = [];
+    for (const m of S.msgs) for (const st of m.steps || []) if (['run', 'check', 'bash'].includes(st.kind) || /^Ran\b/.test(st.label || '')) runs.push({ who: m.who, cmd: st.detail || st.label, note: st.note || '' });
+    return `<div class="term mono">${runs.length ? runs.slice(-60).map((r) => `<div><span class="pr">${esc(aiName(r.who).toLowerCase())}$</span> ${esc(r.cmd)}${r.note ? ` <span class="faint">· ${esc(r.note)}</span>` : ''}</div>`).join('') : '<div class="faint">Commands the AIs run in this chat show here.</div>'}</div>`;
+  }
+  if (t === 'browser') {
+    const pages = [];
+    for (const m of S.msgs) for (const st of m.steps || []) if (st.url) pages.push({ who: m.who, url: st.url, label: st.detail || st.url });
+    const prev = S.msgs.flatMap((m) => (m.previews || []).map((p) => ({ m, p })));
+    return `${prev.length ? `<div class="rt-h">Live previews</div>${prev.map(({ m, p }) => `<button class="rt-file" data-a="open-preview" data-m="${esc(m.id)}" data-p="${esc(p.id)}">🖥 <span>${esc(p.name)}</span></button>`).join('')}` : ''}<div class="rt-h">Pages the AIs read</div>${pages.length ? pages.slice(-40).reverse().map((x) => `<a class="rt-file" href="${esc(x.url)}" target="_blank" rel="noopener noreferrer">🌐 <span>${esc(x.label)}</span><span class="d">${esc(aiName(x.who))}</span></a>`).join('') : '<div class="rt-empty">Nothing read on the web yet.</div>'}`;
+  }
+  if (t === 'changes') {
+    const m = [...S.msgs].reverse().find((x) => x.changes);
+    return m ? changesCard(m, true) : '<div class="rt-empty">No changes in this chat yet.</div>';
+  }
+  return '';
+}
+function rpanelHtml() {
+  if (S.rpanel === 'tools') {
+    const tab = S.rtab || 'files';
+    return `<div class="rp-top"><button class="xb" data-a="rpanel" data-v="avatar" title="Back to the avatar">${icon('panel', 'sm')}</button><span class="grow"></span><button class="xb" data-a="toggle-pane" title="Live preview and canvas">${icon('monitor', 'sm')}</button><button class="xb" data-a="rfiles-new" title="Open a folder of this chat">${icon('plus', 'sm')}${icon('chev', 'sm')}</button><button class="xb" data-a="win" data-v="max" title="Maximise">${icon('square', 'sm')}</button><button class="xb" data-a="win" data-v="close" title="Close">${icon('x', 'sm')}</button></div>
+      <div class="rtabs">${RTABS.map(([k, ic, l]) => `<button class="${tab === k ? 'on' : ''}" data-a="rtab" data-v="${k}">${icon(ic, 'sm')}<span>${l}</span></button>`).join('')}</div>
+      <div class="rt-body">${rtabBody(tab)}${tab === 'files' && S.rpanel === 'tools' ? `<div class="rtabs sub"><button class="on">${icon('code', 'sm')}<span>${S.mode === 'ithil' || team().members.includes('ithil') ? 'Ithil\'s terminal' : 'Terminal'}</span></button></div>${rtabBody('terminal')}` : ''}</div>`;
+  }
+  return `<div class="rp-top"><span class="grow"></span><button class="xb ${S.settings.autoRead ? 'on' : ''}" data-a="toggle-autoread" title="Read answers aloud">${icon('speaker', 'sm')}</button><button class="xb" data-a="rpanel" data-v="tools" title="Files, terminal, browser and changes">${icon('panel', 'sm')}</button><button class="xb" data-a="avatar-who" title="Who stands here">${icon('user', 'sm')}</button>${winBtns()}</div>${avatarStage()}`;
+}
+
 function renderPane(force = false) {
+  if (!(S.pane && S.view === 'chat')) {
+    const el = document.getElementById('pane');
+    if (!el) return;
+    const show = S.view === 'chat' && !entry()?.rp && S.settings.avatarPanel !== false;
+    el.hidden = !show;
+    el.classList.toggle('rpanel', show);
+    document.getElementById('shell')?.classList.toggle('with-pane', show);
+    if (!show) { if (rpanelKey) { el.innerHTML = ''; rpanelKey = ''; } return; }
+    const key = `${S.rpanel}|${S.rtab}|${S.open}|${S.msgs.length}|${S.ithil.body ? S.ithil.body.length : 0}|${S.ithil.status?.mood}|${S.ithil.status?.state}|${S.mode}|${S.busy?.agent || ''}|${S.settings.autoRead}|${S.rfiles?.path ?? '-'}|${S.rfiles?.items?.length ?? 0}`;
+    if (!force && key === rpanelKey) return;
+    rpanelKey = key; paneKey = '';
+    el.innerHTML = rpanelHtml();
+    return;
+  }
+  document.getElementById('pane')?.classList.remove('rpanel'); rpanelKey = '';
+  return renderPreviewPane(force);
+}
+
+async function loadRFiles(sub) {
+  if (!S.open) return;
+  const r = await call('chatFiles', S.open, sub);
+  S.rfiles = r && typeof r === 'object' ? r : { ok: false, items: [] };
+  return renderPane(true);
+}
+
+function renderPreviewPane(force = false) {
   const el = document.getElementById('pane');
   if (!el) return;
   const p = S.pane ? previewOf(S.pane.msgId, S.pane.pid) : null;
@@ -1778,6 +1912,19 @@ function deskAsksHtml() {
 
 function popHtml() {
   const p = S.pop;
+  if (p.kind === 'avatarwho') return `<div class="scrim" data-a="close-pop"></div><div class="pop menu" style="right:20px;top:52px"><div class="mh">Who stands here</div><button class="it ${S.settings.avatarWho !== 'ithil' ? 'on' : ''}" data-a="set-avatar-who" data-v="answering">${icon('users', 'sm')}Whoever is answering</button><button class="it ${S.settings.avatarWho === 'ithil' ? 'on' : ''}" data-a="set-avatar-who" data-v="ithil">${icon('moon', 'sm')}Always Ithil</button></div>`;
+  if (p.kind === 'copts') return `<div class="scrim" data-a="close-pop"></div><div class="pop copts" style="left:calc(var(--side-w, 330px) + 20px);bottom:96px;max-width:min(760px,calc(100vw - 380px))"><div class="mh">This message</div>${composerChips()}</div>`;
+  if (p.kind === 'chatopts') {
+    // 3.12: the old top bar's tools, one tap away behind ⚙ next to the model button.
+    const c = entry();
+    const it = (a, ic, label, extra = '') => `<button class="it" data-a="${a}" ${extra}>${icon(ic, 'sm')}${label}</button>`;
+    return `<div class="scrim" data-a="close-pop"></div><div class="pop menu" style="left:50%;top:52px;transform:translateX(-50%)"><div class="mh">This chat</div>
+      ${c && !c.rp ? it('repo-pop', 'gh', c.repo || c.repoDir ? `Repo: ${esc(String(c.repo || c.repoDir))}${c.branch ? ` · ${esc(c.branch)}` : ''}` : 'Connect a repo…') : ''}
+      ${c && !c.temp && !c.rp ? `<button class="it" data-a="chat-act" data-k="knowledge" data-id="${esc(c.id)}">${icon('doc', 'sm')}${c.instructions || c.refs?.length ? 'Instructions ✓' : 'Instructions and reference files'}</button>` : ''}
+      ${it('live', 'eye', 'Live: the team as living cores')}${cur() ? it('chat-voice', 'mic', `Voice and speed${cur().sessions?._voice ? ' ✓' : ''}`) : ''}
+      ${S.msgs.some((m) => (m.media || []).some((x) => x.kind === 'image')) ? it('gallery', 'eye', 'Gallery', 'data-m="" data-i="0"') : ''}
+      ${it('toggle-pane', 'panel', 'Live preview and canvas')}${c ? it('chat-menu', 'dots', 'Rename, pin, export…', `data-id="${esc(c.id)}"`) : ''}</div>`;
+  }
   if (p.kind === 'menu') {
     const c = entry(p.id);
     if (!c) return '';
@@ -2799,6 +2946,7 @@ document.addEventListener('click', async (ev) => {
   if (a.tagName === 'A' && a.getAttribute('target') === '_blank') return;
   ev.preventDefault();
   switch (k) {
+    case 'side-menu': S.sideMenu = !S.sideMenu; return renderSide();
     case 'new-chat': return goHome();
     case 'ithil-test': { S.ithil.testing = true; S.ithil.test = null; renderMain(); const r = await call('ithilTest'); S.ithil.testing = false; S.ithil.test = { ok: Boolean(r?.ok), message: r?.message || 'No answer.' }; if (r?.status) S.ithil.status = r.status; else S.ithil.status = (await call('ithilStatus', { fresh: true })) || S.ithil.status; S.ithil.info = await call('ithilInfo'); if (r?.ok) { await ithilAvatar(S.ithil.status?.expression || ''); call('ithilWatch', true); } return render(); }
     case 'ithil-host': { const host = String(document.getElementById('ith-host')?.value || '').trim(); const port = Number(document.getElementById('ith-port')?.value || 47860); await setSettings({ ithil: { host, port } }); S.ithil.info = await call('ithilInfo'); toast(host ? `Saved: Ithil is at ${host}:${port}.` : 'Saved: Ithil is on this PC (connect.json).'); return render(); }
@@ -2973,12 +3121,24 @@ document.addEventListener('click', async (ev) => {
     case 'toggle-trash': S.showTrash = !S.showTrash; return renderSide();
     case 'unhide': await call('chatsUpdate', d.id, { hidden: false }); await loadChats(); return render();
     case 'restore': { const r = await call('chatsRestore', d.id); if (r?.ok === false || r?.message) toast(r.message || 'Not restored.'); await loadChats(); return render(); }
-    case 'undo': { const u = S.toast?.undo; S.toast = null; if (u?.kind === 'coll-restore') { const r = await call('cardsCollectionRestore', u.coll, u.ids, u.before); await loadColls(); renderMain(); toast(r?.message ? r.message : `Put back in “${u.name}”.`); return renderOverlay(); } if (u?.kind === 'restore') { await call('chatsRestore', u.trashId); await loadChats(); render(); toast('Restored.'); } return renderOverlay(); }
+    case 'undo': { const u = S.toast?.undo; S.toast = null; if (u?.kind === 'clear') { const R = runner.runtimes.get(u.chat); if (R) { for (const m of R.msgs) if (m.clearedAt === u.at) { delete m.deleted; delete m.clearedAt; } await saveRt(R); if (S.open === u.chat) S.msgs = R.msgs; render(); toast('Put back.'); } return renderOverlay(); } if (u?.kind === 'coll-restore') { const r = await call('cardsCollectionRestore', u.coll, u.ids, u.before); await loadColls(); renderMain(); toast(r?.message ? r.message : `Put back in “${u.name}”.`); return renderOverlay(); } if (u?.kind === 'restore') { await call('chatsRestore', u.trashId); await loadChats(); render(); toast('Restored.'); } return renderOverlay(); }
     case 'repo-pop': S.pick = null; S.repoQuery = ''; S.pickRepo = null; S.pickBranch = null; popAt(a, 'repo', { chatId: S.view === 'chat' ? S.open : null }); renderOverlay(); await loadRepos(); { const c = S.view === 'chat' ? entry() : null; const cr = c?.repo || S.conn?.repo || S.repos?.[0]?.full; if (cr) loadBranches(cr); } return;
     case 'pick-repo': S.pickRepo = d.r; S.pickBranch = null; S.pop.noFocus = true; renderOverlay(); await loadBranches(d.r); return;
     case 'connect-repo': { const c = S.pop?.chatId ? entry(S.pop.chatId) : S.view === 'chat' ? entry() : null; const sel = S.pickRepo || c?.repo || S.conn?.repo || (S.repos || [])[0]?.full; const b = document.getElementById('branch-sel')?.value || null; S.pickRepo = null; return chooseRepo(sel, b); }
     case 'no-repo': S.pickRepo = null; return chooseRepo(null, null);
-    case 'team-pop': popAt(a, 'team', { top: a.classList.contains('tb') }); return renderOverlay();
+    case 'team-pop': popAt(a, 'team', { top: a.classList.contains('tb') || a.dataset.top === '1' }); return renderOverlay();
+    case 'side-toggle': S.sideHidden = !S.sideHidden; document.getElementById('shell')?.classList.toggle('no-side', S.sideHidden); return renderMain();
+    case 'composer-opts': S.pop = S.pop?.kind === 'copts' ? null : { kind: 'copts' }; return renderOverlay();
+    case 'win': return call('winAct', d.v);
+    case 'rpanel': S.rpanel = d.v; if (d.v === 'tools' && (S.rtab || 'files') === 'files') loadRFiles(''); return renderPane(true);
+    case 'rtab': S.rtab = d.v; if (d.v === 'files') loadRFiles(S.rfiles?.path || ''); return renderPane(true);
+    case 'rfiles-open': return loadRFiles(`${S.rfiles?.path ? `${S.rfiles.path}/` : ''}${d.v}`);
+    case 'rfiles-up': return loadRFiles(String(S.rfiles?.path || '').split('/').slice(0, -1).join('/'));
+    case 'rfiles-new': S.rtab = 'files'; return loadRFiles('');
+    case 'toggle-autoread': await setSettings({ autoRead: !S.settings.autoRead }); toast(S.settings.autoRead ? 'Answers are read aloud.' : 'Answers aren\'t read aloud.'); return renderPane(true);
+    case 'avatar-who': S.pop = { kind: 'avatarwho' }; return renderOverlay();
+    case 'set-avatar-who': S.pop = null; await setSettings({ avatarWho: d.v }); renderOverlay(); return renderPane(true);
+    case 'chat-opts': S.oldTop = false; popAt(a, 'chatopts', { top: true }); return renderOverlay();
     case 'options-pop': popAt(a, 'options'); return renderOverlay();
     case 'set-mode': S.mode = d.v; S.pop = null; keepPrefs(); return render();
     case 'toggle-web': S.web = !S.web; keepPrefs(); return render();
@@ -3069,6 +3229,10 @@ document.addEventListener('click', async (ev) => {
     case 'voice': return toggleVoice();
     case 'send': return send();
     case 'stop': return stopRun();
+    // 3.12 (nyarch-1): Clear hides this chat's messages (Undo puts them back; nothing is deleted from disk until the
+    // chat itself is deleted); Regenerate retries the newest answer.
+    case 'chat-clear': { const R = cur(); if (!R || R.round) return toast(R?.round ? 'Wait for the team to finish first.' : 'Nothing to clear.'); const at = Date.now(); let n = 0; for (const m of R.msgs) if (!m.deleted) { m.deleted = true; m.clearedAt = at; n++; } if (!n) return toast('Nothing to clear.'); await saveRt(R); S.msgs = R.msgs; render(); S.toast = { text: `Cleared ${n} message${n > 1 ? 's' : ''}.`, undo: { kind: 'clear', chat: R.id, at } }; return renderOverlay(); }
+    case 'chat-regen': { const last = [...S.msgs].reverse().find((m) => !m.deleted && m.who !== 'owner' && m.who !== 'system'); return last ? regenerate(last.id) : toast('Nothing to regenerate yet.'); }
     case 'turn-retry': { const R = cur(); if (R && !R.round) runner.retry(R, d.v); return; }
     // 3.4.1: a fix from an error, and the owner's check of an uncensored teammate's reply (the lead learns only the verdict).
     case 'team-check': return teamCheck(d.v === 'all' ? 'all' : 'team');
@@ -3649,6 +3813,10 @@ async function ithilAvatar(expr = '') {
   const r = await call('ithilAvatar', { expression: expr });
   S.ithil.avatar = r?.ok ? r.dataUrl : null;
   S.ithil.avatarExpr = expr;
+  // 3.12 (nyarch-1): her full body for the right panel, with the same expression.
+  const b = await call('ithilAvatar', { expression: expr, framing: 'full' });
+  S.ithil.body = b?.ok ? b.dataUrl : null;
+  renderPane();
 }
 async function ithilInit() {
   S.ithil.info = await call('ithilInfo');

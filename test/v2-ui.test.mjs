@@ -193,7 +193,7 @@ test('no Projects list, no Board, Approvals or Jobs; the Habitat only as a sideb
   assert.doesNotMatch(between(ui, 'function renderPane(', '// ---------- popovers'), /habitat/i, 'no side panel tab');
   assert.match(ui, /saveView3d: \(v\) => \{ call\('setSettings', \{ view3d: v \}\)/, 'the saved 3D settings change only from the owner\'s own 3D controls');
   assert.doesNotMatch(ui, /from '\.\/ops\/ui\.mjs'|from '\.\/team\.mjs'/);
-  for (const s of ['New chat', 'Search chats', 'data-a="chat-menu"', 'data-a="settings"']) assert.ok(side.includes(s), s);
+  for (const s of ['New Chat', 'Search chats', 'data-a="chat-menu"', 'data-a="settings"']) assert.ok(side.includes(s), s); // 3.12: "New Chat" (nyarch-1)
   for (const k of ['rename', 'pin', 'unpin', 'up', 'down', 'connect', 'close', 'hide', 'delete']) assert.ok(ui.includes(`'${k}'`), `chat menu: ${k}`);
   assert.match(ui, /dropInGroup\(S\.chats, dragId/, 'drag to reorder');
   assert.match(ui, /Recently deleted/);

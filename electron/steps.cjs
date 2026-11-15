@@ -44,11 +44,16 @@ function claudeTool(name, input = {}) {
 function fromClaudeEvent(ev) {
   if (!ev || typeof ev !== 'object' || ev.type !== 'assistant') return [];
   const content = Array.isArray(ev.message?.content) ? ev.message.content : [];
-  return content.filter((c) => c && c.type === 'tool_use').map((c) => claudeTool(String(c.name || ''), c.input)).filter(Boolean);
+  // 3.12: its thinking, for the "Thoughts" box (kept short; never sent to the other AIs).
+  const thoughts = content.filter((c) => c && c.type === 'thinking' && typeof c.thinking === 'string' && c.thinking.trim()).map((c) => thoughtStep(c.thinking));
+  return [...thoughts, ...content.filter((c) => c && c.type === 'tool_use').map((c) => claudeTool(String(c.name || ''), c.input)).filter(Boolean)];
 }
 
 // A JSONL event from `codex exec --json`.
+function thoughtStep(text) { return { kind: 'thought', label: 'Thoughts', text: String(text).trim().slice(0, 6000) }; }
+
 function fromCodexEvent(ev) {
+  if (ev && ev.type === 'item.completed' && ev.item?.type === 'reasoning' && typeof ev.item.text === 'string' && ev.item.text.trim()) return [thoughtStep(ev.item.text)];
   if (!ev || typeof ev !== 'object' || ev.type !== 'item.started') return [];
   const it = ev.item || {};
   if (it.type === 'command_execution') return [bashStep(it.command)];
@@ -64,4 +69,4 @@ function fromEvent(agent, ev) {
   return [];
 }
 
-module.exports = { fromEvent, fromClaudeEvent, fromCodexEvent, claudeTool, bashStep, CHECK_RE };
+module.exports = { fromEvent, fromClaudeEvent, fromCodexEvent, claudeTool, bashStep, thoughtStep, CHECK_RE };
