@@ -1246,7 +1246,7 @@ function renderMain(scroll = false) {
   else if (S.view === 'characters') { html = charactersView(); dock = ''; }
   else if (S.view === 'card') { html = cardEditView(); dock = ''; queueMicrotask(() => cfRun(false)); }
   else if (S.view === 'lorebooks') { html = lorebooksView(); dock = ''; }
-  else if (S.view === 'chat') { html = chatView(); dock = composer(entry()?.rp ? `Your line as ${S.persona?.name || 'you'}…` : cur()?.canvas ? 'Ask for changes to the canvas…' : S.open && S.msgs.some((m) => m.previews?.length) && S.pane ? 'Ask for changes to the preview…' : 'Reply to the team…') + `<div class="hint">${esc(hintLine())}</div>`; }
+  else if (S.view === 'chat') { html = chatView(); dock = composer(entry()?.rp ? `Your line as ${S.persona?.name || 'you'}…` : cur()?.canvas ? 'Ask for changes to the canvas…' : S.open && S.msgs.some((m) => m.previews?.length) && S.pane ? 'Ask for changes to the preview…' : S.mode === 'team' ? `Send a message… (${team().members.filter(ready).slice(0, 5).map((x) => `@${aiName(x)}`).join(', ')})` : 'Send a message…') + `<div class="hint">${esc(hintLine())}</div>`; }
   else { html = homeView(); dock = ''; }
   const main = document.getElementById('main');
   main.classList.toggle('home-mode', S.view === 'home');
@@ -2351,11 +2351,15 @@ function section(k) {
       <div class="srow">Stay on top<span class="d"></span><span class="grow"></span>${tog(s.miniOnTop !== false, 'mini-top')}</div></div>`;
   }
   if (k === 'look') {
-    const holo = s.design !== 'classic';
+    const design = ['hologram', 'classic'].includes(s.design) ? s.design : 'adwaita';
+    const holo = design === 'hologram';
+    const ACC = [['blue', 'Blue'], ['teal', 'Teal'], ['green', 'Green'], ['yellow', 'Yellow'], ['orange', 'Orange'], ['red', 'Red'], ['pink', 'Pink'], ['purple', 'Purple'], ['slate', 'Slate']];
+    // 3.12 (settings-7): Look: Style, Accent colour, Text size.
     return `<h1>Appearance</h1><div class="box"><h3>Look</h3>
-      <div class="srow">Design<span class="d">${holo ? 'gold hologram: living cores, always dark, its own colours' : 'classic: calm and warm, follows the theme below'}</span><span class="grow"></span>${[['hologram', 'Gold hologram'], ['classic', 'Classic']].map(([v, l]) => `<button class="seg ${(holo ? 'hologram' : 'classic') === v ? 'on' : ''}" data-a="design" data-v="${v}">${l}</button>`).join('')}</div>
-      ${holo ? '<div class="note sub">Theme and your Hearth OS colours apply when Design is Classic.</div>' : ''}
-      <div class="srow">Theme<span class="grow"></span>${['hearth', 'dark', 'light', 'system'].map((v) => `<button class="seg ${s.theme === v ? 'on' : ''}" data-a="theme" data-v="${v}">${{ hearth: 'Follow Hearth OS', dark: 'Dark', light: 'Light', system: 'System' }[v]}</button>`).join('')}</div>
+      <div class="srow">Style<span class="d">${design === 'adwaita' ? '' : holo ? 'gold hologram: living cores, always dark, its own colours' : 'classic: calm and warm, follows the theme below'}</span><span class="grow"></span><select data-a="design-pick"><option value="adwaita" ${design === 'adwaita' ? 'selected' : ''}>Dark</option><option value="hologram" ${holo ? 'selected' : ''}>Gold hologram</option><option value="classic" ${design === 'classic' ? 'selected' : ''}>Classic</option></select></div>
+      <div class="srow">Accent colour<span class="d"></span><span class="grow"></span><select data-a="accent-pick" ${design !== 'adwaita' ? 'disabled' : ''}>${ACC.map(([v, l]) => `<option value="${v}" ${(s.accent || 'blue') === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+      ${design === 'classic' ? '' : '<div class="note sub">Theme and your Hearth OS colours apply when Style is Classic.</div>'}
+      <div class="srow" ${design === 'classic' ? '' : 'hidden'}>Theme<span class="grow"></span>${['hearth', 'dark', 'light', 'system'].map((v) => `<button class="seg ${s.theme === v ? 'on' : ''}" data-a="theme" data-v="${v}">${{ hearth: 'Follow Hearth OS', dark: 'Dark', light: 'Light', system: 'System' }[v]}</button>`).join('')}</div>
       <div class="srow">Draw the app at 100%<span class="d">${S.screen && S.screen.scale > 1.01 ? `your desktop scales this screen to ${Math.round(S.screen.scale * 100)}%, and the app follows it unless this is on` : 'for a screen your desktop scales up (125%, 150%…): the app then ignores that scale'}</span><span class="grow"></span>${tog(s.fitScreen === true, 'fit-screen')}</div>
       <div class="srow">App size<span class="d">everything: text, buttons and panels · Ctrl − and Ctrl + change it, Ctrl 0 goes back to 100%</span><span class="grow"></span>${APP_SIZES.map((v) => `<button class="seg ${s.textSize === v ? 'on' : ''}" data-a="text-size" data-v="${v}">${v}%</button>`).join('')}</div>
       <div class="srow">Reduce motion<span class="grow"></span>${tog(s.reduceMotion === true, 'reduce-motion')}</div></div>`;
@@ -2864,8 +2868,10 @@ async function setSettings(patch) {
 function applyTheme() {
   const systemDark = window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? true;
   // 2.9: the gold hologram design (always dark, its own colours) unless Design is Classic.
-  const holo = S.settings.design !== 'classic';
-  document.documentElement.dataset.design = holo ? 'hologram' : 'classic';
+  const design = ['hologram', 'classic'].includes(S.settings.design) ? S.settings.design : 'adwaita';
+  const holo = design === 'hologram';
+  document.documentElement.dataset.design = design;
+  document.documentElement.dataset.accent = S.settings.accent || 'blue';
   const follow = !holo && S.settings.theme === 'hearth' && S.theme.found;
   document.documentElement.dataset.mode = holo ? 'dark' : pickMode(S.settings.theme, { ...S.theme, systemDark });
   document.documentElement.classList.toggle('reduce-motion', S.settings.reduceMotion === true);
@@ -2976,7 +2982,7 @@ document.addEventListener('click', async (ev) => {
     case 'live-drawer': S.liveDrawer = !S.liveDrawer; try { localStorage.setItem('hearth.v2.liveDrawer', S.liveDrawer ? '1' : '0'); } catch {} return renderMain();
     case 'live-full': if (S.open) return openChat(S.open); return;
     case 'open-freebuff': { const r = await call('openWeb', 'freebuff'); if (r && r.ok === false) toast(r.message || 'FreeBuff couldn\'t open.'); return; }
-    case 'design': { if (!['hologram', 'classic'].includes(d.v)) return; await setSettings({ design: d.v }); return; }
+    case 'design': { if (!['hologram', 'classic', 'adwaita'].includes(d.v)) return; await setSettings({ design: d.v }); return; }
     // roleplay: characters, lorebooks, persona
     case 'characters': S.view = 'characters'; S.cardEdit = null; S.loreEdit = null; S.pane = null; render(true); await loadCards(); return render();
     case 'lorebooks': S.view = 'lorebooks'; S.loreEdit = null; render(true); S.books = (await call('loreList')) || []; return render();
@@ -3444,6 +3450,8 @@ document.addEventListener('change', (ev) => {
   if (t.matches?.('select[data-a="unc-pic"]')) setSettings({ uncensored: { pictureModel: t.value } });
   if (t.matches?.('[data-a="idle-hours"]')) setSettings({ copyIdleHours: Number(t.value) });
   if (t.matches?.('[data-a="max-chats"]')) setSettings({ maxChats: Number(t.value) });
+  if (t.matches?.('select[data-a="design-pick"]') && ['hologram', 'classic', 'adwaita'].includes(t.value)) setSettings({ design: t.value }).then(() => { applyTheme(); render(); });
+  if (t.matches?.('select[data-a="accent-pick"]')) setSettings({ accent: t.value }).then(() => applyTheme());
   if (t.matches?.('select[data-a="av-who"]')) setSettings({ avatarWho: t.value === 'ithil' ? 'ithil' : 'answering' }).then(() => renderPane(true));
   if (t.matches?.('select[data-a="av-body"]')) setSettings({ ithilBody: t.value === 'live2d' ? 'live2d' : 'vrm' });
   if (t.matches?.('select[data-a="voice-set"]')) setSettings({ voice: { [t.dataset.k]: t.value } }).then(() => loadSection('voice'));

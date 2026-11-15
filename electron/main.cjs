@@ -131,7 +131,9 @@ function normalSettings(s) {
     leadGitHub: s.leadGitHub === true,
     theme: THEMES.includes(s.theme) ? s.theme : 'hearth',
     // 2.9: the gold hologram design unless the owner picks Classic.
-    design: s.design === 'classic' ? 'classic' : 'hologram',
+    // 3.12: the approved Nyarch-style look ('adwaita') unless the owner picked Gold hologram or Classic himself.
+    design: ['hologram', 'classic'].includes(s.design) ? s.design : 'adwaita',
+    accent: ['blue', 'teal', 'green', 'yellow', 'orange', 'red', 'pink', 'purple', 'slate'].includes(s.accent) ? s.accent : 'blue',
     textSize: TEXT_SIZES.includes(s.textSize) ? s.textSize : 100,
     // 3.4.1: draw the app at true 100% even when the desktop scales the screen (125%, 150%…). Off unless he turns it on.
     fitScreen: s.fitScreen === true,
@@ -547,7 +549,8 @@ function registerIpc() {
     if ('leadActions' in patch) s.leadActions = patch.leadActions === true;
     if ('leadGitHub' in patch) s.leadGitHub = patch.leadGitHub === true;
     if ('theme' in patch && THEMES.includes(patch.theme)) s.theme = patch.theme;
-    if ('design' in patch && ['hologram', 'classic'].includes(patch.design)) s.design = patch.design;
+    if ('design' in patch && ['hologram', 'classic', 'adwaita'].includes(patch.design)) s.design = patch.design;
+    if ('accent' in patch && ['blue', 'teal', 'green', 'yellow', 'orange', 'red', 'pink', 'purple', 'slate'].includes(patch.accent)) s.accent = patch.accent;
     if ('textSize' in patch) {
       if (!TEXT_SIZES.includes(patch.textSize)) throw new Error('Invalid text size');
       s.textSize = patch.textSize;
