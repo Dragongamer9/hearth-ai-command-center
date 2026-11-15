@@ -1246,3 +1246,7 @@ html.mini, html.mini body { height: 100%; background: #1e1e1e; }
 .side .item.on { box-shadow: none; border: 0; color: var(--strong); }
 .with-pane .col, .body .col { width: 100%; max-width: none; margin: 0; padding: 0; }
 :root[data-design="adwaita"] .composer, :root[data-design="adwaita"] .card { --corner: 0; }
+/* Settings: the title and tabs stay in view while the page scrolls */
+.set.dlg .dlg-h { position: sticky; top: 0; z-index: 2; background: #242428; border-radius: 14px 14px 0 0; }
+.set.dlg .stabs { position: sticky; top: 56px; z-index: 2; background: #242428; }
+.main.settings-mode .body { padding-top: 24px; }

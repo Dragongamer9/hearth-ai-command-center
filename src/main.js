@@ -1238,7 +1238,7 @@ function renderMain(scroll = false) {
   let html = '';
   let dock = '';
   if (S.view !== 'habitat' && habMounted) { stopHabitat(); stopHabitat3d(); habMounted = false; }
-  if (S.view === 'settings') { html = settingsView(); dock = ''; }
+  if (S.view === 'settings') { html = settingsView(); dock = ''; if (renderMain.lastView !== 'settings' || renderMain.lastTab !== S.tab) queueMicrotask(() => { const b = document.getElementById('body'); if (b) b.scrollTop = 0; }); renderMain.lastTab = S.tab; }
   else if (S.view === 'habitat') { html = `<div class="habwrap">${viewHabitat()}</div>`; dock = ''; }
   else if (S.view === 'studio') { stSync(); html = stHtml(); dock = ''; }
   else if (S.view === 'reverse') { html = reverseView(); dock = ''; }
@@ -1252,6 +1252,7 @@ function renderMain(scroll = false) {
   main.classList.toggle('home-mode', S.view === 'home');
   main.classList.toggle('live-mode', S.view === 'live');
   main.classList.toggle('settings-mode', S.view === 'settings');
+  renderMain.lastView = S.view;
   main.classList.toggle('habitat-mode', S.view === 'habitat');
   main.classList.toggle('studio-mode', S.view === 'studio');
   main.classList.toggle('lib-mode', ['characters', 'card', 'lorebooks'].includes(S.view));
