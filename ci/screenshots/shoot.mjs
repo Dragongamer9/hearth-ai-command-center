@@ -502,7 +502,7 @@ for (const s of SHOTS) {
   try { await shootOne(s); } catch (e) {
     failed++;
     const where = lastPage ? await lastPage.evaluate(() => `view: ${document.querySelector('#main')?.className} · tabs: ${[...document.querySelectorAll('[data-a="tab"]')].map((x) => x.dataset.t).join(',')} · text: ${document.body.innerText.slice(0, 160).replace(/\s+/g, ' ')}`).catch(() => '') : '';
-    console.log(`::error::${s.file}: crashed: ${String(e?.message || e).split('\n')[0].slice(0, 200)} · errors ${JSON.stringify(lastErrors).slice(0, 300)} · ${where}`);
+    console.log(`::error::${s.file}: crashed: ${String(e?.message || e).split('\n').filter((l) => /intercepts|not visible|outside|waiting for|retrying/.test(l)).slice(-3).join(' | ').slice(0, 400) || String(e?.message || e).slice(0, 200)} · errors ${JSON.stringify(lastErrors).slice(0, 300)} · ${where}`);
     try { await lastPage?.close(); } catch {}
   }
 }
