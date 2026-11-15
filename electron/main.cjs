@@ -35,6 +35,8 @@ const teamCheck = require('./team-check.cjs');
 const voiceChat = require('./voice-chat.cjs');
 const voicePerms = require('./voice-perms.cjs');
 const hearthDevices = require('./hearth-devices.cjs');
+const charactersLib = require('./characters.cjs');
+let characters = null;
 const ithilLib = require('./ithil.cjs');
 const comfy = require('./comfy.cjs');
 const studioLib = require('./studio.cjs');
@@ -55,7 +57,7 @@ if (!app.requestSingleInstanceLock()) {
 }
 // Live previews are served from their own scheme with their own CSP (electron/previews.cjs).
 // Pictures and videos the AIs made are served from hearth-media: (only the app's media folder).
-protocol.registerSchemesAsPrivileged([{ scheme: 'hearth-preview', privileges: { standard: true, secure: true } }, { scheme: 'hearth-media', privileges: { standard: true, secure: true, stream: true, supportFetchAPI: true } }]);
+protocol.registerSchemesAsPrivileged([{ scheme: 'hearth-preview', privileges: { standard: true, secure: true } }, { scheme: 'hearth-char', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } }, { scheme: 'hearth-media', privileges: { standard: true, secure: true, stream: true, supportFetchAPI: true } }]);
 
 let mainWindow = null;
 let secrets = null;
@@ -188,6 +190,10 @@ function normalSettings(s) {
     ithilBody: s.ithilBody === 'live2d' ? 'live2d' : 'vrm',
     miniWindow: s.miniWindow !== false,
     miniOnTop: s.miniOnTop !== false,
+    // 3.13: each AI's character (compact-A9) and who answers a new chat first (compact-A1).
+    characters: charactersLib.clean(s.characters),
+    panelState: ['open', 'collapsed', 'hidden'].includes(s.panelState) ? s.panelState : 'open',
+    startWith: typeof s.startWith === 'string' && /^[a-z][a-z0-9_-]{0,31}$/.test(s.startWith) ? s.startWith : 'team',
     previews: s.previews !== false,
     memoryOn: s.memoryOn !== false,
     notifyDone: s.notifyDone !== false,
@@ -371,7 +377,8 @@ function createWindow() {
   mainWindow.webContents.on('will-navigate', (e, url) => { if (!sameDocument(url, mainWindow.webContents.getURL())) e.preventDefault(); });
   // A live preview's frame can never navigate anywhere but its own hearth-preview: page.
   mainWindow.webContents.on('will-frame-navigate', (e) => {
-    if (!e.isMainFrame && !String(e.url || '').startsWith('hearth-preview://') && e.url !== 'about:blank' && e.url !== 'about:srcdoc') e.preventDefault();
+    // 3.13: the sealed avatar page (hearth-char://stage/) is the only other frame allowed.
+    if (!e.isMainFrame && !String(e.url || '').startsWith('hearth-preview://') && !String(e.url || '').startsWith('hearth-char://stage/') && e.url !== 'about:blank' && e.url !== 'about:srcdoc') e.preventDefault();
   });
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith('https://')) shell.openExternal(url);
@@ -592,6 +599,9 @@ function registerIpc() {
     if ('notify' in patch) s.notify = patch.notify === true;
     if ('autoRead' in patch) s.autoRead = patch.autoRead === true;
     for (const k of ['avatarPanel', 'avatarLipSync', 'miniWindow', 'miniOnTop', 'previews', 'memoryOn', 'notifyDone', 'notifyPhone', 'autoUpdate', 'homeServerAi']) if (k in patch) s[k] = patch[k] === true;
+    if ('characters' in patch) s.characters = charactersLib.clean({ ...charactersLib.clean(s.characters), ...(patch.characters && typeof patch.characters === 'object' ? patch.characters : {}) });
+    if ('panelState' in patch && ['open', 'collapsed', 'hidden'].includes(patch.panelState)) s.panelState = patch.panelState;
+    if ('startWith' in patch && typeof patch.startWith === 'string' && /^[a-z][a-z0-9_-]{0,31}$/.test(patch.startWith)) s.startWith = patch.startWith;
     if ('avatarWho' in patch) s.avatarWho = patch.avatarWho === 'ithil' ? 'ithil' : 'answering';
     if ('ithilBody' in patch) s.ithilBody = patch.ithilBody === 'live2d' ? 'live2d' : 'vrm';
     if ('maxChats' in patch) {
@@ -1192,6 +1202,16 @@ function registerIpc() {
   // 3.9: Ithil (Hearth AI): her status, avatar, live events and the connection settings (Settings › Accounts).
   handle('ithil:status', (o = {}) => ithilApi().status({ fresh: o?.fresh === true }));
   handle('ithil:test', () => ithilApi().test());
+  // 3.13 (compact-A9): pick a picture, a VRM file or a Live2D folder for an AI; it's copied into the app's own folder.
+  handle('character:pick', async (agent, kind) => {
+    const k = ['picture', 'vrm', 'live2d'].includes(kind) ? kind : null;
+    if (!k) return { ok: false, message: 'Unknown kind.' };
+    const filters = k === 'picture' ? [{ name: 'Pictures', extensions: ['png', 'gif', 'webp', 'jpg', 'jpeg'] }] : k === 'vrm' ? [{ name: 'VRM models', extensions: ['vrm'] }] : [{ name: 'Live2D models', extensions: ['json'] }];
+    const r = await dialog.showOpenDialog(mainWindow, { title: k === 'live2d' ? 'Pick the model\'s .model3.json' : 'Pick a file', properties: ['openFile'], filters });
+    if (r.canceled || !r.filePaths?.[0]) return { ok: false, canceled: true };
+    try { characters ||= charactersLib.create({ dataDir }); return { ok: true, file: characters.importFrom(String(agent), k, r.filePaths[0]) }; } catch (e) { return { ok: false, message: String(e.message || e) }; }
+  });
+  handle('character:core', async () => { characters ||= charactersLib.create({ dataDir }); try { return await characters.ensureCore(); } catch (e) { return { ok: false, message: String(e.message || e) }; } });
   // 3.12 (nyarch-3): the mini window talks to Ithil straight through Hearth AI (her own chat, short).
   handle('ithil:talk', (text) => ithilApi().talk({ text: String(text || '').slice(0, 8000), from: 'Mini window' }));
   handle('mini:open', () => openMini());
@@ -1387,6 +1407,8 @@ app.whenReady().then(async () => {
   webBridge = webBridgeLib.createWebBridge({ BrowserWindow, iconPath: path.join(__dirname, '..', 'dist', 'icon.png') });
   theme.watchTheme((t) => send('theme:changed', t));
   updater = createUpdater({ app, send });
+  characters = charactersLib.create({ dataDir });
+  protocol.handle('hearth-char', (req) => { const f = characters.resolve(req.url); if (!f) return new Response('Not found', { status: 404 }); try { return new Response(f.body ?? fs.readFileSync(f.file), { headers: { 'Content-Type': f.mime, 'Access-Control-Allow-Origin': '*' } }); } catch { return new Response('Not found', { status: 404 }); } });
   registerIpc();
   createWindow();
   if (process.argv.includes('--mini')) openMini();

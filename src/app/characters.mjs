@@ -1,0 +1,25 @@
+// 3.13 (compact-A9): the starter characters (drawn for this app) and how a character is shown: a picture or a
+// starter as an image; a Live2D or VRM model through the avatar stage (vendor/avatar-stage, Hearth AI's renderer).
+export const STARTERS = [
+  ['ember-fox', 'Ember fox', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 300"><defs><linearGradient id="f" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f59a5c"/><stop offset="1" stop-color="#c96f4a"/></linearGradient></defs><path d="M60 70 L45 15 L85 55 Z M140 70 L155 15 L115 55 Z" fill="url(#f)"/><ellipse cx="100" cy="95" rx="55" ry="48" fill="url(#f)"/><ellipse cx="100" cy="115" rx="30" ry="22" fill="#fde9da"/><circle cx="80" cy="90" r="7" fill="#2b1a12"/><circle cx="120" cy="90" r="7" fill="#2b1a12"/><circle cx="82" cy="88" r="2.5" fill="#fff"/><circle cx="122" cy="88" r="2.5" fill="#fff"/><ellipse cx="100" cy="108" rx="7" ry="5" fill="#2b1a12"/><path d="M60 140 C50 220 70 270 100 272 C130 270 150 220 140 140 Z" fill="url(#f)"/><path d="M80 150 C80 230 120 230 120 150 Z" fill="#fde9da"/><path d="M140 230 C190 210 190 160 165 150 C175 190 160 215 135 222 Z" fill="#f59a5c"/></svg>'],
+  ['robot-pilot', 'Robot pilot', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 300"><rect x="50" y="40" width="100" height="90" rx="22" fill="#7fc7b0"/><rect x="65" y="65" width="70" height="36" rx="12" fill="#163a33"/><circle cx="85" cy="83" r="7" fill="#9ff0d8"/><circle cx="115" cy="83" r="7" fill="#9ff0d8"/><line x1="100" y1="40" x2="100" y2="18" stroke="#7fc7b0" stroke-width="5"/><circle cx="100" cy="15" r="7" fill="#f6c344"/><rect x="58" y="138" width="84" height="100" rx="18" fill="#5aa892"/><rect x="40" y="145" width="16" height="70" rx="8" fill="#5aa892"/><rect x="144" y="145" width="16" height="70" rx="8" fill="#5aa892"/><rect x="68" y="240" width="22" height="45" rx="8" fill="#4a8f7c"/><rect x="110" y="240" width="22" height="45" rx="8" fill="#4a8f7c"/></svg>'],
+  ['star-twin', 'Star twin', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 300"><circle cx="100" cy="95" r="55" fill="#8ab4f8"/><path d="M45 95 Q100 20 155 95" fill="#4d6fd1"/><circle cx="82" cy="100" r="7" fill="#1b2b52"/><circle cx="118" cy="100" r="7" fill="#1b2b52"/><path d="M150 50 l6 12 13 2 -10 9 3 13 -12 -7 -12 7 3 -13 -10 -9 13 -2z" fill="#f6e27a"/><path d="M60 155 C50 230 70 280 100 282 C130 280 150 230 140 155 Z" fill="#4d6fd1"/></svg>'],
+  ['wind-sprite', 'Wind sprite', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 300"><path d="M100 40 C55 75 50 170 100 215 C150 170 145 75 100 40 Z" fill="#f0a35e"/><circle cx="85" cy="115" r="7" fill="#3a2410"/><circle cx="115" cy="115" r="7" fill="#3a2410"/><path d="M40 140 Q20 120 40 100 M160 140 Q180 120 160 100 M70 250 Q100 230 130 250" stroke="#f6c27a" stroke-width="6" fill="none"/></svg>'],
+  ['moss-bear', 'Moss bear', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 300"><circle cx="70" cy="60" r="20" fill="#c3b8d6"/><circle cx="130" cy="60" r="20" fill="#c3b8d6"/><ellipse cx="100" cy="105" rx="58" ry="52" fill="#c3b8d6"/><circle cx="82" cy="100" r="8" fill="#2a2438"/><circle cx="118" cy="100" r="8" fill="#2a2438"/><ellipse cx="100" cy="122" rx="14" ry="9" fill="#a99bc2"/><ellipse cx="100" cy="225" rx="62" ry="70" fill="#b3a6c9"/><ellipse cx="100" cy="230" rx="34" ry="44" fill="#ddd5ea"/></svg>'],
+  ['crystal', 'Crystal', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 300"><polygon points="100,25 165,70 145,160 55,160 35,70" fill="#b39dfa"/><polygon points="100,25 120,70 100,160 80,70" fill="#d3c6ff" opacity=".6"/><circle cx="82" cy="100" r="8" fill="#241a45"/><circle cx="118" cy="100" r="8" fill="#241a45"/><polygon points="70,175 130,175 115,280 85,280" fill="#9a84f0"/></svg>'],
+];
+export const starterSvg = (id) => (STARTERS.find((s) => s[0] === id) || [])[2] || '';
+export const starterName = (id) => (STARTERS.find((s) => s[0] === id) || [])[1] || '';
+export const svgUrl = (svg) => `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
+export const KIND_LABEL = { none: 'None', picture: '2D picture', starter: '2D picture', live2d: 'Live2D', vrm: '3D (VRM)' };
+// The URL a character's file is served from (electron/characters.cjs).
+export const charUrl = (agent, file) => `hearth-char://a/${encodeURIComponent(agent)}/${String(file).split('/').map(encodeURIComponent).join('/')}`;
+// What to show for an AI: { kind: 'img', src } | { kind: 'stage', type: 'vrm'|'live2d', url } | null (its letter mark).
+export function characterOf(chars, agent) {
+  const c = chars?.[agent];
+  if (!c || c.kind === 'none') return null;
+  if (c.kind === 'starter') return { kind: 'img', src: svgUrl(starterSvg(c.starter)), label: starterName(c.starter), motion: c.motion !== false };
+  if (c.kind === 'picture' && c.file) return { kind: 'img', src: charUrl(agent, c.file), label: c.file.split('/').pop(), motion: c.motion !== false };
+  if ((c.kind === 'vrm' || c.kind === 'live2d') && c.file) return { kind: 'stage', type: c.kind, url: charUrl(agent, c.file), label: c.file.split('/').pop(), motion: c.motion !== false };
+  return null;
+}

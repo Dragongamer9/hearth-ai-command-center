@@ -1266,3 +1266,63 @@ html.mini, html.mini body { height: 100%; background: #1e1e1e; }
 .tagp.w { background: rgba(246,195,68,.12); color: #f6d36a; }
 details.more-acct { margin-top: 22px; }
 details.more-acct > summary { cursor: pointer; font-weight: 700; color: var(--strong); padding: 10px 4px; }
+
+/* ===================== 3.13: compact Settings (compact-A1…A8) ===================== */
+.main.settings-mode .body { padding: 28px 24px; align-items: stretch; overflow: hidden; }
+.set.dlg.cmp { flex-direction: row; width: min(1080px, 100%); height: 100%; min-height: 0; max-height: none; margin: 0 auto; }
+.set.dlg.cmp .snav2 { width: 210px; flex: none; background: #202024; padding: 12px 8px; display: flex; flex-direction: column; gap: 2px; border-right: 1px solid rgba(255,255,255,.06); overflow-y: auto; }
+.snav2 .st { font-size: 15px; padding: 4px 12px 10px; color: var(--strong); }
+.snav2 .sq { margin: 0 4px 8px; padding: 6px 10px; border-radius: 7px; background: #1b1b1e; border: 1px solid rgba(255,255,255,.1); color: var(--strong); font-size: 12.5px; }
+.snav2 button { display: flex; gap: 10px; align-items: center; padding: 8px 12px; border-radius: 7px; color: rgba(255,255,255,.67); text-align: left; font-size: 13.5px; }
+.snav2 button.on { background: rgba(255,255,255,.08); color: #fff; font-weight: 700; }
+.set.dlg.cmp .spane { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.set.dlg.cmp .sph { height: 46px; flex: none; display: flex; align-items: center; padding: 0 16px; border-bottom: 1px solid rgba(255,255,255,.06); font-size: 15px; }
+.set.dlg.cmp .spage { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 18px 18px; }
+.set.dlg.cmp .dlg-h, .set.dlg.cmp .stabs { display: none; }
+.set.dlg.cmp .cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); gap: 0 12px; align-items: start; }
+.set.dlg.cmp .box { margin: 12px 0 0; }
+.set.dlg.cmp .box > h3 { font-size: 11.5px; text-transform: uppercase; letter-spacing: .05em; color: rgba(255,255,255,.67); margin: 0 4px 6px; display: flex; gap: 8px; }
+.set.dlg.cmp .box > h3 .cnt { margin-left: auto; text-transform: none; letter-spacing: 0; font-weight: 500; color: rgba(255,255,255,.4); }
+.set.dlg.cmp .box > .srow { min-height: 36px; padding: 0 12px; gap: 9px; flex-wrap: nowrap; font-size: 13.5px; }
+.set.dlg.cmp .srow .t2 { flex-direction: row; align-items: baseline; gap: 8px; min-width: 0; overflow: hidden; white-space: nowrap; }
+.set.dlg.cmp .srow .t2 b { font-weight: 500; display: flex; align-items: center; gap: 8px; }
+.set.dlg.cmp .srow .t2 .d { width: auto; font-size: 12px; color: rgba(255,255,255,.5); overflow: hidden; text-overflow: ellipsis; }
+.set.dlg.cmp .box > .fine, .set.dlg.cmp .box > p { font-size: 12px; margin: 0 4px 6px; }
+.set.dlg.cmp .tog { transform: scale(.85); }
+.set.dlg.cmp select, .set.dlg.cmp .mini { font-size: 12.5px; padding: 3px 9px; }
+.set.dlg.cmp .sub-back { margin: 10px 0 0; }
+.set.dlg.cmp .subpage .box > .srow { flex-wrap: wrap; min-height: 40px; padding: 8px 12px; }
+.set.dlg.cmp .subpage h1 { display: block; font: 700 15px var(--font); margin: 14px 4px 0; }
+/* the character picker (compact-A9) */
+.modal.cmodal { width: min(860px, calc(100vw - 40px)); max-height: calc(100vh - 60px); display: flex; flex-direction: column; padding: 0; overflow: hidden; }
+.cmodal .mhd { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid rgba(255,255,255,.06); }
+.cseg { display: flex; gap: 4px; padding: 10px 16px; align-items: center; }
+.cseg button { padding: 6px 14px; border-radius: 7px; background: rgba(255,255,255,.05); color: rgba(255,255,255,.67); font-weight: 600; }
+.cseg button.on { background: var(--accent); color: #fff; }
+.cbody { flex: 1; min-height: 0; overflow-y: auto; display: grid; grid-template-columns: 300px 1fr; gap: 16px; padding: 6px 16px 16px; }
+.cprev { position: relative; min-height: 380px; border-radius: 12px; background: radial-gradient(260px 300px at 50% 60%, #3a2c26, #1d1b1f); display: flex; flex-direction: column; align-items: center; justify-content: flex-end; padding-bottom: 14px; overflow: hidden; }
+.cprev .cpl { position: absolute; top: 10px; left: 12px; }
+.cprev-img { max-width: 230px; max-height: 300px; }
+.cprev-stage, .stage-host { width: 100%; flex: 1; min-height: 300px; }
+.cmoods { display: flex; gap: 8px; margin-top: 8px; }
+.gt2 { font-weight: 700; font-size: 11.5px; color: rgba(255,255,255,.67); text-transform: uppercase; letter-spacing: .05em; margin: 4px 0 8px; }
+.cgrid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 10px; }
+.ccard { background: #2e2e32; border-radius: 10px; padding: 8px; display: flex; flex-direction: column; align-items: center; gap: 6px; font-size: 12px; color: rgba(255,255,255,.8); border: 2px solid transparent; }
+.ccard.on { border-color: var(--accent); }
+.ccard img { width: 100%; height: 100px; object-fit: contain; }
+.ccard.add { border: 2px dashed rgba(255,255,255,.2); background: none; justify-content: center; }
+.ccard .plus { font-size: 28px; }
+.ccard small { color: rgba(255,255,255,.45); }
+@keyframes breathe { 0%, 100% { transform: translateY(0) scale(1); } 50% { transform: translateY(-3px) scale(1.012); } }
+.breathe { animation: breathe 4s ease-in-out infinite; transform-origin: 50% 100%; }
+.m-Thinking { filter: saturate(.8); animation: breathe 2.4s ease-in-out infinite; }
+.m-Happy { animation: breathe 1.2s ease-in-out infinite; }
+.m-Talking { animation: breathe .35s ease-in-out infinite; }
+/* the right panel collapsed to a strip (compact-A4) */
+.pane.rpanel.collapsed { width: 64px; }
+.rail { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 12px 0; -webkit-app-region: drag; }
+.rail button { -webkit-app-region: no-drag; }
+.rail-face { width: 44px; height: 44px; border-radius: 50%; overflow: hidden; display: grid; place-items: center; background: #33463b; }
+.rail-face img { width: 100%; height: 100%; object-fit: cover; object-position: top; }
+.ib.on { background: rgba(53,132,228,.3); }
+.stage-frame { width: 100%; height: 100%; min-height: 300px; border: 0; background: transparent; display: block; }

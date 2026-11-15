@@ -95,6 +95,8 @@ contextBridge.exposeInMainWorld('hearth', {
   ithilInfo: () => ipcRenderer.invoke('ithil:info'),
   ithilTalk: (text) => ipcRenderer.invoke('ithil:talk', text),
   miniOpen: () => ipcRenderer.invoke('mini:open'),
+  characterPick: (agent, kind) => ipcRenderer.invoke('character:pick', agent, kind),
+  characterCore: () => ipcRenderer.invoke('character:core'),
   onIthilEvent: (fn) => { const h = (_e, ev) => fn(ev); ipcRenderer.on('ithil:event', h); return () => ipcRenderer.removeListener('ithil:event', h); },
   voiceAiPick: (who, provider, voice) => ipcRenderer.invoke('voice:aiPick', who, provider, voice),
   voiceSpeak: (o) => ipcRenderer.invoke('voice:speak', o || {}),
