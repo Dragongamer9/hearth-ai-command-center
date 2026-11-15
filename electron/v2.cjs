@@ -320,6 +320,21 @@ function register(d) {
 
   // ---- the files-changed card ----
   handle('chat:changes', async (id) => { const e = entryOf(id); return copies.exists(e.id) ? { ok: true, ...(await copies.changes(e.id)), status: await copies.status(e.id) } : { ok: false, files: [] }; });
+  // 3.12 (nyarch-2): the side panel's Files tab: one folder of this chat's copy, read only, never outside it.
+  handle('chat:files', async (id, sub = '') => {
+    const e = entryOf(id);
+    if (!copies.exists(e.id)) return { ok: false, message: 'This chat has no copy of a repo yet.', items: [] };
+    const root = copies.dirOf(e.id);
+    const rel = String(sub || '').replace(/\\/g, '/').split('/').filter((x) => x && x !== '.' && x !== '..').join('/');
+    const dir = path.join(root, rel);
+    if (!dir.startsWith(root)) return { ok: false, items: [] };
+    try {
+      const names = (await fs.promises.readdir(dir, { withFileTypes: true })).filter((d) => d.name !== '.git').slice(0, 400);
+      const items = await Promise.all(names.map(async (d) => { let mtime = 0; try { mtime = (await fs.promises.stat(path.join(dir, d.name))).mtimeMs; } catch {} return { name: d.name, dir: d.isDirectory(), mtime }; }));
+      items.sort((a, b) => (b.dir - a.dir) || a.name.localeCompare(b.name));
+      return { ok: true, path: rel, repo: e.repo || path.basename(e.repoDir || ''), items };
+    } catch (err) { return { ok: false, message: String(err.message || err), items: [] }; }
+  });
   handle('chat:diff', async (id) => { const e = entryOf(id); return { ok: true, diff: redact(await copies.diff(e.id)) }; });
   handle('chat:push', async (id) => { const e = entryOf(id); return copies.push(e.id); });
   handle('copies:status', async (id) => copies.status(entryOf(id).id));

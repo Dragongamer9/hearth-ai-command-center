@@ -31,7 +31,10 @@ function cleanSettings(v) {
   if (m && h !== m[1]) { h = m[1]; if (m[2]) p = m[2]; }
   const host = HOST_RE.test(h) ? h : '';
   const port = Number.isInteger(Number(p)) && Number(p) > 0 && Number(p) < 65536 ? Number(p) : PORT;
-  return { host, port };
+  // 3.12 (settings-3): his switches; only written when he turns one off.
+  const out = { host, port };
+  for (const k of ['tasks', 'mesh', 'cores']) if (s[k] === false) out[k] = false;
+  return out;
 }
 function mergeSettings(cur, patch) { return cleanSettings({ ...cleanSettings(cur), ...(patch && typeof patch === 'object' ? patch : {}) }); }
 

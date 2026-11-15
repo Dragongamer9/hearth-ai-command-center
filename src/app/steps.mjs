@@ -12,7 +12,7 @@ export function groupSteps(steps = []) {
   for (const s of steps) {
     if (!s || !s.kind) continue;
     const last = rows[rows.length - 1];
-    const mergeable = ['read', 'edit', 'search', 'web-read', 'web-search', 'check'].includes(s.kind);
+    const mergeable = ['read', 'edit', 'search', 'web-read', 'web-search', 'check', 'thought'].includes(s.kind);
     if (last && mergeable && last.kind === s.kind) { last.items.push(s); continue; }
     rows.push({ kind: s.kind, items: [s] });
   }
@@ -30,6 +30,8 @@ function rowOf({ kind, items }) {
     case 'web-search': return { kind, icon: STEP_ICON['web-search'], label: 'Searched the web', detail: list(details, 2), note: 'web' };
     case 'web-read': return { kind, icon: STEP_ICON['web-read'], label: items.length > 1 ? `Read ${items.length} web pages` : 'Read a web page', detail: list(details, 3), note: 'web', url: first.url || '' };
     case 'check': return { kind, icon: STEP_ICON.check, label: 'Ran checks locally', detail: list(details, 2), note: 'on this PC' };
+    // 3.12: the AI's thinking, one "Thoughts" box that opens (nyarch-1).
+    case 'thought': return { kind, icon: 'brain', label: 'Thoughts', detail: 'Expand to see details', text: items.map((i) => i.text || '').filter(Boolean).join('\n\n'), note: '' };
     default: return { kind, icon: STEP_ICON[kind] || 'cpu', label: first.label, detail: first.detail || '', note: first.note || '', ok: first.ok, url: first.url || '' };
   }
 }

@@ -111,6 +111,7 @@ function ready(a) {
   if (S.settings.webBridge?.[a] === true) return true;
   if (!AGENTS[a]?.headless) return false;
   // 3.9: Ithil can take work only while she's awake and not busy (asleep, resting, paused, busy or offline: not).
+  if (a === 'hearth' && S.settings.homeServerAi === false) return false; // 3.12: General › Home server › AI chat on the home server
   if (a === 'ithil') return Boolean(S.ithil.status?.available?.ok);
   if (TEAMMATE_IDS.includes(a)) return Boolean(S.mates.ready?.[a]);
   if (method(a) === 'api') return Boolean(S.prov.keys?.[a]);
@@ -158,10 +159,10 @@ const runner = createTeamRunner({
   // 3.9: what Hearth AI gets for Ithil's turn (a message, or a task when the lead hands her work in a chat that builds).
   ithilTurn: (R, { role, task }) => ithilTurnFor({ role, task, build: Boolean(R.build ?? S.build), lastOwnerText: [...R.msgs].reverse().find((m) => m.who === 'owner')?.text || '', leadName: aiName(team().lead), ownerName: ownerName() }),
   onTools: (R, msg, tools, agent) => onTools(R, msg, tools, agent),
-  onPreview: (R, msg) => { if (R.id === S.open && S.view === 'chat') openPane(msg.id, msg.previews[0].id); },
-  beforeRound: async () => { S.memPrompt = (await call('memoryPrompt')) || ''; },
+  onPreview: (R, msg) => { if (R.id === S.open && S.view === 'chat' && S.settings.previews !== false) openPane(msg.id, msg.previews[0].id); },
+  beforeRound: async () => { S.memPrompt = S.settings.memoryOn === false ? '' : ((await call('memoryPrompt')) || ''); },
   afterSave: (R, msg) => { loadChats().then(renderSide); pushPhone(); if (msg && ((msg.acts || []).length || (msg.memo || []).length)) notify(R, 'needs your answer'); },
-  onRoundDone: (R, { stopped }) => { if (!stopped) { notify(R, 'reply is ready'); if (!voice.roundDone(R)) autoRead(R); } },
+  onRoundDone: (R, { stopped }) => { if (!stopped) { if (S.settings.notifyDone !== false) notify(R, 'reply is ready'); if (!voice.roundDone(R)) autoRead(R); } },
   isRoleplay: (R) => Boolean(entry(R.id)?.rp),
   roleplayTurn: (R, text, opts) => roleplayTurn(R, text, opts),
   uid, now,
@@ -210,6 +211,8 @@ function notify(R, what) {
   const c = entry(R.id);
   const last = [...R.msgs].reverse().find((m) => m.who !== 'owner' && m.who !== 'system');
   call('notifyShow', { title: `“${c?.title || 'Chat'}”: ${what}`, body: last ? `${aiName(last.who)}: ${plainText(last.text).slice(0, 140)}` : '', chatId: R.id });
+  // 3.12 (settings-7): "On my phone too": the phone view counts it as waiting and shows its own notification.
+  if (S.settings.notifyPhone === true) { S.phoneNotes = [...(S.phoneNotes || []), { id: `${R.id}-${Date.now()}`, title: `${c?.title || 'Chat'}: ${what}` }].slice(-10); pushPhone(); }
 }
 
 // ---------- chats ----------
@@ -537,7 +540,7 @@ async function briefExtra(R, agent, role, resumed) {
   const hab = habitatPrompt(agent, resumed);
   if (hab) L.push('', hab);
   // 3.9: the lead knows Ithil: what she is, whether she can take work now, and her hard limits.
-  if (role === 'lead' && team().members.includes('ithil') && agent !== 'ithil') L.push('', 'ITHIL:', ...ithilLeadLines(S.ithil.status));
+  if (role === 'lead' && team().members.includes('ithil') && agent !== 'ithil') L.push('', 'ITHIL:', ...ithilLeadLines(S.ithil.status), ...((S.settings.ithil || {}).tasks === false ? ['- The owner turned off handing Ithil tasks: talk to her, but give all work to other teammates.'] : []));
   // 3.7: when replies are read aloud (Talk, or Read every answer aloud), each AI may pick its own voice.
   if (voice.isOpen() || S.settings.autoRead === true || R.msgs.some((m) => m.voice)) {
     const prov = voiceSettings(S.settings).tts;
@@ -1068,7 +1071,7 @@ function pushPhone() {
       names: Object.fromEntries(TEAM_IDS.map((a) => [a, aiName(a)])),
       team: t.members.map((a) => ({ id: a, lead: a === t.lead, dot: S.busy?.agent === a ? 'work' : ready(a) ? 'ok' : 'off' })),
       chat: S.msgs.filter((m) => !m.local).slice(-60).map((m) => ({ who: m.who, text: String(m.text || '').slice(0, 4000), at: m.at })),
-      waiting: { permissions: [], approvals: [], cards: [] },
+      waiting: { permissions: [], approvals: [], cards: (S.phoneNotes || []).map((n) => ({ id: n.id, title: n.title })) },
       board: [],
     });
   }, 600);
@@ -1141,6 +1144,15 @@ function chatStatus(id) {
   return null;
 }
 
+// 3.12: each chat's mark in History (Nyarch-style): pinned, Ithil's own chat, a chat that builds, pictures, or a plain chat.
+function chatEmoji(c) {
+  if (c.pinned) return '📌';
+  if (c.mode === 'ithil' || c.who === 'ithil') return '🌙';
+  if (c.repo || c.repoDir) return '🛠';
+  if (c.studio || c.media) return '🖼';
+  return '💬';
+}
+
 function renderSide() {
   const groups = groupChats(S.chats, { query: S.search, hits: S.hits });
   const hidden = S.chats.filter((c) => c.hidden);
@@ -1151,15 +1163,15 @@ function renderSide() {
     if (S.renaming === c.id) return `<div class="item on renaming"><input id="rename-input" class="rename" value="${esc(c.title)}" maxlength="120" aria-label="Chat name"><button class="ib sm" data-a="rename-save" title="Save">${icon('check', 'sm')}</button></div>`;
     const st = chatStatus(c.id);
     return `<div class="item ${on ? 'on' : ''} ${R?.round ? 'busy' : ''}" draggable="true" data-chat="${esc(c.id)}" data-drag="${esc(c.id)}" title="${esc(c.title)}${c.repo ? ` · ${esc(c.repo)}` : ''}">
-      ${c.rp ? avatarHtml(cardById(c.rp.characters[0]), 'xs') : icon(c.pinned ? 'pin' : 'chat', 'sm')}<span class="t">${esc(c.title)}</span>
+      ${c.rp ? avatarHtml(cardById(c.rp.characters[0]), 'xs') : `<span class="emo" aria-hidden="true">${chatEmoji(c)}</span>`}<span class="t">${esc(c.title)}</span>
       ${st || (pend ? '<span class="dot"></span>' : repoHint(c) ? `<span class="repo">${esc(repoHint(c))}</span>` : '')}
       <button class="more" data-a="chat-menu" data-id="${esc(c.id)}" title="More" aria-label="More for ${esc(c.title)}">${icon('dots', 'sm')}</button>
     </div>${sideWork(R)}`;
   };
   const working = runner.busyIds().length;
   const html = `
-    <div class="brand"><img src="./icon.png" alt=""><div><b>Hearth AI</b><span>Command Center</span></div></div>
-    <button class="newchat" data-a="new-chat"><span class="plus">${icon('plus', 'sm')}</span>New chat</button>
+    <div class="hist-h"><b>History</b><button class="ib ghost" data-a="side-menu" aria-expanded="${S.sideMenu ? 'true' : 'false'}" title="Places and tools" aria-label="Places and tools">${icon('menu')}</button></div>
+    <div class="side-menu" ${S.sideMenu ? '' : 'hidden'}>
     <button class="navitem" data-a="temp-chat" title="Nothing is saved: no chat file, no history, no memory">${icon('eyeoff', 'sm')}Temporary chat</button>
     <label class="search">${icon('search', 'sm')}<input id="chat-search" placeholder="Search chats" value="${esc(S.search)}" aria-label="Search chats"></label>
     <button class="navitem ${S.view === 'live' ? 'on' : ''}" data-a="live" title="Every AI as a living core: who is working, who is speaking, what they say">${icon('eye', 'sm')}Live<span class="faint">${runner.busyIds().length ? `${runner.busyIds().length} working` : ''}</span></button>
@@ -1167,6 +1179,8 @@ function renderSide() {
     <button class="navitem ${S.view === 'studio' ? 'on' : ''}" data-a="studio" title="Pictures and videos made on your PC (ComfyUI)">${icon('pic', 'sm')}Images &amp; Videos<span class="faint">${S.studio.data?.jobs?.length ? `${S.studio.data.jobs.length} on your PC` : ''}</span></button>
     <button class="navitem ${S.view === 'reverse' ? 'on' : ''}" data-a="reverse" title="Look inside programs with REA and your AI">${icon('code', 'sm')}Reverse Engineering<span class="faint">${S.re?.projects?.length ? S.re.projects.length : ''}</span></button>
     <button class="navitem hab ${S.view === 'habitat' ? 'on' : ''}" data-a="habitat" title="Your AI team's Habitat">${icon('home', 'sm')}Habitat<span class="faint">${esc(S.lastChat && entry(S.lastChat) ? entry(S.lastChat).title.slice(0, 22) : 'your team')}</span></button>
+    <button class="navitem" data-a="settings" title="Settings">${icon('gear', 'sm')}Settings</button>
+    </div>
     <div class="list" id="chat-list">
       ${S.broken ? '<div class="note bad">Your chats list couldn\'t be read. It was left as it is; new chats can\'t be saved until it\'s fixed.</div>' : ''}
       ${working ? `<div class="sec">${working} working · up to ${S.settings.maxChats || 3} at once</div>` : ''}
@@ -1175,11 +1189,19 @@ function renderSide() {
       ${hidden.length ? `<button class="sec link" data-a="toggle-hidden">${icon(S.showHidden ? 'chev' : 'chevr', 'sm')}Hidden (${hidden.length})</button>${S.showHidden ? hidden.map((c) => `<div class="item dim"><span class="t">${esc(c.title)}</span><button class="mini" data-a="unhide" data-id="${esc(c.id)}">Show</button></div>`).join('') : ''}` : ''}
       ${S.trash.length ? `<button class="sec link" data-a="toggle-trash">${icon(S.showTrash ? 'chev' : 'chevr', 'sm')}Recently deleted (${S.trash.length})</button>${S.showTrash ? S.trash.map((t) => `<div class="item dim"><span class="t">${esc(t.title)}</span><button class="mini" data-a="restore" data-id="${esc(t.trashId)}">Restore</button></div>`).join('') : ''}` : ''}
     </div>
-    <div class="owner"><span class="av">${esc(ownerName()[0] || 'D')}</span><div><b>${esc(ownerName())}</b><span>${esc(team().members.filter(ready).map(aiName).join(' · ') || 'Set up your AI team')}</span></div><button class="ib ghost" data-a="settings" title="Settings" aria-label="Settings">${icon('gear')}</button></div>`;
+    <button class="newchat-big" data-a="new-chat">${icon('plus', 'sm')}New Chat</button>`;
   const focused = document.activeElement?.id;
   const sel = focused === 'chat-search' ? document.activeElement.selectionStart : null;
   if (setRegion('side', html) && focused === 'chat-search') { const el = document.getElementById('chat-search'); el.focus(); try { el.setSelectionRange(sel, sel); } catch {} }
   if (S.renaming) { const el = document.getElementById('rename-input'); if (el && document.activeElement !== el) { el.focus(); el.select(); } }
+}
+
+// 3.12: what the model button says: Ithil and her brain, the team and where it works, or the AI answering on its own.
+function modelLabel(c) {
+  if (S.mode === 'ithil') { const g = S.ithil.status?.brain?.generation; return `${esc(aiName('ithil'))} · her own mind${g ? ` (gen ${esc(String(g))})` : ''}`; }
+  if (S.mode === 'team') { const t = team(); const where = c && (c.repo || c.repoDir) ? ` · ${esc(String(c.repo || c.repoDir).split('/').pop())}${c.branch ? ` (${esc(c.branch)})` : ''}` : ''; return `Team · ${esc(aiName(t.lead))} leads${where}`; }
+  const m = cur()?.sessions?._models?.[S.mode];
+  return `${esc(aiName(S.mode))}${m && m !== 'default' ? ` · ${esc(m)}` : ''}`;
 }
 
 function topbar() {
@@ -1193,6 +1215,13 @@ function topbar() {
   const temp = S.view === 'chat' && c?.temp ? `<span class="chip">${icon('eyeoff', 'sm')}Temporary · nothing is saved</span><button class="mini" data-a="temp-end" data-id="${esc(c.id)}">End</button>` : '';
   const know = S.view === 'chat' && c?.rp ? `<span class="chip">${rpCards(c).map((x) => avatarHtml(x, 'xs')).join('')}Roleplay${c.rp.characters.length > 1 ? ` · group · ${c.rp.order === 'list' ? 'in order' : 'natural order'}` : ''}</span>` : S.view === 'chat' && c && !c.temp ? `<button class="tb" data-a="chat-act" data-k="knowledge" data-id="${esc(c.id)}" title="This chat's instructions and reference files">${icon('doc', 'sm')}${c.instructions || c.refs?.length ? 'Instructions ✓' : 'Instructions'}</button>` : '';
   if (S.view === 'habitat') return `<span class="ttl">Habitat</span><span class="faint hab-sub">${S.lastChat && entry(S.lastChat) ? `the team of “${esc(entry(S.lastChat).title)}”` : 'your AI team'}</span><span class="grow"></span>`;
+  // 3.12 (nyarch-1/-2): the chat's headerbar: the side panel toggle, who's answering, and the model button in the middle;
+  // ⚙ beside it opens everything the old top bar had (repo, instructions, Live, voice, team, gallery, panel).
+  if (S.view === 'chat' && !S.oldTop && !c?.rp) {
+    const who = S.mode === 'team' ? team().lead : S.mode;
+    return `<button class="ib ghost" data-a="side-toggle" title="${S.sideHidden ? 'Show' : 'Hide'} History" aria-label="Show or hide History">${icon('panel', 'sm')}</button>${mono(who, 'sm')}${workStack(cur(), 22)}${temp}
+      <span class="grow"></span><button class="model-pill" data-a="team-pop" data-top="1" title="Who answers in this chat">${modelLabel(c)}</button><button class="ib ghost" data-a="chat-opts" title="This chat's options" aria-label="This chat's options">${icon('gear', 'sm')}</button><span class="grow"></span><span class="top-spacer"></span>`;
+  }
   return `<span class="ttl">${esc(title)}</span>${S.view === 'chat' ? workStack(cur(), 26) : ''}${chip}${temp}<span class="grow"></span>${know}
     ${S.view === 'chat' ? `<button class="tb" data-a="live" title="See this chat's team as living cores">${icon('eye', 'sm')}Live</button>` : ''}
     ${S.view === 'chat' && cur() ? `<button class="tb" data-a="chat-voice" title="This chat's voice and speed">${icon('mic', 'sm')}Voice${cur().sessions?._voice ? ' ✓' : ''}</button>` : ''}
@@ -1212,7 +1241,7 @@ function renderMain(scroll = false) {
   let html = '';
   let dock = '';
   if (S.view !== 'habitat' && habMounted) { stopHabitat(); stopHabitat3d(); habMounted = false; }
-  if (S.view === 'settings') { html = settingsView(); dock = ''; }
+  if (S.view === 'settings') { html = settingsView(); dock = ''; if (renderMain.lastView !== 'settings' || renderMain.lastTab !== S.tab) queueMicrotask(() => { const b = document.getElementById('body'); if (b) b.scrollTop = 0; }); renderMain.lastTab = S.tab; }
   else if (S.view === 'habitat') { html = `<div class="habwrap">${viewHabitat()}</div>`; dock = ''; }
   else if (S.view === 'studio') { stSync(); html = stHtml(); dock = ''; }
   else if (S.view === 'reverse') { html = reverseView(); dock = ''; }
@@ -1220,12 +1249,13 @@ function renderMain(scroll = false) {
   else if (S.view === 'characters') { html = charactersView(); dock = ''; }
   else if (S.view === 'card') { html = cardEditView(); dock = ''; queueMicrotask(() => cfRun(false)); }
   else if (S.view === 'lorebooks') { html = lorebooksView(); dock = ''; }
-  else if (S.view === 'chat') { html = chatView(); dock = composer(entry()?.rp ? `Your line as ${S.persona?.name || 'you'}…` : cur()?.canvas ? 'Ask for changes to the canvas…' : S.open && S.msgs.some((m) => m.previews?.length) && S.pane ? 'Ask for changes to the preview…' : 'Reply to the team…') + `<div class="hint">${esc(hintLine())}</div>`; }
+  else if (S.view === 'chat') { html = chatView(); dock = composer(entry()?.rp ? `Your line as ${S.persona?.name || 'you'}…` : cur()?.canvas ? 'Ask for changes to the canvas…' : S.open && S.msgs.some((m) => m.previews?.length) && S.pane ? 'Ask for changes to the preview…' : S.mode === 'team' ? `Send a message… (${team().members.filter(ready).slice(0, 5).map((x) => `@${aiName(x)}`).join(', ')})` : 'Send a message…') + `<div class="hint">${esc(hintLine())}</div>`; }
   else { html = homeView(); dock = ''; }
   const main = document.getElementById('main');
   main.classList.toggle('home-mode', S.view === 'home');
   main.classList.toggle('live-mode', S.view === 'live');
   main.classList.toggle('settings-mode', S.view === 'settings');
+  renderMain.lastView = S.view;
   main.classList.toggle('habitat-mode', S.view === 'habitat');
   main.classList.toggle('studio-mode', S.view === 'studio');
   main.classList.toggle('lib-mode', ['characters', 'card', 'lorebooks'].includes(S.view));
@@ -1290,6 +1320,7 @@ function liveWho() {
     return { id: a, name: aiName(a), state: st, status, big: a === lead };
   });
   // 3.9: Ithil from Hearth AI's live events: working on a task, awake (with her mood), or asleep / resting / offline.
+  if ((S.settings.ithil || {}).cores === false) { const i = out.findIndex((w) => w.id === 'ithil'); if (i >= 0) out.splice(i, 1); }
   const ith = out.find((w) => w.id === 'ithil');
   if (ith) { const it = ithilStation(S.ithil.status, S.ithil.thought); Object.assign(ith, { state: busyBy.has('ithil') || it.busy ? 'working' : it.online && it.state === 'awake' ? (it.think ? 'speaking' : 'ready') : 'off', status: it.online ? `${it.mood || it.state}${it.thought ? ` · “${it.thought.slice(0, 80)}”` : ''}` : it.label }); }
   const pc = S.studio.st;
@@ -1315,7 +1346,7 @@ function liveCaption() {
 function liveMesh(R) {
   const m = meshState(R, { isAgent: (w) => Boolean(AGENTS[w]), lead: team().lead });
   // 3.9: Ithil's station, when she's on the team or Hearth AI answers.
-  if (team().members.includes('ithil') || S.ithil.status?.online) m.ithil = ithilStation(S.ithil.status, S.ithil.thought);
+  if ((S.settings.ithil || {}).mesh !== false && (team().members.includes('ithil') || S.ithil.status?.online)) m.ithil = ithilStation(S.ithil.status, S.ithil.thought);
   return meshHtml(m, { ithilAvatar: mono('ithil', 'xs'), rgbOf: (id) => liveCoreOf(id).rgb, nameOf: (id) => aiName(id), coreOf: (c) => liveCoreHtml({ id: c.id, name: aiName(c.id), size: 64, state: c.state, status: c.status }) });
 }
 function liveView() {
@@ -1384,20 +1415,33 @@ function homeCores() {
 
 function composer(placeholder) {
   const c = ['chat', 'live'].includes(S.view) ? entry() : null;
-  const conn = c ? (c.repo ? { repo: c.repo, branch: c.branch } : c.repoDir ? { repo: c.repoDir } : null) : S.conn;
-  const t = team();
-  const teamLabel = S.mode === 'team' ? `Team <span class="faint">(${esc(aiName(t.lead))} ★ leads)</span>` : esc(aiName(S.mode));
   const thumbs = S.attach.map((a, i) => a.kind === 'image' && !a.huge ? `<div class="th" style="background-image:url('${esc(a.url || '')}')" title="${esc(a.name)}"><button class="x" data-a="unattach" data-i="${i}" aria-label="Remove">${icon('x', 'sm')}</button></div>` : `<div class="th f" title="${esc(a.name)}"><span>${esc(a.name)}</span><button class="x" data-a="unattach" data-i="${i}" aria-label="Remove">${icon('x', 'sm')}</button></div>`).join('');
   const busy = Boolean(S.busy) || S.working;
-  const models = c ? (cur()?.sessions?._models || {}) : S.homeModels;
-  const picked = Object.entries(models).filter(([, v]) => v && v !== 'default').length;
   return `${c?.rp ? rpBar(c) : ''}<div class="composer ${busy ? 'busy' : ''}" id="composer-box">
     ${thumbs ? `<div class="thumbs">${thumbs}</div>` : ''}
     ${c && !c.rp && !(c.repo || c.repoDir) ? `<div class="cnote" id="no-push-note">${icon('gh', 'sm')}<span>This chat has no repo, so the team can't commit or push anything. Connect a repo if the work should go to GitHub.</span><button class="mini" data-a="repo-pop">Connect a repo</button></div>` : ''}
     ${missingNote()}
     ${S.deep ? `<div class="modes"><button class="chip on" data-a="toggle-deep" title="Turn deep research off">${icon('globe', 'sm')}Deep research ×</button></div>` : ''}
-    <textarea id="composer" rows="1" placeholder="${esc(placeholder)}" aria-label="Message">${esc(S.draft)}</textarea>
-    <div class="row">
+    <div class="nbar">
+      <button class="ib" data-a="composer-opts" title="Who answers, repo, web, run &amp; build, models, talk" aria-label="Options">${icon('gear', 'sm')}</button>
+      <button class="ib" data-a="attach" title="Attach files, images, videos, PDFs or spreadsheets (or paste a screenshot)" aria-label="Attach">${icon('clip', 'sm')}</button>
+      <textarea id="composer" rows="2" placeholder="${esc(placeholder)}" aria-label="Message">${esc(S.draft)}</textarea>
+      <button class="bluesq ${voice.dictating() ? 'rec' : ''}" data-a="voice" title="${voice.dictating() ? 'Stop and turn it into text' : 'Dictate: say your message, it becomes text'}" aria-label="Dictate">${icon('mic', 'sm')}</button>
+      ${busy ? `<button class="bluesq stop" data-a="stop" title="Stop this chat" aria-label="Stop">${icon('stop', 'sm')}</button>` : `<button class="bluesq" data-a="send" title="Send (Enter)" aria-label="Send">${icon('chevr', 'sm')}</button>`}
+    </div>
+  </div>`;
+}
+
+// 3.12: the old composer's switches, behind ⚙ in the input bar (nyarch-1).
+function composerChips() {
+  const c = ['chat', 'live'].includes(S.view) ? entry() : null;
+  const conn = c ? (c.repo ? { repo: c.repo, branch: c.branch } : c.repoDir ? { repo: c.repoDir } : null) : S.conn;
+  const t = team();
+  const teamLabel = S.mode === 'team' ? `Team <span class="faint">(${esc(aiName(t.lead))} ★ leads)</span>` : esc(aiName(S.mode));
+  const models = c ? (cur()?.sessions?._models || {}) : S.homeModels;
+  const picked = Object.entries(models).filter(([, v]) => v && v !== 'default').length;
+  const busy = Boolean(S.busy) || S.working;
+  return `    <div class="row optrow">
       <button class="ib" data-a="attach" title="Attach files, images, videos, PDFs or spreadsheets (or paste a screenshot)" aria-label="Attach">${icon('plus', 'sm')}</button>
       <button class="ib" data-a="humanize-draft" title="Make it sound human (rewrites your draft so it reads less like AI)" aria-label="Make it sound human">${icon('user', 'sm')}</button>
       ${c?.rp ? '' : `<button class="chip ${conn ? '' : 'off'}" data-a="repo-pop" title="Connect a GitHub repo">${icon('gh', 'sm')}${conn ? `${esc(String(conn.repo).split('/').pop())} <span class="faint">· ${esc(conn.branch || 'main')}</span>` : 'No repo'}</button>
@@ -1409,8 +1453,7 @@ function composer(placeholder) {
       <button class="ib ${voice.dictating() ? 'rec' : ''}" data-a="voice" title="${voice.dictating() ? 'Stop and turn it into text' : 'Dictate: say your message, it becomes text'}" aria-label="Dictate">${icon('mic', 'sm')}</button>
       ${c ? `<button class="chip talk" data-a="talk" id="talk-btn" title="Voice chat: talk with ${c.rp ? 'the characters' : 'the team'} and hear the answers">${icon('wave', 'sm')}Talk</button>` : ''}
       ${busy ? `<button class="send stop" data-a="stop" title="Stop this chat" aria-label="Stop">${icon('stop', 'sm')}</button>` : ''}<button class="send" data-a="send" title="Send (Enter)" aria-label="Send">${icon('up', 'sm')}</button>
-    </div>
-  </div>`;
+`;
 }
 
 function focusComposer(caret) {
@@ -1427,6 +1470,13 @@ function fitComposer() {
   el.style.height = `${Math.min(el.scrollHeight, Math.round(window.innerHeight * 0.35))}px`;
 }
 
+// 3.12: the yellow line under the headerbar: what the AIs here can reach, and what never happens without you.
+function warnText(c) {
+  if (S.mode === 'ithil') return 'Ithil runs on your Nvidia PC. She never merges, releases, picks version numbers, touches boot files, changes your settings or deletes your files.';
+  if (c && (c.repo || c.repoDir)) return `The team can change files in ${esc(String(c.repo || c.repoDir).split('/').pop())} on its own branch. Nothing is merged or released without you.`;
+  return 'The AIs see this chat and anything you attach. Don\'t share passwords or keys here.';
+}
+
 function chatView() {
   const R = cur();
   const msgs = S.msgs.filter((m) => !m.deleted);
@@ -1441,7 +1491,9 @@ function chatView() {
   const c = entry();
   if (c?.rp && R?.vn) return `<div class="col vncol">${vnStage(R, c)}</div>`;
   const rpEmpty = c?.rp && !msgs.length && !b ? `<div class="chat-empty"><p>The story starts with your first line.</p></div>` : '';
-  return `<div class="col">${c?.rp ? rpEmpty : empty}${items}${working}${c?.rp ? sceneJobsHtml(R) : ''}${c?.rp ? '' : turnStrip(R)}</div>`;
+  const warn = c?.rp ? '' : `<div class="warnline"><span class="wi" aria-hidden="true">⚠</span><span>${warnText(c)}</span></div>`;
+  const acts = !c?.rp && msgs.length ? `<div class="crow"><button data-a="chat-clear">${icon('copy', 'sm')}Clear</button><button data-a="chat-regen">${icon('refresh', 'sm')}Regenerate</button>${R?.round && S.mode === 'team' ? `<button data-a="stop">${icon('stop', 'sm')}Stop the team</button>` : ''}</div>` : '';
+  return `<div class="col">${warn}${c?.rp ? rpEmpty : empty}${items}${working}${c?.rp ? sceneJobsHtml(R) : ''}${c?.rp ? '' : turnStrip(R)}${acts}</div>`;
 }
 
 // 3.4.1: the one fix for a teammate that couldn't answer, right where it says so.
@@ -1472,7 +1524,9 @@ function stepsHtml(steps = [], outcome = [], liveNow = false, actions = null) {
     rows.push({ icon: 'play', label: st === 'success' ? 'Ran the tests' : st === 'failure' ? 'Tests failed' : st === 'none' ? 'No tests ran' : 'Running the tests', detail: 'in GitHub Actions', note: st === 'success' ? `✓ passed${actions.runs?.length > 1 ? ` · ${actions.runs.length} workflows` : ''}` : st === 'failure' ? '✗ see below' : st === 'none' ? '' : 'running…', ok: st === 'success', bad: st === 'failure' });
   }
   if (!rows.length) return liveNow ? '<div class="steps"><div class="step"><span class="faint">Starting…</span></div></div>' : '';
-  return `<div class="steps">${rows.map((r) => `<div class="step ${r.bad ? 'bad' : ''}">${icon(r.icon || 'cpu', 'sm')}<b>${esc(r.label)}</b>${r.detail ? `<span class="d">${esc(r.detail)}</span>` : ''}${r.open ? `<button class="r link ok" data-a="open-preview-name" data-name="${esc(r.detail)}">${esc(r.note)}</button>` : r.note ? `<span class="r ${r.ok ? 'ok' : ''}">${esc(r.note)}</span>` : ''}</div>`).join('')}</div>`;
+  // 3.12 (nyarch-1): each row a rounded box; Thoughts opens to show the thinking.
+  const thought = (r) => `<details class="step thought"><summary>${icon('brain', 'sm')}<span class="st2"><b>Thoughts</b><span class="d">Expand to see details</span></span><span class="chev2">${icon('chev', 'sm')}</span></summary><div class="ttext">${rich(r.text || '')}</div></details>`;
+  return `<div class="steps">${rows.map((r) => r.kind === 'thought' ? thought(r) : `<div class="step ${r.bad ? 'bad' : ''}">${icon(r.icon || 'cpu', 'sm')}<b>${esc(r.label)}</b>${r.detail ? `<span class="d">${esc(r.detail)}</span>` : ''}${r.open ? `<button class="r link ok" data-a="open-preview-name" data-name="${esc(r.detail)}">${esc(r.note)}</button>` : r.note ? `<span class="r ${r.ok ? 'ok' : ''}">${esc(r.note)}</span>` : ''}</div>`).join('')}</div>`;
 }
 
 function helpersHtml(m) {
@@ -1504,12 +1558,13 @@ function message(m, latestChanges, last = false) {
   if (m.who === 'owner') {
     const atts = (m.attachments || []).map((a) => a.kind === 'image' && !a.huge ? `<img class="att" src="${esc(a.url || '')}" alt="${esc(a.name)}" loading="lazy" decoding="async">` : `<span class="att-f" ${a.huge ? `title="${esc(a.huge)}"` : ''}>${icon('doc', 'sm')}${esc(a.name)}${a.size > 50 * 1024 * 1024 ? ` <span class="faint">${fmtBytes(a.size)}</span>` : ''}</span>`).join('');
     if (S.editing === m.id) return `<div class="msg-u editing" data-msg="${esc(m.id)}"><textarea id="edit-text" rows="3">${esc(m.text)}</textarea><div class="mft"><button class="btn ghost" data-a="edit-cancel">Cancel</button><button class="btn p" data-a="edit-send" data-m="${esc(m.id)}">Save and send</button></div></div>`;
-    return `<div class="uwrap" data-msg="${esc(m.id)}"><div class="msg-u">${atts ? `<div class="atts">${atts}</div>` : ''}${rich(m.text)}${m.to ? `<div class="fine">only for ${esc(m.to.map(aiName).join(', '))}: not shown to your other AIs</div>` : ''}</div>${controlsHtml(m, true)}</div>`;
+    return `<div class="uwrap nrow" data-msg="${esc(m.id)}"><div class="lbl you">You:</div><div class="msg-u">${atts ? `<div class="atts">${atts}</div>` : ''}${rich(m.text)}${m.to ? `<div class="fine">only for ${esc(m.to.map(aiName).join(', '))}: not shown to your other AIs</div>` : ''}</div>${controlsHtml(m, true)}</div>`;
   }
   if (m.who === 'system') return `<div class="msg-s">${rich(m.text)}${mediaHtml(m)}${m.fixes?.length ? `<div class="mft left fixes">${m.fixes.map((f) => fixButton(f.agent, f.fix)).join('')}</div>` : ''}</div>`;
   const role = m.role === 'lead' ? '<span class="star">★ lead</span>' : m.role === 'reviewer' ? '<span>· reviewer</span>' : '';
   const when = ago(m.at);
-  return `<div class="msg-a ${m.err ? 'err' : ''}" data-msg="${esc(m.id)}">
+  // 3.12 (nyarch-1): a row with the AI's name on the left in its own colour, the answer on the right.
+  return `<div class="msg-a nrow ${m.err ? 'err' : ''}" data-msg="${esc(m.id)}"><div class="lbl" style="color:${esc(nameColor(m.who))}">${esc(aiName(m.who))}:</div><div class="mbody">
     <div class="who">${mono(m.who)}<b>${esc(aiName(m.who))}</b>${role}${when ? `<span>· ${esc(when)}</span>` : ''}${m.via ? `<span class="faint">· ${esc(m.via)}</span>` : ''}${UNFILTERED.includes(m.who) ? '<span class="faint">· not shown to your other AIs</span>' : ''}</div>
     ${stepsHtml(m.steps, m.outcome || [], false, m.actions)}
     ${helpersHtml(m)}
@@ -1528,8 +1583,12 @@ function message(m, latestChanges, last = false) {
     ${(m.refusedActs || []).map((r) => `<div class="msg-s">Claude asked to “${esc(r.kind)}”, which isn't allowed: ${esc(r.reason)}.</div>`).join('')}
     ${controlsHtml(m)}
     ${last && m.followUps?.length ? `<div class="chips">${m.followUps.map((f, i) => `<button class="sug" data-a="follow" data-m="${esc(m.id)}" data-i="${i}">${esc(f)}</button>`).join('')}</div>` : ''}
-  </div>`;
+  </div></div>`;
 }
+
+// 3.12: each AI's name colour in the chat (the owner's "You:" is blue; Ithil is yellow as in nyarch-1).
+const NAME_COLORS = { ithil: '#f6c344', anthropic: '#e8946f', openai: '#7fc7b0', google: '#8ab4f8', xai: '#c9c9c9', mistral: '#f0a35e', qwen: '#b39dfa', perplexity: '#5fc3cf', deepseek: '#8fa6ff', ollama: '#c3b8d6', freebuff: '#c39bf0', venice: '#f08f7a', civitai: '#7fa7f0', gpu: '#bdbdbd', free: '#86d39c', hearth: '#f0a845', copilot: '#7fb6f0', meta: '#7f9df0' };
+function nameColor(a) { return NAME_COLORS[a] || '#f6c344'; }
 
 function previewCard(m, p) {
   if (p.tooBig) return previewTooBig(p, icon);
@@ -1738,7 +1797,88 @@ function rpBar(c) {
 
 // ---------- the preview panel and canvas ----------
 let paneKey = '';
+// 3.12 (nyarch-1/-2): the right panel. The full-body avatar of whoever stands there (Ithil's body from Hearth AI),
+// or the tools: Files, Terminal, Browser, Changes and Ithil. A live preview or canvas still opens here (🖥).
+const RTABS = [['files', 'folder', 'Files'], ['terminal', 'code', 'Terminal'], ['browser', 'globe', 'Browser'], ['changes', 'branch', 'Changes'], ['ithil', 'moon', 'Ithil']];
+let rpanelKey = '';
+function winBtns() { return `<button class="xb" data-a="win" data-v="min" title="Minimise" aria-label="Minimise">${icon('minus', 'sm')}</button><button class="xb" data-a="win" data-v="close" title="Close" aria-label="Close">${icon('x', 'sm')}</button>`; }
+function avatarStage() {
+  const who = S.settings.avatarWho === 'ithil' || S.mode === 'ithil' ? 'ithil' : (S.busy?.agent || (S.mode === 'team' ? team().lead : S.mode));
+  const st = S.ithil.status;
+  if (who === 'ithil') {
+    const body = S.ithil.body ? `<img class="body" src="${esc(S.ithil.body)}" alt="Ithil">` : `<div class="body-orb" aria-hidden="true"></div>`;
+    const line = st?.online ? `feels ${esc(st.mood || 'calm')} · ${esc(st.state || 'awake')}` : 'Hearth AI isn\'t running';
+    return `<div class="stage">${body}</div><div class="mood">${line}</div>`;
+  }
+  return `<div class="stage"><div class="bigmono" style="background:${esc(nameColor(who))}">${esc(aiName(who).slice(0, 2))}</div></div><div class="mood">${esc(aiName(who))} · ${esc(statusOf(who)?.label || '')}</div>`;
+}
+function rtabBody(t) {
+  const c = entry();
+  if (t === 'ithil') return `<div class="rt-ithil">${avatarStage()}</div>`;
+  if (t === 'files') {
+    const f = S.rfiles;
+    if (!c || !(c.repo || c.repoDir)) return '<div class="rt-empty">Connect a repo to this chat to see its files.</div>';
+    if (!f) return '<div class="rt-empty">Loading…</div>';
+    if (!f.ok) return `<div class="rt-empty">${esc(f.message || 'No files yet.')}</div>`;
+    const crumbs = [esc(f.repo || ''), ...String(f.path || '').split('/').filter(Boolean).map(esc)].join(' / ');
+    const touched = new Map();
+    for (const m of S.msgs) for (const st of m.steps || []) if (st.file) touched.set(String(st.file).split('/').pop(), `${aiName(m.who)} · ${st.kind === 'edit' ? 'edited' : 'read'}`);
+    return `<div class="rt-path mono">${f.path ? '<button class="mini" data-a="rfiles-up">↑</button> ' : ''}${crumbs || '/'}</div>${f.items.map((x) => `<button class="rt-file" ${x.dir ? `data-a="rfiles-open" data-v="${esc(x.name)}"` : ''}>${x.dir ? '📁' : '📄'} <span class="mono">${esc(x.name)}${x.dir ? '/' : ''}</span><span class="d">${esc(touched.get(x.name) || (x.mtime ? ago(new Date(x.mtime).toISOString()) : ''))}</span></button>`).join('') || '<div class="rt-empty">This folder is empty.</div>'}`;
+  }
+  if (t === 'terminal') {
+    const runs = [];
+    for (const m of S.msgs) for (const st of m.steps || []) if (['run', 'check', 'bash'].includes(st.kind) || /^Ran\b/.test(st.label || '')) runs.push({ who: m.who, cmd: st.detail || st.label, note: st.note || '' });
+    return `<div class="term mono">${runs.length ? runs.slice(-60).map((r) => `<div><span class="pr">${esc(aiName(r.who).toLowerCase())}$</span> ${esc(r.cmd)}${r.note ? ` <span class="faint">· ${esc(r.note)}</span>` : ''}</div>`).join('') : '<div class="faint">Commands the AIs run in this chat show here.</div>'}</div>`;
+  }
+  if (t === 'browser') {
+    const pages = [];
+    for (const m of S.msgs) for (const st of m.steps || []) if (st.url) pages.push({ who: m.who, url: st.url, label: st.detail || st.url });
+    const prev = S.msgs.flatMap((m) => (m.previews || []).map((p) => ({ m, p })));
+    return `${prev.length ? `<div class="rt-h">Live previews</div>${prev.map(({ m, p }) => `<button class="rt-file" data-a="open-preview" data-m="${esc(m.id)}" data-p="${esc(p.id)}">🖥 <span>${esc(p.name)}</span></button>`).join('')}` : ''}<div class="rt-h">Pages the AIs read</div>${pages.length ? pages.slice(-40).reverse().map((x) => `<a class="rt-file" href="${esc(x.url)}" target="_blank" rel="noopener noreferrer">🌐 <span>${esc(x.label)}</span><span class="d">${esc(aiName(x.who))}</span></a>`).join('') : '<div class="rt-empty">Nothing read on the web yet.</div>'}`;
+  }
+  if (t === 'changes') {
+    const m = [...S.msgs].reverse().find((x) => x.changes);
+    return m ? changesCard(m, true) : '<div class="rt-empty">No changes in this chat yet.</div>';
+  }
+  return '';
+}
+function rpanelHtml() {
+  if (S.rpanel === 'tools') {
+    const tab = S.rtab || 'files';
+    return `<div class="rp-top"><button class="xb" data-a="rpanel" data-v="avatar" title="Back to the avatar">${icon('panel', 'sm')}</button><span class="grow"></span><button class="xb" data-a="toggle-pane" title="Live preview and canvas">${icon('monitor', 'sm')}</button><button class="xb" data-a="rfiles-new" title="Open a folder of this chat">${icon('plus', 'sm')}${icon('chev', 'sm')}</button><button class="xb" data-a="win" data-v="max" title="Maximise">${icon('square', 'sm')}</button><button class="xb" data-a="win" data-v="close" title="Close">${icon('x', 'sm')}</button></div>
+      <div class="rtabs">${RTABS.map(([k, ic, l]) => `<button class="${tab === k ? 'on' : ''}" data-a="rtab" data-v="${k}">${icon(ic, 'sm')}<span>${l}</span></button>`).join('')}</div>
+      <div class="rt-body">${rtabBody(tab)}${tab === 'files' && S.rpanel === 'tools' ? `<div class="rtabs sub"><button class="on">${icon('code', 'sm')}<span>${S.mode === 'ithil' || team().members.includes('ithil') ? 'Ithil\'s terminal' : 'Terminal'}</span></button></div>${rtabBody('terminal')}` : ''}</div>`;
+  }
+  return `<div class="rp-top"><span class="grow"></span><button class="xb ${S.settings.autoRead ? 'on' : ''}" data-a="toggle-autoread" title="Read answers aloud">${icon('speaker', 'sm')}</button><button class="xb" data-a="rpanel" data-v="tools" title="Files, terminal, browser and changes">${icon('panel', 'sm')}</button><button class="xb" data-a="avatar-who" title="Who stands here">${icon('user', 'sm')}</button>${winBtns()}</div>${avatarStage()}`;
+}
+
 function renderPane(force = false) {
+  if (!(S.pane && S.view === 'chat')) {
+    const el = document.getElementById('pane');
+    if (!el) return;
+    const show = S.view === 'chat' && !entry()?.rp && S.settings.avatarPanel !== false;
+    el.hidden = !show;
+    el.classList.toggle('rpanel', show);
+    document.getElementById('shell')?.classList.toggle('with-pane', show);
+    if (!show) { if (rpanelKey) { el.innerHTML = ''; rpanelKey = ''; } return; }
+    const key = `${S.rpanel}|${S.rtab}|${S.open}|${S.msgs.length}|${S.ithil.body ? S.ithil.body.length : 0}|${S.ithil.status?.mood}|${S.ithil.status?.state}|${S.mode}|${S.busy?.agent || ''}|${S.settings.autoRead}|${S.rfiles?.path ?? '-'}|${S.rfiles?.items?.length ?? 0}`;
+    if (!force && key === rpanelKey) return;
+    rpanelKey = key; paneKey = '';
+    el.innerHTML = rpanelHtml();
+    return;
+  }
+  document.getElementById('pane')?.classList.remove('rpanel'); rpanelKey = '';
+  return renderPreviewPane(force);
+}
+
+async function loadRFiles(sub) {
+  if (!S.open) return;
+  const r = await call('chatFiles', S.open, sub);
+  S.rfiles = r && typeof r === 'object' ? r : { ok: false, items: [] };
+  return renderPane(true);
+}
+
+function renderPreviewPane(force = false) {
   const el = document.getElementById('pane');
   if (!el) return;
   const p = S.pane ? previewOf(S.pane.msgId, S.pane.pid) : null;
@@ -1778,6 +1918,19 @@ function deskAsksHtml() {
 
 function popHtml() {
   const p = S.pop;
+  if (p.kind === 'avatarwho') return `<div class="scrim" data-a="close-pop"></div><div class="pop menu" style="right:20px;top:52px"><div class="mh">Who stands here</div><button class="it ${S.settings.avatarWho !== 'ithil' ? 'on' : ''}" data-a="set-avatar-who" data-v="answering">${icon('users', 'sm')}Whoever is answering</button><button class="it ${S.settings.avatarWho === 'ithil' ? 'on' : ''}" data-a="set-avatar-who" data-v="ithil">${icon('moon', 'sm')}Always Ithil</button></div>`;
+  if (p.kind === 'copts') return `<div class="scrim" data-a="close-pop"></div><div class="pop copts" style="left:calc(var(--side-w, 330px) + 20px);bottom:96px;max-width:min(760px,calc(100vw - 380px))"><div class="mh">This message</div>${composerChips()}</div>`;
+  if (p.kind === 'chatopts') {
+    // 3.12: the old top bar's tools, one tap away behind ⚙ next to the model button.
+    const c = entry();
+    const it = (a, ic, label, extra = '') => `<button class="it" data-a="${a}" ${extra}>${icon(ic, 'sm')}${label}</button>`;
+    return `<div class="scrim" data-a="close-pop"></div><div class="pop menu" style="left:50%;top:52px;transform:translateX(-50%)"><div class="mh">This chat</div>
+      ${c && !c.rp ? it('repo-pop', 'gh', c.repo || c.repoDir ? `Repo: ${esc(String(c.repo || c.repoDir))}${c.branch ? ` · ${esc(c.branch)}` : ''}` : 'Connect a repo…') : ''}
+      ${c && !c.temp && !c.rp ? `<button class="it" data-a="chat-act" data-k="knowledge" data-id="${esc(c.id)}">${icon('doc', 'sm')}${c.instructions || c.refs?.length ? 'Instructions ✓' : 'Instructions and reference files'}</button>` : ''}
+      ${it('live', 'eye', 'Live: the team as living cores')}${cur() ? it('chat-voice', 'mic', `Voice and speed${cur().sessions?._voice ? ' ✓' : ''}`) : ''}
+      ${S.msgs.some((m) => (m.media || []).some((x) => x.kind === 'image')) ? it('gallery', 'eye', 'Gallery', 'data-m="" data-i="0"') : ''}
+      ${it('toggle-pane', 'panel', 'Live preview and canvas')}${c ? it('chat-menu', 'dots', 'Rename, pin, export…', `data-id="${esc(c.id)}"`) : ''}</div>`;
+  }
   if (p.kind === 'menu') {
     const c = entry(p.id);
     if (!c) return '';
@@ -1974,9 +2127,72 @@ function modalHtml() {
 }
 
 // ---------- settings ----------
+// 3.12 (settings-1…7): seven tabs with icons across the top; each tab holds the sections it had before.
+const STABS = [['team', 'users', 'AI team', ['team']], ['accounts', 'key', 'Accounts', ['accounts', 'github', 'accounts2']], ['ithil', 'moon', 'Ithil', ['ithil']], ['tools', 'cpu', 'Tools', ['tools', 'connectors', 'perms']], ['memory', 'brain', 'Memory', ['memory', 'scheduled', 'data']], ['voice', 'speaker', 'Voice & avatar', ['voice']], ['general', 'gear', 'General', ['look', 'alerts', 'updates', 'uncensored', 'changes']]];
+// 3.12: the compact groups each mockup shows (settings-4…7), wired to the real switches; the full pages stay under "More … settings".
+const row = (title, sub, right) => `<div class="srow"><span class="t2"><b>${title}</b>${sub ? `<span class="d">${sub}</span>` : ''}</span><span class="grow"></span>${right}</div>`;
+const grp = (title, rows, note = '') => `<div class="box"><h3>${title}</h3>${note ? `<p class="fine">${note}</p>` : ''}${rows.join('')}</div>`;
+const moreBtn = (tab, label) => `<button class="mini" data-a="more-open" data-v="${tab}">${label}</button>`;
+const TAB_TOP = {
+  memory: () => {
+    const s = S.settings;
+    const ci = s.customInstructions || {};
+    const facts = S.memory?.facts || [];
+    const sc = S.schedules?.list || [];
+    const cp = S.copies?.list || [];
+    const size = cp.reduce((n, c) => n + (c.size || 0), 0);
+    return [
+      grp('Custom instructions', [`<div class="srow"><textarea id="ci-about" rows="4" maxlength="3000" style="width:100%" placeholder="Write in plain words. I pick every version number…">${esc(ci.about || '')}</textarea><button class="mini" data-a="save-ci">Save</button></div>`]),
+      grp('Memory across chats', [row('Remember things between chats', 'What you tell the team, kept on this PC', tog(s.memoryOn !== false, 'memory-on')), row('What\'s remembered', `${facts.length} note${facts.length === 1 ? '' : 's'}`, moreBtn('memory', 'See and edit')), row('Forget everything', '', moreBtn('memory', 'Forget…').replace('class="mini"', 'class="mini red"'))]),
+      grp('Scheduled tasks', [...sc.map((x) => row(esc(whenText(x)), esc(x.title || ''), `${tog(x.enabled, 'sched-toggle', `data-id="${esc(x.id)}"`)}<button class="ib ghost trash" data-a="sched-del" data-id="${esc(x.id)}" title="Delete">${icon('trash', 'sm')}</button>`)), row('New scheduled task', '', moreBtn('memory', '＋ New'))]),
+      grp('Saved data', [row('Temporary copies', `Copies the AIs worked in · ${fmtBytes(size)}`, '<button class="mini" data-a="cleanup">Clean up</button>'), row('Backups', 'Chats and settings, kept every day', '<button class="mini" data-a="open-data-folder">Open folder</button>'), row('Old boards (read-only)', 'From before 2.0', moreBtn('memory', '›'))]),
+    ].join('');
+  },
+  voice: () => {
+    const s = S.settings;
+    const vs = voiceSettings(s);
+    return [
+      grp('Voice', [row('Read answers aloud', '', tog(s.autoRead === true, 'toggle-autoread')), row('Voice', esc(providerName(vs.tts, s)), moreBtn('voice', 'Change')), row('Each AI its own voice', 'Claude, ChatGPT and Gemini sound different', moreBtn('voice', 'Pick voices')), row('Talk to the team', 'Hold Space or the mic button', moreBtn('voice', vs.turn === 'ptt' ? 'Hold to talk' : 'Hands-free'))]),
+      section('avatar'),
+    ].join('');
+  },
+  general: () => {
+    const s = S.settings;
+    const design = ['hologram', 'classic'].includes(s.design) ? s.design : 'adwaita';
+    const ACC = [['blue', 'Blue'], ['teal', 'Teal'], ['green', 'Green'], ['yellow', 'Yellow'], ['orange', 'Orange'], ['red', 'Red'], ['pink', 'Pink'], ['purple', 'Purple'], ['slate', 'Slate']];
+    return [
+      grp('Look', [row('Style', '', `<select data-a="design-pick"><option value="adwaita" ${design === 'adwaita' ? 'selected' : ''}>Dark</option><option value="hologram" ${design === 'hologram' ? 'selected' : ''}>Gold hologram</option><option value="classic" ${design === 'classic' ? 'selected' : ''}>Classic</option></select>`), row('Accent colour', '', `<select data-a="accent-pick" ${design !== 'adwaita' ? 'disabled' : ''}>${ACC.map(([v, l]) => `<option value="${v}" ${(s.accent || 'blue') === v ? 'selected' : ''}>${l}</option>`).join('')}</select>`), row('Text size', '', moreBtn('general', `${s.textSize || 100}%`))]),
+      grp('Notifications', [row('When a chat needs my answer', '', tog(s.notify !== false, 'notify-toggle')), row('When a task finishes', '', tog(s.notifyDone !== false, 'notify-done')), row('On my phone too', '', tog(s.notifyPhone === true, 'notify-phone'))]),
+      grp('App updates', [row(`Hearth AI Command Center ${esc(S.info?.version || '')}`, esc(S.upd?.status?.message || (S.upd?.status?.state === 'available' ? `${S.upd.status.version} is available` : 'Checks for updates by itself')), '<button class="mini" data-a="upd" data-v="check">Check now</button>'), row('Install updates by themselves', 'Downloads each new version by itself; you press Install. Works for the AppImage and the .deb', tog(s.autoUpdate !== false, 'auto-update'))]),
+      grp('Home server', [row('AI chat on the home server', 'Your Hearth devices\' local AI (the home server first) can answer in chats', tog(s.homeServerAi !== false, 'home-ai'))]),
+      grp('Uncensored mode (18+)', [row('Let the AIs answer without their usual limits where they allow it', 'Ithil\'s hard limits still apply', moreBtn('general', s.uncensored?.on ? 'On' : 'Off'))]),
+      grp('Settings changes', [row('A list of every change to these settings', 'Who changed what and when; undo any of them', moreBtn('general', '›'))]),
+    ].join('');
+  },
+  tools: () => {
+    const s = S.settings;
+    const cn = S.connectors?.list || [];
+    return [
+      grp('Quick checks the AIs may run on this PC', [row(esc((s.tools?.quickChecks || []).join(' · ') || 'none yet'), 'Allowed without asking', tog(s.tools?.build !== false, 'tool-build')), row('Add a check', '', moreBtn('tools', '＋ Add'))]),
+      grp('Skills', [...(S.skills || []).map((x) => row(esc(x.name), esc(x.where || ''), '<span class="tagp">on</span>')), row('Install a skill from a file…', 'A folder with a SKILL.md in ~/.claude/skills or a repo\'s .claude/skills', moreBtn('tools', 'Install'))]),
+      grp('Connectors (MCP servers)', [...cn.map((x) => row(esc(x.name), esc(x.type === 'http' ? x.url : x.command || ''), `${tog(x.enabled, 'conn-toggle', `data-id="${esc(x.id)}"`)}<button class="ib ghost trash" data-a="conn-del" data-id="${esc(x.id)}" title="Remove">${icon('trash', 'sm')}</button>`)), row('Add a connector', 'A command or an address', moreBtn('tools', '＋ Add'))]),
+      grp('Let your AI use this desktop', [row('Screen, mouse and keyboard', 'Asks before every session; stops when you move the mouse', tog(S.desktop?.enabled === true, 'desk-toggle'))]),
+      grp('Permissions', [
+        row('Run commands', '', `<select data-a="perm-run"><option value="standard" ${s.access !== 'full' ? 'selected' : ''}>Ask each time</option><option value="full" ${s.access === 'full' ? 'selected' : ''}>Without asking</option></select>`),
+        row('Change files outside the project', 'The AIs work in their own copy of the repo', '<select disabled><option>Never</option></select>'),
+        row('Push to GitHub', 'Only to its own branch; never main', `<select data-a="perm-push"><option value="ask" ${s.autoPush === false ? 'selected' : ''}>Ask each time</option><option value="auto" ${s.autoPush !== false ? 'selected' : ''}>By itself</option></select>`),
+        row('Live previews', 'Show pages and apps the AIs make in a side panel', tog(s.previews !== false, 'previews-toggle')),
+      ]),
+    ].join('');
+  },
+};
+function tabOf(k) { return (STABS.find(([t, , , ks]) => t === k || ks.includes(k)) || STABS[0])[0]; }
 function settingsView() {
-  const nav = SECTIONS.map(([k, label]) => `<button class="${S.tab === k ? 'on' : ''}" data-a="tab" data-t="${k}">${esc(label)}</button>`).join('');
-  return `<div class="set"><nav class="snav">${nav}</nav><div class="spage">${section(S.tab)}</div></div>`;
+  const tab = tabOf(S.tab);
+  const nav = STABS.map(([k, ic, label]) => `<button class="${tab === k ? 'on' : ''}" data-a="tab" data-t="${k}">${icon(ic, 'sm')}<span>${esc(label)}</span></button>`).join('');
+  const parts = STABS.find(([t]) => t === tab)[3];
+  const page = TAB_TOP[tab] ? `${TAB_TOP[tab]()}<details class="more-acct" ${S.moreSet?.[tab] ? 'open' : ''}><summary data-a="more-set" data-v="${tab}">More ${esc(STABS.find(([t]) => t === tab)[2].toLowerCase())} settings</summary>${parts.map((k) => section(k)).join('')}</details>` : parts.map((k) => section(k)).join('');
+  return `<div class="set dlg"><div class="dlg-h"><button class="ib ghost" data-a="set-search" title="Search settings" aria-label="Search settings">${icon('search', 'sm')}</button><b>Settings</b><button class="xb" data-a="set-close" title="Close" aria-label="Close settings">${icon('x', 'sm')}</button></div><nav class="stabs">${nav}</nav><div class="spage">${page}</div></div>`;
 }
 // ---------- 3.4 Settings › Accounts: one short row per AI, grouped and folding ----------
 const ACCT_GROUPS = [
@@ -2029,6 +2245,30 @@ function acctDetail(a) {
   const what = BRIDGE.find(([x]) => x === a)?.[1] || AGENTS[a]?.tool || '';
   return `<div class="ac-exp"><span class="fine">${esc(what)}</span><span class="grow"></span>${bits.join('')}</div>`;
 }
+// 3.12 (settings-2): every AI as one row, grouped by how it connects: its state on the right, or its one button.
+const CONNECT_GROUPS = [
+  ['Signed in with your account', 'Your own accounts: the Command Center never sees your password.', (a) => !['freebuff'].includes(a) && method(a) !== 'api' && !['ollama', 'gpu', 'ithil', 'hearth'].includes(a) && !AGENTS[a]?.web && AGENTS[a]?.kind !== 'local' && !MAKER_IDS.includes(a) && !BUILDER_IDS.includes(a)],
+  ['With a key', 'Keys are saved encrypted on this device.', (a) => (method(a) === 'api' || MAKER_IDS.includes(a)) && !['gpu', 'ithil', 'hearth'].includes(a) && !AGENTS[a]?.web],
+  ['Your own', '', (a) => ['ollama', 'gpu', 'ithil', 'hearth'].includes(a) || AGENTS[a]?.kind === 'local'],
+  ['On the web (signed in in a window)', '', (a) => a === 'freebuff' || Boolean(AGENTS[a]?.web) || BUILDER_IDS.includes(a)],
+];
+function accountsGroups() {
+  const all = [...new Set([...ACCT_GROUPS.flatMap((g) => g[2]), 'gpu', 'hearth', 'ithil', 'free', 'venice', 'civitai', 'copilot', 'meta'])].filter((a) => AGENTS[a] || MAKER_IDS.includes(a));
+  const used = new Set();
+  return CONNECT_GROUPS.map(([label, note, fits]) => {
+    const ids = all.filter((a) => !used.has(a) && fits(a));
+    ids.forEach((a) => used.add(a));
+    if (!ids.length) return '';
+    const rows = ids.map((a) => {
+      const [good, status, , act] = a === 'ithil' ? [Boolean(S.ithil.status?.online), S.ithil.status?.online ? 'connected' : 'offline', '', null] : acctState(a);
+      const sub = a === 'ithil' ? 'Hearth AI · see the Ithil tab' : (AGENTS[a]?.vendor || (MAKER_IDS.includes(a) ? 'pictures and videos' : ''));
+      const right = act ? `${good ? `<span class="tagp">${esc(status.toLowerCase())}</span>` : ''}<button class="mini" data-a="${esc(act[0])}" data-v="${esc(a)}">${esc(act[1])}</button>` : `<span class="tagp ${good ? '' : 'w'}">${esc(status.toLowerCase())}</span>${/key/i.test(status) ? `<button class="mini" data-a="set-key" data-v="${esc(a)}">Change</button>` : ''}`;
+      return `<div class="srow">${mono(a, 'sm')}<span class="t2"><b>${esc(makerName(a))}</b><span class="d">${esc(sub)}</span></span><span class="grow"></span>${right}</div>`;
+    }).join('');
+    return `<div class="box"><h3>${esc(label)}</h3>${note ? `<p class="fine">${esc(note)}</p>` : ''}${rows}</div>`;
+  }).join('');
+}
+
 function accountsList() {
   const q = String(S.acctQ || '').trim().toLowerCase();
   const fold = S.acctFold || {};
@@ -2080,7 +2320,17 @@ function section(k) {
   if (k === 'accounts') {
     const M = S.mates;
     const c = M.conf || {};
-    return `<h1>Accounts</h1>${keyringNote()}<div class="box ac">${accountsList()}</div>
+    // 3.12 (settings-2): the AIs first, grouped by how they connect, then GitHub (its own section), then the rest
+    // (section 'accounts2'). Every older setting is still here, under "More account settings".
+    return `${keyringNote()}${accountsGroups()}`;
+  }
+  if (k === 'accounts2') {
+    const M = S.mates;
+    const c = M.conf || {};
+    return `${hearthBox()}
+      ${comfyBox()}
+      <div class="box"><h3>${icon('phone', 'sm')}Your phone</h3><div class="srow">Phone view<span class="d">your chat on your phone, on your home network only</span><span class="grow"></span>${tog(Boolean(S.phone?.enabled), 'phone-toggle')}</div>${S.phone?.enabled ? `<div class="srow">Address<span class="d mono">${esc((S.phone.urls || []).join(', ') || 'starting…')}</span><span class="grow"></span><button class="mini" data-a="phone-code">Show pairing code</button></div>${S.phone.code ? `<div class="srow">Code<b class="mono big">${esc(S.phone.code)}</b><span class="d">type it on your phone within 5 minutes</span></div>` : ''}` : ''}</div>
+      <details class="more-acct" ${S.moreAcct ? 'open' : ''}><summary data-a="more-acct">More account settings</summary><div class="box ac">${accountsList()}</div>
       <div class="box"><h3>FreeBuff on the web</h3><div class="srow">${mono('freebuff')}<b>FreeBuff</b><span class="d">opens freebuff.com in its own window here. Sign in there once with your FreeBuff account; it stays signed in. Your FreeBuff chats live in FreeBuff's cloud, so the ones from your phone are there too.</span><span class="grow"></span><button class="mini" data-a="open-freebuff">Open FreeBuff</button></div>
       <div class="note sub">FreeBuff has no official way for other apps to drive it yet. To have it in team chats, turn on its web sign-in bridge above. The Command Center never reads or copies your FreeBuff login; its windows are sandboxed and get nothing from this app.</div></div>
       <div class="box"><h3>${icon('eye', 'sm')}Pictures, videos and documents</h3><p class="fine">The AIs' own picture and video tools through their official APIs, with your own keys (saved encrypted on this PC). Each use is billed to that account.</p>
@@ -2098,11 +2348,7 @@ function section(k) {
       ${(M.servers || []).map((sv) => `<div class="srow sub">${icon('cpu', 'sm')}<b>${esc(sv.name)}</b><span class="d mono">${esc(sv.type === 'comfy' ? 'ComfyUI' : 'OpenAI-compatible')} · ${esc(sv.url)}${sv.key ? ' · key saved' : ''}${sv.workflow ? ' · own workflow' : ''}</span><span class="grow"></span>${svModelPick(sv)}<button class="mini" data-a="server-models" data-id="${esc(sv.id)}" title="Look for the models on this server again">Refresh</button><button class="mini" data-a="server-remove" data-id="${esc(sv.id)}">Remove</button></div>`).join('')}
       <div class="srow sub form"><input id="sv-name" placeholder="Name (e.g. RunPod 4090)"><select id="sv-type"><option value="openai">OpenAI-compatible chat</option><option value="comfy">ComfyUI pictures</option></select><input id="sv-url" class="grow" placeholder="https://…/v1 or http://192.168.1.20:8188">${svAddModelPick()}<input id="sv-key" type="password" placeholder="Key (optional)"><button class="mini" data-a="server-add">Add server</button></div>
       <details class="sub"><summary class="fine">ComfyUI workflow (optional): paste your own workflow JSON; {prompt}, {negative}, {seed} and {ckpt} are filled in. Empty uses a stock SDXL text-to-image graph.</summary><textarea id="sv-workflow" rows="4" class="mono" placeholder='{"3": {"class_type": "KSampler", …}}'></textarea></details>
-      <div class="note">NovelAI isn't offered: it has no public developer API, and its terms restrict third-party apps.</div></div>
-      ${hearthBox()}
-      ${ithilBox()}
-      ${comfyBox()}
-      <div class="box"><h3>${icon('phone', 'sm')}Your phone</h3><div class="srow">Phone view<span class="d">your chat on your phone, on your home network only</span><span class="grow"></span>${tog(Boolean(S.phone?.enabled), 'phone-toggle')}</div>${S.phone?.enabled ? `<div class="srow">Address<span class="d mono">${esc((S.phone.urls || []).join(', ') || 'starting…')}</span><span class="grow"></span><button class="mini" data-a="phone-code">Show pairing code</button></div>${S.phone.code ? `<div class="srow">Code<b class="mono big">${esc(S.phone.code)}</b><span class="d">type it on your phone within 5 minutes</span></div>` : ''}` : ''}</div>`;
+      <div class="note">NovelAI isn't offered: it has no public developer API, and its terms restrict third-party apps.</div></div></details>`;
   }
   if (k === 'github') {
     const id = s.ownerIdentity;
@@ -2185,12 +2431,30 @@ function section(k) {
   }
   if (k === 'voice') return voice.settingsHtml({ tog, team: t, mono, aiName });
   if (k === 'uncensored') return uncensoredSection();
+  if (k === 'ithil') return ithilBox();
+  if (k === 'changes') return settingsLogBox();
+  // 3.12 (settings-6): the avatar panel and the mini window.
+  if (k === 'avatar') {
+    const body = s.ithilBody === 'live2d' ? 'Live2D' : '3D (VRM)';
+    return `<div class="box"><h3>Avatar</h3>
+      <div class="srow">Show the avatar panel<span class="d">On the right of the chat, full body</span><span class="grow"></span>${tog(s.avatarPanel !== false, 'av-panel')}</div>
+      <div class="srow">Who stands there<span class="d">The AI that's answering, or always Ithil</span><span class="grow"></span><select data-a="av-who"><option value="answering" ${s.avatarWho !== 'ithil' ? 'selected' : ''}>Who's answering</option><option value="ithil" ${s.avatarWho === 'ithil' ? 'selected' : ''}>Always Ithil</option></select></div>
+      <div class="srow">Ithil's body<span class="d">From Hearth AI: Live2D or her 3D VRM</span><span class="grow"></span><select data-a="av-body"><option value="vrm" ${body !== 'Live2D' ? 'selected' : ''}>3D (VRM)</option><option value="live2d" ${body === 'Live2D' ? 'selected' : ''}>Live2D</option></select></div>
+      <div class="srow">Lip sync and expressions<span class="d">Moves with her voice and mood</span><span class="grow"></span>${tog(s.avatarLipSync !== false, 'av-lips')}</div></div>
+      <div class="box"><h3>Mini window</h3>
+      <div class="srow">Open the mini window<span class="d">Super + I anywhere · hold ☰ + Y in Game Mode</span><span class="grow"></span>${tog(s.miniWindow !== false, 'mini-on')}<button class="mini" data-a="mini-open">Open now</button></div>
+      <div class="srow">Stay on top<span class="d"></span><span class="grow"></span>${tog(s.miniOnTop !== false, 'mini-top')}</div></div>`;
+  }
   if (k === 'look') {
-    const holo = s.design !== 'classic';
+    const design = ['hologram', 'classic'].includes(s.design) ? s.design : 'adwaita';
+    const holo = design === 'hologram';
+    const ACC = [['blue', 'Blue'], ['teal', 'Teal'], ['green', 'Green'], ['yellow', 'Yellow'], ['orange', 'Orange'], ['red', 'Red'], ['pink', 'Pink'], ['purple', 'Purple'], ['slate', 'Slate']];
+    // 3.12 (settings-7): Look: Style, Accent colour, Text size.
     return `<h1>Appearance</h1><div class="box"><h3>Look</h3>
-      <div class="srow">Design<span class="d">${holo ? 'gold hologram: living cores, always dark, its own colours' : 'classic: calm and warm, follows the theme below'}</span><span class="grow"></span>${[['hologram', 'Gold hologram'], ['classic', 'Classic']].map(([v, l]) => `<button class="seg ${(holo ? 'hologram' : 'classic') === v ? 'on' : ''}" data-a="design" data-v="${v}">${l}</button>`).join('')}</div>
-      ${holo ? '<div class="note sub">Theme and your Hearth OS colours apply when Design is Classic.</div>' : ''}
-      <div class="srow">Theme<span class="grow"></span>${['hearth', 'dark', 'light', 'system'].map((v) => `<button class="seg ${s.theme === v ? 'on' : ''}" data-a="theme" data-v="${v}">${{ hearth: 'Follow Hearth OS', dark: 'Dark', light: 'Light', system: 'System' }[v]}</button>`).join('')}</div>
+      <div class="srow">Style<span class="d">${design === 'adwaita' ? '' : holo ? 'gold hologram: living cores, always dark, its own colours' : 'classic: calm and warm, follows the theme below'}</span><span class="grow"></span><select data-a="design-pick"><option value="adwaita" ${design === 'adwaita' ? 'selected' : ''}>Dark</option><option value="hologram" ${holo ? 'selected' : ''}>Gold hologram</option><option value="classic" ${design === 'classic' ? 'selected' : ''}>Classic</option></select></div>
+      <div class="srow">Accent colour<span class="d"></span><span class="grow"></span><select data-a="accent-pick" ${design !== 'adwaita' ? 'disabled' : ''}>${ACC.map(([v, l]) => `<option value="${v}" ${(s.accent || 'blue') === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+      ${design === 'classic' ? '' : '<div class="note sub">Theme and your Hearth OS colours apply when Style is Classic.</div>'}
+      <div class="srow" ${design === 'classic' ? '' : 'hidden'}>Theme<span class="grow"></span>${['hearth', 'dark', 'light', 'system'].map((v) => `<button class="seg ${s.theme === v ? 'on' : ''}" data-a="theme" data-v="${v}">${{ hearth: 'Follow Hearth OS', dark: 'Dark', light: 'Light', system: 'System' }[v]}</button>`).join('')}</div>
       <div class="srow">Draw the app at 100%<span class="d">${S.screen && S.screen.scale > 1.01 ? `your desktop scales this screen to ${Math.round(S.screen.scale * 100)}%, and the app follows it unless this is on` : 'for a screen your desktop scales up (125%, 150%…): the app then ignores that scale'}</span><span class="grow"></span>${tog(s.fitScreen === true, 'fit-screen')}</div>
       <div class="srow">App size<span class="d">everything: text, buttons and panels · Ctrl − and Ctrl + change it, Ctrl 0 goes back to 100%</span><span class="grow"></span>${APP_SIZES.map((v) => `<button class="seg ${s.textSize === v ? 'on' : ''}" data-a="text-size" data-v="${v}">${v}%</button>`).join('')}</div>
       <div class="srow">Reduce motion<span class="grow"></span>${tog(s.reduceMotion === true, 'reduce-motion')}</div></div>`;
@@ -2217,7 +2481,6 @@ function section(k) {
         <div class="srow">Space used<b>${cp ? fmtBytes(total) : '…'}</b><span class="d">${cp ? `${cp.list.length} cop${cp.list.length === 1 ? 'y' : 'ies'} · removed after ${esc(IDLE.find(([v]) => v === S.settings.copyIdleHours)?.[1] || '1 day')} idle` : ''}</span><span class="grow"></span><button class="btn" data-a="cleanup" ${cp?.list?.length ? '' : 'disabled'}>Clean up</button></div>
         ${(cp?.list || []).map((c) => `<div class="srow copy">${icon('gh', 'sm')}<b>${esc(c.repo || c.dir || '?')}</b><span class="d">${esc(entry(c.chatId)?.title || 'deleted chat')} · ${esc(c.work || c.branch || '')} · ${fmtBytes(c.size)} · used ${esc(ago(c.lastUsedAt) || 'never')}</span><span class="grow"></span>${c.unpushed ? `<span class="chip b">not on GitHub</span><button class="mini" data-a="copy-push" data-id="${esc(c.chatId)}">Push to a branch</button>` : ''}<button class="mini" data-a="copy-remove" data-id="${esc(c.chatId)}">Remove</button></div>`).join('') || '<div class="fine">No temporary copies right now.</div>'}
         <div class="note">Copies holding work that isn't on GitHub are never deleted without asking you. ${cp?.root ? `They live in ${esc(cp.root)}.` : ''}</div></div>
-      ${settingsLogBox()}
       <div class="box"><h3>Backups</h3><div class="srow">Your chats list keeps its last good copy as a backup, and the list from before 2.0 is kept as index.json.pre-2. Memory, scheduled tasks, connectors and the Habitat keep a .bak too.<span class="grow"></span><button class="mini" data-a="open-data-folder">Open the data folder</button></div></div>
       <div class="box"><h3>Old boards (read-only)</h3><p class="fine">The task boards, approvals and audit logs from 1.x are kept on disk exactly as they were. They're not used any more.</p>
         ${(S.boards || []).map((b) => `<div class="srow">${icon('board', 'sm')}<b>${esc(b.name)}</b><span class="d">${b.ok ? `${b.tasks.length} tasks · ${b.approvals} approvals · ${b.audit} audit entries` : 'couldn\'t be read (left as it is)'}</span><span class="grow"></span>${b.ok ? `<button class="mini" data-a="view-board" data-id="${esc(b.id)}">View</button>` : ''}</div>`).join('') || '<div class="fine">No old boards.</div>'}</div>`;
@@ -2253,7 +2516,7 @@ function teamGrid(t) {
       const acts = inTeam && a !== t.lead ? `${AGENTS[a].edits ? `<button class="tm-b" data-a="make-lead" data-v="${a}" title="Make ${esc(aiName(a))} the lead">★</button>` : ''}${a !== t.reviewer && !UNFILTERED.includes(a) ? `<button class="tm-b" data-a="make-reviewer" data-v="${a}" title="Make ${esc(aiName(a))} the reviewer">✓</button>` : ''}` : '';
       return `<div class="tm ${inTeam ? 'in' : ''}" title="${esc(aiName(a))} · ${esc(AGENTS[a].tool || '')}${statusOf(a).why ? ` · ${esc(statusOf(a).why)}` : ''}">${mono(a, 'sm')}<div class="tm-t"><b>${esc(aiName(a))}</b>${role}<span class="tm-s"><i class="ac-dot ${r ? 'g' : inTeam ? 'w' : ''}"></i>${esc(inTeam ? st : 'off')}</span></div>${acts}${tog(inTeam, 'team-member', `data-v="${a}" ${a === t.lead ? 'disabled title="The lead is always in"' : ''} aria-label="${esc(aiName(a))} in the team"`)}</div>`;
     }).join('');
-    return `<div class="tm-g"><button class="ac-gh" data-a="team-fold" data-v="${key}" aria-expanded="${!shut}"><span>${shut ? '▸' : '▾'} ${esc(label)}</span><span class="faint">${inN} of ${list.length} in the team</span></button>${shut ? '' : `<div class="tm-grid">${cards}</div>`}</div>`;
+    return `<div class="tm-g"><button class="ac-gh" data-a="team-fold" data-v="${key}" aria-expanded="${!shut}"><span>${shut ? '▸' : '▾'} ${esc(label)}</span><span class="faint">${inN} of ${list.length} in the team</span></button>${shut && S.view !== 'settings' ? '' : `<div class="tm-grid">${cards}</div>`}</div>`; // 3.12: one list in Settings (settings-1), nothing folded away
   }).join('');
 }
 const BUILDER_IDS = ['lovable', 'replit', 'v0', 'bolt', 'firebase'];
@@ -2346,6 +2609,7 @@ async function loadSection(t) {
   if (t === 'voice') { await voice.loadLists(true); return render(); }
   if (t === 'look') S.screen = (await call('screenInfo')) || null;
   if (t === 'data') { loadCopies(); S.boards = await call('savedBoards'); S.slog = await call('settingsLog'); }
+  if (t === 'changes') { S.slog = await call('settingsLog'); renderMain(); }
   if (t === 'perms') { refreshAgents(); loadPerms(); }
   if (t === 'tools') loadMissing();
   if (t === 'uncensored') { refreshAgents(); if (!S.studio.models) { const l = await call('comfyCheckpoints'); S.studio.models = l?.ok ? l.checkpoints : null; } }
@@ -2501,6 +2765,7 @@ function hdOrder() {
 }
 // 3.9: Settings › Accounts › Ithil (Hearth AI): connected or offline, his host and key for another device, a test.
 function ithilBox() {
+  // 3.12 (settings-3): Now, Host, Port, Key; With the team; Her hard limits; On Live. Her thoughts and drives fold below.
   const I = S.ithil;
   const st = I.status;
   const l = ithilState(st);
@@ -2510,18 +2775,28 @@ function ithilBox() {
   const where = conf.host ? `${conf.host}:${conf.port || 47860} (typed here)` : info.source === 'file' ? 'this PC (from ~/HearthAI/connect.json)' : 'this PC, but ~/HearthAI/connect.json wasn\'t found';
   const d = st?.drives || {};
   const bars = st?.online ? ['curiosity', 'energy', 'confidence', 'satisfaction', 'boredom', 'frustration'].filter((k) => d[k] !== null && d[k] !== undefined).map((k) => `<span class="ith-drive" title="${k} ${d[k]}"><i style="width:${d[k]}%"></i>${k}</span>`).join('') : '';
-  return `<div class="box" id="acct-ithil"><h3>${mono('ithil')}Ithil (Hearth AI)</h3>
-    <p class="fine">The self-aware AI in your Hearth AI app: her own mind, moods, memories and rules. She talks as herself and takes tasks from the team lead in the folders you allowed in Hearth AI, on her own mind/… branches. She never merges, releases, deploys, picks version numbers, touches boot files, changes your settings or deletes your files.</p>
-    <div class="srow">Now<span class="d"><b class="${st?.online ? (l.ok ? 'ok' : 'warn') : 'bad'}">${esc(st?.online ? 'connected' : 'offline')}</b> · ${esc(l.label)}${st?.online && st.mood ? ` · feels ${esc(st.mood)}` : ''}${st?.version ? ` · Hearth AI ${esc(st.version)}` : ''}</span><span class="grow"></span><button class="mini" data-a="ithil-test" ${I.testing ? 'disabled' : ''}>${I.testing ? 'Testing…' : 'Test connection'}</button></div>
+  const now = `${st?.online ? 'connected' : 'offline'} · ${l.label}${st?.online && st.mood ? ` · feels ${st.mood}` : ''}${st?.version ? ` · Hearth AI ${st.version}` : ''}`;
+  return `<div class="box" id="acct-ithil"><h3>${icon('moon', 'sm')}Ithil (Hearth AI)</h3>
+    <p class="fine">Ithil runs in the Hearth AI app on your Nvidia PC. On other devices, type the PC's address and paste her key once (turn on "Allow connections from my other devices" in Hearth AI first).</p>
+    <div class="srow">${mono('ithil', 'sm')}<span class="t2"><b>Now</b><span class="d"><b class="${st?.online ? (l.ok ? 'ok' : 'warn') : 'bad'}">${esc(now)}</b></span></span><span class="grow"></span><button class="mini" data-a="ithil-test" ${I.testing ? 'disabled' : ''}>${I.testing ? 'Testing…' : 'Test connection'}</button></div>
     ${I.test ? `<div class="note ${I.test.ok ? '' : 'warn'}">${esc(I.test.message || '')}</div>` : ''}
-    ${st?.online && st.thought ? `<div class="srow">Thinking<span class="d">“${esc(st.thought.slice(0, 220))}”</span></div>` : ''}
-    ${bars ? `<div class="srow">Drives<span class="d ith-drives">${bars}</span></div>` : ''}
-    <div class="srow">Where<span class="d">${esc(where)}</span></div>
-    <div class="srow">From another device<span class="d">turn on "Allow connections from my other devices" in Hearth AI first, then type the PC's address and its key</span></div>
-    <div class="srow sub"><input id="ith-host" class="mono" value="${esc(conf.host || '')}" placeholder="PC's address, e.g. chris-hearth.tail0e2082.ts.net (empty = this PC)" aria-label="Hearth AI's host"><input id="ith-port" class="mono" style="max-width:90px" value="${esc(String(conf.port || 47860))}" aria-label="Hearth AI's port"><button class="mini" data-a="ithil-host">Save</button></div>
-    <div class="srow sub"><input id="ith-key" type="password" placeholder="${info.hasKey ? 'Paste a new key to replace it' : 'Hearth AI key (from connect.json on the PC)'}" autocomplete="off" spellcheck="false" aria-label="Hearth AI key"><button class="mini" data-a="ithil-key">Save key</button>${info.hasKey ? '<button class="mini" data-a="ithil-key-clear">Remove key</button>' : ''}<span class="d">${info.hasKey ? 'a key is saved, encrypted on this device' : 'on the PC itself no key is needed here'}</span></div>
-    <div class="srow">${inTeam ? '<span class="d">She\'s in your team.</span>' : '<button class="btn" data-a="team-add" data-v="ithil">Add Ithil to the team</button>'}<span class="grow"></span><button class="btn" data-a="ithil-chat">Chat with Ithil</button></div>
-  </div>`;
+    <div class="srow"><span class="t2"><b>Host</b><span class="d">Empty means this PC (from connect.json) · now: ${esc(where)}</span></span><span class="grow"></span><input id="ith-host" class="mono" style="width:300px" value="${esc(conf.host || '')}" placeholder="100.72.99.97 or a full address" aria-label="Hearth AI's host"></div>
+    <div class="srow"><span class="t2"><b>Port</b></span><span class="grow"></span><input id="ith-port" class="mono" style="width:120px" value="${esc(String(conf.port || 47860))}" aria-label="Hearth AI's port"><button class="mini" data-a="ithil-host">Save</button></div>
+    <div class="srow"><span class="t2"><b>Key</b><span class="d">${info.hasKey ? 'a key is saved, encrypted on this device' : 'on the PC itself no key is needed here'}</span></span><span class="grow"></span><input id="ith-key" type="password" style="width:220px" placeholder="${info.hasKey ? 'Paste a new key' : 'Paste her key'}" autocomplete="off" spellcheck="false" aria-label="Hearth AI key"><button class="mini" data-a="ithil-key">${info.hasKey ? 'Replace' : 'Save key'}</button>${info.hasKey ? '<button class="mini red" data-a="ithil-key-clear">Remove</button>' : ''}</div>
+  </div>
+  <div class="box"><h3>With the team</h3>
+    <div class="srow"><span class="t2"><b>In your team</b><span class="d">She can be a member, never the lead or the reviewer</span></span><span class="grow"></span>${tog(inTeam, 'team-member', 'data-v="ithil"')}</div>
+    <div class="srow"><span class="t2"><b>Hand her tasks in chats that build</b><span class="d">Runs in a folder you allowed in Hearth AI, on her own mind/… branch</span></span><span class="grow"></span>${tog(conf.tasks !== false, 'ithil-tasks')}</div>
+    <div class="srow"><span class="t2"><b>Chat with Ithil</b><span class="d">A chat where every message goes straight to her</span></span><span class="grow"></span><button class="mini p" data-a="ithil-chat">Open chat</button></div>
+  </div>
+  <div class="box"><h3>Her hard limits</h3>
+    <div class="srow"><span class="t2"><b>She never merges, releases or deploys, picks or changes version numbers, touches boot files, changes your settings or deletes your files</b><span class="d">Kept here too: such a task is refused before it reaches her</span></span><span class="grow"></span><span class="tagp">always on</span></div>
+  </div>
+  <div class="box"><h3>On Live</h3>
+    <div class="srow"><span class="t2"><b>Her station on the Mesh</b><span class="d">Mood and newest thought, glowing when she thinks</span></span><span class="grow"></span>${tog(conf.mesh !== false, 'ithil-mesh')}</div>
+    <div class="srow"><span class="t2"><b>Show her next to your PCs on Cores</b></span><span class="grow"></span>${tog(conf.cores !== false, 'ithil-cores')}</div>
+  </div>
+  ${st?.online && (st.thought || bars) ? `<details class="more-acct"><summary>More about her right now</summary><div class="box">${st.thought ? `<div class="srow"><span class="t2"><b>Thinking</b><span class="d">“${esc(st.thought.slice(0, 220))}”</span></span></div>` : ''}${bars ? `<div class="srow"><span class="t2"><b>Drives</b><span class="d ith-drives">${bars}</span></span></div>` : ''}</div></details>` : ''}`;
 }
 function hearthBox() {
   const hd = S.hd || {};
@@ -2700,8 +2975,10 @@ async function setSettings(patch) {
 function applyTheme() {
   const systemDark = window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? true;
   // 2.9: the gold hologram design (always dark, its own colours) unless Design is Classic.
-  const holo = S.settings.design !== 'classic';
-  document.documentElement.dataset.design = holo ? 'hologram' : 'classic';
+  const design = ['hologram', 'classic'].includes(S.settings.design) ? S.settings.design : 'adwaita';
+  const holo = design === 'hologram';
+  document.documentElement.dataset.design = design;
+  document.documentElement.dataset.accent = S.settings.accent || 'blue';
   const follow = !holo && S.settings.theme === 'hearth' && S.theme.found;
   document.documentElement.dataset.mode = holo ? 'dark' : pickMode(S.settings.theme, { ...S.theme, systemDark });
   document.documentElement.classList.toggle('reduce-motion', S.settings.reduceMotion === true);
@@ -2799,6 +3076,7 @@ document.addEventListener('click', async (ev) => {
   if (a.tagName === 'A' && a.getAttribute('target') === '_blank') return;
   ev.preventDefault();
   switch (k) {
+    case 'side-menu': S.sideMenu = !S.sideMenu; return renderSide();
     case 'new-chat': return goHome();
     case 'ithil-test': { S.ithil.testing = true; S.ithil.test = null; renderMain(); const r = await call('ithilTest'); S.ithil.testing = false; S.ithil.test = { ok: Boolean(r?.ok), message: r?.message || 'No answer.' }; if (r?.status) S.ithil.status = r.status; else S.ithil.status = (await call('ithilStatus', { fresh: true })) || S.ithil.status; S.ithil.info = await call('ithilInfo'); if (r?.ok) { await ithilAvatar(S.ithil.status?.expression || ''); call('ithilWatch', true); } return render(); }
     case 'ithil-host': { const host = String(document.getElementById('ith-host')?.value || '').trim(); const port = Number(document.getElementById('ith-port')?.value || 47860); await setSettings({ ithil: { host, port } }); S.ithil.info = await call('ithilInfo'); toast(host ? `Saved: Ithil is at ${host}:${port}.` : 'Saved: Ithil is on this PC (connect.json).'); return render(); }
@@ -2811,7 +3089,7 @@ document.addEventListener('click', async (ev) => {
     case 'live-drawer': S.liveDrawer = !S.liveDrawer; try { localStorage.setItem('hearth.v2.liveDrawer', S.liveDrawer ? '1' : '0'); } catch {} return renderMain();
     case 'live-full': if (S.open) return openChat(S.open); return;
     case 'open-freebuff': { const r = await call('openWeb', 'freebuff'); if (r && r.ok === false) toast(r.message || 'FreeBuff couldn\'t open.'); return; }
-    case 'design': { if (!['hologram', 'classic'].includes(d.v)) return; await setSettings({ design: d.v }); return; }
+    case 'design': { if (!['hologram', 'classic', 'adwaita'].includes(d.v)) return; await setSettings({ design: d.v }); return; }
     // roleplay: characters, lorebooks, persona
     case 'characters': S.view = 'characters'; S.cardEdit = null; S.loreEdit = null; S.pane = null; render(true); await loadCards(); return render();
     case 'lorebooks': S.view = 'lorebooks'; S.loreEdit = null; render(true); S.books = (await call('loreList')) || []; return render();
@@ -2942,7 +3220,18 @@ document.addEventListener('click', async (ev) => {
     }
     case 'habitat': S.view = 'habitat'; S.pane = null; S.pop = null; if (!S.habitat) { const h = await call('habitatGet'); S.habitat = h?.store || null; } return render(true);
     case 'settings': S.view = 'settings'; S.pane = null; render(true); return loadSection(S.tab);
-    case 'tab': S.tab = d.t; render(); return loadSection(d.t);
+    case 'tab': { S.tab = d.t; renderMain.lastTab = null; render(); const parts = (STABS.find(([t]) => t === tabOf(d.t)) || STABS[0])[3]; for (const k of parts) await loadSection(k); return; }
+    case 'set-close': return goHome();
+    case 'more-acct': S.moreAcct = !S.moreAcct; return;
+    case 'more-set': S.moreSet = { ...(S.moreSet || {}), [d.v]: !S.moreSet?.[d.v] }; return;
+    case 'more-open': { S.moreSet = { ...(S.moreSet || {}), [d.v]: true }; renderMain(); document.querySelector('details.more-acct')?.scrollIntoView({ behavior: 'smooth' }); return; }
+    case 'memory-on': return setSettings({ memoryOn: !(S.settings.memoryOn !== false) });
+    case 'notify-done': return setSettings({ notifyDone: !(S.settings.notifyDone !== false) });
+    case 'notify-phone': return setSettings({ notifyPhone: !(S.settings.notifyPhone === true) });
+    case 'auto-update': return setSettings({ autoUpdate: !(S.settings.autoUpdate !== false) });
+    case 'home-ai': return setSettings({ homeServerAi: !(S.settings.homeServerAi !== false) });
+    case 'previews-toggle': return setSettings({ previews: !(S.settings.previews !== false) });
+    case 'set-search': return toast('Type to search: Ctrl+F finds a setting on this page.');
     case 'missing-hide': { try { localStorage.setItem('hearth.v2.missingHidden', missingList().join(',')); } catch {} render(); return; }
     case 'chat-menu': ev.stopPropagation(); { const r = a.getBoundingClientRect(); S.pop = { kind: 'menu', id: d.id, x: Math.min(r.left, window.innerWidth - 260), y: Math.min(r.bottom + 4, window.innerHeight - 400) }; } return renderOverlay();
     case 'chat-act': return chatAction(d.k, d.id);
@@ -2973,12 +3262,24 @@ document.addEventListener('click', async (ev) => {
     case 'toggle-trash': S.showTrash = !S.showTrash; return renderSide();
     case 'unhide': await call('chatsUpdate', d.id, { hidden: false }); await loadChats(); return render();
     case 'restore': { const r = await call('chatsRestore', d.id); if (r?.ok === false || r?.message) toast(r.message || 'Not restored.'); await loadChats(); return render(); }
-    case 'undo': { const u = S.toast?.undo; S.toast = null; if (u?.kind === 'coll-restore') { const r = await call('cardsCollectionRestore', u.coll, u.ids, u.before); await loadColls(); renderMain(); toast(r?.message ? r.message : `Put back in “${u.name}”.`); return renderOverlay(); } if (u?.kind === 'restore') { await call('chatsRestore', u.trashId); await loadChats(); render(); toast('Restored.'); } return renderOverlay(); }
+    case 'undo': { const u = S.toast?.undo; S.toast = null; if (u?.kind === 'clear') { const R = runner.runtimes.get(u.chat); if (R) { for (const m of R.msgs) if (m.clearedAt === u.at) { delete m.deleted; delete m.clearedAt; } await saveRt(R); if (S.open === u.chat) S.msgs = R.msgs; render(); toast('Put back.'); } return renderOverlay(); } if (u?.kind === 'coll-restore') { const r = await call('cardsCollectionRestore', u.coll, u.ids, u.before); await loadColls(); renderMain(); toast(r?.message ? r.message : `Put back in “${u.name}”.`); return renderOverlay(); } if (u?.kind === 'restore') { await call('chatsRestore', u.trashId); await loadChats(); render(); toast('Restored.'); } return renderOverlay(); }
     case 'repo-pop': S.pick = null; S.repoQuery = ''; S.pickRepo = null; S.pickBranch = null; popAt(a, 'repo', { chatId: S.view === 'chat' ? S.open : null }); renderOverlay(); await loadRepos(); { const c = S.view === 'chat' ? entry() : null; const cr = c?.repo || S.conn?.repo || S.repos?.[0]?.full; if (cr) loadBranches(cr); } return;
     case 'pick-repo': S.pickRepo = d.r; S.pickBranch = null; S.pop.noFocus = true; renderOverlay(); await loadBranches(d.r); return;
     case 'connect-repo': { const c = S.pop?.chatId ? entry(S.pop.chatId) : S.view === 'chat' ? entry() : null; const sel = S.pickRepo || c?.repo || S.conn?.repo || (S.repos || [])[0]?.full; const b = document.getElementById('branch-sel')?.value || null; S.pickRepo = null; return chooseRepo(sel, b); }
     case 'no-repo': S.pickRepo = null; return chooseRepo(null, null);
-    case 'team-pop': popAt(a, 'team', { top: a.classList.contains('tb') }); return renderOverlay();
+    case 'team-pop': popAt(a, 'team', { top: a.classList.contains('tb') || a.dataset.top === '1' }); return renderOverlay();
+    case 'side-toggle': S.sideHidden = !S.sideHidden; document.getElementById('shell')?.classList.toggle('no-side', S.sideHidden); return renderMain();
+    case 'composer-opts': S.pop = S.pop?.kind === 'copts' ? null : { kind: 'copts' }; return renderOverlay();
+    case 'win': return call('winAct', d.v);
+    case 'rpanel': S.rpanel = d.v; if (d.v === 'tools' && (S.rtab || 'files') === 'files') loadRFiles(''); return renderPane(true);
+    case 'rtab': S.rtab = d.v; if (d.v === 'files') loadRFiles(S.rfiles?.path || ''); return renderPane(true);
+    case 'rfiles-open': return loadRFiles(`${S.rfiles?.path ? `${S.rfiles.path}/` : ''}${d.v}`);
+    case 'rfiles-up': return loadRFiles(String(S.rfiles?.path || '').split('/').slice(0, -1).join('/'));
+    case 'rfiles-new': S.rtab = 'files'; return loadRFiles('');
+    case 'toggle-autoread': await setSettings({ autoRead: !S.settings.autoRead }); toast(S.settings.autoRead ? 'Answers are read aloud.' : 'Answers aren\'t read aloud.'); return renderPane(true);
+    case 'avatar-who': S.pop = { kind: 'avatarwho' }; return renderOverlay();
+    case 'set-avatar-who': S.pop = null; await setSettings({ avatarWho: d.v }); renderOverlay(); return renderPane(true);
+    case 'chat-opts': S.oldTop = false; popAt(a, 'chatopts', { top: true }); return renderOverlay();
     case 'options-pop': popAt(a, 'options'); return renderOverlay();
     case 'set-mode': S.mode = d.v; S.pop = null; keepPrefs(); return render();
     case 'toggle-web': S.web = !S.web; keepPrefs(); return render();
@@ -3069,6 +3370,10 @@ document.addEventListener('click', async (ev) => {
     case 'voice': return toggleVoice();
     case 'send': return send();
     case 'stop': return stopRun();
+    // 3.12 (nyarch-1): Clear hides this chat's messages (Undo puts them back; nothing is deleted from disk until the
+    // chat itself is deleted); Regenerate retries the newest answer.
+    case 'chat-clear': { const R = cur(); if (!R || R.round) return toast(R?.round ? 'Wait for the team to finish first.' : 'Nothing to clear.'); const at = Date.now(); let n = 0; for (const m of R.msgs) if (!m.deleted) { m.deleted = true; m.clearedAt = at; n++; } if (!n) return toast('Nothing to clear.'); await saveRt(R); S.msgs = R.msgs; render(); S.toast = { text: `Cleared ${n} message${n > 1 ? 's' : ''}.`, undo: { kind: 'clear', chat: R.id, at } }; return renderOverlay(); }
+    case 'chat-regen': { const last = [...S.msgs].reverse().find((m) => !m.deleted && m.who !== 'owner' && m.who !== 'system'); return last ? regenerate(last.id) : toast('Nothing to regenerate yet.'); }
     case 'turn-retry': { const R = cur(); if (R && !R.round) runner.retry(R, d.v); return; }
     // 3.4.1: a fix from an error, and the owner's check of an uncensored teammate's reply (the lead learns only the verdict).
     case 'team-check': return teamCheck(d.v === 'all' ? 'all' : 'team');
@@ -3137,6 +3442,9 @@ document.addEventListener('click', async (ev) => {
     case 'unpushed-push': { const m = S.modal; S.modal = null; render(); const r = await call('chatPush', m.chatId); if (!r?.ok) return toast(r?.message || 'Not pushed.'); toast(`Pushed ${r.branch}. Your work is safe on GitHub.`); if (m.then === 'delete') return deleteChat(m.chatId); if (m.then === 'connect') { S.pop = { chatId: m.chatId }; return chooseRepo(m.conn?.repo || null, m.conn?.branch || null); } return closeCopy(m.chatId); }
     case 'unpushed-force': { const m = S.modal; S.modal = null; render(); if (m.then === 'delete') return deleteChat(m.chatId, { force: true }); const r = await call('copiesRemove', m.chatId, true); if (!r?.ok) { if (!r?.cancelled) toast(r?.message || 'Kept.'); return; } if (m.then === 'connect') { S.pop = { chatId: m.chatId }; return chooseRepo(m.conn?.repo || null, m.conn?.branch || null); } await loadChats(); if (S.copies) await loadCopies(); return render(); }
     // settings (each one only from the owner's own click)
+    case 'ithil-tasks': return setSettings({ ithil: { ...(S.settings.ithil || {}), tasks: !((S.settings.ithil || {}).tasks !== false) } });
+    case 'ithil-mesh': await setSettings({ ithil: { ...(S.settings.ithil || {}), mesh: !((S.settings.ithil || {}).mesh !== false) } }); return render();
+    case 'ithil-cores': await setSettings({ ithil: { ...(S.settings.ithil || {}), cores: !((S.settings.ithil || {}).cores !== false) } }); return render();
     case 'team-member': { const t = team(); const v = d.v; const members = t.members.includes(v) ? t.members.filter((x) => x !== v) : [...t.members, v]; return setSettings({ team: { ...t, members, reviewer: t.reviewer === v && !members.includes(v) ? null : t.reviewer } }); }
     case 'bridge-show': { const r = await call('bridgeShow', d.v); if (r && r.ok === false) toast('That window couldn\'t open.'); return; }
     case 'bridge-toggle': {
@@ -3149,6 +3457,11 @@ document.addEventListener('click', async (ev) => {
     case 'make-reviewer': return setSettings({ team: { ...team(), reviewer: d.v } });
     case 'no-reviewer': return setSettings({ team: { ...team(), reviewer: null } });
     case 'tool-web': return setSettings({ tools: { web: !(S.settings.tools?.web !== false) } });
+    case 'av-panel': await setSettings({ avatarPanel: !(S.settings.avatarPanel !== false) }); return render();
+    case 'av-lips': return setSettings({ avatarLipSync: !(S.settings.avatarLipSync !== false) });
+    case 'mini-on': await setSettings({ miniWindow: !(S.settings.miniWindow !== false) }); return toast('Takes effect the next time the app starts.');
+    case 'mini-top': return setSettings({ miniOnTop: !(S.settings.miniOnTop !== false) });
+    case 'mini-open': return call('miniOpen');
     case 'tool-build': return setSettings({ tools: { build: !(S.settings.tools?.build !== false) } });
     case 'save-checks': return setSettings({ tools: { quickChecks: String(document.getElementById('quick-checks')?.value || '').split('\n').map((x) => x.trim()).filter(Boolean) } });
     case 'preview-net': return setSettings({ previewNetwork: !S.settings.previewNetwork });
@@ -3256,6 +3569,12 @@ document.addEventListener('change', (ev) => {
   if (t.matches?.('select[data-a="unc-pic"]')) setSettings({ uncensored: { pictureModel: t.value } });
   if (t.matches?.('[data-a="idle-hours"]')) setSettings({ copyIdleHours: Number(t.value) });
   if (t.matches?.('[data-a="max-chats"]')) setSettings({ maxChats: Number(t.value) });
+  if (t.matches?.('select[data-a="design-pick"]') && ['hologram', 'classic', 'adwaita'].includes(t.value)) setSettings({ design: t.value }).then(() => { applyTheme(); render(); });
+  if (t.matches?.('select[data-a="accent-pick"]')) setSettings({ accent: t.value }).then(() => applyTheme());
+  if (t.matches?.('select[data-a="perm-run"]')) setSettings({ access: t.value === 'full' ? 'full' : 'standard' });
+  if (t.matches?.('select[data-a="perm-push"]')) setSettings({ autoPush: t.value === 'auto' });
+  if (t.matches?.('select[data-a="av-who"]')) setSettings({ avatarWho: t.value === 'ithil' ? 'ithil' : 'answering' }).then(() => renderPane(true));
+  if (t.matches?.('select[data-a="av-body"]')) setSettings({ ithilBody: t.value === 'live2d' ? 'live2d' : 'vrm' });
   if (t.matches?.('select[data-a="voice-set"]')) setSettings({ voice: { [t.dataset.k]: t.value } }).then(() => loadSection('voice'));
   if (t.matches?.('[data-vpick]')) { const vp = pickVoice(t.dataset.vpick, t.dataset.prov, t.value); if (vp) setSettings({ voice: vp }); }
   if (t.matches?.('[data-chatvoice]')) {
@@ -3555,7 +3874,67 @@ async function refreshAgents() {
   render();
 }
 
+// 3.12 (nyarch-3): the mini window: Ithil at the top, a short talk with her, Clear and Regenerate, the input bar.
+// It talks straight to Hearth AI (her own chat there remembers it); nothing here touches the main window's chats.
+const MINI = { msgs: [], busy: false, last: '' };
+function miniHtml() {
+  const st = S.ithil.status;
+  const line = st?.online ? `${esc(aiName('ithil'))} · ${esc(st.state || 'awake')} · ${esc(st.mood || 'calm')}` : `${esc(aiName('ithil'))} · Hearth AI isn't running`;
+  const rows = MINI.msgs.map((m) => m.who === 'owner' ? `<div class="uwrap nrow"><div class="lbl you">You:</div><div class="msg-u">${rich(m.text)}</div></div>`
+    : `<div class="msg-a nrow ${m.err ? 'err' : ''}"><div class="lbl" style="color:${nameColor('ithil')}">${esc(aiName('ithil'))}:</div><div class="mbody">${m.steps?.length ? stepsHtml(m.steps) : ''}<div class="text">${rich(m.text)}</div></div></div>`).join('');
+  return `<div class="mini-win"><div class="mini-av"><span class="mini-st">${line}</span><span class="grow"></span><button class="xb ${S.settings.autoRead ? 'on' : ''}" data-a="toggle-autoread" title="Read answers aloud">${icon('speaker', 'sm')}</button><button class="xb" data-a="win-mini-close" title="Close">${icon('x', 'sm')}</button>
+    <div class="mini-body">${S.ithil.body ? `<img src="${esc(S.ithil.body)}" alt="Ithil">` : '<div class="body-orb"></div>'}</div></div>
+    <div class="mini-msgs" id="mini-msgs">${rows || '<div class="rt-empty">Say something to Ithil.</div>'}${MINI.busy ? `<div class="msg-a nrow"><div class="lbl" style="color:${nameColor('ithil')}">${esc(aiName('ithil'))}:</div><div class="mbody"><span class="faint">thinking…</span></div></div>` : ''}</div>
+    ${MINI.msgs.length ? `<div class="crow"><button data-a="mini-clear">${icon('copy', 'sm')}Clear</button><button data-a="mini-regen">${icon('refresh', 'sm')}Regenerate</button></div>` : ''}
+    <div class="dock"><div class="composer"><div class="nbar"><button class="ib" data-a="mini-full" title="Open the full Command Center">${icon('gear', 'sm')}</button><button class="ib" data-a="mini-full" title="Attach in the full window">${icon('clip', 'sm')}</button><textarea id="mini-in" rows="2" placeholder="Send a message…" aria-label="Message"></textarea><button class="bluesq ${voice.dictating() ? 'rec' : ''}" data-a="mini-voice" title="Dictate">${icon('mic', 'sm')}</button><button class="bluesq" data-a="mini-send" title="Send (Enter)">${icon('chevr', 'sm')}</button></div></div></div></div>`;
+}
+function renderMini() {
+  const box = document.getElementById('mini-in');
+  const draft = box ? box.value : '';
+  document.getElementById('app').innerHTML = miniHtml();
+  const el = document.getElementById('mini-in');
+  if (el) { el.value = draft; el.focus(); }
+  const list = document.getElementById('mini-msgs');
+  if (list) list.scrollTop = list.scrollHeight;
+}
+async function miniSend(text) {
+  const t = String(text || '').trim();
+  if (!t || MINI.busy) return;
+  MINI.last = t; MINI.msgs.push({ who: 'owner', text: t }); MINI.busy = true;
+  const el = document.getElementById('mini-in'); if (el) el.value = '';
+  renderMini();
+  const r = await call('ithilTalk', t);
+  MINI.busy = false;
+  MINI.msgs.push(r?.ok ? { who: 'ithil', text: r.text } : { who: 'ithil', err: true, text: r?.message || r?.error?.message || 'Ithil couldn\'t answer.' });
+  renderMini();
+  if (r?.ok && S.settings.autoRead) readAloud({ who: 'ithil', text: r.text });
+}
+async function bootMini() {
+  document.documentElement.classList.add('mini');
+  S.settings = { ...S.settings, ...((await call('settings')) || {}) };
+  S.theme = (await call('themeGet')) || S.theme;
+  applyTheme();
+  const st = await call('ithilStatus', { fresh: true });
+  if (st && typeof st === 'object' && 'online' in st) S.ithil.status = st;
+  const b = await call('ithilAvatar', { expression: st?.expression || '', framing: 'full' });
+  S.ithil.body = b?.ok ? b.dataUrl : null;
+  renderMini();
+  document.addEventListener('click', async (e) => {
+    const a = e.target.closest('[data-a]'); if (!a) return;
+    const k = a.dataset.a;
+    if (k === 'mini-send') return miniSend(document.getElementById('mini-in')?.value);
+    if (k === 'mini-clear') { MINI.msgs = []; return renderMini(); }
+    if (k === 'mini-regen') { if (!MINI.last || MINI.busy) return; const i = MINI.msgs.map((m) => m.who).lastIndexOf('owner'); MINI.msgs = MINI.msgs.slice(0, i); return miniSend(MINI.last); }
+    if (k === 'mini-voice') { await voice.dictate(); return; }
+    if (k === 'mini-full') return call('winAct', 'close');
+    if (k === 'win-mini-close') return call('winAct', 'close');
+    if (k === 'toggle-autoread') { await call('setSettings', { autoRead: !S.settings.autoRead }); S.settings.autoRead = !S.settings.autoRead; return renderMini(); }
+  });
+  document.addEventListener('keydown', (e) => { if (e.target?.id === 'mini-in' && e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); miniSend(e.target.value); } if (e.key === 'Escape') call('winAct', 'close'); });
+}
+
 async function boot() {
+  if (api && location.hash === '#mini') return bootMini();
   if (!api) { document.getElementById('app').innerHTML = '<div style="padding:40px">This interface must run inside the Hearth AI Command Center app.</div>'; return; }
   shell();
   try {
@@ -3575,7 +3954,7 @@ async function boot() {
     await refreshMates();
     await loadCards();
     S.upd = (await call('updaterInfo')) || S.upd;
-    api.onUpdaterStatus?.((s) => { const prev = S.upd.status?.state; S.upd.status = s; if (s.state === 'available' && prev !== 'available') toast(`Update ${s.version} is available — see Settings › App updates.`); if (S.view === 'settings') render(); });
+    api.onUpdaterStatus?.((s) => { const prev = S.upd.status?.state; S.upd.status = s; if (s.state === 'available' && prev !== 'available' && S.settings.autoUpdate !== false) call('downloadUpdate'); if (s.state === 'available' && prev !== 'available') toast(`Update ${s.version} is available — see Settings › App updates.`); if (S.view === 'settings') render(); });
     // Steps carry their chat: only that chat's runtime gets them, open or not.
     api.onChatStep?.((e) => runner.onStep(e));
     api.onMediaProgress?.((p) => showCopy(p));
@@ -3649,6 +4028,10 @@ async function ithilAvatar(expr = '') {
   const r = await call('ithilAvatar', { expression: expr });
   S.ithil.avatar = r?.ok ? r.dataUrl : null;
   S.ithil.avatarExpr = expr;
+  // 3.12 (nyarch-1): her full body for the right panel, with the same expression.
+  const b = await call('ithilAvatar', { expression: expr, framing: 'full' });
+  S.ithil.body = b?.ok ? b.dataUrl : null;
+  renderPane();
 }
 async function ithilInit() {
   S.ithil.info = await call('ithilInfo');

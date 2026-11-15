@@ -1,7 +1,7 @@
 // Hearth AI Command Center — Electron main process.
 // All privileged work (files, secrets, provider APIs, updates) happens here.
 // The renderer only gets the narrow API exposed in preload.cjs.
-const { app, BrowserWindow, Notification, ipcMain, shell, Menu, safeStorage, dialog, clipboard, protocol, screen } = require('electron');
+const { app, BrowserWindow, Notification, ipcMain, shell, Menu, safeStorage, dialog, clipboard, protocol, screen, globalShortcut } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -131,7 +131,9 @@ function normalSettings(s) {
     leadGitHub: s.leadGitHub === true,
     theme: THEMES.includes(s.theme) ? s.theme : 'hearth',
     // 2.9: the gold hologram design unless the owner picks Classic.
-    design: s.design === 'classic' ? 'classic' : 'hologram',
+    // 3.12: the approved Nyarch-style look ('adwaita') unless the owner picked Gold hologram or Classic himself.
+    design: ['hologram', 'classic'].includes(s.design) ? s.design : 'adwaita',
+    accent: ['blue', 'teal', 'green', 'yellow', 'orange', 'red', 'pink', 'purple', 'slate'].includes(s.accent) ? s.accent : 'blue',
     textSize: TEXT_SIZES.includes(s.textSize) ? s.textSize : 100,
     // 3.4.1: draw the app at true 100% even when the desktop scales the screen (125%, 150%…). Off unless he turns it on.
     fitScreen: s.fitScreen === true,
@@ -179,6 +181,19 @@ function normalSettings(s) {
     notify: s.notify !== false,
     // Read every answer aloud. Off unless the owner turns it on.
     autoRead: s.autoRead === true,
+    // 3.12: the avatar panel and the mini window (settings-6). Only he changes them.
+    avatarPanel: s.avatarPanel !== false,
+    avatarWho: s.avatarWho === 'ithil' ? 'ithil' : 'answering',
+    avatarLipSync: s.avatarLipSync !== false,
+    ithilBody: s.ithilBody === 'live2d' ? 'live2d' : 'vrm',
+    miniWindow: s.miniWindow !== false,
+    miniOnTop: s.miniOnTop !== false,
+    previews: s.previews !== false,
+    memoryOn: s.memoryOn !== false,
+    notifyDone: s.notifyDone !== false,
+    notifyPhone: s.notifyPhone === true,
+    autoUpdate: s.autoUpdate !== false,
+    homeServerAi: s.homeServerAi !== false,
     // How many chats may have their team working at once.
     maxChats: v2.MAX_CHAT_CHOICES.includes(s.maxChats) ? s.maxChats : 3,
     // Custom instructions every AI gets in every chat (empty until he writes them).
@@ -323,6 +338,8 @@ function createWindow() {
     title: 'Hearth AI Command Center',
     icon: path.join(__dirname, '..', 'dist', 'icon.png'),
     autoHideMenuBar: true,
+    // 3.12 (nyarch-1): the window draws its own headerbars and window buttons, like a GNOME app.
+    frame: false,
     show: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
@@ -393,6 +410,8 @@ function registerIpc() {
   // Refused (never written) when the state isn't the open project's: no cross-project saves.
   const stateApi = guard.stateIpc({ binding, read: () => readState(), write: (st) => writeState(st) });
   // The window asks the main process to reload it (always works, whatever the page's own navigation rules).
+  // 3.12: the window buttons drawn in the right panel's bar (the window has no system frame now).
+  ipcMain.handle('win:act', (event, what) => { if (!trusted(event)) return false; const w = BrowserWindow.fromWebContents(event.sender); if (!w || w.isDestroyed()) return false; if (what === 'min') w.minimize(); else if (what === 'max') { if (w.isMaximized()) w.unmaximize(); else w.maximize(); } else if (what === 'close') w.close(); return true; });
   handle('app:reload', () => { setImmediate(() => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.reload(); }); return true; });
   handle('state:load', () => stateApi.load());
   handle('state:save', (state) => stateApi.save(state));
@@ -536,7 +555,8 @@ function registerIpc() {
     if ('leadActions' in patch) s.leadActions = patch.leadActions === true;
     if ('leadGitHub' in patch) s.leadGitHub = patch.leadGitHub === true;
     if ('theme' in patch && THEMES.includes(patch.theme)) s.theme = patch.theme;
-    if ('design' in patch && ['hologram', 'classic'].includes(patch.design)) s.design = patch.design;
+    if ('design' in patch && ['hologram', 'classic', 'adwaita'].includes(patch.design)) s.design = patch.design;
+    if ('accent' in patch && ['blue', 'teal', 'green', 'yellow', 'orange', 'red', 'pink', 'purple', 'slate'].includes(patch.accent)) s.accent = patch.accent;
     if ('textSize' in patch) {
       if (!TEXT_SIZES.includes(patch.textSize)) throw new Error('Invalid text size');
       s.textSize = patch.textSize;
@@ -571,6 +591,9 @@ function registerIpc() {
     if ('webBridge' in patch) s.webBridge = webBridgeLib.cleanBridge({ ...webBridgeLib.cleanBridge(s.webBridge), ...(patch.webBridge && typeof patch.webBridge === 'object' ? patch.webBridge : {}) });
     if ('notify' in patch) s.notify = patch.notify === true;
     if ('autoRead' in patch) s.autoRead = patch.autoRead === true;
+    for (const k of ['avatarPanel', 'avatarLipSync', 'miniWindow', 'miniOnTop', 'previews', 'memoryOn', 'notifyDone', 'notifyPhone', 'autoUpdate', 'homeServerAi']) if (k in patch) s[k] = patch[k] === true;
+    if ('avatarWho' in patch) s.avatarWho = patch.avatarWho === 'ithil' ? 'ithil' : 'answering';
+    if ('ithilBody' in patch) s.ithilBody = patch.ithilBody === 'live2d' ? 'live2d' : 'vrm';
     if ('maxChats' in patch) {
       if (!v2.MAX_CHAT_CHOICES.includes(patch.maxChats)) throw new Error('Invalid number of chats');
       s.maxChats = patch.maxChats;
@@ -1169,6 +1192,9 @@ function registerIpc() {
   // 3.9: Ithil (Hearth AI): her status, avatar, live events and the connection settings (Settings › Accounts).
   handle('ithil:status', (o = {}) => ithilApi().status({ fresh: o?.fresh === true }));
   handle('ithil:test', () => ithilApi().test());
+  // 3.12 (nyarch-3): the mini window talks to Ithil straight through Hearth AI (her own chat, short).
+  handle('ithil:talk', (text) => ithilApi().talk({ text: String(text || '').slice(0, 8000), from: 'Mini window' }));
+  handle('mini:open', () => openMini());
   handle('ithil:avatar', (o = {}) => ithilApi().avatar({ expression: String(o?.expression || ''), framing: o?.framing === 'full' ? 'full' : 'portrait' }));
   handle('ithil:watch', (on) => ithilApi().watch(on === true));
   handle('ithil:setKey', (key) => ithilApi().setKey(key === null ? null : String(key ?? '')));
@@ -1318,7 +1344,25 @@ function registerOps() {
   });
 }
 
-app.on('second-instance', () => {
+// 3.12 (nyarch-3): the mini window. Super + I on Hearth OS runs `hearth-ai-command-center --mini`, which reaches
+// the running app here; a global shortcut does the same where the desktop allows one.
+let miniWindow = null;
+function openMini() {
+  if (miniWindow && !miniWindow.isDestroyed()) { if (miniWindow.isVisible() && miniWindow.isFocused()) miniWindow.hide(); else { miniWindow.show(); miniWindow.focus(); } return true; }
+  const onTop = readSettings()?.miniOnTop !== false;
+  miniWindow = new BrowserWindow({ width: 480, height: 640, minWidth: 380, minHeight: 480, frame: false, alwaysOnTop: onTop, skipTaskbar: false, backgroundColor: '#1e1e1e', title: 'Ithil', show: false,
+    webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true } });
+  miniWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  miniWindow.webContents.on('will-navigate', (e) => e.preventDefault());
+  const devUrl = process.env.VITE_DEV_SERVER_URL;
+  const load = devUrl ? miniWindow.loadURL(`${devUrl}#mini`) : miniWindow.loadFile(path.join(__dirname, '..', 'dist', 'index.html'), { hash: 'mini' });
+  load.then(() => { if (miniWindow && !miniWindow.isDestroyed()) miniWindow.show(); }).catch(() => {});
+  miniWindow.on('closed', () => { miniWindow = null; });
+  return true;
+}
+
+app.on('second-instance', (_e, argv = []) => {
+  if (argv.includes('--mini')) { openMini(); return; }
   if (mainWindow) {
     if (mainWindow.isMinimized()) mainWindow.restore();
     mainWindow.focus();
@@ -1345,6 +1389,10 @@ app.whenReady().then(async () => {
   updater = createUpdater({ app, send });
   registerIpc();
   createWindow();
+  if (process.argv.includes('--mini')) openMini();
+  // Super + I opens the mini window where the desktop lets apps take a shortcut (Hearth OS's own keybind runs --mini).
+  if (readSettings().miniWindow !== false) { try { globalShortcut.register('Super+I', () => openMini()); } catch {} }
+  app.on('will-quit', () => { try { globalShortcut.unregisterAll(); } catch {} });
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
