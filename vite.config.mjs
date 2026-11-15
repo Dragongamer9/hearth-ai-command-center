@@ -12,6 +12,6 @@ export default defineConfig({
   },
   plugins: [{
     name: 'hearth-copy-sandboxed-libs',
-    writeBundle() { cpSync('src/vendor/mermaid', 'dist/vendor/mermaid', { recursive: true }); },
+    writeBundle() { cpSync('src/vendor/mermaid', 'dist/vendor/mermaid', { recursive: true }); cpSync('src/vendor/avatar-stage', 'dist/vendor/avatar-stage', { recursive: true }); },
   }],
 });

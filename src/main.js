@@ -32,6 +32,7 @@ import { activateLore, nextSpeakers, rpPrompt, addSwipe, moveSwipe, isSexual, fi
 import { createVoice } from './voice.mjs';
 import { liveStageHtml, miniCore, coreHtml as liveCoreHtml, coreOf as liveCoreOf, LIVE_AIS, MAKER_IDS } from './live.mjs';
 import { meshState, meshHtml } from './live-mesh.mjs';
+import { STARTERS, characterOf, svgUrl, KIND_LABEL } from './app/characters.mjs';
 import { turnFor as ithilTurnFor, stateLine as ithilState, leadLines as ithilLeadLines, stationFor as ithilStation, SAGE } from './app/ithil.mjs';
 import { checkWord, CHECK_PROMPT, planCheck, runCheck, CHECK_ORDER, CHECK_LABEL, summary as checkSummary } from './app/rollcall.mjs';
 import { creditsHtml } from './app/credits.mjs';
@@ -264,6 +265,8 @@ function goHome() {
   S.view = 'home'; S.open = null; S.pane = null; S.pop = null; S.editing = null;
   // A new chat starts from the owner's defaults, never from what the last chat used.
   applyPrefs(S, defaultsFrom(S.settings)); S.homeModels = {};
+  // 3.13: Settings › AI team › New messages start with.
+  if (S.settings.startWith && S.settings.startWith !== 'team' && team().members.includes(S.settings.startWith)) S.mode = S.settings.startWith;
   try { localStorage.removeItem('hearth.v2.open'); } catch {}
   render(true);
 }
@@ -1220,7 +1223,7 @@ function topbar() {
   if (S.view === 'chat' && !S.oldTop && !c?.rp) {
     const who = S.mode === 'team' ? team().lead : S.mode;
     return `<button class="ib ghost" data-a="side-toggle" title="${S.sideHidden ? 'Show' : 'Hide'} History" aria-label="Show or hide History">${icon('panel', 'sm')}</button>${mono(who, 'sm')}${workStack(cur(), 22)}${temp}
-      <span class="grow"></span><button class="model-pill" data-a="team-pop" data-top="1" title="Who answers in this chat">${modelLabel(c)}</button><button class="ib ghost" data-a="chat-opts" title="This chat's options" aria-label="This chat's options">${icon('gear', 'sm')}</button><span class="grow"></span><span class="top-spacer"></span>`;
+      <span class="grow"></span><button class="model-pill" data-a="team-pop" data-top="1" title="Who answers in this chat">${modelLabel(c)}</button><button class="ib ghost" data-a="chat-opts" title="This chat's options" aria-label="This chat's options">${icon('gear', 'sm')}</button><span class="grow"></span><button class="ib ghost ${(S.settings.panelState || 'open') !== 'hidden' ? 'on' : ''}" data-a="rp-hide" title="Show or hide the right panel (Ctrl + .)" aria-label="Show or hide the right panel">${icon('panel', 'sm')}</button>`;
   }
   return `<span class="ttl">${esc(title)}</span>${S.view === 'chat' ? workStack(cur(), 26) : ''}${chip}${temp}<span class="grow"></span>${know}
     ${S.view === 'chat' ? `<button class="tb" data-a="live" title="See this chat's team as living cores">${icon('eye', 'sm')}Live</button>` : ''}
@@ -1810,7 +1813,20 @@ function avatarStage() {
     const line = st?.online ? `feels ${esc(st.mood || 'calm')} · ${esc(st.state || 'awake')}` : 'Hearth AI isn\'t running';
     return `<div class="stage">${body}</div><div class="mood">${line}</div>`;
   }
-  return `<div class="stage"><div class="bigmono" style="background:${esc(nameColor(who))}">${esc(aiName(who).slice(0, 2))}</div></div><div class="mood">${esc(aiName(who))} · ${esc(statusOf(who)?.label || '')}</div>`;
+  // 3.13 (compact-A9): the AI's own character: a picture or starter, or its Live2D / VRM model on the stage.
+  const ch = characterOf(S.settings.characters, who);
+  const body = ch?.kind === 'img' ? `<img class="body ${ch.motion ? 'breathe' : ''} ${S.busy?.agent === who ? 'm-Thinking' : ''}" src="${esc(ch.src)}" alt="${esc(aiName(who))}">` : ch?.kind === 'stage' ? `<div class="stage-host" id="rp-stage" data-who="${esc(who)}"></div>` : `<div class="bigmono" style="background:${esc(nameColor(who))}">${esc(aiName(who).slice(0, 2))}</div>`;
+  if (ch?.kind === 'stage') queueMicrotask(() => mountStage(document.getElementById('rp-stage'), 'panel', ch));
+  return `<div class="stage">${body}</div><div class="mood">${esc(aiName(who))} · ${esc(statusOf(who)?.label || '')}</div>`;
+}
+// 3.13 (compact-A4): the collapsed strip: the answering AI's face, read aloud, tools and Ithil, and ⟨ to open it.
+function railHtml() {
+  const who = S.settings.avatarWho === 'ithil' || S.mode === 'ithil' ? 'ithil' : (S.busy?.agent || (S.mode === 'team' ? team().lead : S.mode));
+  const ch = who === 'ithil' ? (S.ithil.avatar ? { kind: 'img', src: S.ithil.avatar } : null) : characterOf(S.settings.characters, who);
+  const face = ch?.kind === 'img' ? `<img src="${esc(ch.src)}" alt="">` : mono(who, 'sm');
+  return `<div class="rail"><button class="xb" data-a="win" data-v="close" title="Close">${icon('x', 'sm')}</button><button class="xb" data-a="win" data-v="min" title="Minimise">${icon('minus', 'sm')}</button><button class="xb" data-a="rp-collapse" title="Open the panel">⟨</button>
+    <div class="rail-face" style="box-shadow:0 0 0 2px ${esc(nameColor(who))}" title="${esc(aiName(who))}">${face}</div>
+    <button class="xb ${S.settings.autoRead ? 'on' : ''}" data-a="toggle-autoread" title="Read answers aloud">${icon('speaker', 'sm')}</button><button class="xb" data-a="rp-tools" title="Files, terminal, browser and changes">${icon('folder', 'sm')}</button><button class="xb" data-a="rp-ithil" title="Ithil">${icon('moon', 'sm')}</button></div>`;
 }
 function rtabBody(t) {
   const c = entry();
@@ -1849,16 +1865,19 @@ function rpanelHtml() {
       <div class="rtabs">${RTABS.map(([k, ic, l]) => `<button class="${tab === k ? 'on' : ''}" data-a="rtab" data-v="${k}">${icon(ic, 'sm')}<span>${l}</span></button>`).join('')}</div>
       <div class="rt-body">${rtabBody(tab)}${tab === 'files' && S.rpanel === 'tools' ? `<div class="rtabs sub"><button class="on">${icon('code', 'sm')}<span>${S.mode === 'ithil' || team().members.includes('ithil') ? 'Ithil\'s terminal' : 'Terminal'}</span></button></div>${rtabBody('terminal')}` : ''}</div>`;
   }
-  return `<div class="rp-top"><span class="grow"></span><button class="xb ${S.settings.autoRead ? 'on' : ''}" data-a="toggle-autoread" title="Read answers aloud">${icon('speaker', 'sm')}</button><button class="xb" data-a="rpanel" data-v="tools" title="Files, terminal, browser and changes">${icon('panel', 'sm')}</button><button class="xb" data-a="avatar-who" title="Who stands here">${icon('user', 'sm')}</button>${winBtns()}</div>${avatarStage()}`;
+  return `<div class="rp-top"><span class="grow"></span><button class="xb ${S.settings.autoRead ? 'on' : ''}" data-a="toggle-autoread" title="Read answers aloud">${icon('speaker', 'sm')}</button><button class="xb" data-a="rpanel" data-v="tools" title="Files, terminal, browser and changes">${icon('panel', 'sm')}</button><button class="xb" data-a="avatar-who" title="Who stands here">${icon('user', 'sm')}</button><button class="xb" data-a="rp-collapse" title="Collapse the panel">⟩</button>${winBtns()}</div>${avatarStage()}`;
 }
 
 function renderPane(force = false) {
   if (!(S.pane && S.view === 'chat')) {
     const el = document.getElementById('pane');
     if (!el) return;
-    const show = S.view === 'chat' && !entry()?.rp && S.settings.avatarPanel !== false;
+    const pstate = S.settings.panelState || 'open';   // 3.13 (compact-A4): open, collapsed or hidden; remembered
+    const show = S.view === 'chat' && !entry()?.rp && S.settings.avatarPanel !== false && pstate !== 'hidden';
     el.hidden = !show;
     el.classList.toggle('rpanel', show);
+    el.classList.toggle('collapsed', show && pstate === 'collapsed');
+    if (show && pstate === 'collapsed') { const k2 = `rail|${S.mode}|${S.busy?.agent || ''}|${S.settings.autoRead}|${S.ithil.avatar ? 1 : 0}`; if (force || k2 !== rpanelKey) { rpanelKey = k2; el.innerHTML = railHtml(); } return; }
     document.getElementById('shell')?.classList.toggle('with-pane', show);
     if (!show) { if (rpanelKey) { el.innerHTML = ''; rpanelKey = ''; } return; }
     const key = `${S.rpanel}|${S.rtab}|${S.open}|${S.msgs.length}|${S.ithil.body ? S.ithil.body.length : 0}|${S.ithil.status?.mood}|${S.ithil.status?.state}|${S.mode}|${S.busy?.agent || ''}|${S.settings.autoRead}|${S.rfiles?.path ?? '-'}|${S.rfiles?.items?.length ?? 0}`;
@@ -2012,6 +2031,7 @@ function popHtml() {
 
 function modalHtml() {
   const m = S.modal;
+  if (m.kind === 'character') return characterModal(m);
   if (m.kind === 'humanize') {
     const list = humanizeTargets(m.from);
     return `<div class="scrim dark" data-a="close-modal"></div><div class="modal wide"><div class="mhd"><b>Make it sound human</b><span class="grow"></span><button class="tb" data-a="close-modal">${icon('x', 'sm')}</button></div>
@@ -2132,7 +2152,7 @@ const STABS = [['team', 'users', 'AI team', ['team']], ['accounts', 'key', 'Acco
 // 3.12: the compact groups each mockup shows (settings-4…7), wired to the real switches; the full pages stay under "More … settings".
 const row = (title, sub, right) => `<div class="srow"><span class="t2"><b>${title}</b>${sub ? `<span class="d">${sub}</span>` : ''}</span><span class="grow"></span>${right}</div>`;
 const grp = (title, rows, note = '') => `<div class="box"><h3>${title}</h3>${note ? `<p class="fine">${note}</p>` : ''}${rows.join('')}</div>`;
-const moreBtn = (tab, label) => `<button class="mini" data-a="more-open" data-v="${tab}">${label}</button>`;
+const moreBtn = (tab, label) => `<button class="mini" data-a="sub-open" data-v="${tab}" data-p="${(STABS.find(([t]) => t === tab) || [, , , [tab]])[3].join(',')}" data-title="${esc((STABS.find(([t]) => t === tab) || [, , tab])[2])}">${label}</button>`;
 const TAB_TOP = {
   memory: () => {
     const s = S.settings;
@@ -2188,12 +2208,127 @@ const TAB_TOP = {
 };
 function tabOf(k) { return (STABS.find(([t, , , ks]) => t === k || ks.includes(k)) || STABS[0])[0]; }
 function settingsView() {
+  // 3.13 (compact-A1…A8): a side list of tabs, a header with ✕, and a page that scrolls inside the dialog. Buttons that
+  // need the full form (＋ Add, See and edit, Change…) open it here as a sub-page with ‹ Back.
   const tab = tabOf(S.tab);
   const nav = STABS.map(([k, ic, label]) => `<button class="${tab === k ? 'on' : ''}" data-a="tab" data-t="${k}">${icon(ic, 'sm')}<span>${esc(label)}</span></button>`).join('');
   const parts = STABS.find(([t]) => t === tab)[3];
-  const page = TAB_TOP[tab] ? `${TAB_TOP[tab]()}<details class="more-acct" ${S.moreSet?.[tab] ? 'open' : ''}><summary data-a="more-set" data-v="${tab}">More ${esc(STABS.find(([t]) => t === tab)[2].toLowerCase())} settings</summary>${parts.map((k) => section(k)).join('')}</details>` : parts.map((k) => section(k)).join('');
-  return `<div class="set dlg"><div class="dlg-h"><button class="ib ghost" data-a="set-search" title="Search settings" aria-label="Search settings">${icon('search', 'sm')}</button><b>Settings</b><button class="xb" data-a="set-close" title="Close" aria-label="Close settings">${icon('x', 'sm')}</button></div><nav class="stabs">${nav}</nav><div class="spage">${page}</div></div>`;
+  const sub = S.subpage && S.subpage.tab === tab ? S.subpage : null;
+  const page = sub ? `<button class="mini sub-back" data-a="sub-back">‹ Back</button><div class="subpage">${sub.parts.map((k) => section(k)).join('')}</div>` : (PAGES[tab] ? PAGES[tab]() : parts.map((k) => section(k)).join(''));
+  const q = String(S.setQ || '');
+  return `<div class="set dlg cmp"><nav class="snav2"><b class="st">Settings</b><input id="set-q" class="sq" placeholder="Search settings" value="${esc(q)}" aria-label="Search settings">${nav}</nav>
+    <div class="spane"><div class="sph"><b>${esc(sub ? sub.title : STABS.find(([t]) => t === tab)[2])}</b><span class="grow"></span><button class="xb" data-a="set-close" title="Close" aria-label="Close settings">${icon('x', 'sm')}</button></div>
+    <div class="spage" id="spage">${q ? searchPage(q) : page}</div></div></div>`;
 }
+// 3.13: typing in "Search settings" lists every row of every tab whose words match, with its tab.
+function searchPage(q) {
+  const k = q.toLowerCase();
+  const hits = [];
+  for (const [t, , label] of STABS) {
+    const div = document.createElement('div');
+    div.innerHTML = PAGES[t] ? PAGES[t]() : '';
+    for (const r of div.querySelectorAll('.srow')) if (r.textContent.toLowerCase().includes(k)) hits.push(`<div class="srow"><span class="t2"><b>${esc(r.querySelector('b')?.textContent || r.textContent.trim().slice(0, 60))}</b><span class="d">${esc(label)}</span></span><span class="grow"></span><button class="mini" data-a="tab" data-t="${t}">Open</button></div>`);
+  }
+  return hits.length ? `<div class="box">${hits.slice(0, 60).join('')}</div>` : '<p class="fine">Nothing matches.</p>';
+}
+// 3.13 (compact-A8): Characters (2D and 3D): each AI with its file, its kind and Change….
+function charactersBox() {
+  const chars = S.settings.characters || {};
+  const ids = TEAM_IDS.filter((a) => AGENTS[a]);
+  const shown = S.charsAll ? ids : ids.slice(0, 6);
+  const rows = shown.map((a) => {
+    const c = chars[a];
+    const kind = a === 'ithil' ? '3D (VRM)' : KIND_LABEL[c?.kind || 'none'];
+    const src = a === 'ithil' ? 'from Hearth AI' : (characterOf(chars, a)?.label || 'letter mark');
+    return row(`${mono(a, 'xs')}${esc(aiName(a))}`, esc(src), `<span class="tagp b">${esc(kind)}</span>${a === 'ithil' ? '' : `<button class="mini" data-a="char-open" data-v="${esc(a)}">Change…</button>`}`);
+  });
+  if (!S.charsAll) rows.push(row(`All ${ids.length} AIs`, 'each can have its own', '<button class="mini" data-a="chars-all">Show all</button>'));
+  return grp('Characters (2D and 3D) <span class="cnt">a body for each AI</span>', rows);
+}
+// 3.13 (compact-A9): the character picker.
+function characterModal(m) {
+  const a = m.agent;
+  const c = m.draft || { kind: 'none', motion: true };
+  const tab = (k, l) => `<button class="${(c.kind === k || (k === 'picture' && c.kind === 'starter')) ? 'on' : ''}" data-a="char-kind" data-v="${k}">${l}</button>`;
+  const ch = characterOf({ [a]: c }, a);
+  const prev = ch?.kind === 'img' ? `<img class="cprev-img ${c.motion !== false ? 'breathe' : ''}" src="${esc(ch.src)}" alt="">` : ch?.kind === 'stage' ? '<div class="cprev-stage" id="char-stage"></div>' : `<div class="bigmono" style="background:${esc(nameColor(a))}">${esc(aiName(a).slice(0, 2))}</div>`;
+  const card = ([id, name, svg]) => `<button class="ccard ${c.kind === 'starter' && c.starter === id ? 'on' : ''}" data-a="char-starter" data-v="${id}"><img src="${esc(svgUrl(svg))}" alt="">${esc(name)}</button>`;
+  return `<div class="scrim dark" data-a="close-modal"></div><div class="modal cmodal" role="dialog" aria-label="${esc(aiName(a))}'s character">
+    <div class="mhd">${mono(a, 'sm')}<b>${esc(aiName(a))}'s character</b><span class="grow"></span><button class="xb" data-a="close-modal" aria-label="Close">${icon('x', 'sm')}</button></div>
+    <div class="cseg">${tab('none', 'None')}${tab('picture', '2D picture')}${tab('live2d', 'Live2D')}${tab('vrm', '3D (VRM)')}<span class="grow"></span><span class="fine">Ithil's body always comes from Hearth AI</span></div>
+    <div class="cbody"><div class="cprev"><span class="fine cpl">Preview · breathing, blinks, talks with its voice</span>${prev}<div class="cmoods"><button class="mini" data-a="char-mood" data-v="Happy">Happy</button><button class="mini" data-a="char-mood" data-v="Thinking">Thinking</button><button class="mini" data-a="char-mood" data-v="Talking">Talking</button></div></div>
+    <div><div class="gt2">Starter characters</div><div class="cgrid">${STARTERS.map(card).join('')}
+      <button class="ccard add" data-a="char-pick" data-v="picture"><span class="plus">＋</span>Your own picture<small>PNG, GIF, WebP</small></button>
+      <button class="ccard add" data-a="char-maker"><span class="plus">⇩</span>From your image maker<small>ComfyUI on your PC</small></button></div>
+      ${m.error ? `<div class="note warn">${esc(m.error)}</div>` : ''}
+      <div class="srow">Live2D: a model folder (<code>.model3.json</code>)<span class="grow"></span><button class="mini" data-a="char-pick" data-v="live2d">Load…</button></div>
+      <div class="srow">3D: a VRM file (<code>.vrm</code>), with its own expressions<span class="grow"></span><button class="mini" data-a="char-pick" data-v="vrm">Load…</button></div>
+      <div class="srow">Move with its voice and mood<span class="grow"></span>${tog(c.motion !== false, 'char-motion')}</div>
+      <div class="srow fine">Files stay on this PC; nothing is sent to the AI</div></div></div>
+    <div class="mft"><button class="btn ghost" data-a="close-modal">Cancel</button><button class="btn p" data-a="char-save">Use this character</button></div></div>`;
+}
+// The avatar stage (Hearth AI's renderer) runs in a sealed frame (hearth-char://stage/, sandbox="allow-scripts", no
+// same origin): Live2D's runtime and the model files never run in the app's own window. Moods go in by postMessage.
+const stages = new Map();
+async function mountStage(el, key, ch) {
+  if (!el || !ch) return;
+  const had = stages.get(key);
+  if (had && had.url === ch.url && had.el === el && el.contains(had.frame)) return;
+  if (ch.type === 'live2d') { const r = await call('characterCore'); if (!r?.ok) { el.innerHTML = `<div class="fine" style="padding:16px">${esc(r?.message || 'Live2D\'s Cubism Core isn\'t here.')}</div>`; return; } }
+  const f = document.createElement('iframe');
+  f.setAttribute('sandbox', 'allow-scripts');
+  f.className = 'stage-frame';
+  f.src = `hearth-char://stage/?kind=${encodeURIComponent(ch.type)}&url=${encodeURIComponent(ch.url)}`;
+  el.replaceChildren(f);
+  stages.set(key, { url: ch.url, el, frame: f });
+}
+function setStageMood(mood, level = 0) { for (const r of stages.values()) { try { r.frame?.contentWindow?.postMessage({ mood, level }, '*'); } catch {} } }
+
+const cols = (...g) => `<div class="cols">${g.join('')}</div>`;
+const subBtn = (tab, parts, title, label, cls = '') => `<button class="mini ${cls}" data-a="sub-open" data-v="${tab}" data-p="${parts.join(',')}" data-title="${esc(title)}">${label}</button>`;
+const sel = (a, cur, opts, extra = '') => `<select data-a="${a}" ${extra}>${opts.map(([v, l]) => `<option value="${esc(v)}" ${String(cur) === String(v) ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>`;
+const PAGES = {
+  team: () => {
+    const t = team();
+    const ids = TEAM_IDS.filter((a) => AGENTS[a]);
+    const on = ids.filter((a) => t.members.includes(a)).length;
+    const r1 = (a) => {
+      const st = a === 'ithil' ? (S.ithil.status?.online ? `Hearth AI · ${S.ithil.status.state || 'awake'}` : 'Hearth AI · offline') : ready(a) ? 'ready' : statusOf(a).label;
+      const role = a === t.lead ? ' · lead' : a === t.reviewer ? ' · reviewer' : '';
+      const fix = !ready(a) && statusOf(a).state !== 'connected' && ['cli', 'signin'].includes(statusOf(a).state) && a !== 'ithil';
+      const right = fix ? `<button class="mini" data-a="acct-goto" data-v="${esc(a)}">${statusOf(a).state === 'signin' ? 'Sign in' : 'Set up'}</button>` : tog(t.members.includes(a), 'team-member', `data-v="${esc(a)}"`);
+      return row(`${mono(a, 'xs')}${esc(aiName(a))}`, esc(st + role), right);
+    };
+    const half = Math.ceil(ids.length / 2);
+    const others = ids.filter((a) => a !== 'ithil' && AGENTS[a]?.edits !== false);
+    return cols(grp(`Who's in your chats <span class="cnt">${ids.length} AIs · ${on} on</span>`, ids.slice(0, half).map(r1)), grp('&nbsp;', ids.slice(half).map(r1)))
+      + cols(grp('Roles', [row('Team lead', '', sel('set-lead', t.lead, t.members.filter((a) => a !== 'ithil').map((a) => [a, aiName(a)]))), row('Reviewer', '', sel('set-reviewer', t.reviewer || '', [['', 'No reviewer'], ...t.members.filter((a) => a !== 'ithil' && a !== t.lead).map((a) => [a, aiName(a)])])), row('New messages start with', '', sel('set-start', S.settings.startWith || 'team', [['team', 'The team lead'], ...others.filter((a) => t.members.includes(a)).map((a) => [a, aiName(a)])]))]),
+        grp('Several chats at once', [row('Working at the same time', '', sel('max-chats', S.settings.maxChats || 3, MAX_CHATS.map((n) => [n, String(n)]))), row('Notify when a chat needs me', '', tog(S.settings.notify !== false, 'notify-toggle')), row('Check the team', '', `<button class="mini p" data-a="sub-team-check">Test team</button>${subBtn('team', ['team'], 'Check the team', 'Tool test')}`)]));
+  },
+  accounts: () => {
+    const g = accountsGroups().replace(/<div class="box">/g, '<div class="box">');
+    const boxes = g.split('<div class="box">').filter(Boolean).map((b) => `<div class="box">${b}`);
+    const half = Math.ceil(boxes.length / 2);
+    const gh = S.gh || {};
+    const dev = (S.hearthDev?.devices || []).slice(0, 4);
+    return cols(boxes.slice(0, half).join(''), boxes.slice(half).join(''))
+      + cols(grp('GitHub', [row(esc(gh.ghUser || 'Not signed in'), '', `<span class="tagp ${gh.ghUser ? '' : 'w'}">${gh.ghUser ? 'connected' : 'sign in with gh'}</span>`), row('Projects', esc((S.repos || []).slice(0, 3).map((r) => r.name || r).join(', ')), subBtn('accounts', ['github'], 'GitHub', '›'))]),
+        grp('Devices', [...dev.map((d) => row(esc(d.name || d.host || 'device'), esc(d.role || ''), `<span class="tagp ${d.reachable ? '' : 'w'}">${d.reachable ? 'online' : 'offline'}</span>`)), row('Hearth devices, ComfyUI and your phone', '', subBtn('accounts', ['accounts2'], 'Devices, ComfyUI and your phone', 'Open'))]));
+  },
+  ithil: () => {
+    const html = ithilBox();
+    const boxes = html.split(/(?=<div class="box")/).filter((x) => x.trim().startsWith('<div class="box"'));
+    const more = html.includes('<details') ? html.slice(html.indexOf('<details')) : '';
+    return cols(boxes[0] || '', (boxes[1] || '')) + cols(boxes[2] || '', boxes[3] || '') + more;
+  },
+  tools: () => TAB_TOP.tools().replace(/^/, '<div class="cols">').replace(/$/, '</div>').replace(/moreBtn/g, ''),
+  memory: () => { const h = TAB_TOP.memory(); const k = h.indexOf('<div class="box"><h3>Memory across chats'); return h.slice(0, k) + cols(h.slice(k, h.indexOf('<div class="box"><h3>Saved data')), h.slice(h.indexOf('<div class="box"><h3>Saved data'))); },
+  voice: () => {
+    const h = TAB_TOP.voice();
+    return cols(h, charactersBox());
+  },
+  general: () => `<div class="cols">${TAB_TOP.general()}</div>`,
+};
 // ---------- 3.4 Settings › Accounts: one short row per AI, grouped and folding ----------
 const ACCT_GROUPS = [
   ['coders', 'Coding tools', ['anthropic', 'openai', 'google', 'xai', 'mistral', 'qwen', 'freebuff', ...MORE_GROUPS.coders]],
@@ -3220,8 +3355,24 @@ document.addEventListener('click', async (ev) => {
     }
     case 'habitat': S.view = 'habitat'; S.pane = null; S.pop = null; if (!S.habitat) { const h = await call('habitatGet'); S.habitat = h?.store || null; } return render(true);
     case 'settings': S.view = 'settings'; S.pane = null; render(true); return loadSection(S.tab);
-    case 'tab': { S.tab = d.t; renderMain.lastTab = null; render(); const parts = (STABS.find(([t]) => t === tabOf(d.t)) || STABS[0])[3]; for (const k of parts) await loadSection(k); return; }
+    case 'tab': { S.tab = d.t; S.subpage = null; S.setQ = ''; renderMain.lastTab = null; render(); const parts = (STABS.find(([t]) => t === tabOf(d.t)) || STABS[0])[3]; for (const k of parts) await loadSection(k); return; }
     case 'set-close': return goHome();
+    case 'sub-open': S.subpage = { tab: d.v, parts: String(d.p || d.v).split(',').filter(Boolean), title: d.title || '' }; for (const k of S.subpage.parts) await loadSection(k); renderMain(); { const pg = document.getElementById('spage'); if (pg) pg.scrollTop = 0; } return;
+    case 'rp-collapse': await setSettings({ panelState: (S.settings.panelState || 'open') === 'collapsed' ? 'open' : 'collapsed' }); return render();
+    case 'rp-hide': await setSettings({ panelState: (S.settings.panelState || 'open') === 'hidden' ? 'open' : 'hidden' }); return render();
+    case 'rp-tools': S.rpanel = 'tools'; await setSettings({ panelState: 'open' }); loadRFiles(''); return render();
+    case 'rp-ithil': S.rpanel = 'tools'; S.rtab = 'ithil'; await setSettings({ panelState: 'open' }); return render();
+    case 'chars-all': S.charsAll = true; return renderMain();
+    case 'char-open': S.modal = { kind: 'character', agent: d.v, draft: { ...((S.settings.characters || {})[d.v] || { kind: 'none', motion: true }) } }; renderOverlay(); return queueMicrotask(charPreview);
+    case 'char-kind': { const m = S.modal; if (!m) return; m.error = ''; if (d.v === 'none') m.draft = { kind: 'none', motion: m.draft.motion }; else if (d.v === 'picture') m.draft = { ...m.draft, kind: m.draft.kind === 'starter' || m.draft.kind === 'picture' ? m.draft.kind : 'starter', starter: m.draft.starter || 'ember-fox' }; else if (m.draft.kind !== d.v) { const r = await call('characterPick', m.agent, d.v); if (r?.ok) m.draft = { kind: d.v, file: r.file, motion: m.draft.motion }; else if (!r?.canceled) m.error = r?.message || 'That file couldn\'t be used.'; } renderOverlay(); return queueMicrotask(charPreview); }
+    case 'char-starter': S.modal.draft = { kind: 'starter', starter: d.v, motion: S.modal.draft.motion }; S.modal.error = ''; return renderOverlay();
+    case 'char-pick': { const m = S.modal; if (!m) return; const r = await call('characterPick', m.agent, d.v); if (r?.ok) { m.draft = { kind: d.v, file: r.file, motion: m.draft.motion }; m.error = ''; } else if (!r?.canceled) m.error = r?.message || 'That file couldn\'t be used.'; renderOverlay(); return queueMicrotask(charPreview); }
+    case 'char-maker': S.modal.error = 'Make a picture in Images & Videos, save it, then pick it with "Your own picture".'; return renderOverlay();
+    case 'char-motion': S.modal.draft.motion = !(S.modal.draft.motion !== false); return renderOverlay();
+    case 'char-mood': setStageMood(d.v === 'Talking' ? 'Happy' : d.v, d.v === 'Talking' ? 0.7 : 0); { const img = document.querySelector('.cprev-img'); if (img) { img.classList.remove('m-Happy', 'm-Thinking', 'm-Talking'); img.classList.add(`m-${d.v}`); } } return;
+    case 'char-save': { const m = S.modal; await setSettings({ characters: { [m.agent]: m.draft } }); S.modal = null; renderOverlay(); toast(`${aiName(m.agent)}'s character is saved.`); renderPane(true); return renderMain(); }
+    case 'sub-back': S.subpage = null; return renderMain();
+    case 'sub-team-check': S.subpage = { tab: 'team', parts: ['team'], title: 'Check the team' }; renderMain(); return teamCheck('team');
     case 'more-acct': S.moreAcct = !S.moreAcct; return;
     case 'more-set': S.moreSet = { ...(S.moreSet || {}), [d.v]: !S.moreSet?.[d.v] }; return;
     case 'more-open': { S.moreSet = { ...(S.moreSet || {}), [d.v]: true }; renderMain(); document.querySelector('details.more-acct')?.scrollIntoView({ behavior: 'smooth' }); return; }
@@ -3571,6 +3722,9 @@ document.addEventListener('change', (ev) => {
   if (t.matches?.('[data-a="max-chats"]')) setSettings({ maxChats: Number(t.value) });
   if (t.matches?.('select[data-a="design-pick"]') && ['hologram', 'classic', 'adwaita'].includes(t.value)) setSettings({ design: t.value }).then(() => { applyTheme(); render(); });
   if (t.matches?.('select[data-a="accent-pick"]')) setSettings({ accent: t.value }).then(() => applyTheme());
+  if (t.matches?.('select[data-a="set-lead"]') && t.value) { const tm = team(); setSettings({ team: { ...tm, lead: t.value, reviewer: tm.reviewer === t.value ? tm.lead : tm.reviewer } }); }
+  if (t.matches?.('select[data-a="set-reviewer"]')) setSettings({ team: { ...team(), reviewer: t.value || null } });
+  if (t.matches?.('select[data-a="set-start"]')) setSettings({ startWith: t.value || 'team' });
   if (t.matches?.('select[data-a="perm-run"]')) setSettings({ access: t.value === 'full' ? 'full' : 'standard' });
   if (t.matches?.('select[data-a="perm-push"]')) setSettings({ autoPush: t.value === 'auto' });
   if (t.matches?.('select[data-a="av-who"]')) setSettings({ avatarWho: t.value === 'ithil' ? 'ithil' : 'answering' }).then(() => renderPane(true));
@@ -3666,6 +3820,8 @@ document.addEventListener('input', (ev) => {
 });
 
 document.addEventListener('keydown', (ev) => {
+  // 3.13 (compact-A4): Ctrl + . shows or hides the right panel.
+  if (ev.ctrlKey && !ev.altKey && !ev.metaKey && ev.key === '.') { ev.preventDefault(); document.querySelector('[data-a="rp-hide"]')?.click(); return; }
   const t = ev.target;
   if (S.view === 'card' && !S.modal && cardFindKey(ev)) return;
   // In a collection: Delete removes the selected cards, else the focused card (Undo puts them back).
