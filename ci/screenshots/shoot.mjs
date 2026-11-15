@@ -397,7 +397,7 @@ async function shootOne(s) {
   if (s.click) { await page.click(s.click); await page.waitForTimeout(500); }
   if (s.then) { await page.click(s.then); await page.waitForTimeout(500); }
   // 3.12: the older Accounts shots look inside "More account settings".
-  if (!s.file.startsWith('3.12') && s.then?.includes('data-t="accounts"')) { await page.evaluate(() => document.querySelector('details.more-acct summary')?.click()); await page.waitForTimeout(200); }
+  if (!s.file.startsWith('3.12') && s.then?.includes('data-a="tab"')) { await page.evaluate(() => document.querySelectorAll('details.more-acct:not([open]) summary').forEach((x) => x.click())); await page.waitForTimeout(250); }
   if (s.then2) { await page.click(s.then2); await page.waitForTimeout(500); }
   if (s.run === 'multi') {
     // Two chats working (they never finish here) and a third whose answer arrives while another is open.
