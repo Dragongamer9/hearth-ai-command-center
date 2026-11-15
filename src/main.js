@@ -1214,7 +1214,7 @@ function topbar() {
   if (S.view === 'habitat') return `<span class="ttl">Habitat</span><span class="faint hab-sub">${S.lastChat && entry(S.lastChat) ? `the team of “${esc(entry(S.lastChat).title)}”` : 'your AI team'}</span><span class="grow"></span>`;
   // 3.12 (nyarch-1/-2): the chat's headerbar: the side panel toggle, who's answering, and the model button in the middle;
   // ⚙ beside it opens everything the old top bar had (repo, instructions, Live, voice, team, gallery, panel).
-  if (S.view === 'chat' && !S.oldTop) {
+  if (S.view === 'chat' && !S.oldTop && !c?.rp) {
     const who = S.mode === 'team' ? team().lead : S.mode;
     return `<button class="ib ghost" data-a="side-toggle" title="${S.sideHidden ? 'Show' : 'Hide'} History" aria-label="Show or hide History">${icon('panel', 'sm')}</button>${mono(who, 'sm')}${workStack(cur(), 22)}${temp}
       <span class="grow"></span><button class="model-pill" data-a="team-pop" data-top="1" title="Who answers in this chat">${modelLabel(c)}</button><button class="ib ghost" data-a="chat-opts" title="This chat's options" aria-label="This chat's options">${icon('gear', 'sm')}</button><span class="grow"></span><span class="top-spacer"></span>`;
@@ -2337,7 +2337,7 @@ function section(k) {
   }
   if (k === 'voice') return voice.settingsHtml({ tog, team: t, mono, aiName });
   if (k === 'uncensored') return uncensoredSection();
-  if (k === 'ithil') return `<h1>Ithil</h1>${ithilBox()}`;
+  if (k === 'ithil') return ithilBox();
   if (k === 'changes') return settingsLogBox();
   // 3.12 (settings-6): the avatar panel and the mini window.
   if (k === 'avatar') {
@@ -2422,7 +2422,7 @@ function teamGrid(t) {
       const acts = inTeam && a !== t.lead ? `${AGENTS[a].edits ? `<button class="tm-b" data-a="make-lead" data-v="${a}" title="Make ${esc(aiName(a))} the lead">★</button>` : ''}${a !== t.reviewer && !UNFILTERED.includes(a) ? `<button class="tm-b" data-a="make-reviewer" data-v="${a}" title="Make ${esc(aiName(a))} the reviewer">✓</button>` : ''}` : '';
       return `<div class="tm ${inTeam ? 'in' : ''}" title="${esc(aiName(a))} · ${esc(AGENTS[a].tool || '')}${statusOf(a).why ? ` · ${esc(statusOf(a).why)}` : ''}">${mono(a, 'sm')}<div class="tm-t"><b>${esc(aiName(a))}</b>${role}<span class="tm-s"><i class="ac-dot ${r ? 'g' : inTeam ? 'w' : ''}"></i>${esc(inTeam ? st : 'off')}</span></div>${acts}${tog(inTeam, 'team-member', `data-v="${a}" ${a === t.lead ? 'disabled title="The lead is always in"' : ''} aria-label="${esc(aiName(a))} in the team"`)}</div>`;
     }).join('');
-    return `<div class="tm-g"><button class="ac-gh" data-a="team-fold" data-v="${key}" aria-expanded="${!shut}"><span>${shut ? '▸' : '▾'} ${esc(label)}</span><span class="faint">${inN} of ${list.length} in the team</span></button>${shut ? '' : `<div class="tm-grid">${cards}</div>`}</div>`;
+    return `<div class="tm-g"><button class="ac-gh" data-a="team-fold" data-v="${key}" aria-expanded="${!shut}"><span>${shut ? '▸' : '▾'} ${esc(label)}</span><span class="faint">${inN} of ${list.length} in the team</span></button>${shut && S.view !== 'settings' ? '' : `<div class="tm-grid">${cards}</div>`}</div>`; // 3.12: one list in Settings (settings-1), nothing folded away
   }).join('');
 }
 const BUILDER_IDS = ['lovable', 'replit', 'v0', 'bolt', 'firebase'];
@@ -3114,7 +3114,7 @@ document.addEventListener('click', async (ev) => {
     }
     case 'habitat': S.view = 'habitat'; S.pane = null; S.pop = null; if (!S.habitat) { const h = await call('habitatGet'); S.habitat = h?.store || null; } return render(true);
     case 'settings': S.view = 'settings'; S.pane = null; render(true); return loadSection(S.tab);
-    case 'tab': { S.tab = d.t; render(); const parts = (STABS.find(([t]) => t === tabOf(d.t)) || STABS[0])[3]; for (const k of parts) await loadSection(k); return; }
+    case 'tab': { S.tab = d.t; renderMain.lastTab = null; render(); const parts = (STABS.find(([t]) => t === tabOf(d.t)) || STABS[0])[3]; for (const k of parts) await loadSection(k); return; }
     case 'set-close': return goHome();
     case 'set-search': return toast('Type to search: Ctrl+F finds a setting on this page.');
     case 'missing-hide': { try { localStorage.setItem('hearth.v2.missingHidden', missingList().join(',')); } catch {} render(); return; }

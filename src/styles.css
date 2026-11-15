@@ -1219,7 +1219,7 @@ html.mini, html.mini body { height: 100%; background: #1e1e1e; }
 .stabs button { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 6px 14px; border-radius: 8px; color: rgba(255,255,255,.67); font-size: 13px; font-weight: 600; }
 .stabs button.on { background: rgba(255,255,255,.08); color: #fff; }
 .set.dlg .spage { padding: 6px 30px 24px; overflow: visible; }
-.set.dlg .spage h1 { display: none; }
+.set.dlg .spage h1 { font: 700 15px var(--font); color: var(--strong); margin: 22px 4px 0; }
 .set.dlg .box { max-width: none; border: 0; background: none; padding: 0; margin: 16px 0 0; }
 .set.dlg .box > h3 { margin: 0 4px 4px; font-size: 15px; }
 .set.dlg .box > .fine, .set.dlg .box > p { margin: 0 4px 8px; color: rgba(255,255,255,.53); font-size: 13px; }
@@ -1250,3 +1250,13 @@ html.mini, html.mini body { height: 100%; background: #1e1e1e; }
 .set.dlg .dlg-h { position: sticky; top: 0; z-index: 2; background: #242428; border-radius: 14px 14px 0 0; }
 .set.dlg .stabs { position: sticky; top: 56px; z-index: 2; background: #242428; }
 .main.settings-mode .body { padding-top: 24px; }
+/* Settings over the dimmed app (settings-1…7); AI team as one list with a switch per AI (settings-1) */
+.main.settings-mode .top { display: none; }
+.shell:has(.main.settings-mode) .side { filter: brightness(.45); pointer-events: none; }
+.shell:has(.main.settings-mode) .pane { display: none; }
+.set.dlg .tm-g > .ac-gh { display: none; }
+.set.dlg .tm-g { margin: 0; border: 0; padding: 0; background: none; }
+.set.dlg .tm-grid { display: flex !important; flex-direction: column; gap: 0; }
+.set.dlg .tm-g:first-of-type .tm:first-child { border-top-left-radius: 12px; border-top-right-radius: 12px; }
+.set.dlg .tm-g:last-of-type .tm:last-child { border-bottom-left-radius: 12px; border-bottom-right-radius: 12px; }
+.set.dlg .tm { display: flex; align-items: center; gap: 12px; padding: 11px 16px; min-height: 52px; background: #2e2e32; border: 0; border-top: 1px solid rgba(255,255,255,.06); border-radius: 0; width: 100%; }

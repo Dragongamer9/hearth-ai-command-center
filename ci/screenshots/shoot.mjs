@@ -262,7 +262,7 @@ const SHOTS = [
   ...[['team', 'Who\'s in your chats'], ['accounts', 'GitHub'], ['ithil', 'Ithil (Hearth AI)'], ['tools', 'Connectors (MCP servers)'], ['memory', 'Custom instructions'], ['voice', 'Mini window'], ['general', 'App updates']].map(([t, e], n) => ({ file: `3.12-s${n + 1}-settings-${t}.png`, opts: { more: true, ithil: true }, click: '[data-a="settings"]', then: `[data-a="tab"][data-t="${t}"]`, wait: 700, expect: [e], selector: ['.set.dlg', '.stabs', `.stabs [data-t="${t}"].on`] })),
   // 3.4: the new Live page (lead on top, every AI in its group) and the compact Accounts page.
   // 3.9: Ithil (Hearth AI) in Settings › Accounts and on Live › Mesh (her station with her mood and newest thought).
-  { file: '70b-ithil-accounts.png', opts: { more: true, ithil: true }, click: '[data-a="settings"]', then: '[data-a="tab"][data-t="accounts"]', wait: 600, scrollTo: '#acct-ithil', expect: ['Ithil (Hearth AI)', 'connected', 'awake · curious', 'Test connection', 'From another device', 'Chat with Ithil', 'If a branch never merges'], selector: ['#acct-ithil', '#acct-ithil .ithil-orb', '#ith-host', '#ith-key'] },
+  { file: '70b-ithil-accounts.png', opts: { more: true, ithil: true }, click: '[data-a="settings"]', then: '[data-a="tab"][data-t="ithil"]', wait: 600, scrollTo: '#acct-ithil', expect: ['Ithil (Hearth AI)', 'connected', 'awake · curious', 'Test connection', 'From another device', 'Chat with Ithil', 'If a branch never merges'], selector: ['#acct-ithil', '#acct-ithil .ithil-orb', '#ith-host', '#ith-key'] },
   { file: '70c-live-mesh-ithil.png', opts: { open: 'c0000000001', more: true, ithil: true }, click: '[data-a="live"]', wait: 900, expect: ['Ithil', 'curious', 'If a branch never merges'], selector: ['.mesh-ithil'] },
   // 3.7: Live opens on the Mesh (mockup live-mesh.png): the stations around the AIs, and the Mesh / Cores switch.
   { file: '70a-live-mesh.png', opts: { open: 'c0000000001', more: true }, click: '[data-a="live"]', wait: 900, expect: ['Mesh', 'Cores', 'You', 'Replies', 'Files', 'Search', 'Shell', 'Checks', 'Web', 'Git', 'Helpers', 'Tools', 'Make', 'Memory', 'Coding tools'], selector: ['.mesh', '.mesh-cap', '.mesh-st'] },
@@ -277,8 +277,8 @@ const SHOTS = [
   { file: '01-home.png', opts: {}, expect: ['Good ', 'What should the team work on?', 'Fix a bug in a repo', 'Prepare a release', 'Pinned', 'Today', 'Yesterday', 'Earlier'] },
   { file: '02-chat-working-on-a-repo.png', opts: { open: 'c0000000001' }, expect: ['Searched the repo', 'Read', 'Edited 2 files', 'committed as you', '2 files changed', 'Open pull request', 'Show changes', 'Merge into main', 'Ran the tests', 'in GitHub Actions', 'reviewer'] },
   { file: '03-live-preview.png', opts: { open: 'c0000000002' }, click: '[data-a="open-preview"]', expect: ['storage-page.html', 'Preview', 'Code', 'Download', 'Save to repo'], frame: true },
-  { file: '04-connect-a-repo-and-attach.png', opts: {}, attach: true, click: '#composer-box [data-a="repo-pop"]', expect: ['Connect this chat to a GitHub repo', 'Dragongamer9/hearth-os', 'No repo, just talk', 'Branch'] },
-  { file: '05-settings.png', opts: {}, click: '[data-a="settings"]', expect: ['AI team', 'Who\'s in your chats', 'Accounts', 'GitHub', 'Tools', 'Permissions', 'Appearance', 'App updates', 'Saved data'] },
+  { file: '04-connect-a-repo-and-attach.png', opts: {}, attach: true, click: '.pop.copts [data-a="repo-pop"]', expect: ['Connect this chat to a GitHub repo', 'Dragongamer9/hearth-os', 'No repo, just talk', 'Branch'] },
+  { file: '05-settings.png', opts: {}, click: '[data-a="settings"]', expect: ['AI team', 'Who\'s in your chats', 'Accounts', 'Ithil', 'Tools', 'Memory', 'Voice & avatar', 'General'] },
   { file: '06-chat-light.png', opts: { open: 'c0000000001', light: true }, expect: ['2 files changed'] },
   { file: '07-diff-viewer.png', opts: { open: 'c0000000001' }, click: '[data-a="card-diff"]', expect: ['nm-watch.py', 'RESCAN_DELAY_S', 'WifiPage.qml'] },
   { file: '08-saved-data-temporary-copies.png', opts: { trash: true }, click: '[data-a="settings"]', then: '[data-a="tab"][data-t="memory"]', expect: ['Temporary copies', 'Space used', '200 MB', 'not on GitHub', 'Clean up', 'Old boards (read-only)', 'hearth-os'] },
@@ -372,7 +372,7 @@ const ONLY = process.env.ONLY ? new RegExp(process.env.ONLY) : null;
 let lastPage = null; let lastErrors = [];
 async function shootOne(s) {
   const page = await browser.newPage({ viewport: s.viewport || { width: 1600, height: 1000 }, bypassCSP: Boolean(s.bypassCSP) });
-  page.setDefaultTimeout(8000);
+  page.setDefaultTimeout(20000);
   const errors = [];
   lastPage = page; lastErrors = errors;
   page.on('pageerror', (e) => errors.push(String(e.message || e)));
@@ -392,6 +392,8 @@ async function shootOne(s) {
   }
   // 3.12: Settings, Live, Characters… are in History's ☰ menu: open it first when the button is hidden there.
   if (s.click && !(await page.isVisible(s.click).catch(() => false)) && await page.$('[data-a="side-menu"]')) { await page.click('[data-a="side-menu"]'); await page.waitForTimeout(200); }
+  // 3.12: the repo, who-answers, Web, Run & build and Talk switches are behind ⚙ in the input bar.
+  if (s.click && !(await page.isVisible(s.click).catch(() => false)) && await page.$('[data-a="composer-opts"]')) { await page.click('[data-a="composer-opts"]'); await page.waitForTimeout(200); }
   if (s.click) { await page.click(s.click); await page.waitForTimeout(500); }
   if (s.then) { await page.click(s.then); await page.waitForTimeout(500); }
   if (s.then2) { await page.click(s.then2); await page.waitForTimeout(500); }
