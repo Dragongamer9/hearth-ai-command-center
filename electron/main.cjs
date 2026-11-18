@@ -555,6 +555,11 @@ function registerIpc() {
     if (!s.projects.includes(dir)) throw new Error('Unknown project.');
     return opsApi ? opsApi.useFolder(dir) : useProject(dir);
   });
+  // rtk (Settings › Tools): status and savings, the verified download (only while the switch is on, only from his
+  // button), and removing a leftover folder while it's off.
+  handle('rtk:status', () => rtkLib.instance()?.status() || null);
+  handle('rtk:download', () => (readSettings().rtk === true ? rtkLib.instance().download() : { ok: false, message: 'Turn on "Trim command output for agents (rtk)" first.' }));
+  handle('rtk:remove', () => (readSettings().rtk === true ? { ok: false, message: 'Turn the switch off to remove rtk.' } : rtkLib.instance().remove()));
   handle('settings:set', (patch) => {
     if (!patch || typeof patch !== 'object') throw new Error('bad settings');
     const s = readSettings();
@@ -649,11 +654,6 @@ function registerIpc() {
     applyZoom(s);
     return s;
   });
-  // rtk (Settings › Tools): status and savings, the verified download (only while the switch is on, only from his
-  // button), and removing a leftover folder while it's off.
-  handle('rtk:status', () => rtkLib.instance()?.status() || null);
-  handle('rtk:download', () => (readSettings().rtk === true ? rtkLib.instance().download() : { ok: false, message: 'Turn on "Trim command output for agents (rtk)" first.' }));
-  handle('rtk:remove', () => (readSettings().rtk === true ? { ok: false, message: 'Turn the switch off to remove rtk.' } : rtkLib.instance().remove()));
   handle('settings:addDir', async () => {
     const r = await dialog.showOpenDialog(mainWindow, { title: 'Give the AIs access to a folder', properties: ['openDirectory'] });
     const s = readSettings();
