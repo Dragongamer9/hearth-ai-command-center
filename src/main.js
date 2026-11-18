@@ -2149,6 +2149,28 @@ function modalHtml() {
 // ---------- settings ----------
 // 3.12 (settings-1…7): seven tabs with icons across the top; each tab holds the sections it had before.
 const STABS = [['team', 'users', 'AI team', ['team']], ['accounts', 'key', 'Accounts', ['accounts', 'github', 'accounts2']], ['ithil', 'moon', 'Ithil', ['ithil']], ['tools', 'cpu', 'Tools', ['tools', 'connectors', 'perms']], ['memory', 'brain', 'Memory', ['memory', 'scheduled', 'data']], ['voice', 'speaker', 'Voice & avatar', ['voice']], ['general', 'gear', 'General', ['look', 'alerts', 'updates', 'uncensored', 'changes']]];
+// rtk (electron/rtk.cjs): the switch, what it does in plain words, the verified download and the savings.
+const RTK_ABOUT = 'Shortens the output of commands the agents run (tests, git, ls, grep, builds) before they read it, so they use fewer tokens. A failing test\'s error lines are always kept, and the full output is saved so an agent can get it back (rtk bypass, rtk recall). Only for the agents this app starts: your own Claude Code and Codex settings aren\'t changed. No telemetry, no proxy.';
+async function rtkDownload() {
+  if (S.rtkBusy) return;
+  S.rtkBusy = true; render();
+  const r = await call('rtkDownload');
+  S.rtkBusy = false;
+  toast(r?.ok ? `rtk ${r.version} is ready: the agents' command output is trimmed from their next run.` : (r?.message || 'Not downloaded.'));
+  S.rtk = await call('rtkStatus');
+  render();
+}
+function rtkLine() {
+  const r = S.rtk;
+  const s = S.settings;
+  if (s.rtk !== true) return r?.leftover ? { text: 'Off. rtk files from before are still in the app\'s folder.', btn: '<button class="mini" data-a="rtk-remove">Remove them</button>' } : { text: 'Off: the agents read every command\'s full output.', btn: '' };
+  if (!r) return { text: 'Checking…', btn: '' };
+  if (!r.supported) return { text: 'rtk is offered only for Linux on x86_64 PCs.', btn: '' };
+  if (!r.installed) return { text: `rtk ${esc(r.version)} isn't downloaded yet (about 6 MB, from rtk's GitHub release, checksum checked, kept in the app's own folder).`, btn: `<button class="mini" data-a="rtk-download" ${S.rtkBusy ? 'disabled' : ''}>${S.rtkBusy ? 'Downloading…' : 'Download rtk'}</button>` };
+  const g = r.gain;
+  const k = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : String(n));
+  return { text: g && g.commands ? `rtk ${esc(r.version)} on · saved about ${k(g.saved)} tokens (${g.pct}%) over ${g.commands} command${g.commands === 1 ? '' : 's'}` : `rtk ${esc(r.version)} on · no commands trimmed yet`, btn: '' };
+}
 // 3.12: the compact groups each mockup shows (settings-4…7), wired to the real switches; the full pages stay under "More … settings".
 const row = (title, sub, right) => `<div class="srow"><span class="t2"><b>${title}</b>${sub ? `<span class="d">${sub}</span>` : ''}</span><span class="grow"></span>${right}</div>`;
 const grp = (title, rows, note = '') => `<div class="box"><h3>${title}</h3>${note ? `<p class="fine">${note}</p>` : ''}${rows.join('')}</div>`;
@@ -2196,6 +2218,7 @@ const TAB_TOP = {
       grp('Quick checks the AIs may run on this PC', [row(esc((s.tools?.quickChecks || []).join(' · ') || 'none yet'), 'Allowed without asking', tog(s.tools?.build !== false, 'tool-build')), row('Add a check', '', moreBtn('tools', '＋ Add'))]),
       grp('Skills', [...(S.skills || []).map((x) => row(esc(x.name), esc(x.where || ''), '<span class="tagp">on</span>')), row('Install a skill from a file…', 'A folder with a SKILL.md in ~/.claude/skills or a repo\'s .claude/skills', moreBtn('tools', 'Install'))]),
       grp('Connectors (MCP servers)', [...cn.map((x) => row(esc(x.name), esc(x.type === 'http' ? x.url : x.command || ''), `${tog(x.enabled, 'conn-toggle', `data-id="${esc(x.id)}"`)}<button class="ib ghost trash" data-a="conn-del" data-id="${esc(x.id)}" title="Remove">${icon('trash', 'sm')}</button>`)), row('Add a connector', 'A command or an address', moreBtn('tools', '＋ Add'))]),
+      grp('Trim command output for agents (rtk)', [row('Trim command output for agents (rtk)', esc(RTK_ABOUT), tog(s.rtk === true, 'rtk-toggle')), row(rtkLine().text, '', rtkLine().btn)]),
       grp('Let your AI use this desktop', [row('Screen, mouse and keyboard', 'Asks before every session; stops when you move the mouse', tog(S.desktop?.enabled === true, 'desk-toggle'))]),
       grp('Permissions', [
         row('Run commands', '', `<select data-a="perm-run"><option value="standard" ${s.access !== 'full' ? 'selected' : ''}>Ask each time</option><option value="full" ${s.access === 'full' ? 'selected' : ''}>Without asking</option></select>`),
@@ -2515,6 +2538,7 @@ function section(k) {
       ${missingBox()}</div>
       <div class="box"><h3>${icon('star', 'sm')}Skills</h3><p class="fine">Claude Code skills from ~/.claude/skills and the chat's repo (.claude/skills) work in chats: Claude uses them by itself when they fit. The lead can also hand side tasks to helpers that work in parallel.</p>
       ${S.skills === null ? '<div class="fine">Loading…</div>' : (S.skills || []).map((x) => `<div class="srow">${icon('star', 'sm')}<b>${esc(x.name)}</b><span class="d">${esc(x.description || '')} · ${esc(x.where)}</span></div>`).join('') || '<div class="fine">No skills installed. Put a skill folder with a SKILL.md in ~/.claude/skills, or in a repo\'s .claude/skills.</div>'}</div>
+      <div class="box"><h3>Trim command output for agents (rtk)</h3><div class="srow">Trim command output for agents (rtk)<span class="d">${esc(RTK_ABOUT)}</span><span class="grow"></span>${tog(s.rtk === true, 'rtk-toggle')}</div><div class="srow"><span class="d">${rtkLine().text}</span><span class="grow"></span>${rtkLine().btn}</div></div>
       <div class="box"><h3>Live previews</h3><div class="srow">Previews may load from the internet<span class="d">off: previews can't reach the network (safest)</span><span class="grow"></span>${tog(s.previewNetwork === true, 'preview-net')}</div></div>`;
   }
   if (k === 'memory') {
@@ -2764,7 +2788,7 @@ async function loadSection(t) {
   if (t === 'memory') S.memory = await call('memoryList');
   if (t === 'scheduled') S.schedules = await call('scheduleList');
   if (t === 'connectors') { S.connectors = await call('connectorsList'); S.desktop = await call('desktopStatus'); }
-  if (t === 'tools') { S.skills = (await call('skillsList', S.lastChat)) || []; }
+  if (t === 'tools') { S.skills = (await call('skillsList', S.lastChat)) || []; S.rtk = await call('rtkStatus'); }
   render();
 }
 // ---------- Images & Videos (2.2.1; electron/studio.cjs, src/app/studio.mjs) ----------
@@ -3626,6 +3650,17 @@ document.addEventListener('click', async (ev) => {
     case 'tool-build': return setSettings({ tools: { build: !(S.settings.tools?.build !== false) } });
     case 'save-checks': return setSettings({ tools: { quickChecks: String(document.getElementById('quick-checks')?.value || '').split('\n').map((x) => x.trim()).filter(Boolean) } });
     case 'preview-net': return setSettings({ previewNetwork: !S.settings.previewNetwork });
+    case 'rtk-toggle': {
+      const on = S.settings.rtk === true;
+      if (on && !confirm('Turn off trimming (rtk)?\n\nThe agents read full command output again, and everything the app added for rtk is removed: the rtk program, its savings count and its saved outputs (all in the app\'s own folder).')) return;
+      await setSettings({ rtk: !on });
+      S.rtk = await call('rtkStatus');
+      render();
+      if (!on && S.settings.rtk === true && S.rtk?.supported && !S.rtk.installed && confirm(`Download rtk ${S.rtk.version} now?\n\nThe free (Apache-2.0) build from rtk's GitHub release, about 6 MB. Its checksum is checked before anything is saved, and it's kept only in the app's own folder (never system-wide).`)) return rtkDownload();
+      return;
+    }
+    case 'rtk-download': return rtkDownload();
+    case 'rtk-remove': { const r = await call('rtkRemove'); if (r && r.ok === false) toast(r.message || 'Not removed.'); S.rtk = await call('rtkStatus'); return render(); }
     case 'act-for-me': return setSettings({ actForMe: !S.settings.actForMe });
     case 'full-access': return setSettings({ access: S.settings.access === 'full' ? 'standard' : 'full' });
     case 'theme': return setSettings({ theme: d.v });

@@ -45,6 +45,7 @@ const studioLib = require('./studio.cjs');
 // Hearth OS versions (the owner picks every number). It only shows which Hearth
 // OS this computer runs, read from /etc/os-release.
 const more = require('./more-ais.cjs');
+const rtkLib = require('./rtk.cjs');
 // 3.3: the new chat APIs and cloud agents only connect by key (kimi is a CLI that can use its key too).
 const API_ONLY = ['perplexity', 'deepseek', ...more.KEYED.filter((a) => a !== 'kimi')];
 // 3.4.1: smaller sizes too (the app looked like it was at 150% on his screen). The owner picks it; never changed by itself.
@@ -219,6 +220,8 @@ function normalSettings(s) {
     // Uncensored mode (2.2.1, electron/studio.cjs): off until the owner turns it on; the hard
     // limits stay on either way.
     uncensored: studioLib.cleanUncensored(s.uncensored),
+    // rtk trims the command output the agents read (electron/rtk.cjs). Off unless the owner turns it on.
+    rtk: s.rtk === true,
   };
 }
 const MODEL_OK = /^[A-Za-z0-9._:\-/]{1,100}$/;
@@ -638,10 +641,19 @@ function registerIpc() {
       s.actForMe = on;
     }
     if ('fitScreen' in patch) s.fitScreen = patch.fitScreen === true;
+    // rtk: turning it off removes everything the app added for it (its own folder), after the setting is saved.
+    const rtkOff = 'rtk' in patch && patch.rtk !== true && s.rtk === true;
+    if ('rtk' in patch) s.rtk = patch.rtk === true;
     writeSettings(s);
+    if (rtkOff) rtkLib.instance()?.remove();
     applyZoom(s);
     return s;
   });
+  // rtk (Settings › Tools): status and savings, the verified download (only while the switch is on, only from his
+  // button), and removing a leftover folder while it's off.
+  handle('rtk:status', () => rtkLib.instance()?.status() || null);
+  handle('rtk:download', () => (readSettings().rtk === true ? rtkLib.instance().download() : { ok: false, message: 'Turn on "Trim command output for agents (rtk)" first.' }));
+  handle('rtk:remove', () => (readSettings().rtk === true ? { ok: false, message: 'Turn the switch off to remove rtk.' } : rtkLib.instance().remove()));
   handle('settings:addDir', async () => {
     const r = await dialog.showOpenDialog(mainWindow, { title: 'Give the AIs access to a folder', properties: ['openDirectory'] });
     const s = readSettings();
@@ -1409,6 +1421,8 @@ app.whenReady().then(async () => {
   updater = createUpdater({ app, send });
   characters = charactersLib.create({ dataDir });
   protocol.handle('hearth-char', (req) => { const f = characters.resolve(req.url); if (!f) return new Response('Not found', { status: 404 }); try { return new Response(f.body ?? fs.readFileSync(f.file), { headers: { 'Content-Type': f.mime, 'Access-Control-Allow-Origin': '*' } }); } catch { return new Response('Not found', { status: 404 }); } });
+  // rtk is used only while his switch is on, and only from the app's own folder.
+  rtkLib.configure({ dir: () => path.join(dataDir(), 'rtk'), enabled: () => readSettings().rtk === true });
   registerIpc();
   createWindow();
   if (process.argv.includes('--mini')) openMini();

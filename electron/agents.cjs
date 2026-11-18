@@ -22,6 +22,7 @@ const installer = require('./installer.cjs');
 const { claudeUsage } = require('./ops/usage.cjs');
 const perms = require('./permissions.cjs');
 const more = require('./more-ais.cjs');
+const rtk = require('./rtk.cjs');
 
 const BIN = { anthropic: 'claude', openai: 'codex', google: 'gemini', xai: 'grok', mistral: 'vibe', qwen: 'qwen', freebuff: 'freebuff', ollama: 'ollama',
   // 3.3: the new command-line agents, and the app builders (run through Claude Code).
@@ -34,12 +35,16 @@ const NPM_PACKAGE = installer.NPM_PACKAGE;
 // Claude Code adds AI attribution to commits/PRs by default; the owner's rule is
 // commits only as Dragongamer9 with no AI attribution, so turn it off per run.
 // Passed as a settings file (not inline JSON) in the user's own cache folder.
-function claudeSettingsFile() {
+const CLAUDE_BASE = { includeCoAuthoredBy: false, attribution: { commit: '', pr: '' } };
+// rt: this run's rtk (electron/rtk.cjs, only while the owner's switch is on): the same settings plus rtk's
+// hook, in rtk's own file inside the app's data folder.
+function claudeSettingsFile(rt = null) {
+  if (rt && rt.hook) { try { return rt.claudeSettings(CLAUDE_BASE); } catch {} }
   const dir = path.join(os.homedir(), '.cache', 'hearth-ai');
   const file = path.join(dir, 'claude-settings.json');
   try {
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-    fs.writeFileSync(file, JSON.stringify({ includeCoAuthoredBy: false, attribution: { commit: '', pr: '' } }), { mode: 0o600 });
+    fs.writeFileSync(file, JSON.stringify(CLAUDE_BASE), { mode: 0o600 });
     return file;
   } catch {
     return null;
@@ -487,11 +492,15 @@ async function runAgent({ agent, prompt, cwd, mode = 'read', model, timeoutMs, s
   let keySource = null;
   const lines = typeof onEvent === 'function' ? lineSplitter((ev) => { if (ev && ev.type === 'result') resultEvent = ev; if (ev && ev.type === 'system' && ev.subtype === 'init' && typeof ev.apiKeySource === 'string') keySource = ev.apiKeySource; try { onEvent(ev); } catch {} }) : null;
   const feed = lines ? (d) => { lines(d); onData?.(d); } : onData;
+  // rtk (Settings › Tools, off by default): trims the command output this run's agent reads. null while off,
+  // and then nothing below changes. Builders (MCP tools only) and local models don't run commands.
+  const rt = agent === 'ollama' || more.LOCAL[agent] || more.BUILDERS[agent] ? null : rtk.forRun({ agent, pathDirs: searchDirs() });
+  if (rt) extraEnv = { ...(extraEnv || {}), ...rt.env };
   const run = (f, a, o) => runTool(f, a, { ...o, onData: feed, extraEnv: o?.extraEnv ? { ...(extraEnv || {}), ...o.extraEnv } : extraEnv });
   if (mode === 'edit') mode = 'standard';
   const file = agent === 'ollama' ? null : bin || findBinary(agent);
   const img = imageInputs(agent, images, { agy: agent === 'google' && isAgy(file) });
-  prompt = `${prompt}${img.prompt}`;
+  prompt = `${rt && rt.note ? `${rt.note}\n\n` : ''}${prompt}${img.prompt}`;
   const dirs = [...extraDirs, ...img.dirs].filter((d, i, a) => typeof d === 'string' && path.isAbsolute(d) && fs.existsSync(d) && a.indexOf(d) === i);
   if (agent === 'ollama') return runOllama({ prompt, model, timeoutMs, signal });
   // Phi: Microsoft's small model, on this PC through Ollama.
@@ -511,7 +520,7 @@ async function runAgent({ agent, prompt, cwd, mode = 'read', model, timeoutMs, s
     const args = ['-p', '--output-format', lines ? 'stream-json' : 'json', ...(lines ? ['--verbose'] : []), '--permission-mode', perm];
     if (allowed.length) args.push('--allowedTools', ...allowed);
     if (!web) args.push('--disallowedTools', 'WebSearch', 'WebFetch');
-    const settingsFile = claudeSettingsFile();
+    const settingsFile = claudeSettingsFile(rt);
     if (settingsFile) args.push('--settings', settingsFile);
     if (mcp && typeof mcp.claudeFile === 'string') args.push('--mcp-config', mcp.claudeFile);
     args.push(...(resume ? ['--resume', resume] : ['--session-id', sid]));
