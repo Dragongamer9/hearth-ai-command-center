@@ -20,6 +20,7 @@
 - Policy check, approvals, audit log, in-app updates from published GitHub Releases.
 
 ## Not yet
+- Craft Anything (the owner, Nov 20, 2026: add it): github.com/storytold/craft-anything, an open-source (MIT/Apache-2.0, early alpha) tool that studies a program or game and has a coding agent build its own version. Planned as a tool for the Reverse Engineering work (docs/REVERSE-ENGINEERING.md), for the Trains 2010 remake, BFME and Universe at War. It would connect through its MCP server, so the team's agents can call its Study, Build and Check steps. Safety: its clean room isn't a sandbox, and the agents it runs act with the user's permissions. So it runs in its own container (distrobox) or user account, never "always allow" for npm, and Deep mode stays for private use with the owner's own copies.
 - FreeBuff can't be driven automatically (no non-interactive mode found), so its work is hands-on in a terminal.
 - No GitHub PR/CI tracking; approved merges/releases/deploys are recorded, not executed.
 - Agents run one task at a time each; no queue or scheduler yet.
