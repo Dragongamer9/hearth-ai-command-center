@@ -103,6 +103,8 @@ function createSecretStore({ safeStorage, dir, allowBasic = () => false }) {
       try { return safeStorage.decryptString(Buffer.from(enc, 'base64')); } catch { return null; }
     },
     has(provider) { return Boolean(readAll()[provider]); },
+    // How many keys are saved (read or not): 3.14's keyring-store.cjs compares it with how many could be read.
+    saved() { return Object.keys(readAll()).length; },
     remove(provider) {
       const data = readAll();
       delete data[provider];

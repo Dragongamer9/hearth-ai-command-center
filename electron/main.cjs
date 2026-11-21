@@ -51,6 +51,10 @@ const API_ONLY = ['perplexity', 'deepseek', ...more.KEYED.filter((a) => a !== 'k
 const TEXT_SIZES = [67, 75, 80, 90, 100, 115, 130, 150];
 const THEMES = ['hearth', 'dark', 'light', 'system'];
 
+// 3.14: start with the password store the keys were saved in, whatever the desktop (electron/keyring-store.cjs).
+const keyringStore = require('./keyring-store.cjs');
+try { keyringStore.applyAtStart({ app, dir: app.getPath('userData') }); } catch (e) { console.error('[hearth-ai] keyring:', e?.message || e); }
+
 if (!app.requestSingleInstanceLock()) {
   app.quit();
   process.exit(0);
@@ -1397,7 +1401,10 @@ app.whenReady().then(async () => {
   Menu.setApplicationMenu(null);
   secrets = createSecretStore({ safeStorage, dir: dataDir(), allowBasic: () => readSettings().secretsBasic === true });
   // Decrypt saved keys once (async keyring API), so they can be read synchronously afterwards.
-  try { await secrets.load(); } catch (e) { console.error('[hearth-ai] keys:', e?.message || e); }
+  let keysRead = 0;
+  try { keysRead = await secrets.load(); } catch (e) { console.error('[hearth-ai] keys:', e?.message || e); }
+  // 3.14: remember where the keys are; keys saved before 3.14 on another desktop's store: try that store once.
+  try { if (keyringStore.afterLoad({ app, dir: dataDir(), read: keysRead, saved: secrets.saved(), backend: secrets.backend() }) === 'relaunch') return; } catch (e) { console.error('[hearth-ai] keyring:', e?.message || e); }
   // The active project's board (the data from before projects is the default project, in the same file).
   store = createStore(ops.stateFile(dataDir(), readSettings().project, readSettings().projects));
   binding.setActive(ops.activeProjectId());
