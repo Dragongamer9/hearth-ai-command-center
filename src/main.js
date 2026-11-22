@@ -1226,8 +1226,8 @@ function topbar() {
   const temp = S.view === 'chat' && c?.temp ? `<span class="chip">${icon('eyeoff', 'sm')}Temporary · nothing is saved</span><button class="mini" data-a="temp-end" data-id="${esc(c.id)}">End</button>` : '';
   const know = S.view === 'chat' && c?.rp ? `<span class="chip">${rpCards(c).map((x) => avatarHtml(x, 'xs')).join('')}Roleplay${c.rp.characters.length > 1 ? ` · group · ${c.rp.order === 'list' ? 'in order' : 'natural order'}` : ''}</span>` : S.view === 'chat' && c && !c.temp ? `<button class="tb" data-a="chat-act" data-k="knowledge" data-id="${esc(c.id)}" title="This chat's instructions and reference files">${icon('doc', 'sm')}${c.instructions || c.refs?.length ? 'Instructions ✓' : 'Instructions'}</button>` : '';
   // 3.14 (claude-look-1/-2): Home has only Team and the panel; a chat's title opens its menu (⌄).
-  if (isClaude() && S.view === 'home') return `<span class="grow"></span><button class="tb" data-a="team-pop" data-top="1" title="Who works on this chat">${icon('users', 'sm')}Team</button><button class="tb" data-a="toggle-pane" title="Side panel" disabled>${icon('panel', 'sm')}</button>`;
-  if (isClaude() && S.view === 'chat' && c && !c.rp) return `${S.sideHidden ? `<button class="ib ghost" data-a="side-toggle" title="Show the sidebar" aria-label="Show the sidebar">${icon('panel', 'sm')}</button>` : ''}<button class="cl-title" data-a="chat-menu" data-id="${esc(c.id)}" title="This chat's menu">${esc(c.title || 'Chat')} <span class="faint">⌄</span></button>${workStack(cur(), 22)}${chip}${temp}<span class="grow"></span>${know}<button class="tb" data-a="live" title="See this chat's team as living cores">${icon('eye', 'sm')}Live</button><button class="tb" data-a="team-pop" data-top="1" title="Who works on this chat">${icon('users', 'sm')}Team</button><button class="tb" data-a="chat-opts" title="This chat's options">${icon('gear', 'sm')}</button><button class="tb" data-a="toggle-pane" title="Side panel: changes, code and preview">${icon('panel', 'sm')}</button>`;
+  if (isClaude() && S.view === 'home') return `<span class="grow"></span><button class="tb cl-tb" data-a="team-pop" data-top="1" title="Who works on this chat">${icon('users', 'sm')}Team</button><button class="tb cl-tb" data-a="toggle-pane" title="Side panel" disabled>${icon('panel', 'sm')}</button>`;
+  if (isClaude() && S.view === 'chat' && c && !c.rp) return `${S.sideHidden ? `<button class="ib ghost" data-a="side-toggle" title="Show the sidebar" aria-label="Show the sidebar">${icon('panel', 'sm')}</button>` : ''}<button class="cl-title" data-a="chat-opts" title="This chat: instructions, Live, voice, rename and more">${esc(c.title || 'Chat')} <span class="faint">⌄</span></button>${(c.repo || c.repoDir) ? `<button class="cl-pill mono" data-a="repo-pop" title="Connected repo">${icon('gh', 'sm')}${esc(String(c.repo || c.repoDir).split('/').pop())} · ${esc(c.branch || S.copy?.base || 'default branch')}</button>` : ''}${workStack(cur(), 22)}${temp}<span class="grow"></span><button class="tb cl-tb" data-a="team-pop" data-top="1" title="Who works on this chat">${icon('users', 'sm')}Team</button><button class="tb cl-tb" data-a="toggle-pane" title="Side panel: changes, code and preview">${icon('panel', 'sm')}</button>`;
   if (S.view === 'habitat') return `<span class="ttl">Habitat</span><span class="faint hab-sub">${S.lastChat && entry(S.lastChat) ? `the team of “${esc(entry(S.lastChat).title)}”` : 'your AI team'}</span><span class="grow"></span>`;
   // 3.12 (nyarch-1/-2): the chat's headerbar: the side panel toggle, who's answering, and the model button in the middle;
   // ⚙ beside it opens everything the old top bar had (repo, instructions, Live, voice, team, gallery, panel).
@@ -1358,7 +1358,7 @@ function claudeRow(c, busy) {
   const off = offIn(['chat', 'live'].includes(S.view) ? cur() : null);
   const on = t.members.filter((a) => ready(a) && !off.includes(a));
   const who = S.mode === 'team' ? `Team: ${on.slice(0, 3).map(aiName).join(', ')}${on.length > 3 ? ` +${on.length - 3}` : ''}` : aiName(S.mode);
-  const cores = S.settings.composerCores !== false ? `<span class="cl-cores">${(S.mode === 'team' ? on : [S.mode]).slice(0, 4).map((a) => miniCore(a, aiName(a), 18, 'ready')).join('')}</span>` : '';
+  const cores = S.settings.composerCores !== false ? `<span class="cl-cores">${(S.mode === 'team' ? on : [S.mode]).slice(0, 4).map((a) => `<i class="cl-dot" style="--c:rgb(${liveCoreOf(a).rgb})" title="${esc(aiName(a))}"></i>`).join('')}</span>` : '';
   return `<div class="cl-row">
     <button class="ib" data-a="attach" title="Attach files, images, videos, PDFs or spreadsheets (or paste a screenshot)" aria-label="Attach">${icon('plus', 'sm')}</button>
     <button class="ib" data-a="composer-opts" title="Tools: web, run &amp; build, deep research, models, talk" aria-label="Tools">${icon('sliders', 'sm')}</button>
@@ -1375,12 +1375,14 @@ function teamPickClaude(p) {
   const R = S.view === 'chat' ? cur() : null;
   const off = offIn(R);
   const on = t.members.filter(ready);
-  const pos = p.top ? 'right:20px;top:52px' : p.b != null ? `left:${p.x}px;bottom:${p.b}px` : `left:${p.x}px;top:${p.y}px`;
+  const pos = `${p.top ? 'right:20px;top:52px' : p.b != null ? `left:${Math.max(8, Math.min(p.x, window.innerWidth - 400))}px;bottom:${p.b}px` : `left:${p.x}px;top:${p.y}px`};max-height:${Math.max(240, p.maxH || window.innerHeight - 80)}px`;
+  const lead = [t.lead, t.reviewer].filter((a) => on.includes(a));
+  const shown = S.clMore ? on : [...lead, ...on.filter((a) => !lead.includes(a))].slice(0, 5);
   const plan = (a) => [a === t.lead ? 'lead' : a === t.reviewer ? 'reviewer' : 'member', statusOf(a).label].filter(Boolean).join(' · ');
   return `<div class="scrim" data-a="close-pop"></div><div class="pop cl-pick" style="${pos}"><div class="mh">Who works on this chat</div>
-    ${on.map((a) => `<div class="cl-it">${miniCore(a, aiName(a), 26, off.includes(a) ? 'off' : 'ready')}<span class="t2"><b>${esc(aiName(a))}</b><small>${esc(plan(a))}</small></span><span class="grow"></span>${tog(!off.includes(a) && S.mode === 'team', 'team-off', `data-v="${esc(a)}"`)}</div>`).join('') || '<p class="fine">No teammate is connected yet.</p>'}
+    ${shown.map((a) => `<div class="cl-it">${miniCore(a, aiName(a), 26, off.includes(a) ? 'off' : 'ready')}<span class="t2"><b>${esc(aiName(a))}</b><small>${esc(plan(a))}</small></span><span class="grow"></span>${tog(!off.includes(a) && S.mode === 'team', 'team-off', `data-v="${esc(a)}"`)}</div>`).join('') || '<p class="fine">No teammate is connected yet.</p>'}
     <div class="sep"></div>
-    <button class="it" data-a="settings-team">More AIs<small>›</small></button>
+    ${on.length > shown.length || S.clMore ? `<button class="it" data-a="cl-more">${S.clMore ? 'Fewer' : `More AIs (${on.length - shown.length})`}<small>${S.clMore ? '‹' : '›'}</small></button>` : '<button class="it" data-a="settings-team">More AIs<small>›</small></button>'}
     <button class="it" data-a="go-set" data-t="team">Roles and who leads…</button>
     <button class="it" data-a="cl-solo">Just one AI, no team<small>›</small></button>
     ${S.clSolo ? `<div class="wa-grid">${on.map((a) => `<button class="wa ${S.mode === a ? 'on' : ''}" data-a="set-mode" data-v="${a}">${mono(a, 'sm')}<span>${esc(aiName(a))}</span></button>`).join('')}<button class="wa ${S.mode === 'team' ? 'on' : ''}" data-a="set-mode" data-v="team">${icon('users', 'sm')}<span>Whole team</span></button></div>` : ''}
@@ -1971,14 +1973,35 @@ function rtabBody(t) {
   }
   return '';
 }
+// 3.14 (claude-look-2): the side panel: a title, Changes / Code / Preview, the diff in mono with + and − coloured.
+// Files, the terminal and the avatar are one click away (⋯ and the face button), as before.
+function clPanelHtml() {
+  const tab = S.clTab || 'changes';
+  const m = [...S.msgs].reverse().find((x) => x.changes);
+  const files = m?.changes?.files || [];
+  const prevs = S.msgs.flatMap((x) => (x.previews || []).map((p) => ({ m: x, p })));
+  const title = files.length ? (files.length === 1 ? files[0].path.split('/').pop() : `${files.length} files changed`) : prevs.length ? prevs[prevs.length - 1].p.name : entry()?.title || 'This chat';
+  if (tab === 'changes' && m && entry() && (!S.clDiff || S.clDiff.chat !== S.open || S.clDiff.msg !== m.id) && !S.clDiffLoading) {
+    S.clDiffLoading = true;
+    call('chatDiff', entry().id).then((d) => { S.clDiff = { chat: S.open, msg: m.id, files: parseDiff(d?.diff || '') }; S.clDiffLoading = false; renderPane(true); }).catch(() => { S.clDiffLoading = false; });
+  }
+  const diff = S.clDiff && S.clDiff.chat === S.open ? S.clDiff.files : null;
+  const line = (l) => `<div class="dl ${l.t === '+' ? 'add' : l.t === '-' ? 'del' : ''}">${esc(l.t === '+' || l.t === '-' ? l.t : ' ')}${esc(l.s ?? l.text ?? '')}</div>`;
+  const body = tab === 'changes' ? (!m ? '<div class="rt-empty">No changes in this chat yet.</div>' : diff ? diff.map((f) => `<div class="cl-df"><div class="cl-dfh mono">${esc(f.path)} <span class="add">+${f.add}</span> <span class="del">−${f.del}</span></div>${f.binary ? '<div class="faint">Binary file</div>' : f.hunks.map((h) => `<div class="cl-hunk mono"><div class="hh">${esc(h.header)}</div>${h.lines.map(line).join('')}</div>`).join('')}</div>`).join('') || '<div class="rt-empty">No changes.</div>' : '<div class="rt-empty">Loading the changes…</div>')
+    : tab === 'code' ? (prevs.filter(({ p }) => p.kind === 'code').map(({ m: x, p }) => `<button class="rt-file" data-a="open-canvas" data-m="${esc(x.id)}" data-p="${esc(p.id)}">${icon('code', 'sm')}<span>${esc(p.name)}</span></button>`).join('') + rtabBody('files'))
+    : rtabBody('browser');
+  return `<div class="rp-top cl-pt"><b class="cl-ptt">${icon('code', 'sm')}${esc(title)}</b><span class="grow"></span>${[['changes', 'Changes'], ['code', 'Code'], ['preview', 'Preview']].map(([k, l]) => `<button class="cl-tab ${tab === k ? 'on' : ''}" data-a="cl-tab" data-v="${k}">${l}</button>`).join('')}<button class="xb" data-a="rpanel" data-v="tools" title="Files, terminal, browser and Ithil">${icon('dots', 'sm')}</button><button class="xb" data-a="rpanel" data-v="avatar" title="The avatar">${icon('user', 'sm')}</button><button class="xb" data-a="rp-collapse" title="Collapse the panel">⟩</button></div>
+    <div class="rt-body cl-pb">${body}</div>`;
+}
 function rpanelHtml() {
+  if (isClaude() && !S.rpanel) return clPanelHtml();
   if (S.rpanel === 'tools') {
     const tab = S.rtab || 'files';
-    return `<div class="rp-top"><button class="xb" data-a="rpanel" data-v="avatar" title="Back to the avatar">${icon('panel', 'sm')}</button><span class="grow"></span><button class="xb" data-a="toggle-pane" title="Live preview and canvas">${icon('monitor', 'sm')}</button><button class="xb" data-a="rfiles-new" title="Open a folder of this chat">${icon('plus', 'sm')}${icon('chev', 'sm')}</button><button class="xb" data-a="win" data-v="max" title="Maximise">${icon('square', 'sm')}</button><button class="xb" data-a="win" data-v="close" title="Close">${icon('x', 'sm')}</button></div>
+    return `<div class="rp-top"><button class="xb" data-a="rpanel" data-v="${isClaude() ? '' : 'avatar'}" title="${isClaude() ? 'Back to changes, code and preview' : 'Back to the avatar'}">${icon('panel', 'sm')}</button><span class="grow"></span><button class="xb" data-a="toggle-pane" title="Live preview and canvas">${icon('monitor', 'sm')}</button><button class="xb" data-a="rfiles-new" title="Open a folder of this chat">${icon('plus', 'sm')}${icon('chev', 'sm')}</button><button class="xb" data-a="win" data-v="max" title="Maximise">${icon('square', 'sm')}</button><button class="xb" data-a="win" data-v="close" title="Close">${icon('x', 'sm')}</button></div>
       <div class="rtabs">${RTABS.map(([k, ic, l]) => `<button class="${tab === k ? 'on' : ''}" data-a="rtab" data-v="${k}">${icon(ic, 'sm')}<span>${l}</span></button>`).join('')}</div>
       <div class="rt-body">${rtabBody(tab)}${tab === 'files' && S.rpanel === 'tools' ? `<div class="rtabs sub"><button class="on">${icon('code', 'sm')}<span>${S.mode === 'ithil' || team().members.includes('ithil') ? 'Ithil\'s terminal' : 'Terminal'}</span></button></div>${rtabBody('terminal')}` : ''}</div>`;
   }
-  return `<div class="rp-top"><span class="grow"></span><button class="xb ${S.settings.autoRead ? 'on' : ''}" data-a="toggle-autoread" title="Read answers aloud">${icon('speaker', 'sm')}</button><button class="xb" data-a="rpanel" data-v="tools" title="Files, terminal, browser and changes">${icon('panel', 'sm')}</button><button class="xb" data-a="avatar-who" title="Who stands here">${icon('user', 'sm')}</button><button class="xb" data-a="rp-collapse" title="Collapse the panel">⟩</button>${winBtns()}</div>${avatarStage()}`;
+  return `<div class="rp-top">${isClaude() ? `<button class="xb" data-a="rpanel" data-v="" title="Back to changes, code and preview">${icon('chev', 'sm')}</button>` : ''}<span class="grow"></span><button class="xb ${S.settings.autoRead ? 'on' : ''}" data-a="toggle-autoread" title="Read answers aloud">${icon('speaker', 'sm')}</button><button class="xb" data-a="rpanel" data-v="tools" title="Files, terminal, browser and changes">${icon('panel', 'sm')}</button><button class="xb" data-a="avatar-who" title="Who stands here">${icon('user', 'sm')}</button><button class="xb" data-a="rp-collapse" title="Collapse the panel">⟩</button>${winBtns()}</div>${avatarStage()}`;
 }
 
 function renderPane(force = false) {
@@ -1993,7 +2016,7 @@ function renderPane(force = false) {
     if (show && pstate === 'collapsed') { const k2 = `rail|${S.mode}|${S.busy?.agent || ''}|${S.settings.autoRead}|${S.ithil.avatar ? 1 : 0}`; if (force || k2 !== rpanelKey) { rpanelKey = k2; el.innerHTML = railHtml(); } return; }
     document.getElementById('shell')?.classList.toggle('with-pane', show);
     if (!show) { if (rpanelKey) { el.innerHTML = ''; rpanelKey = ''; } return; }
-    const key = `${S.rpanel}|${S.rtab}|${S.open}|${S.msgs.length}|${S.ithil.body ? S.ithil.body.length : 0}|${S.ithil.status?.mood}|${S.ithil.status?.state}|${S.mode}|${S.busy?.agent || ''}|${S.settings.autoRead}|${S.rfiles?.path ?? '-'}|${S.rfiles?.items?.length ?? 0}`;
+    const key = `${S.rpanel}|${S.rtab}|${S.clTab}|${S.clDiff?.msg || ''}|${S.open}|${S.msgs.length}|${S.ithil.body ? S.ithil.body.length : 0}|${S.ithil.status?.mood}|${S.ithil.status?.state}|${S.mode}|${S.busy?.agent || ''}|${S.settings.autoRead}|${S.rfiles?.path ?? '-'}|${S.rfiles?.items?.length ?? 0}`;
     if (!force && key === rpanelKey) return;
     rpanelKey = key; paneKey = '';
     el.innerHTML = rpanelHtml();
@@ -2724,9 +2747,9 @@ function section(k) {
     const ACC = [['blue', 'Blue'], ['teal', 'Teal'], ['green', 'Green'], ['yellow', 'Yellow'], ['orange', 'Orange'], ['red', 'Red'], ['pink', 'Pink'], ['purple', 'Purple'], ['slate', 'Slate']];
     // 3.12 (settings-7): Look: Style, Accent colour, Text size.
     return `<h1>Appearance</h1><div class="box"><h3>Look</h3>
-      ${design === 'claude' ? lookClaudeRows(s) : ''}<div class="srow">Style<span class="d">${design === 'claude' ? 'The Claude app look is the default; Gold hologram and Dark (3.12) are still here' : design === 'adwaita' ? '' : holo ? 'gold hologram: living cores, always dark, its own colours' : 'classic: calm and warm, follows the theme below'}</span><span class="grow"></span><select data-a="design-pick"><option value="claude" ${design === 'claude' ? 'selected' : ''}>Claude app</option><option value="adwaita" ${design === 'adwaita' ? 'selected' : ''}>Dark</option><option value="hologram" ${holo ? 'selected' : ''}>Gold hologram</option><option value="classic" ${design === 'classic' ? 'selected' : ''}>Classic</option></select></div>
+      ${design === 'claude' ? lookClaudeRows(s) : ''}<div class="srow ${design === 'claude' ? 'cl-style' : ''}">${design === 'claude' ? '<span class="t2"><b>Style</b><span class="d">Claude app is the default; Gold hologram, Dark (3.12) and Classic are still here</span></span><span class="cl-hide">' : ''}Style${design === 'claude' ? '</span>' : ''}<span class="d ${design === 'claude' ? 'cl-hide' : ''}">${design === 'claude' ? 'The Claude app look is the default; Gold hologram and Dark (3.12) are still here' : design === 'adwaita' ? '' : holo ? 'gold hologram: living cores, always dark, its own colours' : 'classic: calm and warm, follows the theme below'}</span><span class="grow"></span><select data-a="design-pick"><option value="claude" ${design === 'claude' ? 'selected' : ''}>Claude app</option><option value="adwaita" ${design === 'adwaita' ? 'selected' : ''}>Dark</option><option value="hologram" ${holo ? 'selected' : ''}>Gold hologram</option><option value="classic" ${design === 'classic' ? 'selected' : ''}>Classic</option></select></div>
       ${s.design === 'claude' && !s.designPicked ? '<div class="note sub">3.14 switched the Style to Claude app. Pick Dark, Gold hologram or Classic here to go back; your pick is kept.</div>' : ''}
-      <div class="srow">Accent colour<span class="d"></span><span class="grow"></span><select data-a="accent-pick" ${design !== 'adwaita' ? 'disabled' : ''}>${ACC.map(([v, l]) => `<option value="${v}" ${(s.accent || 'blue') === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+      <div class="srow" ${design === 'claude' ? 'hidden' : ''}>Accent colour<span class="d"></span><span class="grow"></span><select data-a="accent-pick" ${design !== 'adwaita' ? 'disabled' : ''}>${ACC.map(([v, l]) => `<option value="${v}" ${(s.accent || 'blue') === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
       ${['classic', 'claude'].includes(design) ? '' : '<div class="note sub">Theme and your Hearth OS colours apply when Style is Classic.</div>'}
       <div class="srow" ${design === 'classic' ? '' : 'hidden'}>Theme<span class="grow"></span>${['hearth', 'dark', 'light', 'system'].map((v) => `<button class="seg ${s.theme === v ? 'on' : ''}" data-a="theme" data-v="${v}">${{ hearth: 'Follow Hearth OS', dark: 'Dark', light: 'Light', system: 'System' }[v]}</button>`).join('')}</div>
       <div class="srow">Draw the app at 100%<span class="d">${S.screen && S.screen.scale > 1.01 ? `your desktop scales this screen to ${Math.round(S.screen.scale * 100)}%, and the app follows it unless this is on` : 'for a screen your desktop scales up (125%, 150%…): the app then ignores that scale'}</span><span class="grow"></span>${tog(s.fitScreen === true, 'fit-screen')}</div>
@@ -3567,6 +3590,7 @@ document.addEventListener('click', async (ev) => {
     case 'composer-opts': S.pop = S.pop?.kind === 'copts' ? null : { kind: 'copts' }; return renderOverlay();
     case 'win': return call('winAct', d.v);
     case 'rpanel': S.rpanel = d.v; if (d.v === 'tools' && (S.rtab || 'files') === 'files') loadRFiles(''); return renderPane(true);
+    case 'cl-tab': S.clTab = d.v; if (d.v === 'code') loadRFiles(S.rfiles?.path || ''); return renderPane(true);
     case 'rtab': S.rtab = d.v; if (d.v === 'files') loadRFiles(S.rfiles?.path || ''); return renderPane(true);
     case 'rfiles-open': return loadRFiles(`${S.rfiles?.path ? `${S.rfiles.path}/` : ''}${d.v}`);
     case 'rfiles-up': return loadRFiles(String(S.rfiles?.path || '').split('/').slice(0, -1).join('/'));
@@ -3771,6 +3795,7 @@ document.addEventListener('click', async (ev) => {
     case 'composer-cores': return setSettings({ composerCores: S.settings.composerCores === false });
     case 'go-set': S.view = 'settings'; S.pane = null; S.pop = null; S.tab = d.t || 'team'; render(true); return loadSection(S.tab);
     case 'cl-solo': S.clSolo = !S.clSolo; return renderOverlay();
+    case 'cl-more': S.clMore = !S.clMore; return renderOverlay();
     case 'team-off': {
       // Switched per chat: kept in the chat's own file (sessions._off), never in settings.
       const R = S.view === 'chat' ? cur() : null;

@@ -1489,3 +1489,24 @@ details.more-acct > summary { cursor: pointer; font-weight: 700; color: var(--st
 :root[data-design="claude"] .rtabs button { color: var(--muted); }
 :root[data-design="claude"] .rtabs button.on { background: var(--side-on); color: var(--strong); }
 :root[data-design="claude"] .rpanel .term { background: var(--cl-code); color: var(--text); }
+/* 3.14 fixes after the first screenshots */
+:root[data-design="claude"] .side .sec { text-transform: none; letter-spacing: 0; }
+.cl-dot { width: 18px; height: 18px; border-radius: 50%; display: inline-block; background: radial-gradient(circle at 35% 30%, #fff8, transparent 60%), var(--c); box-shadow: 0 0 0 2px var(--panel); }
+.cl-it .core { pointer-events: none; }
+:root[data-design="claude"] .cl-tb { border: 1px solid var(--line); }
+:root[data-design="claude"] .top .cl-pill { height: 30px; font-size: 12.5px; }
+.cl-pt { gap: 6px; padding: 0 10px 0 16px; border-bottom: 1px solid var(--line); }
+.cl-ptt { display: flex; align-items: center; gap: 8px; font-weight: 500; color: var(--strong); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.cl-tab { padding: 5px 11px; border-radius: 8px; color: var(--muted); font-size: 13px; }
+.cl-tab.on { background: var(--side-on); color: var(--strong); }
+.cl-pb { padding: 8px 0; }
+.cl-df { margin: 0 0 10px; }
+.cl-dfh { padding: 6px 16px; color: var(--muted); font-size: 12px; }
+.cl-hunk { font-size: 12.5px; line-height: 1.6; }
+.cl-hunk .hh { color: var(--faint); padding: 2px 16px; }
+.cl-hunk .dl { padding: 0 16px; white-space: pre; overflow: hidden; text-overflow: ellipsis; color: var(--text); }
+.cl-hunk .dl.add { color: #8fcf9c; background: rgba(127, 191, 141, .07); }
+.cl-hunk .dl.del { color: #ec8f7c; background: rgba(236, 133, 119, .07); }
+.cl-dfh .add { color: #8fcf9c; } .cl-dfh .del { color: #ec8f7c; }
+:root[data-design="claude"] .cl-set .srow.cl-style .cl-hide { display: none; }
+:root[data-design="claude"] .cl-set .srow.cl-style select { margin-left: auto; }
