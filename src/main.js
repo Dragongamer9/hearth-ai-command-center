@@ -71,7 +71,7 @@ const S = {
   open: null, lastChat: null,
   // 3.9: Ithil (Hearth AI): her status from /v1/status and /v1/events, her picture, her newest thought.
   ithil: { status: null, avatar: null, avatarExpr: '', thought: null, info: null, testing: false, test: null },
-  draft: '', attach: [], conn: null, mode: 'team', web: true, build: true, deep: false, homeModels: {},
+  draft: '', attach: [], conn: null, mode: 'team', web: true, build: true, deep: false, homeModels: {}, homeOff: [],
   pane: null, pop: null, modal: null, toast: null, editing: null,
   search: '', hits: null, showTrash: false, showHidden: false, renaming: null,
   repos: null, reposMsg: '', repoQuery: '', branches: {}, pick: null,
@@ -93,6 +93,13 @@ const call = async (fn, ...a) => { if (!api || typeof api[fn] !== 'function') re
 const entry = (id = S.open) => S.chats.find((c) => c.id === id) || S.temps.find((c) => c.id === id) || null;
 const ownerName = () => S.settings.ownerIdentity?.name || S.gh.ghUser || 'Dragongamer9';
 const team = () => teamOf(S.settings.team);
+// 3.14 (docs/mockups/claude-look-*.png): the Style. The Claude app look is the default when none was picked; a Style
+// picked in Settings (Gold hologram, Dark, Classic) always stays.
+const DESIGNS = ['claude', 'adwaita', 'hologram', 'classic'];
+const designOf = (s = S.settings) => (DESIGNS.includes(s?.design) ? s.design : 'claude');
+const isClaude = () => designOf() === 'claude';
+// Who's switched off in this chat (the team picker's switches; kept with the chat, never in settings).
+const offIn = (R) => (R ? R.sessions?._off || [] : S.homeOff || []);
 
 // ---------- AIs ----------
 // Missing quick-check tools above the message box: each tool once, and it can be hidden (it
@@ -264,7 +271,7 @@ async function openChat(id) {
 function goHome() {
   S.view = 'home'; S.open = null; S.pane = null; S.pop = null; S.editing = null;
   // A new chat starts from the owner's defaults, never from what the last chat used.
-  applyPrefs(S, defaultsFrom(S.settings)); S.homeModels = {};
+  applyPrefs(S, defaultsFrom(S.settings)); S.homeModels = {}; S.homeOff = [];
   // 3.13: Settings › AI team › New messages start with.
   if (S.settings.startWith && S.settings.startWith !== 'team' && team().members.includes(S.settings.startWith)) S.mode = S.settings.startWith;
   try { localStorage.removeItem('hearth.v2.open'); } catch {}
@@ -280,6 +287,7 @@ async function ensureChat(firstText) {
   const R = rt(e.id);
   R.loaded = true;
   if (Object.keys(S.homeModels).length) R.sessions._models = { ...S.homeModels };
+  if (S.homeOff.length) R.sessions._off = [...S.homeOff];
   // Switches he changed on the home screen before the first message belong to this chat.
   if (!samePrefs(prefsOf(S), defaultsFrom(S.settings))) rememberPrefs(R, S);
   S.open = e.id; S.lastChat = e.id; S.view = 'chat';
@@ -1172,7 +1180,7 @@ function renderSide() {
     </div>${sideWork(R)}`;
   };
   const working = runner.busyIds().length;
-  const html = `
+  const html = isClaude() ? sideClaude(groups, item, hidden, working) : `
     <div class="hist-h"><b>History</b><button class="ib ghost" data-a="side-menu" aria-expanded="${S.sideMenu ? 'true' : 'false'}" title="Places and tools" aria-label="Places and tools">${icon('menu')}</button></div>
     <div class="side-menu" ${S.sideMenu ? '' : 'hidden'}>
     <button class="navitem" data-a="temp-chat" title="Nothing is saved: no chat file, no history, no memory">${icon('eyeoff', 'sm')}Temporary chat</button>
@@ -1217,6 +1225,9 @@ function topbar() {
   const chip = S.view === 'chat' && c && (c.repo || c.repoDir) ? `<button class="chip" data-a="repo-pop" title="Connected repo">${icon('gh', 'sm')}${esc(c.repo || c.repoDir)} <span class="faint">· ${esc(c.branch || S.copy?.base || 'default branch')}</span></button>` : '';
   const temp = S.view === 'chat' && c?.temp ? `<span class="chip">${icon('eyeoff', 'sm')}Temporary · nothing is saved</span><button class="mini" data-a="temp-end" data-id="${esc(c.id)}">End</button>` : '';
   const know = S.view === 'chat' && c?.rp ? `<span class="chip">${rpCards(c).map((x) => avatarHtml(x, 'xs')).join('')}Roleplay${c.rp.characters.length > 1 ? ` · group · ${c.rp.order === 'list' ? 'in order' : 'natural order'}` : ''}</span>` : S.view === 'chat' && c && !c.temp ? `<button class="tb" data-a="chat-act" data-k="knowledge" data-id="${esc(c.id)}" title="This chat's instructions and reference files">${icon('doc', 'sm')}${c.instructions || c.refs?.length ? 'Instructions ✓' : 'Instructions'}</button>` : '';
+  // 3.14 (claude-look-1/-2): Home has only Team and the panel; a chat's title opens its menu (⌄).
+  if (isClaude() && S.view === 'home') return `<span class="grow"></span><button class="tb" data-a="team-pop" data-top="1" title="Who works on this chat">${icon('users', 'sm')}Team</button><button class="tb" data-a="toggle-pane" title="Side panel" disabled>${icon('panel', 'sm')}</button>`;
+  if (isClaude() && S.view === 'chat' && c && !c.rp) return `${S.sideHidden ? `<button class="ib ghost" data-a="side-toggle" title="Show the sidebar" aria-label="Show the sidebar">${icon('panel', 'sm')}</button>` : ''}<button class="cl-title" data-a="chat-menu" data-id="${esc(c.id)}" title="This chat's menu">${esc(c.title || 'Chat')} <span class="faint">⌄</span></button>${workStack(cur(), 22)}${chip}${temp}<span class="grow"></span>${know}<button class="tb" data-a="live" title="See this chat's team as living cores">${icon('eye', 'sm')}Live</button><button class="tb" data-a="team-pop" data-top="1" title="Who works on this chat">${icon('users', 'sm')}Team</button><button class="tb" data-a="chat-opts" title="This chat's options">${icon('gear', 'sm')}</button><button class="tb" data-a="toggle-pane" title="Side panel: changes, code and preview">${icon('panel', 'sm')}</button>`;
   if (S.view === 'habitat') return `<span class="ttl">Habitat</span><span class="faint hab-sub">${S.lastChat && entry(S.lastChat) ? `the team of “${esc(entry(S.lastChat).title)}”` : 'your AI team'}</span><span class="grow"></span>`;
   // 3.12 (nyarch-1/-2): the chat's headerbar: the side panel toggle, who's answering, and the model button in the middle;
   // ⚙ beside it opens everything the old top bar had (repo, instructions, Live, voice, team, gallery, panel).
@@ -1252,7 +1263,7 @@ function renderMain(scroll = false) {
   else if (S.view === 'characters') { html = charactersView(); dock = ''; }
   else if (S.view === 'card') { html = cardEditView(); dock = ''; queueMicrotask(() => cfRun(false)); }
   else if (S.view === 'lorebooks') { html = lorebooksView(); dock = ''; }
-  else if (S.view === 'chat') { html = chatView(); dock = composer(entry()?.rp ? `Your line as ${S.persona?.name || 'you'}…` : cur()?.canvas ? 'Ask for changes to the canvas…' : S.open && S.msgs.some((m) => m.previews?.length) && S.pane ? 'Ask for changes to the preview…' : S.mode === 'team' ? `Send a message… (${team().members.filter(ready).slice(0, 5).map((x) => `@${aiName(x)}`).join(', ')})` : 'Send a message…') + `<div class="hint">${esc(hintLine())}</div>`; }
+  else if (S.view === 'chat') { html = chatView(); dock = composer(entry()?.rp ? `Your line as ${S.persona?.name || 'you'}…` : cur()?.canvas ? 'Ask for changes to the canvas…' : S.open && S.msgs.some((m) => m.previews?.length) && S.pane ? 'Ask for changes to the preview…' : isClaude() ? (S.mode === 'team' ? 'Reply to the team…' : `Reply to ${aiName(S.mode)}…`) : S.mode === 'team' ? `Send a message… (${team().members.filter(ready).slice(0, 5).map((x) => `@${aiName(x)}`).join(', ')})` : 'Send a message…') + `<div class="hint">${esc(hintLine())}</div>`; }
   else { html = homeView(); dock = ''; }
   const main = document.getElementById('main');
   main.classList.toggle('home-mode', S.view === 'home');
@@ -1293,7 +1304,101 @@ function hintLine() {
   return c && (c.repo || c.repoDir) ? `${who} · changes go to a branch · main only changes when you approve` : `${who} · no repo: nothing can be committed or pushed`;
 }
 
+
+// ---------- 3.14: the Claude app look (docs/mockups/claude-look-*.png, checklist docs/mockups/checklists/claude-look.md) ----------
+const partOfDay = (d = new Date()) => greeting(d).replace(/^Good /, '').replace(/^./, (x) => x.toUpperCase());
+const CLAUDE_PLACES = [
+  ['chats', 'chat', 'Chats', 'new-chat', () => S.view === 'home'],
+  ['repos', 'gh', 'Repos', 'repo-pop', () => false],
+  ['studio', 'pic', 'Images & Videos', 'studio', () => S.view === 'studio'],
+  ['live', 'eye', 'Live', 'live', () => S.view === 'live'],
+  ['habitat', 'home', 'Habitat', 'habitat', () => S.view === 'habitat'],
+  ['reverse', 'code', 'Reverse Engineering', 'reverse', () => S.view === 'reverse'],
+  ['desktop', 'cpu', 'Agent Desktop', 'go-set', () => false, 'tools'],
+  ['characters', 'user', 'Characters', 'characters', () => ['characters', 'card', 'lorebooks'].includes(S.view)],
+];
+function signedInLine() {
+  const on = TEAM_IDS.filter((a) => AGENTS[a] && ready(a) && !AGENTS[a].imagesOnly).map(aiName);
+  return on.length ? `${on.slice(0, 3).join(' · ')}${on.length > 3 ? ` +${on.length - 3}` : ''} signed in` : 'No AI signed in yet';
+}
+function sideClaude(groups, item, hidden, working) {
+  const star = groups.find((g) => g.key === 'pinned');
+  const rest = groups.filter((g) => g.key !== 'pinned').flatMap((g) => g.items);
+  const nm = ownerName();
+  return `<div class="cl-brand"><b>Command Center</b><button class="ib ghost" data-a="side-toggle" title="Hide the sidebar" aria-label="Hide the sidebar">${icon('panel', 'sm')}</button></div>
+    <button class="cl-new" data-a="new-chat"><span class="cl-plus">${icon('plus', 'sm')}</span>New chat</button>
+    <nav class="cl-places">${CLAUDE_PLACES.map(([k, ic, label, a, on, t]) => `<button class="navitem ${on() ? 'on' : ''}" data-a="${a}" data-k="${k}" ${t ? `data-t="${t}"` : ''}>${icon(ic, 'sm')}${esc(label)}</button>`).join('')}
+      <button class="navitem" data-a="temp-chat" title="Nothing is saved: no chat file, no history, no memory">${icon('eyeoff', 'sm')}Temporary chat</button></nav>
+    <label class="search">${icon('search', 'sm')}<input id="chat-search" placeholder="Search chats" value="${esc(S.search)}" aria-label="Search chats"></label>
+    <div class="list" id="chat-list">
+      ${S.broken ? '<div class="note bad">Your chats list couldn\'t be read. It was left as it is; new chats can\'t be saved until it\'s fixed.</div>' : ''}
+      ${working ? `<div class="sec">${working} working · up to ${S.settings.maxChats || 3} at once</div>` : ''}
+      ${S.temps.length ? `<div class="sec">Temporary (not saved)</div>${S.temps.map((c) => `<div class="item ${S.view === 'chat' && S.open === c.id ? 'on' : ''}" data-chat="${esc(c.id)}">${icon('eyeoff', 'sm')}<span class="t">${esc(c.title)}</span>${chatStatus(c.id) || ''}<button class="more vis" data-a="temp-end" data-id="${esc(c.id)}" title="End">${icon('x', 'sm')}</button></div>`).join('')}` : ''}
+      ${star && star.items.length ? `<div class="sec">Starred</div>${star.items.map(item).join('')}` : ''}
+      ${rest.length ? `<div class="sec">Recents</div>${rest.map(item).join('')}` : (star && star.items.length) ? '' : `<div class="empty-list">${S.search ? 'No chats match.' : 'No chats yet.'}</div>`}
+      ${hidden.length ? `<button class="sec link" data-a="toggle-hidden">${icon(S.showHidden ? 'chev' : 'chevr', 'sm')}Hidden (${hidden.length})</button>${S.showHidden ? hidden.map((c) => `<div class="item dim"><span class="t">${esc(c.title)}</span><button class="mini" data-a="unhide" data-id="${esc(c.id)}">Show</button></div>`).join('') : ''}` : ''}
+      ${S.trash.length ? `<button class="sec link" data-a="toggle-trash">${icon(S.showTrash ? 'chev' : 'chevr', 'sm')}Recently deleted (${S.trash.length})</button>${S.showTrash ? S.trash.map((t) => `<div class="item dim"><span class="t">${esc(t.title)}</span><button class="mini" data-a="restore" data-id="${esc(t.trashId)}">Restore</button></div>`).join('') : ''}` : ''}
+    </div>
+    <button class="cl-acct" data-a="settings" title="Settings"><span class="cl-av">${esc(nm.slice(0, 1).toUpperCase())}</span><span class="cl-who"><b>${esc(nm)}</b><small>${esc(signedInLine())}</small></span>${icon('gear', 'sm')}</button>`;
+}
+function homeClaude() {
+  return `<div class="home cl-home">
+    <h1 class="cl-greet"><span class="cl-spark" aria-hidden="true">✻</span>${esc(partOfDay())}, ${esc(ownerName())}</h1>
+    ${composer('How can the team help today?')}
+    <div class="sugs">${QUICK.map(([ic, label], i) => `<button class="sug" data-a="quick" data-i="${i}">${icon(ic, 'sm')}${esc(label)}</button>`).join('')}<button class="sug" data-a="studio">${icon('pic', 'sm')}Make a picture or video</button></div>
+    <div class="fine cl-status">${esc(signedInLine().replace(' signed in', ''))} ${live().length ? `${live().length === 1 ? 'is' : 'are'} ready` : ''} · builds and tests run in GitHub Actions · nothing reaches main without you</div>
+    ${S.notices.length ? `<div class="notices">${S.notices.map((n, i) => `<div class="note">${esc(n)}<button class="mini" data-a="dismiss" data-i="${i}">Dismiss</button></div>`).join('')}</div>` : ''}
+    ${S.idle.length ? `<div class="notices">${S.idle.map((c) => `<div class="note warn">The temporary copy for “${esc(entry(c.chatId)?.title || c.repo || 'a chat')}” has work that isn't on GitHub, so it was kept. <button class="mini" data-a="open-data">Look at it</button></div>`).join('')}</div>` : ''}
+  </div>`;
+}
+// The message box's bottom row (claude-look-1): + attach, tools, the repo pill, the team with its cores, mic, send.
+function claudeRow(c, busy) {
+  const conn = c ? (c.repo || c.repoDir) : S.conn?.repo;
+  const t = team();
+  const off = offIn(['chat', 'live'].includes(S.view) ? cur() : null);
+  const on = t.members.filter((a) => ready(a) && !off.includes(a));
+  const who = S.mode === 'team' ? `Team: ${on.slice(0, 3).map(aiName).join(', ')}${on.length > 3 ? ` +${on.length - 3}` : ''}` : aiName(S.mode);
+  const cores = S.settings.composerCores !== false ? `<span class="cl-cores">${(S.mode === 'team' ? on : [S.mode]).slice(0, 4).map((a) => miniCore(a, aiName(a), 18, 'ready')).join('')}</span>` : '';
+  return `<div class="cl-row">
+    <button class="ib" data-a="attach" title="Attach files, images, videos, PDFs or spreadsheets (or paste a screenshot)" aria-label="Attach">${icon('plus', 'sm')}</button>
+    <button class="ib" data-a="composer-opts" title="Tools: web, run &amp; build, deep research, models, talk" aria-label="Tools">${icon('sliders', 'sm')}</button>
+    <button class="cl-pill" data-a="repo-pop" title="Connect this chat to a GitHub repo">${icon('gh', 'sm')}${conn ? esc(String(conn).split('/').pop()) : 'No repo'}</button>
+    <span class="grow"></span>
+    <button class="cl-pill cl-team" data-a="team-pop" title="Who works on this chat">${cores}${esc(who)} <span class="faint">⌄</span></button>
+    <button class="ib ${voice.dictating() ? 'rec' : ''}" data-a="voice" title="${voice.dictating() ? 'Stop and turn it into text' : 'Dictate: say your message, it becomes text'}" aria-label="Dictate">${icon('mic', 'sm')}</button>
+    ${busy ? `<button class="cl-send stop" data-a="stop" title="Stop this chat" aria-label="Stop">${icon('stop', 'sm')}</button>` : `<button class="cl-send" data-a="send" title="Send${S.settings.sendOnEnter === false ? ' (Ctrl+Enter)' : ' (Enter)'}" aria-label="Send">↑</button>`}
+  </div>`;
+}
+// claude-look-4: "Who works on this chat": a switch for each AI, kept with the chat (Home's go with the next new chat).
+function teamPickClaude(p) {
+  const t = team();
+  const R = S.view === 'chat' ? cur() : null;
+  const off = offIn(R);
+  const on = t.members.filter(ready);
+  const pos = p.top ? 'right:20px;top:52px' : p.b != null ? `left:${p.x}px;bottom:${p.b}px` : `left:${p.x}px;top:${p.y}px`;
+  const plan = (a) => [a === t.lead ? 'lead' : a === t.reviewer ? 'reviewer' : 'member', statusOf(a).label].filter(Boolean).join(' · ');
+  return `<div class="scrim" data-a="close-pop"></div><div class="pop cl-pick" style="${pos}"><div class="mh">Who works on this chat</div>
+    ${on.map((a) => `<div class="cl-it">${miniCore(a, aiName(a), 26, off.includes(a) ? 'off' : 'ready')}<span class="t2"><b>${esc(aiName(a))}</b><small>${esc(plan(a))}</small></span><span class="grow"></span>${tog(!off.includes(a) && S.mode === 'team', 'team-off', `data-v="${esc(a)}"`)}</div>`).join('') || '<p class="fine">No teammate is connected yet.</p>'}
+    <div class="sep"></div>
+    <button class="it" data-a="settings-team">More AIs<small>›</small></button>
+    <button class="it" data-a="go-set" data-t="team">Roles and who leads…</button>
+    <button class="it" data-a="cl-solo">Just one AI, no team<small>›</small></button>
+    ${S.clSolo ? `<div class="wa-grid">${on.map((a) => `<button class="wa ${S.mode === a ? 'on' : ''}" data-a="set-mode" data-v="${a}">${mono(a, 'sm')}<span>${esc(aiName(a))}</span></button>`).join('')}<button class="wa ${S.mode === 'team' ? 'on' : ''}" data-a="set-mode" data-v="team">${icon('users', 'sm')}<span>Whole team</span></button></div>` : ''}
+    <button class="it" data-a="team-check-go">${icon('check', 'sm')}Test team<small>a check word from every teammate</small></button></div>`;
+}
+function lookClaudeRows(s) {
+  const seg = (a, cur, list) => list.map(([v, l]) => `<button class="seg ${cur === v ? 'on' : ''}" data-a="${a}" data-v="${v}">${l}</button>`).join('');
+  return `${row('Colour mode', 'Light, dark, or the same as Hearth OS', seg('theme', ['hearth', 'system'].includes(s.theme) ? 'hearth' : s.theme, [['light', 'Light'], ['dark', 'Dark'], ['hearth', 'Match Hearth']]))}
+    ${row('Chat font', 'The font answers are written in', seg('chat-font', s.chatFont || 'serif', [['serif', 'Serif'], ['sans', 'Sans'], ['dyslexic', 'Dyslexic friendly']]))}
+    ${row('Send with Enter', 'Off: Enter makes a new line and Ctrl+Enter sends', tog(s.sendOnEnter !== false, 'send-enter'))}
+    ${row('Cores in the message box', 'The team\'s little cores beside “Team”', tog(s.composerCores !== false, 'composer-cores'))}
+    ${row('Updates', `Hearth AI Command Center ${esc(S.info.appVersion || '')}`, '<button class="mini" data-a="upd" data-v="check">Check for updates</button>')}`;
+}
+// claude-look-5: the Settings sections down the left, like the Claude app's.
+const CTABS = [['c-general', 'gear', 'General', ['alerts', 'changes', 'uncensored', 'data']], ['c-look', 'eye', 'Appearance', ['look']], ['accounts', 'key', 'Accounts', ['accounts', 'accounts2']], ['c-github', 'gh', 'GitHub', ['github']], ['team', 'users', 'Team', ['team']], ['ithil', 'moon', 'Ithil', ['ithil']], ['tools', 'cpu', 'Tools & Agent Desktop', ['tools', 'connectors', 'perms']], ['voice', 'speaker', 'Voice', ['voice', 'avatar']], ['memory', 'brain', 'Memory', ['memory', 'scheduled']], ['c-studio', 'pic', 'Images & Videos', ['c-studio']], ['c-phone', 'phone', 'Phone', ['c-phone']], ['c-updates', 'dl', 'Updates', ['updates']], ['c-credits', 'heart', 'Credits', ['c-credits']]];
+
 function homeView() {
+  if (isClaude()) return homeClaude();
   return `<div class="home">
     <h1><img src="./icon.png" alt="">${esc(greeting())}, ${esc(ownerName())}</h1>
     ${homeCores()}
@@ -1420,6 +1525,14 @@ function composer(placeholder) {
   const c = ['chat', 'live'].includes(S.view) ? entry() : null;
   const thumbs = S.attach.map((a, i) => a.kind === 'image' && !a.huge ? `<div class="th" style="background-image:url('${esc(a.url || '')}')" title="${esc(a.name)}"><button class="x" data-a="unattach" data-i="${i}" aria-label="Remove">${icon('x', 'sm')}</button></div>` : `<div class="th f" title="${esc(a.name)}"><span>${esc(a.name)}</span><button class="x" data-a="unattach" data-i="${i}" aria-label="Remove">${icon('x', 'sm')}</button></div>`).join('');
   const busy = Boolean(S.busy) || S.working;
+  if (isClaude()) return `${c?.rp ? rpBar(c) : ''}<div class="composer cl-box ${busy ? 'busy' : ''}" id="composer-box">
+    ${thumbs ? `<div class="thumbs">${thumbs}</div>` : ''}
+    ${c && !c.rp && !(c.repo || c.repoDir) ? `<div class="cnote" id="no-push-note">${icon('gh', 'sm')}<span>This chat has no repo, so the team can't commit or push anything. Connect a repo if the work should go to GitHub.</span><button class="mini" data-a="repo-pop">Connect a repo</button></div>` : ''}
+    ${missingNote()}
+    ${S.deep ? `<div class="modes"><button class="chip on" data-a="toggle-deep" title="Turn deep research off">${icon('globe', 'sm')}Deep research ×</button></div>` : ''}
+    <textarea id="composer" rows="2" placeholder="${esc(placeholder)}" aria-label="Message">${esc(S.draft)}</textarea>
+    ${claudeRow(c, busy)}
+  </div>`;
   return `${c?.rp ? rpBar(c) : ''}<div class="composer ${busy ? 'busy' : ''}" id="composer-box">
     ${thumbs ? `<div class="thumbs">${thumbs}</div>` : ''}
     ${c && !c.rp && !(c.repo || c.repoDir) ? `<div class="cnote" id="no-push-note">${icon('gh', 'sm')}<span>This chat has no repo, so the team can't commit or push anything. Connect a repo if the work should go to GitHub.</span><button class="mini" data-a="repo-pop">Connect a repo</button></div>` : ''}
@@ -1561,7 +1674,7 @@ function message(m, latestChanges, last = false) {
   if (m.who === 'owner') {
     const atts = (m.attachments || []).map((a) => a.kind === 'image' && !a.huge ? `<img class="att" src="${esc(a.url || '')}" alt="${esc(a.name)}" loading="lazy" decoding="async">` : `<span class="att-f" ${a.huge ? `title="${esc(a.huge)}"` : ''}>${icon('doc', 'sm')}${esc(a.name)}${a.size > 50 * 1024 * 1024 ? ` <span class="faint">${fmtBytes(a.size)}</span>` : ''}</span>`).join('');
     if (S.editing === m.id) return `<div class="msg-u editing" data-msg="${esc(m.id)}"><textarea id="edit-text" rows="3">${esc(m.text)}</textarea><div class="mft"><button class="btn ghost" data-a="edit-cancel">Cancel</button><button class="btn p" data-a="edit-send" data-m="${esc(m.id)}">Save and send</button></div></div>`;
-    return `<div class="uwrap nrow" data-msg="${esc(m.id)}"><div class="lbl you">You:</div><div class="msg-u">${atts ? `<div class="atts">${atts}</div>` : ''}${rich(m.text)}${m.to ? `<div class="fine">only for ${esc(m.to.map(aiName).join(', '))}: not shown to your other AIs</div>` : ''}</div>${controlsHtml(m, true)}</div>`;
+    return `<div class="uwrap nrow" data-msg="${esc(m.id)}"><div class="lbl you">You:</div>${isClaude() ? `<span class="cl-av u">${esc(ownerName().slice(0, 1).toUpperCase())}</span>` : ''}<div class="msg-u">${atts ? `<div class="atts">${atts}</div>` : ''}${rich(m.text)}${m.to ? `<div class="fine">only for ${esc(m.to.map(aiName).join(', '))}: not shown to your other AIs</div>` : ''}</div>${controlsHtml(m, true)}</div>`;
   }
   if (m.who === 'system') return `<div class="msg-s">${rich(m.text)}${mediaHtml(m)}${m.fixes?.length ? `<div class="mft left fixes">${m.fixes.map((f) => fixButton(f.agent, f.fix)).join('')}</div>` : ''}</div>`;
   const role = m.role === 'lead' ? '<span class="star">★ lead</span>' : m.role === 'reviewer' ? '<span>· reviewer</span>' : '';
@@ -1979,6 +2092,7 @@ function popHtml() {
       <div class="fine">For the AI teammates in this chat. Characters keep their own voices; the speed is for everyone here.</div>
       <div class="mft left"><button class="btn" data-a="chat-voice-try">${icon('play', 'sm')}Hear it</button>${R.sessions?._voice ? `<button class="btn ghost" data-a="chat-voice-reset">Back to my default</button>` : ''}</div></div>`;
   }
+  if (p.kind === 'team' && isClaude()) return teamPickClaude(p);
   if (p.kind === 'team') {
     const t = team();
     const opt = (v, label, sub) => `<button class="it ${S.mode === v ? 'on' : ''}" data-a="set-mode" data-v="${v}">${label}<small>${sub}</small></button>`;
@@ -2178,10 +2292,10 @@ const TAB_TOP = {
   },
   general: () => {
     const s = S.settings;
-    const design = ['hologram', 'classic'].includes(s.design) ? s.design : 'adwaita';
+    const design = designOf(s);
     const ACC = [['blue', 'Blue'], ['teal', 'Teal'], ['green', 'Green'], ['yellow', 'Yellow'], ['orange', 'Orange'], ['red', 'Red'], ['pink', 'Pink'], ['purple', 'Purple'], ['slate', 'Slate']];
     return [
-      grp('Look', [row('Style', '', `<select data-a="design-pick"><option value="adwaita" ${design === 'adwaita' ? 'selected' : ''}>Dark</option><option value="hologram" ${design === 'hologram' ? 'selected' : ''}>Gold hologram</option><option value="classic" ${design === 'classic' ? 'selected' : ''}>Classic</option></select>`), row('Accent colour', '', `<select data-a="accent-pick" ${design !== 'adwaita' ? 'disabled' : ''}>${ACC.map(([v, l]) => `<option value="${v}" ${(s.accent || 'blue') === v ? 'selected' : ''}>${l}</option>`).join('')}</select>`), row('Text size', '', moreBtn('general', `${s.textSize || 100}%`))]),
+      grp('Look', [row('Style', '', `<select data-a="design-pick"><option value="claude" ${design === 'claude' ? 'selected' : ''}>Claude app</option><option value="adwaita" ${design === 'adwaita' ? 'selected' : ''}>Dark</option><option value="hologram" ${design === 'hologram' ? 'selected' : ''}>Gold hologram</option><option value="classic" ${design === 'classic' ? 'selected' : ''}>Classic</option></select>`), row('Accent colour', '', `<select data-a="accent-pick" ${design !== 'adwaita' ? 'disabled' : ''}>${ACC.map(([v, l]) => `<option value="${v}" ${(s.accent || 'blue') === v ? 'selected' : ''}>${l}</option>`).join('')}</select>`), row('Text size', '', moreBtn('general', `${s.textSize || 100}%`))]),
       grp('Notifications', [row('When a chat needs my answer', '', tog(s.notify !== false, 'notify-toggle')), row('When a task finishes', '', tog(s.notifyDone !== false, 'notify-done')), row('On my phone too', '', tog(s.notifyPhone === true, 'notify-phone'))]),
       grp('App updates', [row(`Hearth AI Command Center ${esc(S.info?.version || '')}`, esc(S.upd?.status?.message || (S.upd?.status?.state === 'available' ? `${S.upd.status.version} is available` : 'Checks for updates by itself')), '<button class="mini" data-a="upd" data-v="check">Check now</button>'), row('Install updates by themselves', 'Downloads each new version by itself; you press Install. Works for the AppImage and the .deb', tog(s.autoUpdate !== false, 'auto-update'))]),
       grp('Home server', [row('AI chat on the home server', 'Your Hearth devices\' local AI (the home server first) can answer in chats', tog(s.homeServerAi !== false, 'home-ai'))]),
@@ -2210,6 +2324,7 @@ function tabOf(k) { return (STABS.find(([t, , , ks]) => t === k || ks.includes(k
 function settingsView() {
   // 3.13 (compact-A1…A8): a side list of tabs, a header with ✕, and a page that scrolls inside the dialog. Buttons that
   // need the full form (＋ Add, See and edit, Change…) open it here as a sub-page with ‹ Back.
+  if (isClaude()) return settingsClaude();
   const tab = tabOf(S.tab);
   const nav = STABS.map(([k, ic, label]) => `<button class="${tab === k ? 'on' : ''}" data-a="tab" data-t="${k}">${icon(ic, 'sm')}<span>${esc(label)}</span></button>`).join('');
   const parts = STABS.find(([t]) => t === tab)[3];
@@ -2218,6 +2333,16 @@ function settingsView() {
   const q = String(S.setQ || '');
   return `<div class="set dlg cmp"><nav class="snav2"><b class="st">Settings</b><input id="set-q" class="sq" placeholder="Search settings" value="${esc(q)}" aria-label="Search settings">${nav}</nav>
     <div class="spane"><div class="sph"><b>${esc(sub ? sub.title : STABS.find(([t]) => t === tab)[2])}</b><span class="grow"></span><button class="xb" data-a="set-close" title="Close" aria-label="Close settings">${icon('x', 'sm')}</button></div>
+    <div class="spage" id="spage">${q ? searchPage(q) : page}</div></div></div>`;
+}
+function settingsClaude() {
+  const tab = (CTABS.find(([t, , , ks]) => t === S.tab || ks.includes(S.tab)) || CTABS[0])[0];
+  const [, , label, parts] = CTABS.find(([t]) => t === tab);
+  const q = String(S.setQ || '');
+  const sub = S.subpage && S.subpage.tab === tab ? S.subpage : null;
+  const page = sub ? `<button class="mini sub-back" data-a="sub-back">‹ Back</button><div class="subpage">${sub.parts.map((k) => section(k)).join('')}</div>` : PAGES[tab] ? PAGES[tab]() : parts.map((k) => section(k)).join('');
+  return `<div class="set dlg cmp cl-set"><nav class="snav2"><b class="st">Settings</b><input id="set-q" class="sq" placeholder="Search settings" value="${esc(q)}" aria-label="Search settings">${CTABS.map(([k, ic, l]) => `<button class="${tab === k ? 'on' : ''}" data-a="tab" data-t="${k}">${icon(ic, 'sm')}<span>${esc(l)}</span></button>`).join('')}</nav>
+    <div class="spane"><div class="sph"><h1 class="cl-h">${esc(sub ? sub.title : label)}</h1><span class="grow"></span><button class="xb" data-a="set-close" title="Close" aria-label="Close settings">${icon('x', 'sm')}</button></div>
     <div class="spage" id="spage">${q ? searchPage(q) : page}</div></div></div>`;
 }
 // 3.13: typing in "Search settings" lists every row of every tab whose words match, with its tab.
@@ -2474,7 +2599,7 @@ function section(k) {
     const c = M.conf || {};
     return `${hearthBox()}
       ${comfyBox()}
-      <div class="box"><h3>${icon('phone', 'sm')}Your phone</h3><div class="srow">Phone view<span class="d">your chat on your phone, on your home network only</span><span class="grow"></span>${tog(Boolean(S.phone?.enabled), 'phone-toggle')}</div>${S.phone?.enabled ? `<div class="srow">Address<span class="d mono">${esc((S.phone.urls || []).join(', ') || 'starting…')}</span><span class="grow"></span><button class="mini" data-a="phone-code">Show pairing code</button></div>${S.phone.code ? `<div class="srow">Code<b class="mono big">${esc(S.phone.code)}</b><span class="d">type it on your phone within 5 minutes</span></div>` : ''}` : ''}</div>
+      ${phoneBox()}
       <details class="more-acct" ${S.moreAcct ? 'open' : ''}><summary data-a="more-acct">More account settings</summary><div class="box ac">${accountsList()}</div>
       <div class="box"><h3>FreeBuff on the web</h3><div class="srow">${mono('freebuff')}<b>FreeBuff</b><span class="d">opens freebuff.com in its own window here. Sign in there once with your FreeBuff account; it stays signed in. Your FreeBuff chats live in FreeBuff's cloud, so the ones from your phone are there too.</span><span class="grow"></span><button class="mini" data-a="open-freebuff">Open FreeBuff</button></div>
       <div class="note sub">FreeBuff has no official way for other apps to drive it yet. To have it in team chats, turn on its web sign-in bridge above. The Command Center never reads or copies your FreeBuff login; its windows are sandboxed and get nothing from this app.</div></div>
@@ -2590,15 +2715,19 @@ function section(k) {
       <div class="srow">Open the mini window<span class="d">Super + I anywhere · hold ☰ + Y in Game Mode</span><span class="grow"></span>${tog(s.miniWindow !== false, 'mini-on')}<button class="mini" data-a="mini-open">Open now</button></div>
       <div class="srow">Stay on top<span class="d"></span><span class="grow"></span>${tog(s.miniOnTop !== false, 'mini-top')}</div></div>`;
   }
+  if (k === 'c-studio') return `<h1>Images &amp; Videos</h1>${comfyBox()}<div class="box"><div class="srow"><span class="t2"><b>Online makers</b><span class="d">Venice, Civitai, your GPU servers and more: Accounts</span></span><span class="grow"></span><button class="mini" data-a="tab" data-t="accounts">Open Accounts</button></div></div>`;
+  if (k === 'c-phone') return `<h1>Phone</h1>${phoneBox()}`;
+  if (k === 'c-credits') return `<h1>Credits</h1>${creditsHtml(esc)}`;
   if (k === 'look') {
-    const design = ['hologram', 'classic'].includes(s.design) ? s.design : 'adwaita';
+    const design = designOf(s);
     const holo = design === 'hologram';
     const ACC = [['blue', 'Blue'], ['teal', 'Teal'], ['green', 'Green'], ['yellow', 'Yellow'], ['orange', 'Orange'], ['red', 'Red'], ['pink', 'Pink'], ['purple', 'Purple'], ['slate', 'Slate']];
     // 3.12 (settings-7): Look: Style, Accent colour, Text size.
     return `<h1>Appearance</h1><div class="box"><h3>Look</h3>
-      <div class="srow">Style<span class="d">${design === 'adwaita' ? '' : holo ? 'gold hologram: living cores, always dark, its own colours' : 'classic: calm and warm, follows the theme below'}</span><span class="grow"></span><select data-a="design-pick"><option value="adwaita" ${design === 'adwaita' ? 'selected' : ''}>Dark</option><option value="hologram" ${holo ? 'selected' : ''}>Gold hologram</option><option value="classic" ${design === 'classic' ? 'selected' : ''}>Classic</option></select></div>
+      ${design === 'claude' ? lookClaudeRows(s) : ''}<div class="srow">Style<span class="d">${design === 'claude' ? 'The Claude app look is the default; Gold hologram and Dark (3.12) are still here' : design === 'adwaita' ? '' : holo ? 'gold hologram: living cores, always dark, its own colours' : 'classic: calm and warm, follows the theme below'}</span><span class="grow"></span><select data-a="design-pick"><option value="claude" ${design === 'claude' ? 'selected' : ''}>Claude app</option><option value="adwaita" ${design === 'adwaita' ? 'selected' : ''}>Dark</option><option value="hologram" ${holo ? 'selected' : ''}>Gold hologram</option><option value="classic" ${design === 'classic' ? 'selected' : ''}>Classic</option></select></div>
+      ${s.design === 'claude' && !s.designPicked ? '<div class="note sub">3.14 switched the Style to Claude app. Pick Dark, Gold hologram or Classic here to go back; your pick is kept.</div>' : ''}
       <div class="srow">Accent colour<span class="d"></span><span class="grow"></span><select data-a="accent-pick" ${design !== 'adwaita' ? 'disabled' : ''}>${ACC.map(([v, l]) => `<option value="${v}" ${(s.accent || 'blue') === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
-      ${design === 'classic' ? '' : '<div class="note sub">Theme and your Hearth OS colours apply when Style is Classic.</div>'}
+      ${['classic', 'claude'].includes(design) ? '' : '<div class="note sub">Theme and your Hearth OS colours apply when Style is Classic.</div>'}
       <div class="srow" ${design === 'classic' ? '' : 'hidden'}>Theme<span class="grow"></span>${['hearth', 'dark', 'light', 'system'].map((v) => `<button class="seg ${s.theme === v ? 'on' : ''}" data-a="theme" data-v="${v}">${{ hearth: 'Follow Hearth OS', dark: 'Dark', light: 'Light', system: 'System' }[v]}</button>`).join('')}</div>
       <div class="srow">Draw the app at 100%<span class="d">${S.screen && S.screen.scale > 1.01 ? `your desktop scales this screen to ${Math.round(S.screen.scale * 100)}%, and the app follows it unless this is on` : 'for a screen your desktop scales up (125%, 150%…): the app then ignores that scale'}</span><span class="grow"></span>${tog(s.fitScreen === true, 'fit-screen')}</div>
       <div class="srow">App size<span class="d">everything: text, buttons and panels · Ctrl − and Ctrl + change it, Ctrl 0 goes back to 100%</span><span class="grow"></span>${APP_SIZES.map((v) => `<button class="seg ${s.textSize === v ? 'on' : ''}" data-a="text-size" data-v="${v}">${v}%</button>`).join('')}</div>
@@ -2994,6 +3123,9 @@ function uncensoredSection() {
     <div class="box"><h3>${icon('flag', 'sm')}Always on, in every mode</h3><p class="fine">These can't be switched off by any setting:</p>
     <ul class="fine unc-list"><li>Nothing sexual involving minors or anyone who looks under 18.</li><li>No sexual or nude pictures or videos of real people, and no real person's likeness.</li><li>A picture file you add starts a video in Uncensored mode only after you confirm, each time, that it isn't a real person (AI-made, drawn or a 3D render) and everyone in it is an adult.</li><li>Minors are left out of every picture and video.</li></ul></div>`;
 }
+function phoneBox() {
+  return `<div class="box"><h3>${icon('phone', 'sm')}Your phone</h3><div class="srow">Phone view<span class="d">your chat on your phone, on your home network only</span><span class="grow"></span>${tog(Boolean(S.phone?.enabled), 'phone-toggle')}</div>${S.phone?.enabled ? `<div class="srow">Address<span class="d mono">${esc((S.phone.urls || []).join(', ') || 'starting…')}</span><span class="grow"></span><button class="mini" data-a="phone-code">Show pairing code</button></div>${S.phone.code ? `<div class="srow">Code<b class="mono big">${esc(S.phone.code)}</b><span class="d">type it on your phone within 5 minutes</span></div>` : ''}` : ''}</div>`;
+}
 function comfyBox() {
   const c = S.settings.comfy || {};
   const t = S.comfyTest?.url === c.url ? S.comfyTest : null;
@@ -3120,11 +3252,13 @@ async function setSettings(patch) {
 function applyTheme() {
   const systemDark = window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? true;
   // 2.9: the gold hologram design (always dark, its own colours) unless Design is Classic.
-  const design = ['hologram', 'classic'].includes(S.settings.design) ? S.settings.design : 'adwaita';
+  const design = designOf();
   const holo = design === 'hologram';
   document.documentElement.dataset.design = design;
+  document.documentElement.dataset.chatfont = ['sans', 'dyslexic'].includes(S.settings.chatFont) ? S.settings.chatFont : 'serif';
   document.documentElement.dataset.accent = S.settings.accent || 'blue';
-  const follow = !holo && S.settings.theme === 'hearth' && S.theme.found;
+  // The Claude app look follows Colour mode like Classic, with its own colours (Hearth's tokens only in Classic).
+  const follow = design === 'classic' && S.settings.theme === 'hearth' && S.theme.found;
   document.documentElement.dataset.mode = holo ? 'dark' : pickMode(S.settings.theme, { ...S.theme, systemDark });
   document.documentElement.classList.toggle('reduce-motion', S.settings.reduceMotion === true);
   const set = (id, css) => { let el = document.getElementById(id); if (!el) { el = document.createElement('style'); el.id = id; document.head.appendChild(el); } el.textContent = css; };
@@ -3632,6 +3766,21 @@ document.addEventListener('click', async (ev) => {
     case 'text-size': return setSettings({ textSize: Number(d.v) });
     case 'fit-screen': await setSettings({ fitScreen: S.settings.fitScreen !== true }); S.screen = (await call('screenInfo')) || S.screen; return render();
     case 'reduce-motion': return setSettings({ reduceMotion: !S.settings.reduceMotion });
+    case 'chat-font': return setSettings({ chatFont: d.v });
+    case 'send-enter': return setSettings({ sendOnEnter: S.settings.sendOnEnter === false });
+    case 'composer-cores': return setSettings({ composerCores: S.settings.composerCores === false });
+    case 'go-set': S.view = 'settings'; S.pane = null; S.pop = null; S.tab = d.t || 'team'; render(true); return loadSection(S.tab);
+    case 'cl-solo': S.clSolo = !S.clSolo; return renderOverlay();
+    case 'team-off': {
+      // Switched per chat: kept in the chat's own file (sessions._off), never in settings.
+      const R = S.view === 'chat' ? cur() : null;
+      const off = new Set(offIn(R));
+      if (S.mode !== 'team') { S.mode = 'team'; keepPrefs(); }
+      else if (off.has(d.v)) off.delete(d.v); else off.add(d.v);
+      if (team().members.filter(ready).every((a) => off.has(a))) { toast('At least one AI has to work on the chat.'); return; }
+      if (R) { R.sessions._off = [...off]; save(); } else S.homeOff = [...off];
+      return render();
+    }
     case 'notify-toggle': return setSettings({ notify: S.settings.notify === false });
     case 'auto-read': return setSettings({ autoRead: !S.settings.autoRead });
     case 'save-ci': return setSettings({ customInstructions: { about: document.getElementById('ci-about')?.value || '', style: document.getElementById('ci-style')?.value || '' } });
@@ -3836,7 +3985,7 @@ document.addEventListener('keydown', (ev) => {
   if (S.view === 'card' && !S.modal && cardFindKey(ev)) return;
   // In a collection: Delete removes the selected cards, else the focused card (Undo puts them back).
   if (S.view === 'characters' && S.cardColl && ev.key === 'Delete' && !/^(TEXTAREA|SELECT)$/.test(t.tagName || '') && !(t.tagName === 'INPUT' && t.type !== 'checkbox') && t.closest?.('.ccard')) { ev.preventDefault(); collRemove(S.collSel.length ? S.collSel : [t.closest('.ccard').dataset.card]); return; }
-  if (t.id === 'composer' && ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); send(); return; }
+  if (t.id === 'composer' && ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing && (S.settings.sendOnEnter !== false || ev.ctrlKey)) { ev.preventDefault(); send(); return; }
   if (t.id === 'edit-text' && ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); resendEdited(S.editing, t.value); return; }
   if (t.id === 'rename-input') { if (ev.key === 'Enter') { ev.preventDefault(); finishRename(true); } if (ev.key === 'Escape') finishRename(false); return; }
   if (S.modal?.kind === 'gallery' && !ev.ctrlKey && !ev.metaKey && !ev.altKey) { const g = galleryKey(ev.key); if (g) { ev.preventDefault(); galleryDo(g); return; } }

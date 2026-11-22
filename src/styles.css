@@ -1326,3 +1326,166 @@ details.more-acct > summary { cursor: pointer; font-weight: 700; color: var(--st
 .rail-face img { width: 100%; height: 100%; object-fit: cover; object-position: top; }
 .ib.on { background: rgba(53,132,228,.3); }
 .stage-frame { width: 100%; height: 100%; min-height: 300px; border: 0; background: transparent; display: block; }
+
+/* ===================== 3.14: the Claude app look (docs/mockups/claude-look-*.png) =====================
+   The default Style. Warm dark or light like the Claude app, the accent orange, answers in the serif (Lora), the rest
+   in Inter. No other company's logo or name. Only restyles; every feature keeps its place. */
+:root[data-design="claude"], :root[data-design="claude"][data-mode="dark"] {
+  --bg: #262624; --bg-2: #1f1e1d; --panel: #30302e; --panel-2: #2a2a28; --line: #3e3e38; --line-2: #4a4a43;
+  --text: #e8e6dc; --strong: #faf9f5; --muted: #b0aea5; --faint: #8a8880;
+  --accent: #d97757; --accent-2: #e08a6d; --accent-ink: #ffffff; --accent-soft: #4a3128; --btn: #c96442;
+  --you: #faf9f5; --side-on: #2f2e2b; --hover: rgba(250, 249, 245, .05); --read: var(--serif);
+  --cl-bubble: #393937; --cl-card: #2c2c2a; --cl-code: #1e1e1c;
+  --font: 'Inter', 'Noto Sans', system-ui, sans-serif;
+  color-scheme: dark;
+}
+:root[data-design="claude"][data-mode="light"] {
+  --bg: #faf9f5; --bg-2: #f5f4ee; --panel: #ffffff; --panel-2: #f0eee6; --line: #e5e2d8; --line-2: #d6d2c4;
+  --text: #3d3929; --strong: #29261b; --muted: #6b6758; --faint: #8f8b7c;
+  --accent: #c96442; --accent-2: #b4552f; --accent-ink: #ffffff; --accent-soft: #f3e2d9; --btn: #c96442;
+  --you: #29261b; --side-on: #ebe8de; --hover: rgba(61, 57, 41, .05);
+  --cl-bubble: #f0eee6; --cl-card: #ffffff; --cl-code: #f5f4ee;
+  color-scheme: light;
+}
+:root[data-design="claude"][data-chatfont="sans"] { --read: var(--font); }
+:root[data-design="claude"][data-chatfont="dyslexic"] { --read: 'Atkinson Hyperlegible', 'Lexend', 'Verdana', var(--font); }
+:root[data-design="claude"] .main, :root[data-design="claude"] .body { background: var(--bg); background-image: none; }
+:root[data-design="claude"] .top { border-bottom: 0; height: 52px; }
+/* sidebar (claude-look-1) */
+:root[data-design="claude"] .side { width: 288px; padding: 0 8px 8px; background: var(--bg-2); border-right: 1px solid var(--line); }
+.cl-brand { height: 52px; display: flex; align-items: center; padding: 0 6px 0 10px; flex: none; -webkit-app-region: drag; }
+.cl-brand b { font: 600 17px/1 var(--serif); color: var(--strong); flex: 1; }
+.cl-brand button { -webkit-app-region: no-drag; }
+.cl-new { display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: 9px; color: var(--accent); font-weight: 600; width: 100%; text-align: left; flex: none; }
+.cl-new:hover { background: var(--hover); }
+.cl-plus { width: 24px; height: 24px; border-radius: 50%; background: var(--accent); color: #fff; display: grid; place-items: center; }
+.cl-plus svg { stroke-width: 2.4; }
+.cl-places { display: flex; flex-direction: column; gap: 1px; margin: 6px 0 4px; flex: none; }
+:root[data-design="claude"] .navitem { padding: 6px 10px; border-radius: 8px; font-size: 13.5px; color: var(--text); display: flex; gap: 10px; align-items: center; width: 100%; text-align: left; }
+:root[data-design="claude"] .navitem:hover { background: var(--hover); }
+:root[data-design="claude"] .navitem.on { background: var(--side-on); color: var(--strong); }
+:root[data-design="claude"] .side .search { margin: 4px 2px 6px; background: transparent; }
+:root[data-design="claude"] .side .sec { font-size: 12px; color: var(--faint); padding: 12px 10px 4px; font-weight: 500; }
+:root[data-design="claude"] .side .item { padding: 6px 10px; font-weight: 400; font-size: 13.5px; border-radius: 8px; }
+:root[data-design="claude"] .side .item .emo { display: none; }
+:root[data-design="claude"] .side .item.on { background: var(--side-on); }
+:root[data-design="claude"] .side .item .repo { font-family: var(--mono); font-size: 11px; color: var(--faint); }
+:root[data-design="claude"] .side .item .dot { background: var(--accent); }
+.cl-acct { display: flex; align-items: center; gap: 10px; padding: 8px; border-top: 1px solid var(--line); margin-top: 6px; text-align: left; border-radius: 0 0 8px 8px; flex: none; }
+.cl-acct:hover { background: var(--hover); }
+.cl-av { width: 30px; height: 30px; border-radius: 50%; background: var(--accent-soft); color: var(--strong); display: grid; place-items: center; font-weight: 600; flex: none; }
+.cl-who { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+.cl-who b { font-weight: 600; font-size: 13.5px; color: var(--strong); }
+.cl-who small { color: var(--faint); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Home (claude-look-1) */
+.cl-home { max-width: 760px; margin: 0 auto; padding-top: 16vh; }
+.cl-greet { font: 400 38px/1.2 var(--serif); color: var(--strong); text-align: center; margin: 0 0 26px; display: flex; gap: 14px; align-items: center; justify-content: center; }
+.cl-greet img { display: none; }
+.cl-spark { color: var(--accent); font-size: 36px; }
+.cl-home .sugs { justify-content: center; gap: 8px; margin-top: 14px; flex-wrap: wrap; display: flex; }
+:root[data-design="claude"] .sug { border: 1px solid var(--line); border-radius: 10px; padding: 6px 12px; background: transparent; color: var(--muted); font-size: 13px; display: inline-flex; gap: 7px; align-items: center; }
+:root[data-design="claude"] .sug:hover { background: var(--hover); color: var(--strong); }
+.cl-status { text-align: center; margin-top: 18px; color: var(--faint); }
+/* the message box (claude-look-1/-2) */
+:root[data-design="claude"] .composer.cl-box, :root[data-design="claude"] .dock .composer.cl-box { width: min(760px, calc(100% - 40px)); margin: 0 auto 16px; border: 1px solid var(--line-2); border-radius: 20px; background: var(--panel); box-shadow: 0 4px 20px rgba(0, 0, 0, .12); padding: 12px 12px 10px; }
+.cl-box textarea { width: 100%; border: 0; background: none; outline: none; resize: none; font-size: 15.5px; line-height: 1.5; padding: 4px 6px 10px; color: var(--strong); max-height: 35vh; display: block; min-height: 48px; }
+.cl-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.cl-row .ib { width: 32px; height: 32px; border-radius: 9px; border: 1px solid var(--line); color: var(--muted); display: grid; place-items: center; }
+.cl-row .ib:hover { background: var(--hover); color: var(--strong); }
+.cl-row .ib.rec { color: #fff; background: #c0392b; border-color: transparent; }
+.cl-pill { height: 32px; display: inline-flex; align-items: center; gap: 6px; padding: 0 10px; border-radius: 9px; border: 1px solid var(--line); color: var(--muted); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 260px; }
+.cl-pill:hover { background: var(--hover); color: var(--strong); }
+.cl-cores { display: inline-flex; }
+.cl-cores > * { margin-right: -5px; }
+.cl-cores > *:last-child { margin-right: 4px; }
+.cl-send { width: 32px; height: 32px; border-radius: 9px; background: var(--btn); color: #fff; font-size: 17px; font-weight: 700; display: grid; place-items: center; }
+.cl-send:hover { background: var(--accent); }
+.cl-send.stop { background: var(--muted); }
+:root[data-design="claude"] .dock .composer.cl-box .cnote { border-radius: 10px; margin-bottom: 8px; }
+/* the chat (claude-look-2/-3) */
+.cl-title { font-weight: 500; color: var(--strong); padding: 5px 10px; border-radius: 8px; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; -webkit-app-region: no-drag; }
+.cl-title:hover { background: var(--hover); }
+:root[data-design="claude"] .tb { border-radius: 8px; padding: 5px 10px; color: var(--muted); }
+:root[data-design="claude"] .tb:hover { background: var(--hover); color: var(--strong); }
+:root[data-design="claude"] .top .chip { border-radius: 8px; background: transparent; border: 1px solid var(--line); font-family: var(--mono); font-size: 12px; }
+:root[data-design="claude"] .body .col { max-width: 760px; margin: 0 auto; padding: 0 20px; }
+:root[data-design="claude"] .nrow { display: block; border-bottom: 0; padding: 12px 0; }
+:root[data-design="claude"] .nrow > .lbl { display: none; }
+:root[data-design="claude"] .uwrap.nrow { display: flex; flex-direction: row-reverse; justify-content: flex-start; align-items: flex-start; gap: 10px; flex-wrap: wrap; }
+:root[data-design="claude"] .uwrap.nrow > .msg-u { background: var(--cl-bubble); border-radius: 16px; padding: 10px 16px; max-width: 78%; color: var(--strong); font-size: 15px; }
+:root[data-design="claude"] .uwrap.nrow > .cl-av.u { width: 28px; height: 28px; font-size: 13px; }
+:root[data-design="claude"] .uwrap.nrow > :not(.msg-u):not(.cl-av):not(.lbl) { flex-basis: 100%; display: flex; justify-content: flex-end; }
+:root[data-design="claude"] .nrow > .mbody > .who { display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--faint); margin-bottom: 4px; }
+:root[data-design="claude"] .nrow > .mbody > .who > .ava, :root[data-design="claude"] .nrow > .mbody > .who > b { display: inline-flex; }
+:root[data-design="claude"] .nrow > .mbody > .who > b { color: var(--muted); font-weight: 600; }
+:root[data-design="claude"] .msg-a .text { font-family: var(--read); font-size: 16.5px; line-height: 1.65; color: var(--strong); }
+:root[data-design="claude"] .msg-a .text code, :root[data-design="claude"] .msg-a .text pre { font-family: var(--mono); font-size: 13px; }
+:root[data-design="claude"] .msg-a .text pre { background: var(--cl-code); border: 1px solid var(--line); border-radius: 10px; }
+:root[data-design="claude"] .msg-a .text h1, :root[data-design="claude"] .msg-a .text h2, :root[data-design="claude"] .msg-a .text h3 { font-family: var(--serif); font-weight: 600; }
+/* tool steps as one-line rounded rows (claude-look-2) */
+:root[data-design="claude"] .nrow .steps { gap: 6px; }
+:root[data-design="claude"] .nrow .steps .step, :root[data-design="claude"] .nrow details.step { background: transparent; border: 1px solid var(--line); border-radius: 10px; padding: 7px 12px; font-size: 13px; color: var(--muted); }
+:root[data-design="claude"] .nrow .steps .step b { color: var(--text); font-weight: 500; }
+/* cards: artifact/preview, changes, Approve & merge (claude-look-2) */
+:root[data-design="claude"] .card { background: var(--cl-card); border: 1px solid var(--line); border-radius: 12px; }
+:root[data-design="claude"] .card.ch { border: 1.5px solid var(--accent); }
+:root[data-design="claude"] .card .btn.p, :root[data-design="claude"] .btn.p { background: var(--btn); color: #fff; border-radius: 9px; }
+:root[data-design="claude"] .btn { border-radius: 9px; }
+:root[data-design="claude"] .card .add { color: #7fbf8d; }
+:root[data-design="claude"] .card .del { color: #e8846f; }
+:root[data-design="claude"] .ctrls button, :root[data-design="claude"] .mctl button { color: var(--faint); border-radius: 7px; }
+/* pop-ups and the team picker (claude-look-4) */
+:root[data-design="claude"] .pop { background: var(--panel); border: 1px solid var(--line-2); border-radius: 14px; }
+.cl-pick { width: 380px; }
+.cl-it { display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: 9px; }
+.cl-it:hover { background: var(--hover); }
+.cl-it .t2 { display: flex; flex-direction: column; min-width: 0; }
+.cl-it .t2 b { font-weight: 500; color: var(--strong); font-size: 13.5px; }
+.cl-it .t2 small { color: var(--faint); font-size: 12px; }
+.cl-pick .sep { height: 1px; background: var(--line); margin: 6px 4px; }
+.cl-pick .it small { margin-left: auto; }
+:root[data-design="claude"] .tog { background: var(--line-2); }
+:root[data-design="claude"] .tog.on { background: var(--accent); }
+:root[data-design="claude"] .tog::after { background: #fff; }
+:root[data-design="claude"] .seg { border: 1px solid var(--line); padding: 5px 11px; border-radius: 8px; color: var(--muted); }
+:root[data-design="claude"] .seg.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+/* Settings as a page (claude-look-5/-12) */
+:root[data-design="claude"] .main.settings-mode .top { display: none; }
+:root[data-design="claude"] .main.settings-mode .body { background: var(--bg); padding: 0; }
+:root[data-design="claude"] .shell:has(.main.settings-mode) .side { filter: none; pointer-events: auto; }
+:root[data-design="claude"] .set.dlg.cmp.cl-set { width: 100%; max-width: 1100px; background: var(--bg); box-shadow: none; border-radius: 0; min-height: 100%; }
+:root[data-design="claude"] .cl-set .snav2 { background: var(--bg); border-right: 0; padding: 20px 10px; width: 230px; }
+:root[data-design="claude"] .cl-set .snav2 .st { font: 400 24px var(--serif); padding: 4px 12px 14px; }
+:root[data-design="claude"] .cl-set .snav2 .sq { background: var(--panel); border: 1px solid var(--line); color: var(--strong); }
+:root[data-design="claude"] .cl-set .snav2 button { color: var(--muted); }
+:root[data-design="claude"] .cl-set .snav2 button.on { background: var(--side-on); color: var(--strong); }
+:root[data-design="claude"] .cl-set .sph { height: 64px; border-bottom: 0; padding: 0 28px; }
+.cl-h { font: 400 26px var(--serif); color: var(--strong); margin: 0; }
+:root[data-design="claude"] .cl-set .spage { padding: 4px 28px 28px; max-width: 760px; }
+:root[data-design="claude"] .cl-set .spage > h1:first-child { display: none; }
+:root[data-design="claude"] .cl-set .box > h3 { color: var(--faint); }
+:root[data-design="claude"] .cl-set .box > .srow, :root[data-design="claude"] .cl-set .box > .note { background: transparent; border-top: 1px solid var(--line); min-height: 58px; padding: 10px 2px; border-radius: 0; }
+:root[data-design="claude"] .cl-set .box > .srow:first-of-type { border-top: 0; }
+:root[data-design="claude"] .cl-set .srow .t2 { flex-direction: column; align-items: flex-start; gap: 2px; white-space: normal; }
+:root[data-design="claude"] .cl-set .srow .t2 b { font-weight: 600; color: var(--strong); }
+:root[data-design="claude"] .cl-set .srow .t2 .d, :root[data-design="claude"] .cl-set .srow .d { color: var(--faint); font-size: 12.5px; }
+:root[data-design="claude"] .cl-set select, :root[data-design="claude"] .cl-set input { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; color: var(--strong); }
+:root[data-design="claude"] .cl-set .tog { background: var(--line-2); }
+:root[data-design="claude"] .cl-set .tog.on { background: var(--accent); }
+:root[data-design="claude"] .cl-set .mini { border: 1px solid var(--line); border-radius: 8px; padding: 4px 10px; color: var(--text); }
+/* Images & Videos, Live, Habitat, Reverse Engineering, Agent Desktop, Characters (claude-look-6…11) */
+:root[data-design="claude"] .studio .composer, :root[data-design="claude"] .st-prompt { border-radius: 18px; background: var(--panel); border: 1px solid var(--line-2); }
+:root[data-design="claude"] .studio textarea, :root[data-design="claude"] .st-prompt textarea { font-family: var(--read); font-size: 16px; }
+:root[data-design="claude"] .st-job, :root[data-design="claude"] .st-q .row, :root[data-design="claude"] .re-card, :root[data-design="claude"] .desk-card { border: 1px solid var(--line); border-radius: 12px; background: var(--cl-card); }
+:root[data-design="claude"] .st-grid img, :root[data-design="claude"] .st-grid video, :root[data-design="claude"] .media img { border-radius: 12px; }
+:root[data-design="claude"] .live-cap, :root[data-design="claude"] .live-line { font-family: var(--read); font-size: 17px; color: var(--strong); }
+:root[data-design="claude"] .live-name, :root[data-design="claude"] .core-name { font-family: var(--serif); }
+:root[data-design="claude"] .habwrap { padding: 12px; }
+:root[data-design="claude"] .habwrap > * { border-radius: 16px; overflow: hidden; }
+:root[data-design="claude"] .card.act, :root[data-design="claude"] .acts .card { border: 1.5px solid var(--accent); }
+:root[data-design="claude"] .rp .text, :root[data-design="claude"] .msg-rp .text { font-family: var(--read); font-size: 16.5px; line-height: 1.65; }
+:root[data-design="claude"] .rp .text em, :root[data-design="claude"] .msg-rp .text em { color: var(--muted); }
+:root[data-design="claude"] .pane.rpanel { background: var(--bg-2); border-left: 1px solid var(--line); }
+:root[data-design="claude"] .rtabs button { color: var(--muted); }
+:root[data-design="claude"] .rtabs button.on { background: var(--side-on); color: var(--strong); }
+:root[data-design="claude"] .rpanel .term { background: var(--cl-code); color: var(--text); }
