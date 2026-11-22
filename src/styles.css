@@ -1584,3 +1584,6 @@ details.more-acct > summary { cursor: pointer; font-weight: 700; color: var(--st
 .cl-working { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 14px; padding: 8px 0; }
 .cl-spin { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--line-2); border-top-color: var(--accent); animation: clSpin .8s linear infinite; flex: none; }
 @keyframes clSpin { to { transform: rotate(360deg); } }
+.cl-pt .cl-tab { padding: 4px 8px; font-size: 12.5px; }
+.cl-pt .cl-ptt svg { display: none; }
+.cl-pt .xb { min-width: 24px; }

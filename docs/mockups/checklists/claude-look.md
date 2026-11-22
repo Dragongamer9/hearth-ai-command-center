@@ -37,8 +37,8 @@ Still open, and why:
 
 ## claude-look-3-light.png
 - [x] The Claude app's light colours (warm off-white, cream sidebar, white message box, accent orange) — src/styles.css: "[data-design="claude"][data-mode="light"]" (screenshot 3.14-3-light.png)
-- [ ] A copyable command shown as a rounded mono row with "⧉ Copy"
-- [ ] "Gemini is looking for …" with a small spinner while an AI is still working
+- [x] A copyable command shown as a rounded mono row with "⧉ Copy" — src/app/rich.mjs: "⧉ Copy" (screenshot 3.14-3b-light-copy-and-working.png)
+- [x] "Gemini is looking for …" with a small spinner while an AI is still working — src/main.js: "clWork, cl-spin" (screenshot 3.14-3c-working.png)
 
 ## claude-look-4-team-picker.png
 - [x] The team picker opens from the message box's team button, like the Claude app's model menu — src/main.js: "teamPickClaude" (screenshot 3.14-4-team-picker.png)
