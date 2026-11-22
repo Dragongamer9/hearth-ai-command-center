@@ -24,7 +24,7 @@ import { expired, typedAnswer, ACT_KINDS } from './app/act.mjs';
 import { pickMaker, toolsBrief } from './app/tools.mjs';
 import { createTeamRunner } from './app/team-run.mjs';
 import { teammateStatus } from './app/errors.mjs';
-import { viewHabitat, mountHabitat, stopHabitat } from './habitat.mjs';
+import { viewHabitat, mountHabitat, stopHabitat, habitatOwnerAct, habitatNoteCount } from './habitat.mjs';
 import { mountHabitat3d, stopHabitat3d } from './habitat3d/view.mjs';
 import { applyHabitatLines, habitatSection, stripHabitatLines } from './habitat/actions.mjs';
 import { teamHabitatLine } from './habitat/status.mjs';
@@ -1234,7 +1234,7 @@ function topbar() {
   if (isClaude() && S.view === 'chat' && c && !c.rp && reProject()) return `<span class="ttl">Reverse Engineering</span><button class="cl-title" data-a="chat-opts" title="This chat: instructions, Live, voice, rename and more">${esc(c.title || 'Chat')} <span class="faint">⌄</span></button><span class="grow"></span><button class="tb cl-tb" data-a="reverse" title="REA: its setup and your projects">REA</button><button class="tb cl-tb" data-a="team-pop" data-top="1" title="Who works on this chat">${icon('users', 'sm')}Team</button><button class="tb cl-tb" data-a="toggle-pane" title="Side panel">${icon('panel', 'sm')}</button>`;
   if (isClaude() && S.view === 'chat' && c && !c.rp) return `${S.sideHidden ? `<button class="ib ghost" data-a="side-toggle" title="Show the sidebar" aria-label="Show the sidebar">${icon('panel', 'sm')}</button>` : ''}<button class="cl-title" data-a="chat-opts" title="This chat: instructions, Live, voice, rename and more">${esc(c.title || 'Chat')} <span class="faint">⌄</span></button>${(c.repo || c.repoDir) ? `<button class="cl-pill mono" data-a="repo-pop" title="Connected repo">${icon('gh', 'sm')}${esc(String(c.repo || c.repoDir).split('/').pop())} · ${esc(c.branch || S.copy?.base || 'default branch')}</button>` : ''}${workStack(cur(), 22)}${temp}<span class="grow"></span><button class="tb cl-tb" data-a="team-pop" data-top="1" title="Who works on this chat">${icon('users', 'sm')}Team</button><button class="tb cl-tb" data-a="toggle-pane" title="Side panel: changes, code and preview">${icon('panel', 'sm')}</button>`;
   // claude-look-8: the rooms and 2D ⇄ 3D in the top bar (the world itself is unchanged).
-  if (S.view === 'habitat' && isClaude()) return `<span class="ttl">Habitat</span><span class="grow"></span><span class="cl-seg"><button class="cl-tab" data-a="hab-room" data-v="great">Great hall</button><button class="cl-tab" data-a="hab-room" data-v="study">King's chambers</button></span><button class="tb cl-tb" data-a="hab-flip" title="Switch between the 2D and 3D Habitat">2D ⇄ 3D</button>`;
+  if (S.view === 'habitat' && isClaude()) return `<span class="ttl">Habitat</span><span class="grow"></span><span class="cl-seg"><button class="cl-tab" data-a="hab-room" data-v="great">Great hall</button><button class="cl-tab" data-a="hab-room" data-v="study">King's chambers</button><button class="cl-tab" data-a="hab-room" data-v="workroom" title="The shared workroom, in the 2D Habitat">Workroom</button></span><button class="tb cl-tb" data-a="hab-flip" title="Switch between the 2D and 3D Habitat">2D ⇄ 3D</button>`;
   if (S.view === 'habitat') return `<span class="ttl">Habitat</span><span class="faint hab-sub">${S.lastChat && entry(S.lastChat) ? `the team of “${esc(entry(S.lastChat).title)}”` : 'your AI team'}</span><span class="grow"></span>`;
   // 3.12 (nyarch-1/-2): the chat's headerbar: the side panel toggle, who's answering, and the model button in the middle;
   // ⚙ beside it opens everything the old top bar had (repo, instructions, Live, voice, team, gallery, panel).
@@ -1263,7 +1263,7 @@ function renderMain(scroll = false) {
   let dock = '';
   if (S.view !== 'habitat' && habMounted) { stopHabitat(); stopHabitat3d(); habMounted = false; }
   if (S.view === 'settings') { html = settingsView(); dock = ''; if (renderMain.lastView !== 'settings' || renderMain.lastTab !== S.tab) queueMicrotask(() => { const b = document.getElementById('body'); if (b) b.scrollTop = 0; }); renderMain.lastTab = S.tab; }
-  else if (S.view === 'habitat') { html = `<div class="habwrap">${viewHabitat()}</div>`; dock = ''; }
+  else if (S.view === 'habitat') { html = `<div class="habwrap">${viewHabitat()}${isClaude() ? `<div class="cl-hab-pills"><button class="cl-hp" data-a="hab-act" data-v="journal">📓 Habitat journal</button><button class="cl-hp" data-a="hab-act" data-v="board">📌 Board: ${habitatNoteCount()} note${habitatNoteCount() === 1 ? '' : 's'}</button><span class="grow"></span><button class="cl-hp" data-a="hab-act" data-v="wave" title="Wave: each AI waves back">Wave 👋</button></div>` : ''}</div>`; dock = ''; }
   else if (S.view === 'studio') { stSync(); html = stHtml(); dock = ''; }
   else if (S.view === 'reverse') { html = reverseView(); dock = ''; }
   else if (S.view === 'desktop') { html = deskView(); dock = ''; setTimeout(placeDeskMark, 0); }
@@ -3586,10 +3586,12 @@ document.addEventListener('click', async (ev) => {
       const bar = document.querySelector('.hab3d-bar');
       const is3 = document.querySelector('canvas.hab3d-canvas')?.habitat3d?.mode?.() === '3d';
       if (a.dataset.a === 'hab-flip') { bar?.querySelector(`[data-h3="${is3 ? '2d' : '3d'}"]`)?.click(); return; }
+      if (d.v === 'workroom') { if (is3) bar?.querySelector('[data-h3="2d"]')?.click(); return; }
       if (!is3) bar?.querySelector('[data-h3="3d"]')?.click();
       const go = () => { const h = document.querySelector('canvas.hab3d-canvas')?.habitat3d; if (!h?.ready) return setTimeout(go, 300); if (d.v === 'study') bar?.querySelector('[data-h3="study"]')?.click(); else { const sel = document.querySelector('.hab3d-pre'); if (sel) { sel.value = d.v; sel.dispatchEvent(new Event('change')); } } };
       return go();
     }
+    case 'hab-act': if (!habitatOwnerAct(d.v)) toast('The Habitat is still starting.'); return;
     case 'desk-page': S.view = 'desktop'; S.open = null; S.pane = null; S.pop = null; render(true); { const k = await call('desktopStatus'); if (k && typeof k === 'object') S.desktop = { ...(S.desktop || {}), ...k }; } return render();
     case 'desk-ans': { const a0 = (S.deskAsks || []).find((a) => a.id === d.id); await call('desktopAnswer', d.id, d.v); S.deskAsks = (S.deskAsks || []).filter((a) => a.id !== d.id); if (a0) S.deskLog = [...(S.deskLog || []), { ...a0, how: d.v }].slice(-40); return S.view === 'desktop' ? render() : renderOverlay(); }
     case 're-onoff': { const r = await call('reverseSetEnabled', d.v === '1'); if (r?.ok === false || r?.message) toast(r.message || 'Not saved.'); return openReverse(); }
