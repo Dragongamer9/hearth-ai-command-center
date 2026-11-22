@@ -1557,3 +1557,21 @@ details.more-acct > summary { cursor: pointer; font-weight: 700; color: var(--st
 .cl-re-card .t2 b { font-weight: 500; color: var(--strong); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cl-re-card .t2 small { font-size: 12px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cl-re > .col > h1 { font: 400 24px var(--serif); }
+/* Agent Desktop (claude-look-10) */
+.cl-desk { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 20px; padding: 8px 24px 24px; height: 100%; }
+.cl-desk-screen { border: 1px solid var(--line); border-radius: 16px; background: linear-gradient(160deg, #24253a, #15151f); display: grid; place-items: center; min-height: 420px; }
+.cl-desk-app { position: relative; width: 60%; min-height: 50%; border: 1px solid rgba(255,255,255,.12); border-radius: 10px; background: #1d1a17; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; padding: 24px; text-align: center; color: #e8e6dc; }
+.cl-desk-spot { width: 30px; height: 30px; border-radius: 50%; border: 2px solid var(--accent); margin-top: 14px; box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent) 18%, transparent); }
+.cl-desk-side { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.cl-desk-ask { border: 1.5px solid var(--accent); border-radius: 14px; padding: 14px 16px; background: color-mix(in srgb, var(--accent) 8%, var(--cl-card)); display: flex; flex-direction: column; gap: 8px; }
+.cl-desk-ask b { color: var(--strong); font-weight: 600; }
+.cl-desk-ask .ft { display: flex; gap: 8px; flex-wrap: wrap; }
+.cl-desk-done { display: flex; gap: 10px; align-items: center; border: 1px solid var(--line); border-radius: 12px; padding: 9px 14px; color: var(--text); }
+.cl-desk-done svg { color: var(--good); }
+.cl-desk-done.no svg { color: var(--bad); }
+.cl-desk-side > .mini { align-self: flex-start; }
+/* Habitat (claude-look-8) */
+.cl-seg { display: inline-flex; border: 1px solid var(--line); border-radius: 10px; padding: 2px; gap: 2px; margin-right: 6px; }
+:root[data-design="claude"] .habwrap { padding: 4px 14px 14px; }
+:root[data-design="claude"] .habwrap #habitat { border-radius: 16px; overflow: hidden; border: 1px solid var(--line); }
+:root[data-design="claude"] .hab-foot .btn, :root[data-design="claude"] .hab3d-bar .btn { border-radius: 9px; }

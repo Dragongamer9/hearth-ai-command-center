@@ -197,7 +197,7 @@ function stub(opts) {
     onCardsFound: (cb) => { window.__found = cb; return () => {}; },
     gitTools: () => ok({ git: '/usr/bin/git', gh: '/usr/bin/gh', ghUser: 'Dragongamer9' }),
     updaterInfo: () => ok({ enabled: true, install: 'appimage', status: { state: 'none', message: 'You are on the latest version.' } }),
-    onUpdaterStatus: () => () => {}, onThemeChanged: () => () => {}, onCopiesIdle: () => () => {}, onCopiesRemoved: () => () => {}, onOpsPhoneAction: () => () => {},
+    onUpdaterStatus: () => () => {}, onThemeChanged: () => () => {}, onCopiesIdle: () => () => {}, onCopiesRemoved: () => () => {}, onOpsPhoneAction: () => () => {}, onDesktop: (cb) => { if (opts.desk) setTimeout(() => { cb('ask', { id: 'd1', chat: 'c0000000001', tool: 'click', detail: 'Import Content…', args: 'Content Manager › File menu', at: new Date().toISOString() }); }, 300); return () => {}; }, desktopStatus: () => ok({ enabled: true }),
     onChatStep: (cb) => { listeners.step.push(cb); return () => {}; },
     opsPhoneStatus: () => ok({ enabled: false }),
     ghRepos: () => ok({ ok: true, repos: [
@@ -268,8 +268,10 @@ const SHOTS = [
   { file: '3.14-12-settings-accounts.png', opts: CL, click: '[data-a="settings"]', then: '[data-a="tab"][data-t="accounts"]', wait: 600, expect: ['Accounts', 'Claude', 'ChatGPT', 'GitHub'], selector: ['.cl-set .snav2 button.on[data-t="accounts"]'] },
   { file: '3.14-6-studio.png', opts: CL, click: '.cl-places [data-a="studio"]', wait: 700, expect: ['Picture', 'Video', 'Made so far', 'Nothing leaves your PC unless you pick an online maker'], selector: ['.cl-st-cols .cl-st-l .st-form', '.cl-st-r', '.st-pill'] },
   { file: '3.14-7-live.png', opts: { ...CL, open: 'c0000000001' }, click: '.cl-places [data-a="live"]', wait: 900, expect: ['Claude', 'ChatGPT', 'Say something, or type…', 'Calm', 'Mesh', 'Cores'], selector: ['.cl-cores-row .cl-core .core', '.cl-live-cap', '.cl-box'] },
+  { file: '3.14-8-habitat.png', opts: { ...CL, ...C3D }, click: '.cl-places [data-a="habitat"]', wait: 2500, expect: ['Habitat', 'Great hall', 'King\'s chambers', '2D ⇄ 3D'], selector: ['.cl-seg [data-a="hab-room"]', '[data-a="hab-flip"]'] },
   { file: '3.14-9-reverse.png', opts: CL, click: '.cl-places [data-a="reverse"]', wait: 700, expect: ['Trains 2010 (TS2010)', 'BFME2: Rise of the Witch-king', 'trainz.exe', 'New project', 'REA'], selector: ['.cl-re-cards .cl-re-card'] },
   { file: '3.14-9b-reverse-chat.png', opts: { ...CL, open: 'c0000000002' }, wait: 1200, expect: ['Reverse Engineering', 'REA', 'Ask about a game\'s files…', 'Trains 2010 (TS2010)'], selector: ['.cl-re-card.on', '.cl-box'] },
+  { file: '3.14-10-agent-desktop.png', opts: { ...CL, desk: true }, click: '.cl-places [data-a="desk-page"]', wait: 900, expect: ['Agent Desktop', 'Every action asks you first', 'wants to click', 'Import Content…', 'Allow', 'Allow for this task', 'Stop'], selector: ['.cl-desk-screen', '.cl-desk-ask', '.cl-desk-spot'] },
   { file: '3.14-11-characters.png', opts: { ...CL, open: 'c0000000014' }, wait: 700, expect: ['Mira', 'Characters', 'Lorebooks', 'Write Mira\'s scene…', 'Mira · Venice'], selector: ['.cl-title', '.cl-box'] },
   // 3.13: the approved compact mockups (docs/mockups/compact-*.png).
   ...[['team', 'Who\'s in your chats', 'A1'], ['accounts', 'Signed in with your account', 'A3'], ['ithil', 'With the team', 'A5'], ['tools', 'Connectors (MCP servers)', 'A6'], ['memory', 'Custom instructions', 'A7'], ['voice', 'Characters (2D and 3D)', 'A8'], ['general', 'Notifications', 'A2']].map(([t, e, m]) => ({ file: `3.13-${m}-settings-${t}.png`, viewport: { width: 1440, height: 900 }, opts: { more: true, ithil: true }, click: '[data-a="settings"]', then: `[data-a="tab"][data-t="${t}"]`, wait: 700, expect: [e], selector: ['.set.dlg.cmp', '.snav2', `.snav2 [data-t="${t}"].on`, '.spage'] })),

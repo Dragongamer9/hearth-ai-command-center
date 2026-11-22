@@ -1219,6 +1219,7 @@ function topbar() {
   const c = entry();
   if (S.view === 'studio') return `<span class="ttl">Images &amp; Videos</span><span class="grow"></span>`;
   if (S.view === 'reverse') return `<span class="ttl">Reverse Engineering</span><span class="grow"></span>`;
+  if (S.view === 'desktop') return `<span class="ttl">Agent Desktop</span><span class="grow"></span><span class="cl-pill">Every action asks you first</span>`;
   if (S.view === 'live' && isClaude() && liveModeNow() === 'calm') return `<span class="ttl">Live</span><span class="grow"></span>${c ? `<button class="tb cl-tb" data-a="talk" title="Voice chat: talk with the team and hear the answers">${icon('mic', 'sm')}Talk to the team</button>` : ''}`;
   if (S.view === 'live') return `<span class="ttl">Live</span>${workStack(liveChat(), 26)}<span class="grow"></span>${c ? `<button class="tb" data-a="live-full" title="Open this chat with every message and tool">${icon('chat', 'sm')}Full chat</button>` : ''}<button class="tb" data-a="live-drawer" aria-pressed="${S.liveDrawer}" title="${S.liveDrawer ? 'Hide' : 'Show'} the chat on the right">${icon('panel', 'sm')}${S.liveDrawer ? 'Hide chat' : 'Show chat'}</button>`;
   const title = S.view === 'settings' ? 'Settings' : S.view === 'habitat' ? 'Habitat' : ['characters', 'card', 'lorebooks'].includes(S.view) ? 'Characters' : S.view === 'chat' ? (c?.title || 'Chat') : '';
@@ -1232,6 +1233,8 @@ function topbar() {
   if (isClaude() && S.view === 'chat' && c?.rp) return `<button class="cl-title" data-a="chat-opts" title="This chat: voice, rename and more">${esc(c.title || 'Chat')} <span class="faint">⌄</span></button>${workStack(cur(), 22)}<span class="grow"></span><button class="tb cl-tb" data-a="characters">Characters</button><button class="tb cl-tb" data-a="lorebooks">Lorebooks</button><button class="tb cl-tb" data-a="toggle-pane" title="Side panel">${icon('panel', 'sm')}</button>`;
   if (isClaude() && S.view === 'chat' && c && !c.rp && reProject()) return `<span class="ttl">Reverse Engineering</span><button class="cl-title" data-a="chat-opts" title="This chat: instructions, Live, voice, rename and more">${esc(c.title || 'Chat')} <span class="faint">⌄</span></button><span class="grow"></span><button class="tb cl-tb" data-a="reverse" title="REA: its setup and your projects">REA</button><button class="tb cl-tb" data-a="team-pop" data-top="1" title="Who works on this chat">${icon('users', 'sm')}Team</button><button class="tb cl-tb" data-a="toggle-pane" title="Side panel">${icon('panel', 'sm')}</button>`;
   if (isClaude() && S.view === 'chat' && c && !c.rp) return `${S.sideHidden ? `<button class="ib ghost" data-a="side-toggle" title="Show the sidebar" aria-label="Show the sidebar">${icon('panel', 'sm')}</button>` : ''}<button class="cl-title" data-a="chat-opts" title="This chat: instructions, Live, voice, rename and more">${esc(c.title || 'Chat')} <span class="faint">⌄</span></button>${(c.repo || c.repoDir) ? `<button class="cl-pill mono" data-a="repo-pop" title="Connected repo">${icon('gh', 'sm')}${esc(String(c.repo || c.repoDir).split('/').pop())} · ${esc(c.branch || S.copy?.base || 'default branch')}</button>` : ''}${workStack(cur(), 22)}${temp}<span class="grow"></span><button class="tb cl-tb" data-a="team-pop" data-top="1" title="Who works on this chat">${icon('users', 'sm')}Team</button><button class="tb cl-tb" data-a="toggle-pane" title="Side panel: changes, code and preview">${icon('panel', 'sm')}</button>`;
+  // claude-look-8: the rooms and 2D ⇄ 3D in the top bar (the world itself is unchanged).
+  if (S.view === 'habitat' && isClaude()) return `<span class="ttl">Habitat</span><span class="grow"></span><span class="cl-seg"><button class="cl-tab" data-a="hab-room" data-v="great">Great hall</button><button class="cl-tab" data-a="hab-room" data-v="study">King's chambers</button></span><button class="tb cl-tb" data-a="hab-flip" title="Switch between the 2D and 3D Habitat">2D ⇄ 3D</button>`;
   if (S.view === 'habitat') return `<span class="ttl">Habitat</span><span class="faint hab-sub">${S.lastChat && entry(S.lastChat) ? `the team of “${esc(entry(S.lastChat).title)}”` : 'your AI team'}</span><span class="grow"></span>`;
   // 3.12 (nyarch-1/-2): the chat's headerbar: the side panel toggle, who's answering, and the model button in the middle;
   // ⚙ beside it opens everything the old top bar had (repo, instructions, Live, voice, team, gallery, panel).
@@ -1263,6 +1266,7 @@ function renderMain(scroll = false) {
   else if (S.view === 'habitat') { html = `<div class="habwrap">${viewHabitat()}</div>`; dock = ''; }
   else if (S.view === 'studio') { stSync(); html = stHtml(); dock = ''; }
   else if (S.view === 'reverse') { html = reverseView(); dock = ''; }
+  else if (S.view === 'desktop') { html = deskView(); dock = ''; }
   else if (S.view === 'live') { html = liveView(); dock = composer(isClaude() && liveModeNow() === 'calm' ? 'Say something, or type…' : S.open ? 'Talk to the team…' : 'What should the team work on?'); }
   else if (S.view === 'characters') { html = charactersView(); dock = ''; }
   else if (S.view === 'card') { html = cardEditView(); dock = ''; queueMicrotask(() => cfRun(false)); }
@@ -1318,7 +1322,7 @@ const CLAUDE_PLACES = [
   ['live', 'eye', 'Live', 'live', () => S.view === 'live'],
   ['habitat', 'home', 'Habitat', 'habitat', () => S.view === 'habitat'],
   ['reverse', 'code', 'Reverse Engineering', 'reverse', () => S.view === 'reverse'],
-  ['desktop', 'cpu', 'Agent Desktop', 'go-set', () => false, 'tools'],
+  ['desktop', 'cpu', 'Agent Desktop', 'desk-page', () => S.view === 'desktop'],
   ['characters', 'user', 'Characters', 'characters', () => ['characters', 'card', 'lorebooks'].includes(S.view)],
 ];
 function signedInLine() {
@@ -2104,13 +2108,27 @@ function renderOverlay() {
   if (S.pop) html += popHtml();
   if (S.modal) html += modalHtml();
   if (voice.isOpen()) html += voice.viewHtml();
-  if (S.deskAsks?.length) html += deskAsksHtml();
+  if (S.deskAsks?.length && S.view !== 'desktop') html += deskAsksHtml();
   if (S.toast) html += `<div class="toast">${esc(S.toast.text)}${S.toast.undo ? `<button class="mini" data-a="undo">${icon('undo', 'sm')}Undo</button>` : ''}</div>`;
   setRegion('overlay', html);
   if (S.pop?.kind === 'repo') { const el = document.getElementById('repo-q'); if (el && document.activeElement !== el && !S.pop.noFocus) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } }
 }
 
 // Agent Desktop asking to act (electron/desktop.cjs): one card per ask, newest on top.
+// 3.14 (claude-look-10): Agent Desktop as its own page: what it wants to do as accent cards (Allow / Allow for this
+// task / Stop), what was done as ✓ rows. Every action still asks first.
+function deskView() {
+  const dk = S.desktop || {};
+  const asks = (S.deskAsks || []).slice().reverse();
+  const log = (S.deskLog || []).slice().reverse();
+  const who = (a) => `${entry(a.chat)?.title ? `In “${esc(entry(a.chat).title)}”, ` : ''}${esc(aiName(team().lead))}`;
+  const now = asks[0];
+  return `<div class="cl-desk"><div class="cl-desk-screen"><div class="cl-desk-app">${now ? `<b>${esc(now.detail || now.tool)}</b><span class="fine mono">${esc(now.tool)}${now.args ? ` · ${esc(now.args)}` : ''}</span><span class="cl-desk-spot" aria-hidden="true"></span>` : `<span class="fine">${dk.enabled ? 'Nothing is being used right now. When your AI asks to act, what it wants to touch shows here.' : 'Agent Desktop is off. Turn it on in Settings › Tools & Agent Desktop.'}</span>`}</div></div>
+    <aside class="cl-desk-side">${asks.map((a) => `<div class="cl-desk-ask"><b>${who(a)} wants to ${esc(a.tool)}${a.detail ? ` “${esc(a.detail)}”` : ''}</b>${a.args ? `<div class="fine mono">${esc(a.args)}</div>` : ''}<div class="ft"><button class="btn p" data-a="desk-ans" data-id="${esc(a.id)}" data-v="once">Allow</button><button class="btn" data-a="desk-ans" data-id="${esc(a.id)}" data-v="ten" title="For the next 10 minutes in this chat">Allow for this task</button><button class="btn" data-a="desk-ans" data-id="${esc(a.id)}" data-v="no">Stop</button></div></div>`).join('')}
+      ${log.map((a) => `<div class="cl-desk-done ${a.how === 'no' ? 'no' : ''}">${icon(a.how === 'no' ? 'x' : 'check', 'sm')}${esc(a.how === 'no' ? 'Stopped: ' : '')}${esc(a.detail || a.tool)}</div>`).join('')}
+      ${!asks.length && !log.length ? '<p class="fine">Nothing asked yet.</p>' : ''}
+      <button class="mini" data-a="go-set" data-t="tools">Agent Desktop settings</button></aside></div>`;
+}
 function deskAsksHtml() {
   return `<div class="desk-asks" role="alertdialog" aria-label="Your AI wants to use this desktop">${S.deskAsks.slice().reverse().map((a) => `<div class="box desk-ask"><b>${icon('cpu', 'sm')}${esc(entry(a.chat)?.title ? `In “${entry(a.chat).title}”` : 'Your AI')} wants to <span class="mono">${esc(a.tool)}</span>${a.detail ? `: “${esc(a.detail)}”` : ''}</b><div class="fine mono">${esc(a.args)}</div><div class="srow"><button class="btn p" data-a="desk-ans" data-id="${esc(a.id)}" data-v="once">Allow</button><button class="btn" data-a="desk-ans" data-id="${esc(a.id)}" data-v="ten">Allow for 10 minutes in this chat</button><button class="btn ghost" data-a="desk-ans" data-id="${esc(a.id)}" data-v="no">Don't allow</button></div></div>`).join('')}</div>`;
 }
@@ -3528,7 +3546,17 @@ document.addEventListener('click', async (ev) => {
     case 'temp-end': ev.stopPropagation(); return endTemp(d.id);
     case 'studio': return openStudio();
     case 'reverse': return openReverse();
-    case 'desk-ans': { await call('desktopAnswer', d.id, d.v); S.deskAsks = (S.deskAsks || []).filter((a) => a.id !== d.id); return renderOverlay(); }
+    case 'hab-room': case 'hab-flip': {
+      // Through the Habitat's own controls, so its saved view choices stay the one place they're kept.
+      const bar = document.querySelector('.hab3d-bar');
+      const is3 = document.querySelector('canvas.hab3d-canvas')?.habitat3d?.mode?.() === '3d';
+      if (a.dataset.a === 'hab-flip') { bar?.querySelector(`[data-h3="${is3 ? '2d' : '3d'}"]`)?.click(); return; }
+      if (!is3) bar?.querySelector('[data-h3="3d"]')?.click();
+      const go = () => { const h = document.querySelector('canvas.hab3d-canvas')?.habitat3d; if (!h?.ready) return setTimeout(go, 300); if (d.v === 'study') bar?.querySelector('[data-h3="study"]')?.click(); else { const sel = document.querySelector('.hab3d-pre'); if (sel) { sel.value = d.v; sel.dispatchEvent(new Event('change')); } } };
+      return go();
+    }
+    case 'desk-page': S.view = 'desktop'; S.open = null; S.pane = null; S.pop = null; render(true); { const k = await call('desktopStatus'); if (k && typeof k === 'object') S.desktop = { ...(S.desktop || {}), ...k }; } return render();
+    case 'desk-ans': { const a0 = (S.deskAsks || []).find((a) => a.id === d.id); await call('desktopAnswer', d.id, d.v); S.deskAsks = (S.deskAsks || []).filter((a) => a.id !== d.id); if (a0) S.deskLog = [...(S.deskLog || []), { ...a0, how: d.v }].slice(-40); return S.view === 'desktop' ? render() : renderOverlay(); }
     case 're-onoff': { const r = await call('reverseSetEnabled', d.v === '1'); if (r?.ok === false || r?.message) toast(r.message || 'Not saved.'); return openReverse(); }
     case 're-ghidra': { const r = await call('reversePickGhidra'); if (r && !r.canceled && (r.ok === false || r.message)) toast(r.message || 'Not saved.'); return openReverse(); }
     case 're-ghidra-clear': await call('reverseClearGhidra'); return openReverse();
