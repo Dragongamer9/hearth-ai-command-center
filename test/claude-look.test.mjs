@@ -41,3 +41,11 @@ test('every place stays reachable from the sidebar, and the mockups and checklis
   // Its own colours and the bundled fonts only: no pictures or logos in the look.
   assert.doesNotMatch(css.slice(css.indexOf('3.14: the Claude app look')), /url\(/);
 });
+
+test('picking a Style saves it, Claude app included (3.14 ignored the Claude app pick)', () => {
+  assert.match(main, /select\[data-a="design-pick"\]'\) && DESIGNS\.includes\(t\.value\)\) setSettings\(\{ design: t\.value \}\)/);
+  assert.match(main, /case 'design': \{ if \(!DESIGNS\.includes\(d\.v\)\) return;/);
+  assert.doesNotMatch(main, /\['hologram', 'classic', 'adwaita'\]\.includes\((t\.value|d\.v)\)/);
+  // Every option in the Style menus is one the main process saves.
+  for (const v of ['claude', 'adwaita', 'hologram', 'classic']) assert.ok(mainCjs.includes(`'${v}'`), v);
+});

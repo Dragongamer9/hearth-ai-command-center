@@ -3488,7 +3488,7 @@ document.addEventListener('click', async (ev) => {
     case 'live-drawer': S.liveDrawer = !S.liveDrawer; try { localStorage.setItem('hearth.v2.liveDrawer', S.liveDrawer ? '1' : '0'); } catch {} return renderMain();
     case 'live-full': if (S.open) return openChat(S.open); return;
     case 'open-freebuff': { const r = await call('openWeb', 'freebuff'); if (r && r.ok === false) toast(r.message || 'FreeBuff couldn\'t open.'); return; }
-    case 'design': { if (!['hologram', 'classic', 'adwaita'].includes(d.v)) return; await setSettings({ design: d.v }); return; }
+    case 'design': { if (!DESIGNS.includes(d.v)) return; await setSettings({ design: d.v }); return; }
     // roleplay: characters, lorebooks, persona
     case 'characters': S.view = 'characters'; S.cardEdit = null; S.loreEdit = null; S.pane = null; render(true); await loadCards(); return render();
     case 'lorebooks': S.view = 'lorebooks'; S.loreEdit = null; render(true); S.books = (await call('loreList')) || []; return render();
@@ -4025,7 +4025,8 @@ document.addEventListener('change', (ev) => {
   if (t.matches?.('select[data-a="unc-pic"]')) setSettings({ uncensored: { pictureModel: t.value } });
   if (t.matches?.('[data-a="idle-hours"]')) setSettings({ copyIdleHours: Number(t.value) });
   if (t.matches?.('[data-a="max-chats"]')) setSettings({ maxChats: Number(t.value) });
-  if (t.matches?.('select[data-a="design-pick"]') && ['hologram', 'classic', 'adwaita'].includes(t.value)) setSettings({ design: t.value }).then(() => { applyTheme(); render(); });
+  // Every Style in the menu, Claude app included (3.14 left it out here: picking it did nothing).
+  if (t.matches?.('select[data-a="design-pick"]') && DESIGNS.includes(t.value)) setSettings({ design: t.value }).then(() => { applyTheme(); render(); });
   if (t.matches?.('select[data-a="accent-pick"]')) setSettings({ accent: t.value }).then(() => applyTheme());
   if (t.matches?.('select[data-a="set-lead"]') && t.value) { const tm = team(); setSettings({ team: { ...tm, lead: t.value, reviewer: tm.reviewer === t.value ? tm.lead : tm.reviewer } }); }
   if (t.matches?.('select[data-a="set-reviewer"]')) setSettings({ team: { ...team(), reviewer: t.value || null } });
