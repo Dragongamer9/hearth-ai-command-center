@@ -1263,7 +1263,7 @@ function renderMain(scroll = false) {
   let dock = '';
   if (S.view !== 'habitat' && habMounted) { stopHabitat(); stopHabitat3d(); habMounted = false; }
   if (S.view === 'settings') { html = settingsView(); dock = ''; if (renderMain.lastView !== 'settings' || renderMain.lastTab !== S.tab) queueMicrotask(() => { const b = document.getElementById('body'); if (b) b.scrollTop = 0; }); renderMain.lastTab = S.tab; }
-  else if (S.view === 'habitat') { html = `<div class="habwrap">${viewHabitat()}${isClaude() ? `<div class="cl-hab-pills"><button class="cl-hp" data-a="hab-act" data-v="journal">📓 Habitat journal</button><button class="cl-hp" data-a="hab-act" data-v="board">📌 Board: ${habitatNoteCount()} note${habitatNoteCount() === 1 ? '' : 's'}</button><span class="grow"></span><button class="cl-hp" data-a="hab-act" data-v="wave" title="Wave: each AI waves back">Wave 👋</button></div>` : ''}</div>`; dock = ''; }
+  else if (S.view === 'habitat') { const hv = viewHabitat(); html = `<div class="habwrap">${isClaude() ? hv.replace('<div class="hab-pop" hidden></div></div>', `<div class="hab-pop" hidden></div>${`<div class="cl-hab-pills"><button class="cl-hp" data-a="hab-act" data-v="journal">📓 Habitat journal</button><button class="cl-hp" data-a="hab-act" data-v="board">📌 Board: ${habitatNoteCount()} note${habitatNoteCount() === 1 ? '' : 's'}</button><span class="grow"></span><button class="cl-hp" data-a="hab-act" data-v="wave" title="Wave: each AI waves back">Wave 👋</button></div>`}</div>`) : hv}</div>`; dock = ''; }
   else if (S.view === 'studio') { stSync(); html = stHtml(); dock = ''; }
   else if (S.view === 'reverse') { html = reverseView(); dock = ''; }
   else if (S.view === 'desktop') { html = deskView(); dock = ''; setTimeout(placeDeskMark, 0); }

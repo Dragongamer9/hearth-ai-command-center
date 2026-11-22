@@ -6,10 +6,7 @@ screens 6–12 "yes all together" into 3.14). No Anthropic logo or name anywhere
 headings, Inter for the rest). It's the default Style; anyone who picked Gold hologram, Dark or Classic keeps it.
 `- [x] part — file: "proof"` once built. Screenshots are on the `ci/screenshots-out` branch (UI screenshots workflow).
 
-Still open, and why:
-- Images & Videos: "Edit a picture" and "Starred" are new features (the app can't edit a picture or star one yet); Open gallery too.
-- Agent Desktop: Agent Desktop doesn't capture the screen today, so the real screen picture with the click marked needs a screen capture added.
-- Habitat: the name · doing pills and journal / board / wave pills are drawn inside the world; "Workroom" waits for the owner to say which place it is.
+Everything is built. Checked on CI only; to see on the owner's PC: Agent Desktop's real screen picture (CI uses a drawn screen), Edit a picture with his ComfyUI.
 
 ## claude-look-1-home-dark.png
 - [x] Sidebar: "Command Center" in the serif at the top with the collapse button — src/main.js: "sideClaude" (screenshot 3.14-1-home-dark.png)
@@ -50,9 +47,9 @@ Still open, and why:
 - [x] Rows with a bold label, a muted line under it, and the control on the right; segmented buttons and switches in the accent — src/styles.css: ".cl-set .srow .t2 b" (screenshot 3.14-5-settings-appearance.png)
 
 ## claude-look-6-studio.png
-- [ ] Images & Videos: Picture / Video / Edit a picture tabs, the prompt in a message box (serif) with +, aspect, count, the maker and send
+- [x] Images & Videos: Picture / Video / Edit a picture tabs, the prompt in a message box (serif) with +, aspect, count, the maker and send — src/app/studio.mjs: "Edit a picture", electron/comfy.cjs buildEditWorkflow (screenshot 3.14-6b-studio-edit.png)
 - [x] The line about making on your PC or online makers; the Queue as rounded rows with progress — src/app/studio.mjs: "cl-st-why, st-queue" (screenshot 3.14-6-studio.png)
-- [ ] Results as rounded tiles with Save; All / Pictures / Videos / Starred and Open gallery
+- [x] Results as rounded tiles with Save; All / Pictures / Videos / Starred and Open gallery — src/app/studio.mjs: "st-star", "starred", "st-gallery" (screenshot 3.14-6b-studio-edit.png)
 - [x] Top right: your PC's status (ComfyUI ready · the graphics card) — src/app/studio.mjs: "statusPill(st)" (screenshot 3.14-6-studio.png)
 
 ## claude-look-7-live.png
@@ -60,15 +57,15 @@ Still open, and why:
 - [x] What's being said in the reading font under the cores; the message box under that; "🎙 Talk to the team" on top — src/main.js: "liveCalm" (screenshot 3.14-7-live.png)
 
 ## claude-look-8-habitat.png
-- [ ] Habitat's world unchanged; its room tabs (Great hall, King's chambers, Workroom) and 2D ⇄ 3D in the top bar
-- [ ] The world in a rounded frame; each AI's name · what they're doing as a pill; Habitat journal, Board and Wave as pills
+- [x] Habitat's world unchanged; its room tabs (Great hall, King's chambers, Workroom) and 2D ⇄ 3D in the top bar — src/main.js: "hab-room" great / study / workroom, "hab-flip" (screenshot 3.14-8-habitat.png)
+- [x] The world in a rounded frame; each AI's name · what they're doing as a pill; Habitat journal, Board and Wave as pills — src/habitat3d/view.mjs: "namePills", src/main.js: "cl-hab-pills" (screenshots 3.14-8-habitat.png, 3.14-8b-habitat-journal.png)
 
 ## claude-look-9-reverse-engineering.png
 - [x] Reverse Engineering: each project as a card on top (name, file, size, state) — src/main.js: "reCards" (screenshot 3.14-9-reverse.png)
 - [x] REA's chat in the same look (bubble, serif answer, tool step), the message box with the project's repo — src/main.js: "chatView: reCards(), "Ask about a game's files…"" (screenshot 3.14-9b-reverse-chat.png)
 
 ## claude-look-10-agent-desktop.png
-- [ ] Agent Desktop: the screen it's using, framed, with where it'll click marked
+- [x] Agent Desktop: the screen it's using, framed, with where it'll click marked — electron/desktop-proxy.cjs peekFor, src/main.js: "desk-shot", "desk-mark" (screenshot 3.14-10-agent-desktop.png)
 - [x] Each action as an accent card "<AI> wants to …" with Allow / Allow for this task / Stop; done steps as ✓ rows — src/main.js: "deskView, cl-desk-ask, cl-desk-done" (screenshot 3.14-10-agent-desktop.png)
 
 ## claude-look-11-characters.png
