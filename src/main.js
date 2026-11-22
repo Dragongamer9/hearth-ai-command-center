@@ -96,7 +96,8 @@ const team = () => teamOf(S.settings.team);
 // 3.14 (docs/mockups/claude-look-*.png): the Style. The Claude app look is the default when none was picked; a Style
 // picked in Settings (Gold hologram, Dark, Classic) always stays.
 const DESIGNS = ['claude', 'adwaita', 'hologram', 'classic'];
-const designOf = (s = S.settings) => (DESIGNS.includes(s?.design) ? s.design : 'claude');
+// The owner, Nov 22: "By default i want it to look like the claude app, and only the claude app": one look.
+const designOf = () => 'claude';
 const isClaude = () => designOf() === 'claude';
 // Who's switched off in this chat (the team picker's switches; kept with the chat, never in settings).
 const offIn = (R) => (R ? R.sessions?._off || [] : S.homeOff || []);
@@ -2399,7 +2400,7 @@ const TAB_TOP = {
     const design = designOf(s);
     const ACC = [['blue', 'Blue'], ['teal', 'Teal'], ['green', 'Green'], ['yellow', 'Yellow'], ['orange', 'Orange'], ['red', 'Red'], ['pink', 'Pink'], ['purple', 'Purple'], ['slate', 'Slate']];
     return [
-      grp('Look', [row('Style', '', `<select data-a="design-pick"><option value="claude" ${design === 'claude' ? 'selected' : ''}>Claude app</option><option value="adwaita" ${design === 'adwaita' ? 'selected' : ''}>Dark</option><option value="hologram" ${design === 'hologram' ? 'selected' : ''}>Gold hologram</option><option value="classic" ${design === 'classic' ? 'selected' : ''}>Classic</option></select>`), row('Accent colour', '', `<select data-a="accent-pick" ${design !== 'adwaita' ? 'disabled' : ''}>${ACC.map(([v, l]) => `<option value="${v}" ${(s.accent || 'blue') === v ? 'selected' : ''}>${l}</option>`).join('')}</select>`), row('Text size', '', moreBtn('general', `${s.textSize || 100}%`))]),
+      grp('Look', [row('Colour mode', 'Light, dark, or the same as Hearth OS', ['light', 'dark', 'hearth'].map((v) => `<button class="seg ${(['hearth', 'system'].includes(s.theme) ? 'hearth' : s.theme) === v ? 'on' : ''}" data-a="theme" data-v="${v}">${{ light: 'Light', dark: 'Dark', hearth: 'Match Hearth' }[v]}</button>`).join(''))), row('Text size', '', moreBtn('general', `${s.textSize || 100}%`))]),
       grp('Notifications', [row('When a chat needs my answer', '', tog(s.notify !== false, 'notify-toggle')), row('When a task finishes', '', tog(s.notifyDone !== false, 'notify-done')), row('On my phone too', '', tog(s.notifyPhone === true, 'notify-phone'))]),
       grp('App updates', [row(`Hearth AI Command Center ${esc(S.info?.version || '')}`, esc(S.upd?.status?.message || (S.upd?.status?.state === 'available' ? `${S.upd.status.version} is available` : 'Checks for updates by itself')), '<button class="mini" data-a="upd" data-v="check">Check now</button>'), row('Install updates by themselves', 'Downloads each new version by itself; you press Install. Works for the AppImage and the .deb', tog(s.autoUpdate !== false, 'auto-update'))]),
       grp('Home server', [row('AI chat on the home server', 'Your Hearth devices\' local AI (the home server first) can answer in chats', tog(s.homeServerAi !== false, 'home-ai'))]),
@@ -2844,8 +2845,7 @@ function section(k) {
     const ACC = [['blue', 'Blue'], ['teal', 'Teal'], ['green', 'Green'], ['yellow', 'Yellow'], ['orange', 'Orange'], ['red', 'Red'], ['pink', 'Pink'], ['purple', 'Purple'], ['slate', 'Slate']];
     // 3.12 (settings-7): Look: Style, Accent colour, Text size.
     return `<h1>Appearance</h1><div class="box"><h3>Look</h3>
-      ${design === 'claude' ? lookClaudeRows(s) : ''}<div class="srow ${design === 'claude' ? 'cl-style' : ''}">${design === 'claude' ? '<span class="t2"><b>Style</b><span class="d">Claude app is the default; Gold hologram, Dark (3.12) and Classic are still here</span></span><span class="cl-hide">' : ''}Style${design === 'claude' ? '</span>' : ''}<span class="d ${design === 'claude' ? 'cl-hide' : ''}">${design === 'claude' ? 'The Claude app look is the default; Gold hologram and Dark (3.12) are still here' : design === 'adwaita' ? '' : holo ? 'gold hologram: living cores, always dark, its own colours' : 'classic: calm and warm, follows the theme below'}</span><span class="grow"></span><select data-a="design-pick"><option value="claude" ${design === 'claude' ? 'selected' : ''}>Claude app</option><option value="adwaita" ${design === 'adwaita' ? 'selected' : ''}>Dark</option><option value="hologram" ${holo ? 'selected' : ''}>Gold hologram</option><option value="classic" ${design === 'classic' ? 'selected' : ''}>Classic</option></select></div>
-      ${s.design === 'claude' && !s.designPicked ? '<div class="note sub">3.14 switched the Style to Claude app. Pick Dark, Gold hologram or Classic here to go back; your pick is kept.</div>' : ''}
+      ${lookClaudeRows(s)}
       <div class="srow" ${design === 'claude' ? 'hidden' : ''}>Accent colour<span class="d"></span><span class="grow"></span><select data-a="accent-pick" ${design !== 'adwaita' ? 'disabled' : ''}>${ACC.map(([v, l]) => `<option value="${v}" ${(s.accent || 'blue') === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
       ${['classic', 'claude'].includes(design) ? '' : '<div class="note sub">Theme and your Hearth OS colours apply when Style is Classic.</div>'}
       <div class="srow" ${design === 'classic' ? '' : 'hidden'}>Theme<span class="grow"></span>${['hearth', 'dark', 'light', 'system'].map((v) => `<button class="seg ${s.theme === v ? 'on' : ''}" data-a="theme" data-v="${v}">${{ hearth: 'Follow Hearth OS', dark: 'Dark', light: 'Light', system: 'System' }[v]}</button>`).join('')}</div>
@@ -3488,7 +3488,7 @@ document.addEventListener('click', async (ev) => {
     case 'live-drawer': S.liveDrawer = !S.liveDrawer; try { localStorage.setItem('hearth.v2.liveDrawer', S.liveDrawer ? '1' : '0'); } catch {} return renderMain();
     case 'live-full': if (S.open) return openChat(S.open); return;
     case 'open-freebuff': { const r = await call('openWeb', 'freebuff'); if (r && r.ok === false) toast(r.message || 'FreeBuff couldn\'t open.'); return; }
-    case 'design': { if (!DESIGNS.includes(d.v)) return; await setSettings({ design: d.v }); return; }
+
     // roleplay: characters, lorebooks, persona
     case 'characters': S.view = 'characters'; S.cardEdit = null; S.loreEdit = null; S.pane = null; render(true); await loadCards(); return render();
     case 'lorebooks': S.view = 'lorebooks'; S.loreEdit = null; render(true); S.books = (await call('loreList')) || []; return render();
@@ -4025,8 +4025,6 @@ document.addEventListener('change', (ev) => {
   if (t.matches?.('select[data-a="unc-pic"]')) setSettings({ uncensored: { pictureModel: t.value } });
   if (t.matches?.('[data-a="idle-hours"]')) setSettings({ copyIdleHours: Number(t.value) });
   if (t.matches?.('[data-a="max-chats"]')) setSettings({ maxChats: Number(t.value) });
-  // Every Style in the menu, Claude app included (3.14 left it out here: picking it did nothing).
-  if (t.matches?.('select[data-a="design-pick"]') && DESIGNS.includes(t.value)) setSettings({ design: t.value }).then(() => { applyTheme(); render(); });
   if (t.matches?.('select[data-a="accent-pick"]')) setSettings({ accent: t.value }).then(() => applyTheme());
   if (t.matches?.('select[data-a="set-lead"]') && t.value) { const tm = team(); setSettings({ team: { ...tm, lead: t.value, reviewer: tm.reviewer === t.value ? tm.lead : tm.reviewer } }); }
   if (t.matches?.('select[data-a="set-reviewer"]')) setSettings({ team: { ...team(), reviewer: t.value || null } });
