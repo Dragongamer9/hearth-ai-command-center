@@ -1627,7 +1627,9 @@ function chatView() {
   const lastAi = [...msgs].reverse().find((m) => m.who !== 'owner' && m.who !== 'system');
   const items = msgs.map((m) => message(m, m.id === lastChanges, m === lastAi && !R?.round)).join('');
   const b = S.busy;
-  const card = (b) => `<div class="msg-a working"><div class="who">${b.char ? avatarHtml(cardById(b.char)) : mono(b.agent)}<b>${esc(b.char ? `${cardById(b.char)?.name || ''} (${aiName(b.agent)})` : aiName(b.agent))}</b>${b.role === 'lead' ? '<span class="star">★ lead</span>' : b.role === 'reviewer' ? '<span>· reviewer</span>' : ''}<span>· working</span>${b.lane ? '<span class="faint">· at the same time, in its own copy</span>' : ''}<span class="dots"><i></i><i></i><i></i></span>${b.note ? `<span class="faint">· ${esc(b.note)}</span>` : ''}</div>${stepsHtml(b.steps, [], true)}</div>`;
+  // claude-look-3: "Gemini is looking for …" with a small spinner while an AI is still working.
+  const clWork = (b) => { const st = (b.steps || []).slice(-1)[0]; return `<div class="msg-a working cl-working"><i class="cl-spin" aria-hidden="true"></i><span>${esc(aiName(b.agent))} ${st ? `· ${esc(st.label)}${st.detail ? ` ${esc(st.detail)}` : ''}` : 'is thinking'}…</span>${b.lane ? '<span class="faint">· at the same time, in its own copy</span>' : ''}</div>`; };
+  const card = (b) => isClaude() && !b.char ? clWork(b) : `<div class="msg-a working"><div class="who">${b.char ? avatarHtml(cardById(b.char)) : mono(b.agent)}<b>${esc(b.char ? `${cardById(b.char)?.name || ''} (${aiName(b.agent)})` : aiName(b.agent))}</b>${b.role === 'lead' ? '<span class="star">★ lead</span>' : b.role === 'reviewer' ? '<span>· reviewer</span>' : ''}<span>· working</span>${b.lane ? '<span class="faint">· at the same time, in its own copy</span>' : ''}<span class="dots"><i></i><i></i><i></i></span>${b.note ? `<span class="faint">· ${esc(b.note)}</span>` : ''}</div>${stepsHtml(b.steps, [], true)}</div>`;
   const all = R?.working?.length ? R.working : b ? [b] : [];
   const working = all.length ? all.map(card).join('') : R?.waiting ? `<div class="msg-s waitline">${icon('clock', 'sm')} Waiting for a free slot: ${runner.queue.active.size} chats are already working (your limit is ${S.settings.maxChats || 3}). This chat starts by itself when one finishes.</div>` : '';
   const empty = !msgs.length && !b ? `<div class="chat-empty"><p>${entry()?.temp ? 'A temporary chat: nothing is saved, and it ends when you close it.' : `Ask the team anything. ${entry()?.repo ? `They work in a temporary copy of <b>${esc(entry().repo)}</b> and push to their own branch.` : 'Connect a repo from the box below to let them change code.'}`}</p></div>` : '';
@@ -2038,7 +2040,7 @@ function clPanelHtml() {
   const body = tab === 'changes' ? (!m ? '<div class="rt-empty">No changes in this chat yet.</div>' : diff ? diff.map((f) => `<div class="cl-df"><div class="cl-dfh mono">${esc(f.path)} <span class="add">+${f.add}</span> <span class="del">−${f.del}</span></div>${f.binary ? '<div class="faint">Binary file</div>' : f.hunks.map((h) => `<div class="cl-hunk mono"><div class="hh">${esc(h.header)}</div>${h.lines.map(line).join('')}</div>`).join('')}</div>`).join('') || '<div class="rt-empty">No changes.</div>' : '<div class="rt-empty">Loading the changes…</div>')
     : tab === 'code' ? (prevs.filter(({ p }) => p.kind === 'code').map(({ m: x, p }) => `<button class="rt-file" data-a="open-canvas" data-m="${esc(x.id)}" data-p="${esc(p.id)}">${icon('code', 'sm')}<span>${esc(p.name)}</span></button>`).join('') + rtabBody('files'))
     : rtabBody('browser');
-  return `<div class="rp-top cl-pt"><b class="cl-ptt">${icon('code', 'sm')}${esc(title)}</b><span class="grow"></span>${[['changes', 'Changes'], ['code', 'Code'], ['preview', 'Preview']].map(([k, l]) => `<button class="cl-tab ${tab === k ? 'on' : ''}" data-a="cl-tab" data-v="${k}">${l}</button>`).join('')}<button class="xb" data-a="rpanel" data-v="tools" title="Files, terminal, browser and Ithil">${icon('dots', 'sm')}</button><button class="xb" data-a="rpanel" data-v="avatar" title="The avatar">${icon('user', 'sm')}</button><button class="xb" data-a="rp-collapse" title="Collapse the panel">⟩</button></div>
+  return `<div class="rp-top cl-pt"><b class="cl-ptt" title="${esc(title)}">${icon('code', 'sm')}${esc(title)}</b>${[['changes', 'Changes'], ['code', 'Code'], ['preview', 'Preview']].map(([k, l]) => `<button class="cl-tab ${tab === k ? 'on' : ''}" data-a="cl-tab" data-v="${k}">${l}</button>`).join('')}<button class="xb" data-a="rpanel" data-v="tools" title="Files, terminal, browser and Ithil">${icon('dots', 'sm')}</button><button class="xb" data-a="rpanel" data-v="avatar" title="The avatar">${icon('user', 'sm')}</button><button class="xb" data-a="rp-collapse" title="Collapse the panel">⟩</button></div>
     <div class="rt-body cl-pb">${body}</div>`;
 }
 function rpanelHtml() {
@@ -2420,12 +2422,28 @@ function settingsView() {
     <div class="spane"><div class="sph"><b>${esc(sub ? sub.title : STABS.find(([t]) => t === tab)[2])}</b><span class="grow"></span><button class="xb" data-a="set-close" title="Close" aria-label="Close settings">${icon('x', 'sm')}</button></div>
     <div class="spage" id="spage">${q ? searchPage(q) : page}</div></div></div>`;
 }
+// claude-look-12: Settings › Accounts: the main AIs and GitHub in one list, each with one button; every other AI
+// and the full account settings under More AIs….
+function accountsClaude() {
+  const gh = S.gh || {};
+  const dot = (a) => `<i class="cl-dot big" style="--c:rgb(${liveCoreOf(a).rgb})"></i>`;
+  const r1 = (a) => {
+    const st = statusOf(a) || {};
+    const ok = a === 'freebuff' ? true : ready(a);
+    const btn = ok ? `<button class="mini" data-a="acct-goto" data-v="${esc(a)}">${a === 'ollama' ? 'Connected' : 'Signed in'}</button>` : `<button class="mini p" data-a="acct-goto" data-v="${esc(a)}">${st.state === 'signin' ? 'Sign in' : 'Set up'}</button>`;
+    return row(`${dot(a)}${esc(aiName(a))}`, esc(st.label || (ok ? 'signed in' : 'not set up')), btn);
+  };
+  const ghRow = row(`<i class="cl-dot big" style="--c:rgb(120,120,120)"></i>GitHub`, esc(gh.ghUser ? `${gh.ghUser} · through the GitHub CLI` : 'not signed in'), gh.ghUser ? '<button class="mini" data-a="gh-recheck">Re-check</button>' : '<button class="mini p" data-a="gh-login">Sign in</button>');
+  const ids = ['anthropic', 'openai', 'google'].filter((a) => AGENTS[a]);
+  return `<div class="box">${ids.map(r1).join('')}${ghRow}${AGENTS.freebuff ? r1('freebuff') : ''}${AGENTS.ollama ? r1('ollama') : ''}</div>
+    <div class="box">${subBtn('accounts', ['accounts', 'accounts2'], 'More AIs', 'More AIs…')}</div>`;
+}
 function settingsClaude() {
   const tab = (CTABS.find(([t, , , ks]) => t === S.tab || ks.includes(S.tab)) || CTABS[0])[0];
   const [, , label, parts] = CTABS.find(([t]) => t === tab);
   const q = String(S.setQ || '');
   const sub = S.subpage && S.subpage.tab === tab ? S.subpage : null;
-  const page = sub ? `<button class="mini sub-back" data-a="sub-back">‹ Back</button><div class="subpage">${sub.parts.map((k) => section(k)).join('')}</div>` : PAGES[tab] ? PAGES[tab]() : parts.map((k) => section(k)).join('');
+  const page = sub ? `<button class="mini sub-back" data-a="sub-back">‹ Back</button><div class="subpage">${sub.parts.map((k) => section(k)).join('')}</div>` : tab === 'accounts' ? accountsClaude() : PAGES[tab] ? PAGES[tab]() : parts.map((k) => section(k)).join('');
   return `<div class="set dlg cmp cl-set"><nav class="snav2"><b class="st">Settings</b><input id="set-q" class="sq" placeholder="Search settings" value="${esc(q)}" aria-label="Search settings">${CTABS.map(([k, ic, l]) => `<button class="${tab === k ? 'on' : ''}" data-a="tab" data-t="${k}">${icon(ic, 'sm')}<span>${esc(l)}</span></button>`).join('')}</nav>
     <div class="spane"><div class="sph"><h1 class="cl-h">${esc(sub ? sub.title : label)}</h1><span class="grow"></span><button class="xb" data-a="set-close" title="Close" aria-label="Close settings">${icon('x', 'sm')}</button></div>
     <div class="spage" id="spage">${q ? searchPage(q) : page}</div></div></div>`;
@@ -3889,6 +3907,7 @@ document.addEventListener('click', async (ev) => {
     case 'gh-login': { const r = await call('gitLogin'); toast(r?.ok ? 'GitHub sign-in opened in a terminal. Come back and press Re-check when done.' : r?.message || 'Couldn\'t start the sign-in.'); setTimeout(async () => { S.gh = (await call('gitTools')) || S.gh; S.repos = null; render(); }, 20000); return; }
     case 'install': { const r = await call('agentInstall', d.v); toast(r?.ok ? 'Installing in a terminal. Press Re-check when it\'s done.' : r?.message || 'Couldn\'t start the install.'); return; }
     case 'signin': { const r = await call('agentLogin', d.v); toast(r?.ok ? 'Sign-in opened in a terminal. Press Re-check when done.' : r?.message || 'Couldn\'t start the sign-in.'); return; }
+    case 'gh-recheck': { const g = await call('gitTools'); if (g) S.gh = g; toast(S.gh?.ghUser ? `GitHub: signed in as ${S.gh.ghUser}.` : 'GitHub: not signed in.'); return render(); }
     case 'recheck': S.cli[d.v] = (await call('agentStatus', d.v)) || {}; return render();
     case 'secrets-recheck': { S.prov = (await call('providerStatus')) || S.prov; render(); return toast(S.prov.encryption ? 'A keyring answered: keys can be saved now.' : 'Still no keyring. Unlock or install GNOME Keyring or KWallet, or use basic protection.'); }
     case 'secrets-basic': {

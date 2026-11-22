@@ -1575,3 +1575,12 @@ details.more-acct > summary { cursor: pointer; font-weight: 700; color: var(--st
 :root[data-design="claude"] .habwrap { padding: 4px 14px 14px; }
 :root[data-design="claude"] .habwrap #habitat { border-radius: 16px; overflow: hidden; border: 1px solid var(--line); }
 :root[data-design="claude"] .hab-foot .btn, :root[data-design="claude"] .hab3d-bar .btn { border-radius: 9px; }
+.cl-dot.big { width: 30px; height: 30px; margin-right: 4px; box-shadow: none; }
+.cl-pt .cl-ptt { flex: 1 1 auto; min-width: 70px; }
+:root[data-design="claude"] .cl-set .mini.p { background: var(--btn); border-color: var(--btn); color: #fff; }
+:root[data-design="claude"] .codeblock { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: var(--cl-code); }
+:root[data-design="claude"] .codeblock .cb-hd { background: transparent; border-bottom: 1px solid var(--line); padding: 4px 10px; }
+:root[data-design="claude"] .codeblock .cb-hd .mini { border: 0; color: var(--muted); }
+.cl-working { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 14px; padding: 8px 0; }
+.cl-spin { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--line-2); border-top-color: var(--accent); animation: clSpin .8s linear infinite; flex: none; }
+@keyframes clSpin { to { transform: rotate(360deg); } }

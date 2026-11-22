@@ -126,7 +126,7 @@ function makeMarked() {
         if (l === 'chart') { const svg = chartSvg(text); if (svg) return `<figure class="chart">${svg}</figure>`; }
         let body = esc(text);
         if (l && hljs.getLanguage(l)) { try { body = hljs.highlight(text, { language: l, ignoreIllegals: true }).value; } catch {} }
-        return `<div class="codeblock"><div class="cb-hd"><span>${esc(l || 'text')}</span><button class="mini" data-a="copy-code">Copy</button></div><pre class="code"><code class="hljs">${body}</code></pre></div>`;
+        return `<div class="codeblock"><div class="cb-hd"><span>${esc(l || 'text')}</span><button class="mini" data-a="copy-code">⧉ Copy</button></div><pre class="code"><code class="hljs">${body}</code></pre></div>`;
       },
     },
   });
