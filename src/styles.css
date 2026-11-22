@@ -1587,3 +1587,5 @@ details.more-acct > summary { cursor: pointer; font-weight: 700; color: var(--st
 .cl-pt .cl-tab { padding: 4px 8px; font-size: 12.5px; }
 .cl-pt .cl-ptt svg { display: none; }
 .cl-pt .xb { min-width: 24px; }
+.cl-acc .srow .t2 { position: relative; padding-left: 42px; }
+.cl-acc .srow .t2 .cl-dot.big { position: absolute; left: 0; top: 50%; transform: translateY(-50%); }

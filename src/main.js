@@ -2429,13 +2429,13 @@ function accountsClaude() {
   const dot = (a) => `<i class="cl-dot big" style="--c:rgb(${liveCoreOf(a).rgb})"></i>`;
   const r1 = (a) => {
     const st = statusOf(a) || {};
-    const ok = a === 'freebuff' ? true : ready(a);
+    const ok = ready(a);
     const btn = ok ? `<button class="mini" data-a="acct-goto" data-v="${esc(a)}">${a === 'ollama' ? 'Connected' : 'Signed in'}</button>` : `<button class="mini p" data-a="acct-goto" data-v="${esc(a)}">${st.state === 'signin' ? 'Sign in' : 'Set up'}</button>`;
     return row(`${dot(a)}${esc(aiName(a))}`, esc(st.label || (ok ? 'signed in' : 'not set up')), btn);
   };
   const ghRow = row(`<i class="cl-dot big" style="--c:rgb(120,120,120)"></i>GitHub`, esc(gh.ghUser ? `${gh.ghUser} · through the GitHub CLI` : 'not signed in'), gh.ghUser ? '<button class="mini" data-a="gh-recheck">Re-check</button>' : '<button class="mini p" data-a="gh-login">Sign in</button>');
   const ids = ['anthropic', 'openai', 'google'].filter((a) => AGENTS[a]);
-  return `<div class="box">${ids.map(r1).join('')}${ghRow}${AGENTS.freebuff ? r1('freebuff') : ''}${AGENTS.ollama ? r1('ollama') : ''}</div>
+  return `<div class="box cl-acc">${ids.map(r1).join('')}${ghRow}${AGENTS.freebuff ? r1('freebuff') : ''}${AGENTS.ollama ? r1('ollama') : ''}</div>
     <div class="box">${subBtn('accounts', ['accounts', 'accounts2'], 'More AIs', 'More AIs…')}</div>`;
 }
 function settingsClaude() {

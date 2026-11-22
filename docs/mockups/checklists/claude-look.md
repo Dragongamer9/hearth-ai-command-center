@@ -10,7 +10,6 @@ Still open, and why:
 - Images & Videos: "Edit a picture" and "Starred" are new features (the app can't edit a picture or star one yet); Open gallery too.
 - Agent Desktop: Agent Desktop doesn't capture the screen today, so the real screen picture with the click marked needs a screen capture added.
 - Habitat: the name · doing pills and journal / board / wave pills are drawn inside the world; "Workroom" waits for the owner to say which place it is.
-- Accounts (12) and Images & Videos tiles: rebuilt after the last screenshots; ticked once the next ones match.
 
 ## claude-look-1-home-dark.png
 - [x] Sidebar: "Command Center" in the serif at the top with the collapse button — src/main.js: "sideClaude" (screenshot 3.14-1-home-dark.png)
@@ -78,5 +77,5 @@ Still open, and why:
 - [x] Characters and Lorebooks in the top bar; the message box says "Write <name>'s scene…" and who plays them — src/main.js: "topbar c?.rp, "Write …'s scene…", claudeRow rpc" (screenshot 3.14-11-characters.png)
 
 ## claude-look-12-accounts.png
-- [ ] Settings › Accounts: every AI and GitHub in one list with its core, name, plan or how it's signed in, and a button (Signed in / Re-check / Set up / Connected)
-- [ ] More AIs… under the list
+- [x] Settings › Accounts: every AI and GitHub in one list with its core, name, plan or how it's signed in, and a button (Signed in / Re-check / Set up / Connected) — src/main.js: "accountsClaude" (screenshot 3.14-12-settings-accounts.png)
+- [x] More AIs… under the list — src/main.js: "subBtn('accounts', ['accounts', 'accounts2'], 'More AIs', 'More AIs…')" (screenshot 3.14-12-settings-accounts.png)
