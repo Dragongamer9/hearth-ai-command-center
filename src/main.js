@@ -64,7 +64,7 @@ const APP_SIZES = [67, 75, 80, 90, 100, 115, 130, 150];
 const MEDIA_KEYS = [['google', 'Gemini API key', 'pictures (Gemini image model), Veo videos'], ['openai', 'OpenAI API key', 'pictures and edits (OpenAI Images), Sora videos; the same key as ChatGPT by API'], ['xai', 'xAI API key', 'Grok pictures'], ['mistral', 'Mistral API key', 'reading PDFs and scans (Mistral OCR)']];
 
 const S = {
-  view: 'home', tab: 'team', liveDrawer: (() => { try { return localStorage.getItem('hearth.v2.liveDrawer') !== '0'; } catch { return true; } })(), liveMode: (() => { try { return localStorage.getItem('hearth.v2.liveMode') === 'cores' ? 'cores' : 'mesh'; } catch { return 'mesh'; } })(),
+  view: 'home', tab: 'team', liveDrawer: (() => { try { return localStorage.getItem('hearth.v2.liveDrawer') !== '0'; } catch { return true; } })(), liveMode: (() => { try { const v = localStorage.getItem('hearth.v2.liveMode'); return ['cores', 'mesh', 'calm'].includes(v) ? v : null; } catch { return null; } })(),
   // Images & Videos (src/app/studio.mjs): the form, what the main process reported, the PC's status.
   studio: { f: { kind: 'image', count: 1 }, data: null, st: null, filter: 'all', shown: new Set(), models: null },
   chats: [], temps: [], trash: [], notices: [], broken: false,
@@ -1219,6 +1219,7 @@ function topbar() {
   const c = entry();
   if (S.view === 'studio') return `<span class="ttl">Images &amp; Videos</span><span class="grow"></span>`;
   if (S.view === 'reverse') return `<span class="ttl">Reverse Engineering</span><span class="grow"></span>`;
+  if (S.view === 'live' && isClaude() && liveModeNow() === 'calm') return `<span class="ttl">Live</span><span class="grow"></span>${c ? `<button class="tb cl-tb" data-a="talk" title="Voice chat: talk with the team and hear the answers">${icon('mic', 'sm')}Talk to the team</button>` : ''}`;
   if (S.view === 'live') return `<span class="ttl">Live</span>${workStack(liveChat(), 26)}<span class="grow"></span>${c ? `<button class="tb" data-a="live-full" title="Open this chat with every message and tool">${icon('chat', 'sm')}Full chat</button>` : ''}<button class="tb" data-a="live-drawer" aria-pressed="${S.liveDrawer}" title="${S.liveDrawer ? 'Hide' : 'Show'} the chat on the right">${icon('panel', 'sm')}${S.liveDrawer ? 'Hide chat' : 'Show chat'}</button>`;
   const title = S.view === 'settings' ? 'Settings' : S.view === 'habitat' ? 'Habitat' : ['characters', 'card', 'lorebooks'].includes(S.view) ? 'Characters' : S.view === 'chat' ? (c?.title || 'Chat') : '';
   if (['characters', 'card', 'lorebooks'].includes(S.view)) return `<span class="ttl">${esc(title)}</span><span class="grow"></span>`;
@@ -1227,6 +1228,9 @@ function topbar() {
   const know = S.view === 'chat' && c?.rp ? `<span class="chip">${rpCards(c).map((x) => avatarHtml(x, 'xs')).join('')}Roleplay${c.rp.characters.length > 1 ? ` · group · ${c.rp.order === 'list' ? 'in order' : 'natural order'}` : ''}</span>` : S.view === 'chat' && c && !c.temp ? `<button class="tb" data-a="chat-act" data-k="knowledge" data-id="${esc(c.id)}" title="This chat's instructions and reference files">${icon('doc', 'sm')}${c.instructions || c.refs?.length ? 'Instructions ✓' : 'Instructions'}</button>` : '';
   // 3.14 (claude-look-1/-2): Home has only Team and the panel; a chat's title opens its menu (⌄).
   if (isClaude() && S.view === 'home') return `<span class="grow"></span><button class="tb cl-tb" data-a="team-pop" data-top="1" title="Who works on this chat">${icon('users', 'sm')}Team</button><button class="tb cl-tb" data-a="toggle-pane" title="Side panel" disabled>${icon('panel', 'sm')}</button>`;
+  // claude-look-11: a story chat's title ⌄, then Characters and Lorebooks.
+  if (isClaude() && S.view === 'chat' && c?.rp) return `<button class="cl-title" data-a="chat-opts" title="This chat: voice, rename and more">${esc(c.title || 'Chat')} <span class="faint">⌄</span></button>${workStack(cur(), 22)}<span class="grow"></span><button class="tb cl-tb" data-a="characters">Characters</button><button class="tb cl-tb" data-a="lorebooks">Lorebooks</button><button class="tb cl-tb" data-a="toggle-pane" title="Side panel">${icon('panel', 'sm')}</button>`;
+  if (isClaude() && S.view === 'chat' && c && !c.rp && reProject()) return `<span class="ttl">Reverse Engineering</span><button class="cl-title" data-a="chat-opts" title="This chat: instructions, Live, voice, rename and more">${esc(c.title || 'Chat')} <span class="faint">⌄</span></button><span class="grow"></span><button class="tb cl-tb" data-a="reverse" title="REA: its setup and your projects">REA</button><button class="tb cl-tb" data-a="team-pop" data-top="1" title="Who works on this chat">${icon('users', 'sm')}Team</button><button class="tb cl-tb" data-a="toggle-pane" title="Side panel">${icon('panel', 'sm')}</button>`;
   if (isClaude() && S.view === 'chat' && c && !c.rp) return `${S.sideHidden ? `<button class="ib ghost" data-a="side-toggle" title="Show the sidebar" aria-label="Show the sidebar">${icon('panel', 'sm')}</button>` : ''}<button class="cl-title" data-a="chat-opts" title="This chat: instructions, Live, voice, rename and more">${esc(c.title || 'Chat')} <span class="faint">⌄</span></button>${(c.repo || c.repoDir) ? `<button class="cl-pill mono" data-a="repo-pop" title="Connected repo">${icon('gh', 'sm')}${esc(String(c.repo || c.repoDir).split('/').pop())} · ${esc(c.branch || S.copy?.base || 'default branch')}</button>` : ''}${workStack(cur(), 22)}${temp}<span class="grow"></span><button class="tb cl-tb" data-a="team-pop" data-top="1" title="Who works on this chat">${icon('users', 'sm')}Team</button><button class="tb cl-tb" data-a="toggle-pane" title="Side panel: changes, code and preview">${icon('panel', 'sm')}</button>`;
   if (S.view === 'habitat') return `<span class="ttl">Habitat</span><span class="faint hab-sub">${S.lastChat && entry(S.lastChat) ? `the team of “${esc(entry(S.lastChat).title)}”` : 'your AI team'}</span><span class="grow"></span>`;
   // 3.12 (nyarch-1/-2): the chat's headerbar: the side panel toggle, who's answering, and the model button in the middle;
@@ -1259,11 +1263,11 @@ function renderMain(scroll = false) {
   else if (S.view === 'habitat') { html = `<div class="habwrap">${viewHabitat()}</div>`; dock = ''; }
   else if (S.view === 'studio') { stSync(); html = stHtml(); dock = ''; }
   else if (S.view === 'reverse') { html = reverseView(); dock = ''; }
-  else if (S.view === 'live') { html = liveView(); dock = composer(S.open ? 'Talk to the team…' : 'What should the team work on?'); }
+  else if (S.view === 'live') { html = liveView(); dock = composer(isClaude() && liveModeNow() === 'calm' ? 'Say something, or type…' : S.open ? 'Talk to the team…' : 'What should the team work on?'); }
   else if (S.view === 'characters') { html = charactersView(); dock = ''; }
   else if (S.view === 'card') { html = cardEditView(); dock = ''; queueMicrotask(() => cfRun(false)); }
   else if (S.view === 'lorebooks') { html = lorebooksView(); dock = ''; }
-  else if (S.view === 'chat') { html = chatView(); dock = composer(entry()?.rp ? `Your line as ${S.persona?.name || 'you'}…` : cur()?.canvas ? 'Ask for changes to the canvas…' : S.open && S.msgs.some((m) => m.previews?.length) && S.pane ? 'Ask for changes to the preview…' : isClaude() ? (S.mode === 'team' ? 'Reply to the team…' : `Reply to ${aiName(S.mode)}…`) : S.mode === 'team' ? `Send a message… (${team().members.filter(ready).slice(0, 5).map((x) => `@${aiName(x)}`).join(', ')})` : 'Send a message…') + `<div class="hint">${esc(hintLine())}</div>`; }
+  else if (S.view === 'chat') { html = chatView(); dock = composer(entry()?.rp ? (isClaude() ? `Write ${rpCards(entry()).map((x) => x.name).join(' and ')}'s scene…` : `Your line as ${S.persona?.name || 'you'}…`) : cur()?.canvas ? 'Ask for changes to the canvas…' : S.open && S.msgs.some((m) => m.previews?.length) && S.pane ? 'Ask for changes to the preview…' : isClaude() && reProject() ? 'Ask about a game\'s files…' : isClaude() ? (S.mode === 'team' ? 'Reply to the team…' : `Reply to ${aiName(S.mode)}…`) : S.mode === 'team' ? `Send a message… (${team().members.filter(ready).slice(0, 5).map((x) => `@${aiName(x)}`).join(', ')})` : 'Send a message…') + `<div class="hint">${esc(hintLine())}</div>`; }
   else { html = homeView(); dock = ''; }
   const main = document.getElementById('main');
   main.classList.toggle('home-mode', S.view === 'home');
@@ -1357,8 +1361,9 @@ function claudeRow(c, busy) {
   const t = team();
   const off = offIn(['chat', 'live'].includes(S.view) ? cur() : null);
   const on = t.members.filter((a) => ready(a) && !off.includes(a));
-  const who = S.mode === 'team' ? `Team: ${on.slice(0, 3).map(aiName).join(', ')}${on.length > 3 ? ` +${on.length - 3}` : ''}` : aiName(S.mode);
-  const cores = S.settings.composerCores !== false ? `<span class="cl-cores">${(S.mode === 'team' ? on : [S.mode]).slice(0, 4).map((a) => `<i class="cl-dot" style="--c:rgb(${liveCoreOf(a).rgb})" title="${esc(aiName(a))}"></i>`).join('')}</span>` : '';
+  const rpc = c?.rp ? rpCards(c) : null;
+  const who = rpc ? `${rpc.map((x) => x.name).join(', ')} · ${[...new Set(rpc.map((x) => aiName(playerOf(c, x.id))))].join(', ')}` : S.mode === 'team' ? `Team: ${on.slice(0, 3).map(aiName).join(', ')}${on.length > 3 ? ` +${on.length - 3}` : ''}` : aiName(S.mode);
+  const cores = S.settings.composerCores !== false ? `<span class="cl-cores">${(rpc ? [...new Set(rpc.map((x) => playerOf(c, x.id)))] : S.mode === 'team' ? on : [S.mode]).slice(0, 4).map((a) => `<i class="cl-dot" style="--c:rgb(${liveCoreOf(a).rgb})" title="${esc(aiName(a))}"></i>`).join('')}</span>` : '';
   return `<div class="cl-row">
     <button class="ib" data-a="attach" title="Attach files, images, videos, PDFs or spreadsheets (or paste a screenshot)" aria-label="Attach">${icon('plus', 'sm')}</button>
     <button class="ib" data-a="composer-opts" title="Tools: web, run &amp; build, deep research, models, talk" aria-label="Tools">${icon('sliders', 'sm')}</button>
@@ -1459,13 +1464,29 @@ function liveMesh(R) {
   if ((S.settings.ithil || {}).mesh !== false && (team().members.includes('ithil') || S.ithil.status?.online)) m.ithil = ithilStation(S.ithil.status, S.ithil.thought);
   return meshHtml(m, { ithilAvatar: mono('ithil', 'xs'), rgbOf: (id) => liveCoreOf(id).rgb, nameOf: (id) => aiName(id), coreOf: (c) => liveCoreHtml({ id: c.id, name: aiName(c.id), size: 64, state: c.state, status: c.status }) });
 }
+// 3.14 (claude-look-7): the calm Live: the chat's team as glowing cores (talking / listening / thinking / idle), what's
+// being said under them in the reading font, then the message box. Mesh and Cores are one click away.
+const liveModeNow = () => S.liveMode || (isClaude() ? 'calm' : 'mesh');
+function liveCalm(R) {
+  const t = team();
+  const off = offIn(R);
+  const ids = [t.lead, ...t.members.filter((a) => a !== t.lead)].filter((a) => ready(a) && !off.includes(a) && !AGENTS[a]?.imagesOnly).slice(0, 6);
+  const byId = new Map(liveWho().map((w) => [w.id, w]));
+  const hearing = voice.isOpen() && voice.state.phase === 'hearing';
+  const word = (w, a) => w?.state === 'speaking' ? 'talking' : w?.state === 'working' ? 'thinking' : hearing || (voice.isOpen() && a === t.lead) ? 'listening' : 'idle';
+  const cap = liveCaption();
+  return `<div class="cl-live"><div class="cl-live-sw">${[['calm', 'Calm'], ['mesh', 'Mesh'], ['cores', 'Cores']].map(([k, l]) => `<button class="cl-tab ${liveModeNow() === k ? 'on' : ''}" data-a="live-mode" data-v="${k}">${l}</button>`).join('')}</div>
+    <div class="cl-cores-row">${ids.map((a, i) => { const w = byId.get(a); return `<div class="cl-core">${liveCoreHtml({ id: a, name: aiName(a), size: i === 0 ? 150 : 110, state: w?.state || 'ready', status: w?.status || '' })}<b>${esc(aiName(a))}</b><span>${esc(word(w, a))}</span></div>`; }).join('') || '<p class="fine">No AI is ready yet: Settings › Accounts.</p>'}</div>
+    ${cap?.line ? `<p class="cl-live-cap">“${esc(cap.line)}”</p>` : '<p class="cl-live-cap faint">Nobody has said anything in this chat yet.</p>'}</div>`;
+}
 function liveView() {
   const R = liveChat();
+  if (liveModeNow() === 'calm') return liveCalm(R);
   const who = liveWho();
   const cr = S.credit;
   const counts = { total: who.length, team: team().members.length, working: who.filter((w) => w.state === 'working' || w.state === 'speaking').length, credit: cr?.on ? `$${Number(cr.spent || 0).toFixed(2)} / $${cr.budget || 200}` : '' };
-  const mesh = S.liveMode === 'mesh' ? liveMesh(R) : '';
-  const stage = liveStageHtml({ who, caption: liveCaption(), chatTitle: entry()?.title || '', counts, canTalk: Boolean(S.open), mode: S.liveMode, mesh });
+  const mesh = liveModeNow() === 'mesh' ? liveMesh(R) : '';
+  const stage = liveStageHtml({ who, caption: liveCaption(), chatTitle: entry()?.title || '', counts, canTalk: Boolean(S.open), mode: liveModeNow(), mesh });
   const msgs = (R?.msgs || []).filter((m) => m.text && (m.who === 'owner' || AGENTS[m.who])).slice(-40);
   const list = msgs.length ? msgs.map((m) => `<div class="live-msg ${m.who === 'owner' ? 'owner' : ''}"><b style="color:${m.who === 'owner' ? 'var(--muted)' : (COLORS[m.who] || 'var(--accent)')}">${esc(m.who === 'owner' ? ownerName() : aiName(m.who))}</b><div>${esc(shortLine(m.text, 900))}</div></div>`).join('') : `<div class="fine">${S.open ? 'Nothing said in this chat yet.' : 'Type below to start a chat; the team shows up here as it works.'}</div>`;
   return `<div class="live">${stage}<aside class="live-drawer" ${S.liveDrawer ? '' : 'hidden'} aria-label="Chat"><div class="dh">◢ Chat<span class="grow"></span>${S.open ? '<button class="mini" data-a="live-full">Full chat</button>' : ''}<button class="mini" data-a="live-drawer">Hide</button></div><div class="live-msgs" id="live-msgs">${list}</div></aside></div>`;
@@ -1611,7 +1632,8 @@ function chatView() {
   const rpEmpty = c?.rp && !msgs.length && !b ? `<div class="chat-empty"><p>The story starts with your first line.</p></div>` : '';
   const warn = c?.rp ? '' : `<div class="warnline"><span class="wi" aria-hidden="true">⚠</span><span>${warnText(c)}</span></div>`;
   const acts = !c?.rp && msgs.length ? `<div class="crow"><button data-a="chat-clear">${icon('copy', 'sm')}Clear</button><button data-a="chat-regen">${icon('refresh', 'sm')}Regenerate</button>${R?.round && S.mode === 'team' ? `<button data-a="stop">${icon('stop', 'sm')}Stop the team</button>` : ''}</div>` : '';
-  return `<div class="col">${warn}${c?.rp ? rpEmpty : empty}${items}${working}${c?.rp ? sceneJobsHtml(R) : ''}${c?.rp ? '' : turnStrip(R)}${acts}</div>`;
+  if (isClaude() && !S.re && !S.reLoading) { S.reLoading = true; call('reverseStatus').then((r) => { S.re = r || null; if (reProject()) render(); }).catch(() => {}); }
+  return `<div class="col">${isClaude() && reProject() ? reCards() : ''}${warn}${c?.rp ? rpEmpty : empty}${items}${working}${c?.rp ? sceneJobsHtml(R) : ''}${c?.rp ? '' : turnStrip(R)}${acts}</div>`;
 }
 
 // 3.4.1: the one fix for a teammate that couldn't answer, right where it says so.
@@ -1665,7 +1687,7 @@ function controlsHtml(m, owner = false) {
   const ver = m.versions?.length > 1 ? `<span class="ver"><button class="ib sm ghost" data-a="ver" data-m="${esc(m.id)}" data-d="-1" ${(m.v ?? m.versions.length - 1) === 0 ? 'disabled' : ''} aria-label="Previous version">‹</button>${(m.v ?? m.versions.length - 1) + 1}/${m.versions.length}<button class="ib sm ghost" data-a="ver" data-m="${esc(m.id)}" data-d="1" ${(m.v ?? m.versions.length - 1) === m.versions.length - 1 ? 'disabled' : ''} aria-label="Next version">›</button></span>` : '';
   const br = m.branches?.length > 1 ? `<span class="ver"><button class="ib sm ghost" data-a="branch" data-m="${esc(m.id)}" data-d="-1" ${(m.b || 0) === 0 || busy ? 'disabled' : ''} aria-label="Previous version">‹</button>${(m.b || 0) + 1}/${m.branches.length}<button class="ib sm ghost" data-a="branch" data-m="${esc(m.id)}" data-d="1" ${(m.b || 0) === m.branches.length - 1 || busy ? 'disabled' : ''} aria-label="Next version">›</button></span>` : '';
   if (owner) return `<div class="mctl u">${br}<button class="ib sm ghost" data-a="msg-copy" data-m="${esc(m.id)}" title="Copy">${icon('doc', 'sm')}</button>${!S.readOnly ? `<button class="ib sm ghost" data-a="msg-edit" data-m="${esc(m.id)}" title="Edit and resend" ${busy ? 'disabled' : ''}>${icon('pencil', 'sm')}</button>` : ''}</div>`;
-  return `<div class="mctl">${ver}<button class="ib sm ghost" data-a="msg-copy" data-m="${esc(m.id)}" title="Copy">${icon('doc', 'sm')}</button><button class="ib sm ghost" data-a="humanize-msg" data-m="${esc(m.id)}" title="Make it sound human">${icon('user', 'sm')}</button><button class="ib sm ghost ${voice.isReading(m.id) ? 'rec' : ''}" data-a="msg-read" data-m="${esc(m.id)}" title="${voice.isReading(m.id) ? 'Stop reading' : 'Read aloud'}">${icon(voice.isReading(m.id) ? 'stop' : 'mic', 'sm')}</button>${!S.readOnly && AGENTS[m.who] ? `<button class="ib sm ghost" data-a="msg-retry" data-m="${esc(m.id)}" title="Retry (a new version of this answer)" ${busy ? 'disabled' : ''}>${icon('refresh', 'sm')}</button>` : ''}</div>`;
+  return `<div class="mctl">${ver}<button class="ib sm ghost" data-a="msg-copy" data-m="${esc(m.id)}" title="Copy">${icon('doc', 'sm')}</button><button class="ib sm ghost" data-a="humanize-msg" data-m="${esc(m.id)}" title="Make it sound human">${icon('user', 'sm')}</button><button class="ib sm ghost ${voice.isReading(m.id) ? 'rec' : ''}" data-a="msg-read" data-m="${esc(m.id)}" title="${voice.isReading(m.id) ? 'Stop reading' : 'Read aloud'}">${icon(voice.isReading(m.id) ? 'stop' : 'mic', 'sm')}</button>${isClaude() && !S.readOnly ? ['up', 'down'].map((v) => `<button class="ib sm ghost ${m.rating === v ? 'on' : ''}" data-a="msg-rate" data-m="${esc(m.id)}" data-v="${v}" title="${v === 'up' ? 'Good answer' : 'Not a good answer'}" aria-pressed="${m.rating === v}">${icon(v === 'up' ? 'thumbup' : 'thumbdown', 'sm')}</button>`).join('') : ''}${!S.readOnly && AGENTS[m.who] ? `<button class="ib sm ghost" data-a="msg-retry" data-m="${esc(m.id)}" title="Retry (a new version of this answer)" ${busy ? 'disabled' : ''}>${icon('refresh', 'sm')}</button>` : ''}</div>`;
 }
 
 function message(m, latestChanges, last = false) {
@@ -1717,6 +1739,7 @@ function previewCard(m, p) {
 }
 
 function changesCard(m, latest) {
+  if (isClaude() && latest && m.changes && !m.changes.merged && entry()?.repo && (m.actions?.state === 'success' || m.changes.pushed) && !m.notYet) return clMergeCard(m);
   const ch = m.changes;
   const files = ch.files || [];
   const base = ch.base || 'main';
@@ -1735,6 +1758,16 @@ function changesCard(m, latest) {
     </div></div>`;
 }
 
+// 3.14 (claude-look-2): what's ready, its checks, and Approve & merge / Look at the changes / Not yet.
+function clMergeCard(m) {
+  const ch = m.changes;
+  const st = m.actions?.state;
+  const checks = st === 'success' ? 'checks passed' : st === 'failure' ? 'checks failed' : st && st !== 'none' ? 'checks running' : 'no checks yet';
+  const n = ch.commits || 1;
+  return `<div class="card cl-merge"><div class="hd">${icon('flag', 'sm')}<b>Ready to merge into ${esc(ch.base || 'main')}</b></div>
+    <div class="fine">${n} commit${n === 1 ? '' : 's'} on ${esc(ch.pushed || ch.branch || 'its branch')} · ${(ch.files || []).length} file${(ch.files || []).length === 1 ? '' : 's'} · ${checks} · nothing reaches main without you.${ch.pr ? ` <a href="${esc(ch.pr.url)}" target="_blank" rel="noopener">Pull request #${esc(ch.pr.number)}</a>` : ''}</div>
+    <div class="ft"><button class="btn p" data-a="card-merge" data-m="${esc(m.id)}" ${m.busy ? 'disabled' : ''}>${m.busy === 'merge' ? 'Merging…' : 'Approve &amp; merge'}</button><button class="btn" data-a="card-diff" data-m="${esc(m.id)}">Look at the changes</button><button class="btn" data-a="not-yet" data-m="${esc(m.id)}">Not yet</button></div></div>`;
+}
 function actionsCard(m) {
   const a = m.actions;
   const label = { queued: 'Waiting for GitHub Actions to start…', pending: 'GitHub Actions is running…', success: 'GitHub Actions passed', failure: 'GitHub Actions failed', none: 'No GitHub Actions ran for this push' }[a.state] || 'GitHub Actions';
@@ -1785,9 +1818,20 @@ function ageBox(c) {
     <div class="fine">${hard ? 'This card has a hard flag, so no age can clear it.' : 'Saved when you press Save, kept in this app only (never in exported card files). An adult age clears soft flags. Leave it empty to remove it.'}</div>`;
 }
 // Reverse Engineering (electron/reverse.cjs): REA, a connector only for these projects' chats.
+// 3.14 (claude-look-9): each project as a card on top (name, file, size, state); its REA chat under them.
+const reProject = (id = S.open) => (S.re?.projects || []).find((p) => p.chatId === id) || null;
+function reCards() {
+  const ps = (S.re?.projects || []).slice().reverse();
+  const state = (p) => !p.exists ? 'file not found' : !p.chat ? 'chat deleted' : p.chatId === S.open ? 'open now' : runner.runtimes.get(p.chatId)?.round ? 'working' : 'its chat';
+  return `<div class="cl-re-cards">${ps.map((p) => `<button class="cl-re-card ${p.chatId === S.open ? 'on' : ''}" ${p.chat ? `data-a="re-open" data-id="${esc(p.chatId)}"` : 'disabled'}><span class="cl-re-ic">${icon('doc', 'sm')}</span><span class="t2"><b>${esc(p.name)}</b><small>${esc([String(p.path || '').split(/[\\/]/).pop(), p.kind, p.size != null ? fmtBytes(p.size) : '', state(p)].filter(Boolean).join(' · '))}</small></span></button>`).join('')}<button class="cl-re-card add" data-a="re-new" ${S.re?.broken ? 'disabled' : ''}><span class="cl-re-ic">${icon('plus', 'sm')}</span><span class="t2"><b>New project</b><small>pick a program</small></span></button></div>`;
+}
 function reverseView() {
   const r = S.re;
   if (!r) return '<div class="col"><div class="fine">Loading…</div></div>';
+  if (isClaude()) return `<div class="col cl-re">${reCards()}${reverseSetup(r)}</div>`;
+  return reverseSetup(r);
+}
+function reverseSetup(r) {
   const ok = (b) => (b ? `<span class="ok">${icon('check', 'sm')}</span>` : `<span class="bad">${icon('x', 'sm')}</span>`);
   const ready = r.node.ok && r.npx;
   return `<div class="col">
@@ -2920,7 +2964,7 @@ async function loadSection(t) {
   render();
 }
 // ---------- Images & Videos (2.2.1; electron/studio.cjs, src/app/studio.mjs) ----------
-const stHtml = () => studioView({ f: S.studio.f, data: S.studio.data || {}, st: S.studio.st, filter: S.studio.filter, models: S.studio.models, shown: S.studio.shown });
+const stHtml = () => studioView({ f: S.studio.f, data: S.studio.data || {}, st: S.studio.st, filter: S.studio.filter, models: S.studio.models, shown: S.studio.shown, look: designOf() });
 // What he typed is kept across re-renders (the page is redrawn when a job moves on).
 function stSync() {
   if (S.view !== 'studio' || !document.getElementById('st-prompt')) return;
@@ -3387,7 +3431,7 @@ document.addEventListener('click', async (ev) => {
     case 'ithil-chat': { goHome(); S.mode = 'ithil'; return render(true); }
     case 'live': return openLive();
     case 'live-pick': return livePick(d.v);
-    case 'live-mode': S.liveMode = d.v === 'cores' ? 'cores' : 'mesh'; try { localStorage.setItem('hearth.v2.liveMode', S.liveMode); } catch {} return renderMain();
+    case 'live-mode': S.liveMode = ['cores', 'calm'].includes(d.v) ? d.v : 'mesh'; try { localStorage.setItem('hearth.v2.liveMode', S.liveMode); } catch {} return renderMain();
     case 'live-drawer': S.liveDrawer = !S.liveDrawer; try { localStorage.setItem('hearth.v2.liveDrawer', S.liveDrawer ? '1' : '0'); } catch {} return renderMain();
     case 'live-full': if (S.open) return openChat(S.open); return;
     case 'open-freebuff': { const r = await call('openWeb', 'freebuff'); if (r && r.ok === false) toast(r.message || 'FreeBuff couldn\'t open.'); return; }
@@ -3710,6 +3754,8 @@ document.addEventListener('click', async (ev) => {
     case 'dismiss': S.notices.splice(Number(d.i), 1); return render();
     case 'open-data': S.view = 'settings'; S.tab = 'data'; render(); return loadSection('data');
     // message controls
+    case 'not-yet': { const m = msgById(d.m); if (m) { m.notYet = true; save(); render(); } return; }
+    case 'msg-rate': { const m = msgById(d.m); if (m) { m.rating = m.rating === d.v ? null : d.v; save(); render(); } return; }
     case 'msg-copy': { const m = msgById(d.m); if (m) { try { await navigator.clipboard.writeText(String(m.text || '')); toast('Copied.'); } catch { toast('Couldn\'t copy.'); } } return; }
     case 'msg-read': return readAloud(msgById(d.m));
     case 'msg-retry': return regenerate(d.m);

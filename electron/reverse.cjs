@@ -63,7 +63,7 @@ function createReverse({ file, chats, run = (cmd, args) => new Promise((res) => 
       npx: Boolean(npx),
       java: java ? (/version "([^"]+)"/.exec(java)?.[1] || 'found') : null,
       ghidra: { dir: j.ghidraDir, ok: ghidraOk(j.ghidraDir), onPath: onPath ? onPath.trim().split('\n')[0] : null },
-      projects: j.projects.map((p) => ({ ...p, exists: fs.existsSync(p.path), chat: Boolean(chats.entry?.(p.chatId)) })),
+      projects: j.projects.map((p) => { let size = null; try { size = fs.statSync(p.path).size; } catch {} return { ...p, exists: fs.existsSync(p.path), size, chat: Boolean(chats.entry?.(p.chatId)) }; }),
     };
   }
   // His own switches; each is a press in the window.

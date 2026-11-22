@@ -43,7 +43,7 @@ export function queueHtml(jobs = []) {
 // The whole page. f: the form ({ kind, prompt, size, count, model, negative, seed, steps, start,
 // startName, more }); data: { items, jobs, uncensored }; st: the PC's status; filter; models:
 // the picture models on the server (or null); shown: ids of 18+ items he clicked to show.
-export function studioView({ f = {}, data = {}, st = null, filter = 'all', models = null, shown = new Set(), gallery = [] } = {}) {
+export function studioView({ f = {}, data = {}, st = null, filter = 'all', models = null, shown = new Set(), gallery = [], look = '' } = {}) {
   const kind = f.kind === 'video' ? 'video' : 'image';
   const jobs = data.jobs || [];
   const items = filterItems(data.items || [], filter);
@@ -76,6 +76,9 @@ export function studioView({ f = {}, data = {}, st = null, filter = 'all', model
       <span class="st-acts"><button class="lnk" data-a="st-save" data-id="${esc(x.id)}">Save</button><span aria-hidden="true">·</span><button class="lnk" data-a="st-send" data-id="${esc(x.id)}" ${x.adult ? 'disabled title="18+ items stay here: never sent to Claude, ChatGPT or Gemini"' : ''}>Send to a chat</button><span aria-hidden="true">·</span><button class="lnk" data-a="st-again" data-id="${esc(x.id)}">Again</button>${x.kind === 'image' ? `<span aria-hidden="true">·</span><button class="lnk" data-a="st-animate" data-id="${esc(x.id)}">Animate</button>` : ''}<span class="grow"></span><button class="lnk dim" data-a="st-remove" data-id="${esc(x.id)}" aria-label="Delete">${icon('trash', 'sm')}</button></span></figcaption></figure>`;
   };
   const made = `<section class="st-sec" aria-label="Made so far"><div class="st-mh"><h2>Made so far</h2><span class="grow"></span>${filt}</div>${items.length ? `<div class="st-gal">${items.map(card).join('')}</div>` : `<p class="faint">${(data.items || []).length ? 'Nothing here with this filter.' : 'Nothing yet. What you make shows up here, and stays until you delete it.'}</p>`}${data.broken ? `<div class="note warn">${esc(data.broken)}</div>` : ''}</section>`;
+  // 3.14 (claude-look-6): the request and the queue on the left, what was made on the right, your PC's status on top.
+  if (look === 'claude') return `<div class="studio cl-studio"><header class="st-hd"><span class="grow"></span>${statusPill(st)}<button class="ib" data-a="st-refresh" aria-label="Check your PC again" title="Check your PC again">${icon('refresh', 'sm')}</button></header>
+    <div class="cl-st-cols"><div class="cl-st-l">${form}<p class="fine cl-st-why">Made on your own PC with ComfyUI (free), or by an online maker when you pick one in a chat. Nothing leaves your PC unless you pick an online maker.</p><div id="st-queue">${queueHtml(jobs)}</div></div><div class="cl-st-r">${made}</div></div></div>`;
   return `<div class="studio"><header class="st-hd"><h1>Images &amp; Videos</h1><span class="grow"></span>${statusPill(st)}<button class="ib" data-a="st-refresh" aria-label="Check your PC again" title="Check your PC again">${icon('refresh', 'sm')}</button></header>${form}<div id="st-queue">${queueHtml(jobs)}</div>${made}</div>`;
 }
 
