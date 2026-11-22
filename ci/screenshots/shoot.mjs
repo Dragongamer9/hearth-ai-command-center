@@ -395,7 +395,7 @@ async function shootOne(s) {
   page.on('pageerror', (e) => errors.push(String(e.message || e)));
   await page.addInitScript(stub, { ...s.opts, pics: PICS });
   await page.goto(BASE, { waitUntil: 'networkidle' });
-  await page.waitForSelector('#side .hist-h'); // 3.12: History's header (nyarch-1)
+  await page.waitForSelector('#side .hist-h, #side .cl-brand'); // 3.12: History's header (nyarch-1); 3.14: the Claude look's brand row
   await page.waitForTimeout(300);
   if (s.attach) {
     await page.evaluate(() => {
