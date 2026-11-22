@@ -138,10 +138,9 @@ function normalSettings(s) {
     theme: THEMES.includes(s.theme) ? s.theme : 'hearth',
     // 2.9: the gold hologram design unless the owner picks Classic.
     // 3.12: the approved Nyarch-style look ('adwaita') unless the owner picked Gold hologram or Classic himself.
-    // 3.14: the approved Claude app look ('claude') unless the owner picked another Style himself. 'adwaita' saved
-    // before 3.14 was only ever the 3.12 default, so it counts as picked only when designPicked says so.
-    design: ['hologram', 'classic', 'claude'].includes(s.design) ? s.design : s.design === 'adwaita' && s.designPicked === true ? 'adwaita' : 'claude',
-    designPicked: s.designPicked === true,
+    // The Claude app look, the only one (the owner, Nov 22: "By default i want it to look like the claude app, and
+    // only the claude app"). Gold hologram, Dark and Classic are gone; nothing else in settings changes.
+    design: 'claude',
     // 3.14 Appearance: the reading font, Enter sends, and the team's cores in the message box.
     chatFont: ['serif', 'sans', 'dyslexic'].includes(s.chatFont) ? s.chatFont : 'serif',
     sendOnEnter: s.sendOnEnter !== false,
@@ -573,7 +572,6 @@ function registerIpc() {
     if ('leadActions' in patch) s.leadActions = patch.leadActions === true;
     if ('leadGitHub' in patch) s.leadGitHub = patch.leadGitHub === true;
     if ('theme' in patch && THEMES.includes(patch.theme)) s.theme = patch.theme;
-    if ('design' in patch && ['hologram', 'classic', 'adwaita', 'claude'].includes(patch.design)) { s.design = patch.design; s.designPicked = true; }
     if ('chatFont' in patch && ['serif', 'sans', 'dyslexic'].includes(patch.chatFont)) s.chatFont = patch.chatFont;
     if ('sendOnEnter' in patch) s.sendOnEnter = patch.sendOnEnter !== false;
     if ('composerCores' in patch) s.composerCores = patch.composerCores !== false;

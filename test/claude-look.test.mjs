@@ -9,12 +9,12 @@ const main = read('src/main.js');
 const mainCjs = read('electron/main.cjs');
 const css = read('src/styles.css');
 
-test('the Claude app look is the default Style, and a Style he picked stays', () => {
-  assert.match(mainCjs, /design: \['hologram', 'classic', 'claude'\]\.includes\(s\.design\) \? s\.design : s\.design === 'adwaita' && s\.designPicked === true \? 'adwaita' : 'claude'/);
-  assert.match(mainCjs, /s\.design = patch\.design; s\.designPicked = true;/);
-  assert.match(main, /const designOf = \(s = S\.settings\) => \(DESIGNS\.includes\(s\?\.design\) \? s\.design : 'claude'\)/);
-  // The switch is told, and can be undone in Appearance.
-  assert.match(main, /3\.14 switched the Style to Claude app\. Pick Dark, Gold hologram or Classic here to go back/);
+test('the Claude app look is the only look (the owner, Nov 22)', () => {
+  assert.match(mainCjs, /design: 'claude',/);
+  assert.doesNotMatch(mainCjs, /patch\.design/);
+  assert.match(main, /const designOf = \(\) => 'claude';/);
+  assert.doesNotMatch(main, /data-a="design-pick"/);
+  assert.match(main, /grp\('Look', \[row\('Colour mode'/);
 });
 
 test('new Appearance settings are validated and only change when he changes them', () => {
