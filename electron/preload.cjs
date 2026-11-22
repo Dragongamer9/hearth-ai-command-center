@@ -206,6 +206,7 @@ contextBridge.exposeInMainWorld('hearth', {
   studioCancel: (id) => ipcRenderer.invoke('studio:cancel', id),
   studioRemove: (id) => ipcRenderer.invoke('studio:remove', id),
   studioAgain: (id) => ipcRenderer.invoke('studio:again', id),
+  studioStar: (id, on) => ipcRenderer.invoke('studio:star', id, on),
   studioPickImage: () => ipcRenderer.invoke('studio:pickImage'),
   studioToAttach: (id) => ipcRenderer.invoke('studio:toAttach', id),
   onStudio: (cb) => {

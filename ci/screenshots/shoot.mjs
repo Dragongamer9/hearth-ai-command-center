@@ -2,7 +2,7 @@
 // replaces the Electron preload bridge (window.hearth) with harmless fake data. Nothing
 // here ships in the app; it never signs in anywhere or touches real accounts.
 // Fails (exit 1) when a page doesn't render what it should or the page throws.
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, readFileSync } from 'node:fs';
 import { deflateSync } from 'node:zlib';
 
 const { chromium } = await import(process.env.PLAYWRIGHT || 'playwright');
@@ -197,7 +197,7 @@ function stub(opts) {
     onCardsFound: (cb) => { window.__found = cb; return () => {}; },
     gitTools: () => ok({ git: '/usr/bin/git', gh: '/usr/bin/gh', ghUser: 'Dragongamer9' }),
     updaterInfo: () => ok({ enabled: true, install: 'appimage', status: { state: 'none', message: 'You are on the latest version.' } }),
-    onUpdaterStatus: () => () => {}, onThemeChanged: () => () => {}, onCopiesIdle: () => () => {}, onCopiesRemoved: () => () => {}, onOpsPhoneAction: () => () => {}, onDesktop: (cb) => { if (opts.desk) setTimeout(() => { cb('ask', { id: 'd1', chat: 'c0000000001', tool: 'click', detail: 'Import Content…', args: 'Content Manager › File menu', at: new Date().toISOString() }); }, 300); return () => {}; }, desktopStatus: () => ok({ enabled: true }),
+    onUpdaterStatus: () => () => {}, onThemeChanged: () => () => {}, onCopiesIdle: () => () => {}, onCopiesRemoved: () => () => {}, onOpsPhoneAction: () => () => {}, onDesktop: (cb) => { if (opts.desk) setTimeout(() => { cb('ask', { id: 'd1', chat: 'c0000000001', tool: 'click', detail: 'Import Content…', args: 'Content Manager › File menu', peek: { mime: 'image/png', data: opts.deskShot, mark: { x: 172, y: 176, w: 150, h: 24 } }, at: new Date().toISOString() }); }, 300); return () => {}; }, desktopStatus: () => ok({ enabled: true }),
     onChatStep: (cb) => { listeners.step.push(cb); return () => {}; },
     opsPhoneStatus: () => ok({ enabled: false }),
     ghRepos: () => ok({ ok: true, repos: [
@@ -269,11 +269,12 @@ const SHOTS = [
   { file: '3.14-5-settings-appearance.png', opts: CL, click: '[data-a="settings"]', then: '[data-a="tab"][data-t="c-look"]', wait: 500, expect: ['General', 'Appearance', 'Accounts', 'GitHub', 'Team', 'Voice', 'Memory', 'Images & Videos', 'Phone', 'Updates', 'Credits', 'Colour mode', 'Light', 'Dark', 'Match Hearth', 'Style', 'Claude app', 'Chat font', 'Serif', 'Sans', 'Dyslexic friendly', 'App size', 'Send with Enter', 'Cores in the message box', 'Check for updates'], selector: ['.cl-set .snav2', '.cl-h', '.seg.on', '.tog.on'] },
   { file: '3.14-12-settings-accounts.png', opts: CL, click: '[data-a="settings"]', then: '[data-a="tab"][data-t="accounts"]', wait: 600, expect: ['Accounts', 'Claude', 'ChatGPT', 'Gemini', 'GitHub', 'FreeBuff', 'More AIs…'], selector: ['.cl-set .snav2 button.on[data-t="accounts"]', '.cl-set .cl-dot.big', '.cl-h'] },
   { file: '3.14-6-studio.png', opts: CL, click: '.cl-places [data-a="studio"]', wait: 700, expect: ['Picture', 'Video', 'Made so far', 'Nothing leaves your PC unless you pick an online maker'], selector: ['.cl-st-cols .cl-st-l .st-form', '.cl-st-r', '.st-pill'] },
+  { file: '3.14-6b-studio-edit.png', opts: CL, click: '.cl-places [data-a="studio"]', then: '[data-a="st-kind"][data-v="edit"]', wait: 700, expect: ['Edit a picture', 'Picture to edit', 'How much changes', 'Edit it', 'Starred', 'Open gallery'], selector: ['[data-a="st-star"]', '[data-a="st-edit"]', '[data-a="st-gallery"]'] },
   { file: '3.14-7-live.png', opts: { ...CL, open: 'c0000000001' }, click: '.cl-places [data-a="live"]', wait: 900, expect: ['Claude', 'ChatGPT', 'Say something, or type…', 'Calm', 'Mesh', 'Cores'], selector: ['.cl-cores-row .cl-core .core', '.cl-live-cap', '.cl-box'] },
   { file: '3.14-8-habitat.png', opts: { ...CL, ...C3D }, click: '.cl-places [data-a="habitat"]', wait: 2500, expect: ['Habitat', 'Great hall', 'King\'s chambers', '2D ⇄ 3D'], selector: ['.cl-seg [data-a="hab-room"]', '[data-a="hab-flip"]'] },
   { file: '3.14-9-reverse.png', opts: CL, click: '.cl-places [data-a="reverse"]', wait: 700, expect: ['Trains 2010 (TS2010)', 'BFME2: Rise of the Witch-king', 'trainz.exe', 'New project', 'REA'], selector: ['.cl-re-cards .cl-re-card'] },
   { file: '3.14-9b-reverse-chat.png', opts: { ...CL, open: 'c0000000002' }, wait: 1200, expect: ['Reverse Engineering', 'REA', 'Ask about a game\'s files…', 'Trains 2010 (TS2010)'], selector: ['.cl-re-card.on', '.cl-box'] },
-  { file: '3.14-10-agent-desktop.png', opts: { ...CL, desk: true }, click: '.cl-places [data-a="desk-page"]', wait: 900, expect: ['Agent Desktop', 'Every action asks you first', 'wants to click', 'Import Content…', 'Allow', 'Allow for this task', 'Stop'], selector: ['.cl-desk-screen', '.cl-desk-ask', '.cl-desk-spot'] },
+  { file: '3.14-10-agent-desktop.png', opts: { ...CL, desk: true }, click: '.cl-places [data-a="desk-page"]', wait: 900, expect: ['Agent Desktop', 'Every action asks you first', 'wants to click', 'Import Content…', 'Allow', 'Allow for this task', 'Stop'], selector: ['.cl-desk-shot #desk-shot', '#desk-mark', '.cl-desk-ask'] },
   { file: '3.14-11-characters.png', opts: { ...CL, open: 'c0000000014' }, wait: 700, expect: ['Mira', 'Characters', 'Lorebooks', 'Write Mira\'s scene…', 'Mira · Venice'], selector: ['.cl-title', '.cl-box'] },
   // 3.13: the approved compact mockups (docs/mockups/compact-*.png).
   ...[['team', 'Who\'s in your chats', 'A1'], ['accounts', 'Signed in with your account', 'A3'], ['ithil', 'With the team', 'A5'], ['tools', 'Connectors (MCP servers)', 'A6'], ['memory', 'Custom instructions', 'A7'], ['voice', 'Characters (2D and 3D)', 'A8'], ['general', 'Notifications', 'A2']].map(([t, e, m]) => ({ file: `3.13-${m}-settings-${t}.png`, viewport: { width: 1440, height: 900 }, opts: { more: true, ithil: true }, click: '[data-a="settings"]', then: `[data-a="tab"][data-t="${t}"]`, wait: 700, expect: [e], selector: ['.set.dlg.cmp', '.snav2', `.snav2 [data-t="${t}"].on`, '.spage'] })),
@@ -399,7 +400,7 @@ async function shootOne(s) {
   const errors = [];
   lastPage = page; lastErrors = errors;
   page.on('pageerror', (e) => errors.push(String(e.message || e)));
-  await page.addInitScript(stub, { ...s.opts, pics: PICS });
+  await page.addInitScript(stub, { ...s.opts, pics: PICS, ...(s.opts?.desk ? { deskShot: readFileSync(new URL('./fixtures/desk-screen.png.b64', import.meta.url), 'utf8').trim() } : {}) });
   await page.goto(BASE, { waitUntil: 'networkidle' });
   await page.waitForSelector('#side .hist-h, #side .cl-brand'); // 3.12: History's header (nyarch-1); 3.14: the Claude look's brand row
   await page.waitForTimeout(300);

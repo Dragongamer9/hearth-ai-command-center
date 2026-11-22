@@ -1589,3 +1589,8 @@ details.more-acct > summary { cursor: pointer; font-weight: 700; color: var(--st
 .cl-pt .xb { min-width: 24px; }
 .cl-acc .srow .t2 { position: relative; padding-left: 42px; }
 .cl-acc .srow .t2 .cl-dot.big { position: absolute; left: 0; top: 50%; transform: translateY(-50%); }
+.cl-desk-screen { flex-direction: column; padding: 14px; gap: 10px; }
+.cl-desk-shot { position: relative; width: 100%; line-height: 0; border-radius: 10px; overflow: hidden; border: 1px solid rgba(255,255,255,.12); }
+.cl-desk-shot img { width: 100%; height: auto; display: block; }
+.cl-desk-mark { position: absolute; border: 2.5px solid var(--accent); border-radius: 8px; box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 25%, transparent), 0 0 24px color-mix(in srgb, var(--accent) 50%, transparent); pointer-events: none; }
+.cl-desk-cap { display: flex; gap: 10px; align-items: baseline; color: #e8e6dc; flex-wrap: wrap; }

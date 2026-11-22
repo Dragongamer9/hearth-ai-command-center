@@ -110,3 +110,25 @@ test('wiring: a connector per run while on, the card in the window, the proxy un
   assert.match(ui, /Every action asks you first/);
   assert.match(ui, /'desk-toggle'/);
 });
+
+// 3.14 (claude-look-10): the screen picture and the element's place come with an ask, checked; never back to the AI.
+test('an ask can carry the screen picture and where it will act; anything odd is dropped', async () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'desk-'));
+  const sent = [];
+  const dk = createDesktop({ file: path.join(d, 'desktop.json'), send: (ch, x) => sent.push([ch, x]), proxyPath: '/x/desktop-proxy.cjs', waitMs: 300 });
+  dk.setEnabled(true);
+  const p1 = dk.decide('c1', 'click', { ref: 'e5' }, { data: 'iVBORw0KGgo=', mime: 'image/png', mark: { x: 10, y: 20, w: 30, h: 40 } });
+  const a1 = sent.at(-1)[1];
+  assert.deepEqual(a1.peek, { data: 'iVBORw0KGgo=', mime: 'image/png', mark: { x: 10, y: 20, w: 30, h: 40 } });
+  dk.answer(a1.id, 'no');
+  assert.equal(await p1, false);
+  const p2 = dk.decide('c1', 'click', {}, { data: '<script>', mime: 'text/html', mark: { x: 'a' } });
+  const a2 = sent.at(-1)[1];
+  assert.equal(a2.peek, undefined);
+  dk.answer(a2.id, 'once');
+  assert.equal(await p2, true);
+  const { boundsFrom, imageFrom } = require('../electron/desktop-proxy.cjs');
+  assert.deepEqual(boundsFrom({ content: [{ type: 'text', text: '{"bounds":{"x":5,"y":6,"width":7,"height":8}}' }] }), { x: 5, y: 6, w: 7, h: 8 });
+  assert.equal(boundsFrom({ content: [{ type: 'text', text: 'no numbers' }] }), null);
+  assert.equal(imageFrom({ content: [{ type: 'image', data: 'AAAA', mimeType: 'image/svg+xml' }] }), null);
+});

@@ -50,6 +50,20 @@ function buildWorkflow({ checkpoint, positive, negative = '', seed, width = DEFA
   };
 }
 
+// 3.14: Edit a picture (img2img). The uploaded picture is encoded and only partly re-drawn: strength (denoise)
+// 0.2 keeps almost all of it, 0.9 keeps little more than its layout.
+function buildEditWorkflow({ checkpoint, positive, negative = '', seed, steps = DEFAULTS.steps, cfg = DEFAULTS.cfg, sampler = DEFAULTS.sampler, scheduler = DEFAULTS.scheduler, image, strength = 0.6 } = {}) {
+  const g = buildWorkflow({ checkpoint, positive, negative, seed, steps, cfg, sampler, scheduler });
+  delete g['5'];
+  g['10'] = { class_type: 'LoadImage', inputs: { image: String(image) } };
+  g['11'] = { class_type: 'VAEEncode', inputs: { pixels: ['10', 0], vae: ['4', 2] } };
+  const s = Number(strength);
+  g['3'].inputs.denoise = Number.isFinite(s) ? Math.min(0.9, Math.max(0.2, Math.round(s * 100) / 100)) : 0.6;
+  g['3'].inputs.latent_image = ['11', 0];
+  g['9'].inputs.filename_prefix = 'hearth-edit';
+  return g;
+}
+
 // The checkpoint names in an /object_info/CheckpointLoaderSimple answer. ComfyUI has used two
 // shapes: ckpt_name: [[names], {...}] (older) and ckpt_name: ["COMBO", { options: [names] }] (newer).
 function checkpointNames(j) {
@@ -390,4 +404,4 @@ function effective(saved) {
 // Only the configured server's own host may be reached.
 const allowOnly = (base) => { const h = hnet.hostOf(base); return (host) => Boolean(h) && host === h && hnet.isPrivateHost(host); };
 
-module.exports = { objectOptions, uploadImage, runWorkflow, outputFiles, MAX_VIDEO, cleanSettings, mergeSettings, effective, allowOnly, listCheckpoints, checkpointNames, systemStats, testConnection, pickCheckpoint, buildWorkflow, generate, cancelJob, promptErrorText, runErrorText, DEFAULTS, SIZE_CHOICES, SIZES, MAX_IMAGE, MAX_JSON, CKPT_RE, LOW_VRAM };
+module.exports = { buildEditWorkflow, objectOptions, uploadImage, runWorkflow, outputFiles, MAX_VIDEO, cleanSettings, mergeSettings, effective, allowOnly, listCheckpoints, checkpointNames, systemStats, testConnection, pickCheckpoint, buildWorkflow, generate, cancelJob, promptErrorText, runErrorText, DEFAULTS, SIZE_CHOICES, SIZES, MAX_IMAGE, MAX_JSON, CKPT_RE, LOW_VRAM };

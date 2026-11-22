@@ -37,7 +37,7 @@ import { turnFor as ithilTurnFor, stateLine as ithilState, leadLines as ithilLea
 import { checkWord, CHECK_PROMPT, planCheck, runCheck, CHECK_ORDER, CHECK_LABEL, summary as checkSummary } from './app/rollcall.mjs';
 import { creditsHtml } from './app/credits.mjs';
 import { voiceSettings, routeFor, isServer, serverIdOf, idOf, providerName, voiceLines, voiceMenu } from './app/voice-logic.mjs';
-import { studioView, queueHtml, requestFrom } from './app/studio.mjs';
+import { studioView, queueHtml, requestFrom, filterItems } from './app/studio.mjs';
 import { defaultsFrom, prefsFor, prefsOf, samePrefs, applyPrefs, rememberPrefs } from './app/chat-prefs.mjs';
 import { FIND_FIELDS, searchFields, stepIndex, replaceAllFields, snippet, cardMatches, matchedIn } from './app/card-find.mjs';
 
@@ -1266,7 +1266,7 @@ function renderMain(scroll = false) {
   else if (S.view === 'habitat') { html = `<div class="habwrap">${viewHabitat()}</div>`; dock = ''; }
   else if (S.view === 'studio') { stSync(); html = stHtml(); dock = ''; }
   else if (S.view === 'reverse') { html = reverseView(); dock = ''; }
-  else if (S.view === 'desktop') { html = deskView(); dock = ''; }
+  else if (S.view === 'desktop') { html = deskView(); dock = ''; setTimeout(placeDeskMark, 0); }
   else if (S.view === 'live') { html = liveView(); dock = composer(isClaude() && liveModeNow() === 'calm' ? 'Say something, or type…' : S.open ? 'Talk to the team…' : 'What should the team work on?'); }
   else if (S.view === 'characters') { html = charactersView(); dock = ''; }
   else if (S.view === 'card') { html = cardEditView(); dock = ''; queueMicrotask(() => cfRun(false)); }
@@ -2119,13 +2119,30 @@ function renderOverlay() {
 // Agent Desktop asking to act (electron/desktop.cjs): one card per ask, newest on top.
 // 3.14 (claude-look-10): Agent Desktop as its own page: what it wants to do as accent cards (Allow / Allow for this
 // task / Stop), what was done as ✓ rows. Every action still asks first.
+// The mark over the picture, in the picture's own pixels (the screen's size), once the picture has loaded.
+function placeDeskMark() {
+  const img = document.getElementById('desk-shot');
+  const mk = document.getElementById('desk-mark');
+  if (!img || !mk) return;
+  const put = () => {
+    const W = img.naturalWidth || 1; const H = img.naturalHeight || 1;
+    const n = (k) => Number(mk.dataset[k]) || 0;
+    Object.assign(mk.style, { left: `${(n('x') / W) * 100}%`, top: `${(n('y') / H) * 100}%`, width: `${Math.max(2.5, (n('w') / W) * 100)}%`, height: `${Math.max(2.5, (n('h') / H) * 100)}%` });
+  };
+  if (img.complete) put(); else img.addEventListener('load', put, { once: true });
+}
 function deskView() {
   const dk = S.desktop || {};
   const asks = (S.deskAsks || []).slice().reverse();
   const log = (S.deskLog || []).slice().reverse();
   const who = (a) => `${entry(a.chat)?.title ? `In “${esc(entry(a.chat).title)}”, ` : ''}${esc(aiName(team().lead))}`;
   const now = asks[0];
-  return `<div class="cl-desk"><div class="cl-desk-screen"><div class="cl-desk-app">${now ? `<b>${esc(now.detail || now.tool)}</b><span class="fine mono">${esc(now.tool)}${now.args ? ` · ${esc(now.args)}` : ''}</span><span class="cl-desk-spot" aria-hidden="true"></span>` : `<span class="fine">${dk.enabled ? 'Nothing is being used right now. When your AI asks to act, what it wants to touch shows here.' : 'Agent Desktop is off. Turn it on in Settings › Tools & Agent Desktop.'}</span>`}</div></div>
+  // The screen it's using (taken by the app when it asks, shown only here) with where it'll act marked.
+  const pk = now?.peek;
+  const shot = pk?.data && /^image\/(png|jpeg|webp)$/.test(pk.mime) && /^[A-Za-z0-9+/]+=*$/.test(pk.data) ? `data:${pk.mime};base64,${pk.data}` : '';
+  const screen = shot ? `<div class="cl-desk-shot"><img id="desk-shot" src="${shot}" alt="The screen your AI is using">${pk.mark ? `<span class="cl-desk-mark" id="desk-mark" data-x="${pk.mark.x}" data-y="${pk.mark.y}" data-w="${pk.mark.w}" data-h="${pk.mark.h}" aria-hidden="true"></span>` : ''}</div><div class="cl-desk-cap"><b>${esc(now.detail || now.tool)}</b><span class="fine mono">${esc(now.tool)}</span>${pk.mark ? '' : '<span class="fine">· it didn\'t say where on the screen</span>'}</div>`
+    : `<div class="cl-desk-app">${now ? `<b>${esc(now.detail || now.tool)}</b><span class="fine mono">${esc(now.tool)}${now.args ? ` · ${esc(now.args)}` : ''}</span><span class="fine">No picture of the screen this time (Agent Desktop couldn't take one).</span>` : `<span class="fine">${dk.enabled ? 'Nothing is being used right now. When your AI asks to act, the screen it\'s using shows here.' : 'Agent Desktop is off. Turn it on in Settings › Tools & Agent Desktop.'}</span>`}</div>`;
+  return `<div class="cl-desk"><div class="cl-desk-screen">${screen}</div>
     <aside class="cl-desk-side">${asks.map((a) => `<div class="cl-desk-ask"><b>${who(a)} wants to ${esc(a.tool)}${a.detail ? ` “${esc(a.detail)}”` : ''}</b>${a.args ? `<div class="fine mono">${esc(a.args)}</div>` : ''}<div class="ft"><button class="btn p" data-a="desk-ans" data-id="${esc(a.id)}" data-v="once">Allow</button><button class="btn" data-a="desk-ans" data-id="${esc(a.id)}" data-v="ten" title="For the next 10 minutes in this chat">Allow for this task</button><button class="btn" data-a="desk-ans" data-id="${esc(a.id)}" data-v="no">Stop</button></div></div>`).join('')}
       ${log.map((a) => `<div class="cl-desk-done ${a.how === 'no' ? 'no' : ''}">${icon(a.how === 'no' ? 'x' : 'check', 'sm')}${esc(a.how === 'no' ? 'Stopped: ' : '')}${esc(a.detail || a.tool)}</div>`).join('')}
       ${!asks.length && !log.length ? '<p class="fine">Nothing asked yet.</p>' : ''}
@@ -3005,7 +3022,7 @@ const stHtml = () => studioView({ f: S.studio.f, data: S.studio.data || {}, st: 
 function stSync() {
   if (S.view !== 'studio' || !document.getElementById('st-prompt')) return;
   const r = requestFrom(S.studio.f, document);
-  Object.assign(S.studio.f, { prompt: document.getElementById('st-prompt').value, size: r.size, count: r.count, model: r.model, negative: r.negative, seed: document.getElementById('st-seed')?.value ?? S.studio.f.seed, steps: document.getElementById('st-steps')?.value ?? S.studio.f.steps });
+  Object.assign(S.studio.f, { prompt: document.getElementById('st-prompt').value, size: r.size, count: r.count, model: r.model, negative: r.negative, seed: document.getElementById('st-seed')?.value ?? S.studio.f.seed, steps: document.getElementById('st-steps')?.value ?? S.studio.f.steps, strength: Number(document.getElementById('st-strength')?.value) || S.studio.f.strength });
 }
 function stFocus() {
   const a = document.activeElement;
@@ -3582,7 +3599,7 @@ document.addEventListener('click', async (ev) => {
     case 're-open': return openReChat(d.id);
     case 're-remove': await call('reverseRemoveProject', d.id); return openReverse();
     case 'unc-on': { const r = await setSettings({ uncensored: { on: !(S.settings.uncensored?.on === true) } }); if (S.studio.data && r?.uncensored) S.studio.data = { ...S.studio.data, uncensored: r.uncensored.on }; return render(); }
-    case 'st-kind': stSync(); S.studio.f.kind = d.v === 'video' ? 'video' : 'image'; S.studio.f.size = ''; return render();
+    case 'st-kind': stSync(); { const was = S.studio.f.kind; S.studio.f.kind = ['video', 'edit'].includes(d.v) ? d.v : 'image'; if (was !== S.studio.f.kind && (was === 'edit' || S.studio.f.kind === 'edit')) { S.studio.f.start = null; S.studio.f.startName = ''; } } S.studio.f.size = ''; return render();
     case 'st-more': stSync(); S.studio.f.more = !S.studio.f.more; return render();
     case 'st-filter': stSync(); S.studio.filter = d.v; return render();
     case 'st-show': stSync(); S.studio.shown.add(d.id); return render();
@@ -3590,13 +3607,22 @@ document.addEventListener('click', async (ev) => {
     case 'st-start-none': stSync(); S.studio.f.start = null; S.studio.f.startName = ''; return render();
     case 'st-start-file': { stSync(); const r = await call('studioPickImage'); if (r?.ok) { S.studio.f.start = r.token; S.studio.f.startName = r.name; } else if (r?.message) toast(r.message); return render(); }
     case 'st-animate': { stSync(); const it = (S.studio.data?.items || []).find((x) => x.id === d.id); if (!it) return; Object.assign(S.studio.f, { kind: 'video', size: '', start: `item:${it.id}`, startName: it.prompt.slice(0, 60) }); render(); document.getElementById('st-prompt')?.focus(); return; }
+    case 'st-edit': { stSync(); const it = (S.studio.data?.items || []).find((x) => x.id === d.id); if (!it) return; Object.assign(S.studio.f, { kind: 'edit', size: '', start: `item:${it.id}`, startName: it.prompt.slice(0, 60) }); render(); document.getElementById('st-prompt')?.focus(); return; }
+    case 'st-star': { const r = await call('studioStar', d.id); if (r && !r.ok) toast(r.message || 'Not starred.'); else if (r?.ok) { const it = (S.studio.data?.items || []).find((x) => x.id === d.id); if (it) it.starred = r.starred; render(); } return; }
+    case 'st-gallery': {
+      // Every picture in Made so far (18+ ones only when shown), in the same viewer as a chat's pictures.
+      const pics = filterItems(S.studio.data?.items || [], S.studio.filter).filter((x) => x.kind === 'image' && (!x.adult || S.studio.shown.has(x.id)));
+      if (!pics.length) return toast('No pictures to show here.');
+      S.modal = { kind: 'gallery', items: pics.map((x) => ({ url: x.url, view: false, name: x.prompt.slice(0, 80), file: '', size: x.size || 0, width: x.width || null, height: x.height || null, msg: null })), i: 0, zoom: 1, chatId: null };
+      renderOverlay(); galleryFocus(); return;
+    }
     case 'st-make': {
       stSync();
       const req = requestFrom(S.studio.f, document);
       if (!req.prompt) { toast(`Say what the ${req.kind === 'video' ? 'video' : 'picture'} should show.`); return; }
       const r = await call('studioAdd', req);
       if (!r?.ok) { toast(r?.message || r?.error?.message || 'Not started.'); return; }
-      toast(r.jobs.length > 1 ? `${r.jobs.length} pictures are on their way.` : `Your ${req.kind === 'video' ? 'video' : 'picture'} is on its way.`);
+      toast(r.jobs.length > 1 ? `${r.jobs.length} pictures are on their way.` : S.studio.f.kind === 'edit' ? 'Your edited picture is on its way.' : `Your ${req.kind === 'video' ? 'video' : 'picture'} is on its way.`);
       return;
     }
     case 'st-cancel': { const r = await call('studioCancel', d.id); if (r && !r.ok && r.message) toast(r.message); return; }

@@ -274,3 +274,48 @@ test('wiring: settings, the confirm box, local chat, Send to a chat and the medi
   // Nothing in the studio writes settings.
   assert.doesNotMatch(read('electron/studio.cjs'), /writeSettings|settings:set/);
 });
+
+// 3.14 (claude-look-6): Edit a picture and Starred.
+test('Edit a picture: the picture is uploaded and only partly re-drawn (strength = denoise, 0.2–0.9)', async () => {
+  const g = comfy.buildEditWorkflow({ checkpoint: 'x.safetensors', positive: 'make it snow', seed: 5, image: 'up.png', strength: 2 });
+  assert.equal(g[10].class_type, 'LoadImage');
+  assert.equal(g[10].inputs.image, 'up.png');
+  assert.equal(g[11].class_type, 'VAEEncode');
+  assert.deepEqual(g[3].inputs.latent_image, ['11', 0]);
+  assert.equal(g[3].inputs.denoise, 0.9);
+  assert.equal(g[5], undefined);
+  assert.equal(comfy.buildEditWorkflow({ checkpoint: 'x', positive: 'p', seed: 1, image: 'i', strength: 0.05 })[3].inputs.denoise, 0.2);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'studio-'));
+  const prompts = [];
+  const uploads = [];
+  const st = studio.createStudio({ dataDir: () => dir, readSettings: () => ({ comfy: { url: 'http://100.72.99.97:8188' }, uncensored: { on: false } }), fetchImpl: fakeComfy({ prompts, uploads }), sleep: async () => {}, pollMs: 1 });
+  assert.equal(st.add({ kind: 'image', prompt: 'a signal box at night' }).ok, true);
+  await until(() => st.list().items.length >= 1 && st.list().jobs.length === 0);
+  const pic = st.list().items[0];
+  assert.equal(st.add({ kind: 'image', prompt: 'make it snow', start: 'item:nope' }).ok, false);
+  assert.equal(st.add({ kind: 'image', prompt: 'make it snow', start: `item:${pic.id}`, strength: 0.35 }).ok, true);
+  await until(() => st.list().items.some((x) => x.mode === 'edit'));
+  assert.equal(uploads.length, 1);
+  const g2 = prompts.at(-1);
+  assert.equal(g2[3].inputs.denoise, 0.35);
+  assert.ok(g2[7].inputs.text.includes('nudity'), 'the no-nudity words stay while the mode is off');
+  const ed = st.list().items.find((x) => x.mode === 'edit');
+  assert.equal(ed.from, pic.id);
+  assert.equal(ed.strength, 0.35);
+  // The hard limits apply to edits too.
+  assert.equal(st.add({ kind: 'image', prompt: 'nude teen', start: `item:${pic.id}` }).kind, 'minor');
+});
+test('Starred is his choice, kept in studio.json; the Starred filter shows only those', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'studio-'));
+  const st = studio.createStudio({ dataDir: () => dir, readSettings: () => ({ comfy: { url: 'http://100.72.99.97:8188' }, uncensored: { on: false } }), fetchImpl: fakeComfy({ prompts: [], uploads: [] }), sleep: async () => {}, pollMs: 1 });
+  st.add({ kind: 'image', prompt: 'a signal box at night', count: 2 });
+  await until(() => st.list().items.length >= 2 && st.list().jobs.length === 0);
+  const [a, b] = st.list().items;
+  assert.equal(a.starred, undefined, 'nothing is starred by itself');
+  assert.deepEqual(st.star(a.id), { ok: true, starred: true });
+  const saved = JSON.parse(fs.readFileSync(path.join(dir, 'studio.json'), 'utf8'));
+  assert.equal(saved.items.find((x) => x.id === a.id).starred, true);
+  assert.equal(saved.items.find((x) => x.id === b.id).starred, undefined);
+  assert.deepEqual(st.star(a.id), { ok: true, starred: false });
+  assert.equal(st.star('gone').ok, false);
+});

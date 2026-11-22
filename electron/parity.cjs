@@ -612,6 +612,7 @@ function register(d) {
   handle('studio:cancel', (id) => studio.cancel(id));
   handle('studio:remove', (id) => studio.remove(id));
   handle('studio:again', (id) => studio.again(id));
+  handle('studio:star', (id, on) => studio.star(id, on));
   handle('studio:pickImage', async () => {
     const r = await dialog.showOpenDialog(getWindow(), { title: 'Pick a picture to animate', properties: ['openFile'], filters: [{ name: 'Pictures', extensions: ['png', 'jpg', 'jpeg', 'webp'] }] });
     if (r.canceled || !r.filePaths[0]) return { ok: false, cancelled: true };
