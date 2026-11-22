@@ -66,3 +66,16 @@ test('the request carries what was typed when it comes from the kept form (2.2.1
   assert.equal(v.prompt, 'a lamp');
   assert.equal(v.start, 'item:c3');
 });
+
+test('3.14: Edit a picture, Starred and Open gallery are on the page', async () => {
+  const { studioView, filterItems, requestFrom } = await import('../src/app/studio.mjs');
+  const items = [{ id: 'a', kind: 'image', prompt: 'p', url: 'hearth-media://studio/a.png', starred: true, seed: 1 }, { id: 'b', kind: 'image', prompt: 'q', url: 'hearth-media://studio/b.png', seed: 2 }];
+  const html = studioView({ f: { kind: 'edit' }, data: { items }, look: 'claude' });
+  for (const t of ['Edit a picture', 'Picture to edit', 'How much changes', 'Edit it', 'Starred', 'Open gallery', 'data-a="st-star"', 'data-a="st-edit"']) assert.ok(html.includes(t), t);
+  assert.match(html, /data-a="st-make" disabled/, 'an edit needs a picture first');
+  assert.deepEqual(filterItems(items, 'starred').map((x) => x.id), ['a']);
+  const r = requestFrom({ kind: 'edit', prompt: 'make it snow', start: 'item:a', 'st-strength': '0.85' });
+  assert.equal(r.kind, 'image');
+  assert.equal(r.start, 'item:a');
+  assert.equal(r.strength, 0.85);
+});

@@ -221,18 +221,18 @@ function createStudio({ dataDir, readSettings, send = () => {}, fetchImpl = (...
   // A request from the window: checked, then queued (one job per picture asked for).
   function add(req = {}) {
     const kind = req.kind === 'video' ? 'video' : 'image';
-    const mode = kind === 'video' ? (req.start ? 'i2v' : 't2v') : null;
+    const mode = kind === 'video' ? (req.start ? 'i2v' : 't2v') : req.start ? 'edit' : null;
     if (!conn()) return hnet.fail(`Type your PC's ComfyUI address in Settings › Accounts › ComfyUI server first (like ${comfy.DEFAULTS.url}).`, 'not_set');
     const prompt = String(req.prompt || '').replace(/[\0-\x08\x0b-\x1f]/g, ' ').trim().slice(0, 3000);
     let start = null;
-    if (mode === 'i2v') {
+    if (mode === 'i2v' || mode === 'edit') {
       const s = String(req.start);
       if (s.startsWith('item:')) {
         const it = items().find((x) => x.id === s.slice(5) && x.kind === 'image');
         if (!it) return hnet.fail('That picture isn\'t in Images & Videos any more.');
         start = { item: it.id, outside: false };
       } else if (picked.has(s)) start = { file: picked.get(s), outside: true, token: s };
-      else return hnet.fail('Pick the picture to animate again.');
+      else return hnet.fail(mode === 'edit' ? 'Pick the picture to edit again.' : 'Pick the picture to animate again.');
     }
     const u = unc();
     const chk = checkPrompt({ prompt, uncensored: u.on, what: kind === 'video' ? 'video' : 'picture' });
@@ -246,7 +246,7 @@ function createStudio({ dataDir, readSettings, send = () => {}, fetchImpl = (...
     const seed0 = Number.isInteger(Number(req.seed)) && req.seed !== '' && req.seed !== null && Number(req.seed) >= 0 && Number(req.seed) < 2 ** 31 ? Number(req.seed) : null;
     const added = [];
     for (let i = 0; i < count; i++) {
-      const j = { id: uid(), kind, mode, prompt, own: scene.ownNegative(req.negative), seed: seed0 !== null ? seed0 + i : crypto.randomInt(1, 2 ** 31), size, steps: Number.isInteger(Number(req.steps)) && Number(req.steps) >= 4 && Number(req.steps) <= 60 ? Number(req.steps) : null, model: typeof req.model === 'string' && MODEL_RE.test(req.model) ? req.model : '', start, state: 'waiting', n: i + 1, of: count, again: req.again || null };
+      const j = { id: uid(), kind, mode, prompt, own: scene.ownNegative(req.negative), seed: seed0 !== null ? seed0 + i : crypto.randomInt(1, 2 ** 31), size, steps: Number.isInteger(Number(req.steps)) && Number(req.steps) >= 4 && Number(req.steps) <= 60 ? Number(req.steps) : null, model: typeof req.model === 'string' && MODEL_RE.test(req.model) ? req.model : '', start, strength: Number.isFinite(Number(req.strength)) ? Math.min(0.9, Math.max(0.2, Number(req.strength))) : 0.6, state: 'waiting', n: i + 1, of: count, again: req.again || null };
       jobs.push(j);
       added.push(j.id);
     }
@@ -283,6 +283,7 @@ function createStudio({ dataDir, readSettings, send = () => {}, fetchImpl = (...
     if (!chk.ok) return { ok: false, kind: chk.kind, message: chk.message };
     if (j.start?.outside && u.on && j.start.notReal !== true) return { ok: false, kind: 'confirm', message: NOT_REAL_REFUSED };
     const negative = negativeFor({ kind: j.kind, uncensored: u.on, own: j.own });
+    if (j.kind === 'image' && j.mode === 'edit') return runEdit(j, c, u, negative);
     if (j.kind === 'image') {
       const eff = comfy.effective(readSettings().comfy);
       const wanted = j.model || (u.on && u.pictureModel) || eff.checkpoint || null;
@@ -318,10 +319,43 @@ function createStudio({ dataDir, readSettings, send = () => {}, fetchImpl = (...
     const it = keep(j, f.buf, `video-${j.id}.${ext}`, { kind: 'video', seed: j.seed, model: `Wan 2.2 14B ${j.mode === 'i2v' ? 'I2V' : 'T2V'}${setup.models.lora ? setup.models.lora.kind === 'uncensored' ? ' · uncensored LoRA' : ' · speed LoRA' : ''}`, width: graph['13'].inputs.width, height: graph['13'].inputs.height, frames: graph['13'].inputs.length, steps: setup.models.steps, negative, secs: Math.round((now() - j.startedAt) / 1000), adult: u.on, mode: j.mode, from: j.start?.item || null });
     return it ? { ok: true } : hnet.fail('The video couldn\'t be saved.');
   }
+  // Edit a picture: upload it to ComfyUI, then re-draw it with the prompt (strength = how much changes).
+  async function runEdit(j, c, u, negative) {
+    const eff = comfy.effective(readSettings().comfy);
+    const wanted = j.model || (u.on && u.pictureModel) || eff.checkpoint || null;
+    j.phase = 'checking';
+    changed();
+    const l = await comfy.listCheckpoints({ ...c, signal: j.ac.signal });
+    if (!l.ok) return l;
+    const pick = comfy.pickCheckpoint(l.checkpoints, wanted, { strict: Boolean(j.model || (u.on && u.pictureModel)), name: c.name });
+    if (!pick.ok) return pick;
+    const src = j.start.item ? itemFile(j.start.item) : j.start.file;
+    let buf;
+    try { buf = fs.readFileSync(src); } catch { return hnet.fail('The picture to edit isn\'t there any more.'); }
+    const mime = /\.jpe?g$/i.test(src) ? 'image/jpeg' : /\.webp$/i.test(src) ? 'image/webp' : 'image/png';
+    const up = await comfy.uploadImage({ ...c, signal: j.ac.signal }, { buf, filename: `hearth-edit-${j.id}${path.extname(src) || '.png'}`, mime });
+    if (!up.ok) return up;
+    const graph = comfy.buildEditWorkflow({ checkpoint: pick.checkpoint, positive: j.prompt, negative, seed: j.seed, steps: j.steps || eff.steps, cfg: eff.cfg, image: up.name, strength: j.strength });
+    const r = await comfy.runWorkflow({ ...c, graph, kinds: ['image'], signal: j.ac.signal, onProgress: progress(j), what: 'picture', ...(sleep ? { sleep } : {}), ...(pollMs ? { pollMs } : {}) });
+    if (!r.ok) return r;
+    const secs = Math.round((now() - j.startedAt) / 1000);
+    const out = r.files.map((f, i) => keep(j, f.buf, `edit-${j.id}-${i + 1}.${/jpeg/.test(f.mime) ? 'jpg' : /webp/.test(f.mime) ? 'webp' : 'png'}`, { kind: 'image', mode: 'edit', seed: j.seed, model: pick.checkpoint, steps: graph['3'].inputs.steps, negative, secs, adult: u.on, from: j.start.item || null, strength: graph['3'].inputs.denoise })).filter(Boolean);
+    return out.length ? { ok: true } : hnet.fail('The picture couldn\'t be saved.');
+  }
+  // Starred: kept with the item in studio.json (his choice; nothing stars or un-stars by itself).
+  function star(id, on) {
+    const list = items();
+    const it = list.find((x) => x.id === String(id));
+    if (!it) return hnet.fail('That one isn\'t there any more.');
+    it.starred = on === undefined ? !it.starred : on === true;
+    save(list);
+    changed();
+    return { ok: true, starred: it.starred };
+  }
   function keep(j, buf, name, meta) {
     const it = media.storeBuffer(root, FOLDER, name, buf);
     if (!it) return null;
-    const entry = { id: uid(), kind: meta.kind, mode: meta.mode || null, file: it.file, mime: it.mime, url: it.url, size: it.size, prompt: j.prompt, ownNegative: j.own || '', negative: meta.negative, seed: meta.seed, model: meta.model || null, width: meta.width || null, height: meta.height || null, frames: meta.frames || null, steps: meta.steps || null, secs: meta.secs, adult: meta.adult === true, from: meta.from || null, at: new Date(now()).toISOString() };
+    const entry = { id: uid(), kind: meta.kind, mode: meta.mode || null, file: it.file, mime: it.mime, url: it.url, size: it.size, prompt: j.prompt, ownNegative: j.own || '', negative: meta.negative, seed: meta.seed, model: meta.model || null, width: meta.width || null, height: meta.height || null, frames: meta.frames || null, steps: meta.steps || null, secs: meta.secs, adult: meta.adult === true, from: meta.from || null, ...(meta.strength ? { strength: meta.strength } : {}), at: new Date(now()).toISOString() };
     save([entry, ...items()]);
     return entry;
   }
@@ -364,7 +398,7 @@ function createStudio({ dataDir, readSettings, send = () => {}, fetchImpl = (...
     const it = items().find((x) => x.id === String(id));
     if (!it) return hnet.fail('That one isn\'t there any more.');
     const size = it.kind === 'video' ? VIDEO_SIZES.find((x) => x.width === it.width && x.height === it.height)?.id : comfy.SIZE_CHOICES.find((x) => x.width === it.width && x.height === it.height)?.id;
-    return add({ kind: it.kind, prompt: it.prompt, negative: it.ownNegative, size, start: it.mode === 'i2v' && it.from && items().some((x) => x.id === it.from) ? `item:${it.from}` : null, again: it.id });
+    return add({ kind: it.kind, prompt: it.prompt, negative: it.ownNegative, size, strength: it.strength, start: (it.mode === 'i2v' || it.mode === 'edit') && it.from && items().some((x) => x.id === it.from) ? `item:${it.from}` : null, again: it.id });
   }
   async function status() {
     const c = conn();
@@ -372,7 +406,7 @@ function createStudio({ dataDir, readSettings, send = () => {}, fetchImpl = (...
     const st = await comfy.systemStats(c);
     return st.ok ? { ...st, host: hnet.hostOf(c.base) } : { ...st, host: hnet.hostOf(c.base) };
   }
-  return { add, cancel, remove, again, pickToken, itemFile, list: snapshot, status, jobs: () => jobs.map(jobView), FOLDER };
+  return { add, star, cancel, remove, again, pickToken, itemFile, list: snapshot, status, jobs: () => jobs.map(jobView), FOLDER };
 }
 
 module.exports = { NOT_REAL_TEXT, NOT_REAL_REFUSED, createStudio, checkPrompt, negativeFor, chatUncensored, cleanUncensored, mergeUncensored, pickWan, pickLoras, videoSetup, buildVideoWorkflow, VIDEO_SIZES, FRAMES, FPS, SCRIPT, FOLDER, ID_RE };

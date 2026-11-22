@@ -1,5 +1,10 @@
 # Roadmap & current limitations
 
+## New in 3.14 (the owner's number, Nov 21, 2026)
+- Everything connects by itself (the owner: "All these connections need to be automatic and from now on i shouldnt need to connect any manuel setting or adresses or keys. should just launch do a auto scan or whatever and pick the stuff up"): at start and every few minutes the Command Center scans your own Tailscale devices (same account), asks each one's Hearth AI list (port 8189, `/v1/hearth/ai`: its chat, pictures, voices and speech to text), and uses what answers; a saved Home server address that doesn't answer falls back to the scan: no addresses, keys or share codes to type. Your own GPU servers and Hearth devices address stay as you set them and win over what's found; nothing found is saved over your settings.
+- Your keys stay readable on every desktop: the Command Center remembers which password store (KDE's wallet or GNOME Keyring) its keys were saved in and always opens that one, so switching desktops never hides your GPU servers, keys or sign-ins again (found Nov 21: keys saved on KDE Plasma, Mantel asked GNOME Keyring).
+- In-app updates keep working for the AppImage and the .deb (red flag).
+
 ## New in 0.4.0
 - AIs can do in chat and tasks what they do in their own apps: edit, run commands, git and web, with each tool's own safety checks. Full access is an opt-in.
 - GitHub page: Connect GitHub (official sign-in), clone, open any folder, pull, push branches, pull requests.

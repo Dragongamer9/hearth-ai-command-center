@@ -24,7 +24,7 @@ import { expired, typedAnswer, ACT_KINDS } from './app/act.mjs';
 import { pickMaker, toolsBrief } from './app/tools.mjs';
 import { createTeamRunner } from './app/team-run.mjs';
 import { teammateStatus } from './app/errors.mjs';
-import { viewHabitat, mountHabitat, stopHabitat } from './habitat.mjs';
+import { viewHabitat, mountHabitat, stopHabitat, habitatOwnerAct, habitatNoteCount } from './habitat.mjs';
 import { mountHabitat3d, stopHabitat3d } from './habitat3d/view.mjs';
 import { applyHabitatLines, habitatSection, stripHabitatLines } from './habitat/actions.mjs';
 import { teamHabitatLine } from './habitat/status.mjs';
@@ -37,7 +37,7 @@ import { turnFor as ithilTurnFor, stateLine as ithilState, leadLines as ithilLea
 import { checkWord, CHECK_PROMPT, planCheck, runCheck, CHECK_ORDER, CHECK_LABEL, summary as checkSummary } from './app/rollcall.mjs';
 import { creditsHtml } from './app/credits.mjs';
 import { voiceSettings, routeFor, isServer, serverIdOf, idOf, providerName, voiceLines, voiceMenu } from './app/voice-logic.mjs';
-import { studioView, queueHtml, requestFrom } from './app/studio.mjs';
+import { studioView, queueHtml, requestFrom, filterItems } from './app/studio.mjs';
 import { defaultsFrom, prefsFor, prefsOf, samePrefs, applyPrefs, rememberPrefs } from './app/chat-prefs.mjs';
 import { FIND_FIELDS, searchFields, stepIndex, replaceAllFields, snippet, cardMatches, matchedIn } from './app/card-find.mjs';
 
@@ -64,14 +64,14 @@ const APP_SIZES = [67, 75, 80, 90, 100, 115, 130, 150];
 const MEDIA_KEYS = [['google', 'Gemini API key', 'pictures (Gemini image model), Veo videos'], ['openai', 'OpenAI API key', 'pictures and edits (OpenAI Images), Sora videos; the same key as ChatGPT by API'], ['xai', 'xAI API key', 'Grok pictures'], ['mistral', 'Mistral API key', 'reading PDFs and scans (Mistral OCR)']];
 
 const S = {
-  view: 'home', tab: 'team', liveDrawer: (() => { try { return localStorage.getItem('hearth.v2.liveDrawer') !== '0'; } catch { return true; } })(), liveMode: (() => { try { return localStorage.getItem('hearth.v2.liveMode') === 'cores' ? 'cores' : 'mesh'; } catch { return 'mesh'; } })(),
+  view: 'home', tab: 'team', liveDrawer: (() => { try { return localStorage.getItem('hearth.v2.liveDrawer') !== '0'; } catch { return true; } })(), liveMode: (() => { try { const v = localStorage.getItem('hearth.v2.liveMode'); return ['cores', 'mesh', 'calm'].includes(v) ? v : null; } catch { return null; } })(),
   // Images & Videos (src/app/studio.mjs): the form, what the main process reported, the PC's status.
   studio: { f: { kind: 'image', count: 1 }, data: null, st: null, filter: 'all', shown: new Set(), models: null },
   chats: [], temps: [], trash: [], notices: [], broken: false,
   open: null, lastChat: null,
   // 3.9: Ithil (Hearth AI): her status from /v1/status and /v1/events, her picture, her newest thought.
   ithil: { status: null, avatar: null, avatarExpr: '', thought: null, info: null, testing: false, test: null },
-  draft: '', attach: [], conn: null, mode: 'team', web: true, build: true, deep: false, homeModels: {},
+  draft: '', attach: [], conn: null, mode: 'team', web: true, build: true, deep: false, homeModels: {}, homeOff: [],
   pane: null, pop: null, modal: null, toast: null, editing: null,
   search: '', hits: null, showTrash: false, showHidden: false, renaming: null,
   repos: null, reposMsg: '', repoQuery: '', branches: {}, pick: null,
@@ -93,6 +93,13 @@ const call = async (fn, ...a) => { if (!api || typeof api[fn] !== 'function') re
 const entry = (id = S.open) => S.chats.find((c) => c.id === id) || S.temps.find((c) => c.id === id) || null;
 const ownerName = () => S.settings.ownerIdentity?.name || S.gh.ghUser || 'Dragongamer9';
 const team = () => teamOf(S.settings.team);
+// 3.14 (docs/mockups/claude-look-*.png): the Style. The Claude app look is the default when none was picked; a Style
+// picked in Settings (Gold hologram, Dark, Classic) always stays.
+const DESIGNS = ['claude', 'adwaita', 'hologram', 'classic'];
+const designOf = (s = S.settings) => (DESIGNS.includes(s?.design) ? s.design : 'claude');
+const isClaude = () => designOf() === 'claude';
+// Who's switched off in this chat (the team picker's switches; kept with the chat, never in settings).
+const offIn = (R) => (R ? R.sessions?._off || [] : S.homeOff || []);
 
 // ---------- AIs ----------
 // Missing quick-check tools above the message box: each tool once, and it can be hidden (it
@@ -264,7 +271,7 @@ async function openChat(id) {
 function goHome() {
   S.view = 'home'; S.open = null; S.pane = null; S.pop = null; S.editing = null;
   // A new chat starts from the owner's defaults, never from what the last chat used.
-  applyPrefs(S, defaultsFrom(S.settings)); S.homeModels = {};
+  applyPrefs(S, defaultsFrom(S.settings)); S.homeModels = {}; S.homeOff = [];
   // 3.13: Settings › AI team › New messages start with.
   if (S.settings.startWith && S.settings.startWith !== 'team' && team().members.includes(S.settings.startWith)) S.mode = S.settings.startWith;
   try { localStorage.removeItem('hearth.v2.open'); } catch {}
@@ -280,6 +287,7 @@ async function ensureChat(firstText) {
   const R = rt(e.id);
   R.loaded = true;
   if (Object.keys(S.homeModels).length) R.sessions._models = { ...S.homeModels };
+  if (S.homeOff.length) R.sessions._off = [...S.homeOff];
   // Switches he changed on the home screen before the first message belong to this chat.
   if (!samePrefs(prefsOf(S), defaultsFrom(S.settings))) rememberPrefs(R, S);
   S.open = e.id; S.lastChat = e.id; S.view = 'chat';
@@ -1172,7 +1180,7 @@ function renderSide() {
     </div>${sideWork(R)}`;
   };
   const working = runner.busyIds().length;
-  const html = `
+  const html = isClaude() ? sideClaude(groups, item, hidden, working) : `
     <div class="hist-h"><b>History</b><button class="ib ghost" data-a="side-menu" aria-expanded="${S.sideMenu ? 'true' : 'false'}" title="Places and tools" aria-label="Places and tools">${icon('menu')}</button></div>
     <div class="side-menu" ${S.sideMenu ? '' : 'hidden'}>
     <button class="navitem" data-a="temp-chat" title="Nothing is saved: no chat file, no history, no memory">${icon('eyeoff', 'sm')}Temporary chat</button>
@@ -1211,12 +1219,22 @@ function topbar() {
   const c = entry();
   if (S.view === 'studio') return `<span class="ttl">Images &amp; Videos</span><span class="grow"></span>`;
   if (S.view === 'reverse') return `<span class="ttl">Reverse Engineering</span><span class="grow"></span>`;
+  if (S.view === 'desktop') return `<span class="ttl">Agent Desktop</span><span class="grow"></span><span class="cl-pill">Every action asks you first</span>`;
+  if (S.view === 'live' && isClaude() && liveModeNow() === 'calm') return `<span class="ttl">Live</span><span class="grow"></span>${c ? `<button class="tb cl-tb" data-a="talk" title="Voice chat: talk with the team and hear the answers">${icon('mic', 'sm')}Talk to the team</button>` : ''}`;
   if (S.view === 'live') return `<span class="ttl">Live</span>${workStack(liveChat(), 26)}<span class="grow"></span>${c ? `<button class="tb" data-a="live-full" title="Open this chat with every message and tool">${icon('chat', 'sm')}Full chat</button>` : ''}<button class="tb" data-a="live-drawer" aria-pressed="${S.liveDrawer}" title="${S.liveDrawer ? 'Hide' : 'Show'} the chat on the right">${icon('panel', 'sm')}${S.liveDrawer ? 'Hide chat' : 'Show chat'}</button>`;
   const title = S.view === 'settings' ? 'Settings' : S.view === 'habitat' ? 'Habitat' : ['characters', 'card', 'lorebooks'].includes(S.view) ? 'Characters' : S.view === 'chat' ? (c?.title || 'Chat') : '';
   if (['characters', 'card', 'lorebooks'].includes(S.view)) return `<span class="ttl">${esc(title)}</span><span class="grow"></span>`;
   const chip = S.view === 'chat' && c && (c.repo || c.repoDir) ? `<button class="chip" data-a="repo-pop" title="Connected repo">${icon('gh', 'sm')}${esc(c.repo || c.repoDir)} <span class="faint">· ${esc(c.branch || S.copy?.base || 'default branch')}</span></button>` : '';
   const temp = S.view === 'chat' && c?.temp ? `<span class="chip">${icon('eyeoff', 'sm')}Temporary · nothing is saved</span><button class="mini" data-a="temp-end" data-id="${esc(c.id)}">End</button>` : '';
   const know = S.view === 'chat' && c?.rp ? `<span class="chip">${rpCards(c).map((x) => avatarHtml(x, 'xs')).join('')}Roleplay${c.rp.characters.length > 1 ? ` · group · ${c.rp.order === 'list' ? 'in order' : 'natural order'}` : ''}</span>` : S.view === 'chat' && c && !c.temp ? `<button class="tb" data-a="chat-act" data-k="knowledge" data-id="${esc(c.id)}" title="This chat's instructions and reference files">${icon('doc', 'sm')}${c.instructions || c.refs?.length ? 'Instructions ✓' : 'Instructions'}</button>` : '';
+  // 3.14 (claude-look-1/-2): Home has only Team and the panel; a chat's title opens its menu (⌄).
+  if (isClaude() && S.view === 'home') return `<span class="grow"></span><button class="tb cl-tb" data-a="team-pop" data-top="1" title="Who works on this chat">${icon('users', 'sm')}Team</button><button class="tb cl-tb" data-a="toggle-pane" title="Side panel" disabled>${icon('panel', 'sm')}</button>`;
+  // claude-look-11: a story chat's title ⌄, then Characters and Lorebooks.
+  if (isClaude() && S.view === 'chat' && c?.rp) return `<button class="cl-title" data-a="chat-opts" title="This chat: voice, rename and more">${esc(c.title || 'Chat')} <span class="faint">⌄</span></button>${workStack(cur(), 22)}<span class="grow"></span><button class="tb cl-tb" data-a="characters">Characters</button><button class="tb cl-tb" data-a="lorebooks">Lorebooks</button><button class="tb cl-tb" data-a="toggle-pane" title="Side panel">${icon('panel', 'sm')}</button>`;
+  if (isClaude() && S.view === 'chat' && c && !c.rp && reProject()) return `<span class="ttl">Reverse Engineering</span><button class="cl-title" data-a="chat-opts" title="This chat: instructions, Live, voice, rename and more">${esc(c.title || 'Chat')} <span class="faint">⌄</span></button><span class="grow"></span><button class="tb cl-tb" data-a="reverse" title="REA: its setup and your projects">REA</button><button class="tb cl-tb" data-a="team-pop" data-top="1" title="Who works on this chat">${icon('users', 'sm')}Team</button><button class="tb cl-tb" data-a="toggle-pane" title="Side panel">${icon('panel', 'sm')}</button>`;
+  if (isClaude() && S.view === 'chat' && c && !c.rp) return `${S.sideHidden ? `<button class="ib ghost" data-a="side-toggle" title="Show the sidebar" aria-label="Show the sidebar">${icon('panel', 'sm')}</button>` : ''}<button class="cl-title" data-a="chat-opts" title="This chat: instructions, Live, voice, rename and more">${esc(c.title || 'Chat')} <span class="faint">⌄</span></button>${(c.repo || c.repoDir) ? `<button class="cl-pill mono" data-a="repo-pop" title="Connected repo">${icon('gh', 'sm')}${esc(String(c.repo || c.repoDir).split('/').pop())} · ${esc(c.branch || S.copy?.base || 'default branch')}</button>` : ''}${workStack(cur(), 22)}${temp}<span class="grow"></span><button class="tb cl-tb" data-a="team-pop" data-top="1" title="Who works on this chat">${icon('users', 'sm')}Team</button><button class="tb cl-tb" data-a="toggle-pane" title="Side panel: changes, code and preview">${icon('panel', 'sm')}</button>`;
+  // claude-look-8: the rooms and 2D ⇄ 3D in the top bar (the world itself is unchanged).
+  if (S.view === 'habitat' && isClaude()) return `<span class="ttl">Habitat</span><span class="grow"></span><span class="cl-seg"><button class="cl-tab" data-a="hab-room" data-v="great">Great hall</button><button class="cl-tab" data-a="hab-room" data-v="study">King's chambers</button><button class="cl-tab" data-a="hab-room" data-v="workroom" title="The shared workroom, in the 2D Habitat">Workroom</button></span><button class="tb cl-tb" data-a="hab-flip" title="Switch between the 2D and 3D Habitat">2D ⇄ 3D</button>`;
   if (S.view === 'habitat') return `<span class="ttl">Habitat</span><span class="faint hab-sub">${S.lastChat && entry(S.lastChat) ? `the team of “${esc(entry(S.lastChat).title)}”` : 'your AI team'}</span><span class="grow"></span>`;
   // 3.12 (nyarch-1/-2): the chat's headerbar: the side panel toggle, who's answering, and the model button in the middle;
   // ⚙ beside it opens everything the old top bar had (repo, instructions, Live, voice, team, gallery, panel).
@@ -1245,14 +1263,15 @@ function renderMain(scroll = false) {
   let dock = '';
   if (S.view !== 'habitat' && habMounted) { stopHabitat(); stopHabitat3d(); habMounted = false; }
   if (S.view === 'settings') { html = settingsView(); dock = ''; if (renderMain.lastView !== 'settings' || renderMain.lastTab !== S.tab) queueMicrotask(() => { const b = document.getElementById('body'); if (b) b.scrollTop = 0; }); renderMain.lastTab = S.tab; }
-  else if (S.view === 'habitat') { html = `<div class="habwrap">${viewHabitat()}</div>`; dock = ''; }
+  else if (S.view === 'habitat') { const hv = viewHabitat(); html = `<div class="habwrap">${isClaude() ? hv.replace('<div class="hab-pop" hidden></div></div>', `<div class="hab-pop" hidden></div>${`<div class="cl-hab-pills"><button class="cl-hp" data-a="hab-act" data-v="journal">📓 Habitat journal</button><button class="cl-hp" data-a="hab-act" data-v="board">📌 Board: ${habitatNoteCount()} note${habitatNoteCount() === 1 ? '' : 's'}</button><span class="grow"></span><button class="cl-hp" data-a="hab-act" data-v="wave" title="Wave: each AI waves back">Wave 👋</button></div>`}</div>`) : hv}</div>`; dock = ''; }
   else if (S.view === 'studio') { stSync(); html = stHtml(); dock = ''; }
   else if (S.view === 'reverse') { html = reverseView(); dock = ''; }
-  else if (S.view === 'live') { html = liveView(); dock = composer(S.open ? 'Talk to the team…' : 'What should the team work on?'); }
+  else if (S.view === 'desktop') { html = deskView(); dock = ''; setTimeout(placeDeskMark, 0); }
+  else if (S.view === 'live') { html = liveView(); dock = composer(isClaude() && liveModeNow() === 'calm' ? 'Say something, or type…' : S.open ? 'Talk to the team…' : 'What should the team work on?'); }
   else if (S.view === 'characters') { html = charactersView(); dock = ''; }
   else if (S.view === 'card') { html = cardEditView(); dock = ''; queueMicrotask(() => cfRun(false)); }
   else if (S.view === 'lorebooks') { html = lorebooksView(); dock = ''; }
-  else if (S.view === 'chat') { html = chatView(); dock = composer(entry()?.rp ? `Your line as ${S.persona?.name || 'you'}…` : cur()?.canvas ? 'Ask for changes to the canvas…' : S.open && S.msgs.some((m) => m.previews?.length) && S.pane ? 'Ask for changes to the preview…' : S.mode === 'team' ? `Send a message… (${team().members.filter(ready).slice(0, 5).map((x) => `@${aiName(x)}`).join(', ')})` : 'Send a message…') + `<div class="hint">${esc(hintLine())}</div>`; }
+  else if (S.view === 'chat') { html = chatView(); dock = composer(entry()?.rp ? (isClaude() ? `Write ${rpCards(entry()).map((x) => x.name).join(' and ')}'s scene…` : `Your line as ${S.persona?.name || 'you'}…`) : cur()?.canvas ? 'Ask for changes to the canvas…' : S.open && S.msgs.some((m) => m.previews?.length) && S.pane ? 'Ask for changes to the preview…' : isClaude() && reProject() ? 'Ask about a game\'s files…' : isClaude() ? (S.mode === 'team' ? 'Reply to the team…' : `Reply to ${aiName(S.mode)}…`) : S.mode === 'team' ? `Send a message… (${team().members.filter(ready).slice(0, 5).map((x) => `@${aiName(x)}`).join(', ')})` : 'Send a message…') + `<div class="hint">${esc(hintLine())}</div>`; }
   else { html = homeView(); dock = ''; }
   const main = document.getElementById('main');
   main.classList.toggle('home-mode', S.view === 'home');
@@ -1293,7 +1312,104 @@ function hintLine() {
   return c && (c.repo || c.repoDir) ? `${who} · changes go to a branch · main only changes when you approve` : `${who} · no repo: nothing can be committed or pushed`;
 }
 
+
+// ---------- 3.14: the Claude app look (docs/mockups/claude-look-*.png, checklist docs/mockups/checklists/claude-look.md) ----------
+const partOfDay = (d = new Date()) => greeting(d).replace(/^Good /, '').replace(/^./, (x) => x.toUpperCase());
+const CLAUDE_PLACES = [
+  ['chats', 'chat', 'Chats', 'new-chat', () => S.view === 'home'],
+  ['repos', 'gh', 'Repos', 'repo-pop', () => false],
+  ['studio', 'pic', 'Images & Videos', 'studio', () => S.view === 'studio'],
+  ['live', 'eye', 'Live', 'live', () => S.view === 'live'],
+  ['habitat', 'home', 'Habitat', 'habitat', () => S.view === 'habitat'],
+  ['reverse', 'code', 'Reverse Engineering', 'reverse', () => S.view === 'reverse'],
+  ['desktop', 'cpu', 'Agent Desktop', 'desk-page', () => S.view === 'desktop'],
+  ['characters', 'user', 'Characters', 'characters', () => ['characters', 'card', 'lorebooks'].includes(S.view)],
+];
+function signedInLine() {
+  const on = TEAM_IDS.filter((a) => AGENTS[a] && ready(a) && !AGENTS[a].imagesOnly).map(aiName);
+  return on.length ? `${on.slice(0, 3).join(' · ')}${on.length > 3 ? ` +${on.length - 3}` : ''} signed in` : 'No AI signed in yet';
+}
+function sideClaude(groups, item, hidden, working) {
+  const star = groups.find((g) => g.key === 'pinned');
+  const rest = groups.filter((g) => g.key !== 'pinned').flatMap((g) => g.items);
+  const nm = ownerName();
+  return `<div class="cl-brand"><b>Command Center</b><button class="ib ghost" data-a="side-toggle" title="Hide the sidebar" aria-label="Hide the sidebar">${icon('panel', 'sm')}</button></div>
+    <button class="cl-new" data-a="new-chat"><span class="cl-plus">${icon('plus', 'sm')}</span>New chat</button>
+    <nav class="cl-places">${CLAUDE_PLACES.map(([k, ic, label, a, on, t]) => `<button class="navitem ${on() ? 'on' : ''}" data-a="${a}" data-k="${k}" ${t ? `data-t="${t}"` : ''}>${icon(ic, 'sm')}${esc(label)}</button>`).join('')}
+      <button class="navitem" data-a="temp-chat" title="Nothing is saved: no chat file, no history, no memory">${icon('eyeoff', 'sm')}Temporary chat</button></nav>
+    <label class="search">${icon('search', 'sm')}<input id="chat-search" placeholder="Search chats" value="${esc(S.search)}" aria-label="Search chats"></label>
+    <div class="list" id="chat-list">
+      ${S.broken ? '<div class="note bad">Your chats list couldn\'t be read. It was left as it is; new chats can\'t be saved until it\'s fixed.</div>' : ''}
+      ${working ? `<div class="sec">${working} working · up to ${S.settings.maxChats || 3} at once</div>` : ''}
+      ${S.temps.length ? `<div class="sec">Temporary (not saved)</div>${S.temps.map((c) => `<div class="item ${S.view === 'chat' && S.open === c.id ? 'on' : ''}" data-chat="${esc(c.id)}">${icon('eyeoff', 'sm')}<span class="t">${esc(c.title)}</span>${chatStatus(c.id) || ''}<button class="more vis" data-a="temp-end" data-id="${esc(c.id)}" title="End">${icon('x', 'sm')}</button></div>`).join('')}` : ''}
+      ${star && star.items.length ? `<div class="sec">Starred</div>${star.items.map(item).join('')}` : ''}
+      ${rest.length ? `<div class="sec">Recents</div>${rest.map(item).join('')}` : (star && star.items.length) ? '' : `<div class="empty-list">${S.search ? 'No chats match.' : 'No chats yet.'}</div>`}
+      ${hidden.length ? `<button class="sec link" data-a="toggle-hidden">${icon(S.showHidden ? 'chev' : 'chevr', 'sm')}Hidden (${hidden.length})</button>${S.showHidden ? hidden.map((c) => `<div class="item dim"><span class="t">${esc(c.title)}</span><button class="mini" data-a="unhide" data-id="${esc(c.id)}">Show</button></div>`).join('') : ''}` : ''}
+      ${S.trash.length ? `<button class="sec link" data-a="toggle-trash">${icon(S.showTrash ? 'chev' : 'chevr', 'sm')}Recently deleted (${S.trash.length})</button>${S.showTrash ? S.trash.map((t) => `<div class="item dim"><span class="t">${esc(t.title)}</span><button class="mini" data-a="restore" data-id="${esc(t.trashId)}">Restore</button></div>`).join('') : ''}` : ''}
+    </div>
+    <button class="cl-acct" data-a="settings" title="Settings"><span class="cl-av">${esc(nm.slice(0, 1).toUpperCase())}</span><span class="cl-who"><b>${esc(nm)}</b><small>${esc(signedInLine())}</small></span>${icon('gear', 'sm')}</button>`;
+}
+function homeClaude() {
+  return `<div class="home cl-home">
+    <h1 class="cl-greet"><span class="cl-spark" aria-hidden="true">✻</span>${esc(partOfDay())}, ${esc(ownerName())}</h1>
+    ${composer('How can the team help today?')}
+    <div class="sugs">${QUICK.map(([ic, label], i) => `<button class="sug" data-a="quick" data-i="${i}">${icon(ic, 'sm')}${esc(label)}</button>`).join('')}<button class="sug" data-a="studio">${icon('pic', 'sm')}Make a picture or video</button></div>
+    <div class="fine cl-status">${esc(signedInLine().replace(' signed in', ''))} ${live().length ? `${live().length === 1 ? 'is' : 'are'} ready` : ''} · builds and tests run in GitHub Actions · nothing reaches main without you</div>
+    ${S.notices.length ? `<div class="notices">${S.notices.map((n, i) => `<div class="note">${esc(n)}<button class="mini" data-a="dismiss" data-i="${i}">Dismiss</button></div>`).join('')}</div>` : ''}
+    ${S.idle.length ? `<div class="notices">${S.idle.map((c) => `<div class="note warn">The temporary copy for “${esc(entry(c.chatId)?.title || c.repo || 'a chat')}” has work that isn't on GitHub, so it was kept. <button class="mini" data-a="open-data">Look at it</button></div>`).join('')}</div>` : ''}
+  </div>`;
+}
+// The message box's bottom row (claude-look-1): + attach, tools, the repo pill, the team with its cores, mic, send.
+function claudeRow(c, busy) {
+  const conn = c ? (c.repo || c.repoDir) : S.conn?.repo;
+  const t = team();
+  const off = offIn(['chat', 'live'].includes(S.view) ? cur() : null);
+  const on = t.members.filter((a) => ready(a) && !off.includes(a));
+  const rpc = c?.rp ? rpCards(c) : null;
+  const who = rpc ? `${rpc.map((x) => x.name).join(', ')} · ${[...new Set(rpc.map((x) => aiName(playerOf(c, x.id))))].join(', ')}` : S.mode === 'team' ? `Team: ${on.slice(0, 3).map(aiName).join(', ')}${on.length > 3 ? ` +${on.length - 3}` : ''}` : aiName(S.mode);
+  const cores = S.settings.composerCores !== false ? `<span class="cl-cores">${(rpc ? [...new Set(rpc.map((x) => playerOf(c, x.id)))] : S.mode === 'team' ? on : [S.mode]).slice(0, 4).map((a) => `<i class="cl-dot" style="--c:rgb(${liveCoreOf(a).rgb})" title="${esc(aiName(a))}"></i>`).join('')}</span>` : '';
+  return `<div class="cl-row">
+    <button class="ib" data-a="attach" title="Attach files, images, videos, PDFs or spreadsheets (or paste a screenshot)" aria-label="Attach">${icon('plus', 'sm')}</button>
+    <button class="ib" data-a="composer-opts" title="Tools: web, run &amp; build, deep research, models, talk" aria-label="Tools">${icon('sliders', 'sm')}</button>
+    <button class="cl-pill" data-a="repo-pop" title="Connect this chat to a GitHub repo">${icon('gh', 'sm')}${conn ? esc(String(conn).split('/').pop()) : 'No repo'}</button>
+    <span class="grow"></span>
+    <button class="cl-pill cl-team" data-a="team-pop" title="Who works on this chat">${cores}${esc(who)} <span class="faint">⌄</span></button>
+    <button class="ib ${voice.dictating() ? 'rec' : ''}" data-a="voice" title="${voice.dictating() ? 'Stop and turn it into text' : 'Dictate: say your message, it becomes text'}" aria-label="Dictate">${icon('mic', 'sm')}</button>
+    ${busy ? `<button class="cl-send stop" data-a="stop" title="Stop this chat" aria-label="Stop">${icon('stop', 'sm')}</button>` : `<button class="cl-send" data-a="send" title="Send${S.settings.sendOnEnter === false ? ' (Ctrl+Enter)' : ' (Enter)'}" aria-label="Send">↑</button>`}
+  </div>`;
+}
+// claude-look-4: "Who works on this chat": a switch for each AI, kept with the chat (Home's go with the next new chat).
+function teamPickClaude(p) {
+  const t = team();
+  const R = S.view === 'chat' ? cur() : null;
+  const off = offIn(R);
+  const on = t.members.filter(ready);
+  const pos = `${p.top ? 'right:20px;top:52px' : p.b != null ? `left:${Math.max(8, Math.min(p.x, window.innerWidth - 400))}px;bottom:${p.b}px` : `left:${p.x}px;top:${p.y}px`};max-height:${Math.max(240, p.maxH || window.innerHeight - 80)}px`;
+  const lead = [t.lead, t.reviewer].filter((a) => on.includes(a));
+  const shown = S.clMore ? on : [...lead, ...on.filter((a) => !lead.includes(a))].slice(0, 5);
+  const plan = (a) => [a === t.lead ? 'lead' : a === t.reviewer ? 'reviewer' : 'member', statusOf(a).label].filter(Boolean).join(' · ');
+  return `<div class="scrim" data-a="close-pop"></div><div class="pop cl-pick" style="${pos}"><div class="mh">Who works on this chat</div>
+    ${shown.map((a) => `<div class="cl-it">${miniCore(a, aiName(a), 26, off.includes(a) ? 'off' : 'ready')}<span class="t2"><b>${esc(aiName(a))}</b><small>${esc(plan(a))}</small></span><span class="grow"></span>${tog(!off.includes(a) && S.mode === 'team', 'team-off', `data-v="${esc(a)}"`)}</div>`).join('') || '<p class="fine">No teammate is connected yet.</p>'}
+    <div class="sep"></div>
+    ${on.length > shown.length || S.clMore ? `<button class="it" data-a="cl-more">${S.clMore ? 'Fewer' : `More AIs (${on.length - shown.length})`}<small>${S.clMore ? '‹' : '›'}</small></button>` : '<button class="it" data-a="settings-team">More AIs<small>›</small></button>'}
+    <button class="it" data-a="go-set" data-t="team">Roles and who leads…</button>
+    <button class="it" data-a="cl-solo">Just one AI, no team<small>›</small></button>
+    ${S.clSolo ? `<div class="wa-grid">${on.map((a) => `<button class="wa ${S.mode === a ? 'on' : ''}" data-a="set-mode" data-v="${a}">${mono(a, 'sm')}<span>${esc(aiName(a))}</span></button>`).join('')}<button class="wa ${S.mode === 'team' ? 'on' : ''}" data-a="set-mode" data-v="team">${icon('users', 'sm')}<span>Whole team</span></button></div>` : ''}
+    <button class="it" data-a="team-check-go">${icon('check', 'sm')}Test team<small>a check word from every teammate</small></button></div>`;
+}
+function lookClaudeRows(s) {
+  const seg = (a, cur, list) => list.map(([v, l]) => `<button class="seg ${cur === v ? 'on' : ''}" data-a="${a}" data-v="${v}">${l}</button>`).join('');
+  return `${row('Colour mode', 'Light, dark, or the same as Hearth OS', seg('theme', ['hearth', 'system'].includes(s.theme) ? 'hearth' : s.theme, [['light', 'Light'], ['dark', 'Dark'], ['hearth', 'Match Hearth']]))}
+    ${row('Chat font', 'The font answers are written in', seg('chat-font', s.chatFont || 'serif', [['serif', 'Serif'], ['sans', 'Sans'], ['dyslexic', 'Dyslexic friendly']]))}
+    ${row('Send with Enter', 'Off: Enter makes a new line and Ctrl+Enter sends', tog(s.sendOnEnter !== false, 'send-enter'))}
+    ${row('Cores in the message box', 'The team\'s little cores beside “Team”', tog(s.composerCores !== false, 'composer-cores'))}
+    ${row('Updates', `Hearth AI Command Center ${esc(S.info.appVersion || '')}`, '<button class="mini" data-a="upd" data-v="check">Check for updates</button>')}`;
+}
+// claude-look-5: the Settings sections down the left, like the Claude app's.
+const CTABS = [['c-general', 'gear', 'General', ['alerts', 'changes', 'uncensored', 'data']], ['c-look', 'eye', 'Appearance', ['look']], ['accounts', 'key', 'Accounts', ['accounts', 'accounts2']], ['c-github', 'gh', 'GitHub', ['github']], ['team', 'users', 'Team', ['team']], ['ithil', 'moon', 'Ithil', ['ithil']], ['tools', 'cpu', 'Tools & Agent Desktop', ['tools', 'connectors', 'perms']], ['voice', 'speaker', 'Voice', ['voice', 'avatar']], ['memory', 'brain', 'Memory', ['memory', 'scheduled']], ['c-studio', 'pic', 'Images & Videos', ['c-studio']], ['c-phone', 'phone', 'Phone', ['c-phone']], ['c-updates', 'dl', 'Updates', ['updates']], ['c-credits', 'heart', 'Credits', ['c-credits']]];
+
 function homeView() {
+  if (isClaude()) return homeClaude();
   return `<div class="home">
     <h1><img src="./icon.png" alt="">${esc(greeting())}, ${esc(ownerName())}</h1>
     ${homeCores()}
@@ -1352,13 +1468,29 @@ function liveMesh(R) {
   if ((S.settings.ithil || {}).mesh !== false && (team().members.includes('ithil') || S.ithil.status?.online)) m.ithil = ithilStation(S.ithil.status, S.ithil.thought);
   return meshHtml(m, { ithilAvatar: mono('ithil', 'xs'), rgbOf: (id) => liveCoreOf(id).rgb, nameOf: (id) => aiName(id), coreOf: (c) => liveCoreHtml({ id: c.id, name: aiName(c.id), size: 64, state: c.state, status: c.status }) });
 }
+// 3.14 (claude-look-7): the calm Live: the chat's team as glowing cores (talking / listening / thinking / idle), what's
+// being said under them in the reading font, then the message box. Mesh and Cores are one click away.
+const liveModeNow = () => S.liveMode || (isClaude() ? 'calm' : 'mesh');
+function liveCalm(R) {
+  const t = team();
+  const off = offIn(R);
+  const ids = [t.lead, ...t.members.filter((a) => a !== t.lead)].filter((a) => ready(a) && !off.includes(a) && !AGENTS[a]?.imagesOnly).slice(0, 6);
+  const byId = new Map(liveWho().map((w) => [w.id, w]));
+  const hearing = voice.isOpen() && voice.state.phase === 'hearing';
+  const word = (w, a) => w?.state === 'speaking' ? 'talking' : w?.state === 'working' ? 'thinking' : hearing || (voice.isOpen() && a === t.lead) ? 'listening' : 'idle';
+  const cap = liveCaption();
+  return `<div class="cl-live"><div class="cl-live-sw">${[['calm', 'Calm'], ['mesh', 'Mesh'], ['cores', 'Cores']].map(([k, l]) => `<button class="cl-tab ${liveModeNow() === k ? 'on' : ''}" data-a="live-mode" data-v="${k}">${l}</button>`).join('')}</div>
+    <div class="cl-cores-row">${ids.map((a, i) => { const w = byId.get(a); return `<div class="cl-core">${liveCoreHtml({ id: a, name: aiName(a), size: i === 0 ? 150 : 110, state: w?.state || 'ready', status: w?.status || '' })}<b>${esc(aiName(a))}</b><span>${esc(word(w, a))}</span></div>`; }).join('') || '<p class="fine">No AI is ready yet: Settings › Accounts.</p>'}</div>
+    ${cap?.line ? `<p class="cl-live-cap">“${esc(cap.line)}”</p>` : '<p class="cl-live-cap faint">Nobody has said anything in this chat yet.</p>'}</div>`;
+}
 function liveView() {
   const R = liveChat();
+  if (liveModeNow() === 'calm') return liveCalm(R);
   const who = liveWho();
   const cr = S.credit;
   const counts = { total: who.length, team: team().members.length, working: who.filter((w) => w.state === 'working' || w.state === 'speaking').length, credit: cr?.on ? `$${Number(cr.spent || 0).toFixed(2)} / $${cr.budget || 200}` : '' };
-  const mesh = S.liveMode === 'mesh' ? liveMesh(R) : '';
-  const stage = liveStageHtml({ who, caption: liveCaption(), chatTitle: entry()?.title || '', counts, canTalk: Boolean(S.open), mode: S.liveMode, mesh });
+  const mesh = liveModeNow() === 'mesh' ? liveMesh(R) : '';
+  const stage = liveStageHtml({ who, caption: liveCaption(), chatTitle: entry()?.title || '', counts, canTalk: Boolean(S.open), mode: liveModeNow(), mesh });
   const msgs = (R?.msgs || []).filter((m) => m.text && (m.who === 'owner' || AGENTS[m.who])).slice(-40);
   const list = msgs.length ? msgs.map((m) => `<div class="live-msg ${m.who === 'owner' ? 'owner' : ''}"><b style="color:${m.who === 'owner' ? 'var(--muted)' : (COLORS[m.who] || 'var(--accent)')}">${esc(m.who === 'owner' ? ownerName() : aiName(m.who))}</b><div>${esc(shortLine(m.text, 900))}</div></div>`).join('') : `<div class="fine">${S.open ? 'Nothing said in this chat yet.' : 'Type below to start a chat; the team shows up here as it works.'}</div>`;
   return `<div class="live">${stage}<aside class="live-drawer" ${S.liveDrawer ? '' : 'hidden'} aria-label="Chat"><div class="dh">◢ Chat<span class="grow"></span>${S.open ? '<button class="mini" data-a="live-full">Full chat</button>' : ''}<button class="mini" data-a="live-drawer">Hide</button></div><div class="live-msgs" id="live-msgs">${list}</div></aside></div>`;
@@ -1420,6 +1552,14 @@ function composer(placeholder) {
   const c = ['chat', 'live'].includes(S.view) ? entry() : null;
   const thumbs = S.attach.map((a, i) => a.kind === 'image' && !a.huge ? `<div class="th" style="background-image:url('${esc(a.url || '')}')" title="${esc(a.name)}"><button class="x" data-a="unattach" data-i="${i}" aria-label="Remove">${icon('x', 'sm')}</button></div>` : `<div class="th f" title="${esc(a.name)}"><span>${esc(a.name)}</span><button class="x" data-a="unattach" data-i="${i}" aria-label="Remove">${icon('x', 'sm')}</button></div>`).join('');
   const busy = Boolean(S.busy) || S.working;
+  if (isClaude()) return `${c?.rp ? rpBar(c) : ''}<div class="composer cl-box ${busy ? 'busy' : ''}" id="composer-box">
+    ${thumbs ? `<div class="thumbs">${thumbs}</div>` : ''}
+    ${c && !c.rp && !(c.repo || c.repoDir) ? `<div class="cnote" id="no-push-note">${icon('gh', 'sm')}<span>This chat has no repo, so the team can't commit or push anything. Connect a repo if the work should go to GitHub.</span><button class="mini" data-a="repo-pop">Connect a repo</button></div>` : ''}
+    ${missingNote()}
+    ${S.deep ? `<div class="modes"><button class="chip on" data-a="toggle-deep" title="Turn deep research off">${icon('globe', 'sm')}Deep research ×</button></div>` : ''}
+    <textarea id="composer" rows="2" placeholder="${esc(placeholder)}" aria-label="Message">${esc(S.draft)}</textarea>
+    ${claudeRow(c, busy)}
+  </div>`;
   return `${c?.rp ? rpBar(c) : ''}<div class="composer ${busy ? 'busy' : ''}" id="composer-box">
     ${thumbs ? `<div class="thumbs">${thumbs}</div>` : ''}
     ${c && !c.rp && !(c.repo || c.repoDir) ? `<div class="cnote" id="no-push-note">${icon('gh', 'sm')}<span>This chat has no repo, so the team can't commit or push anything. Connect a repo if the work should go to GitHub.</span><button class="mini" data-a="repo-pop">Connect a repo</button></div>` : ''}
@@ -1487,7 +1627,9 @@ function chatView() {
   const lastAi = [...msgs].reverse().find((m) => m.who !== 'owner' && m.who !== 'system');
   const items = msgs.map((m) => message(m, m.id === lastChanges, m === lastAi && !R?.round)).join('');
   const b = S.busy;
-  const card = (b) => `<div class="msg-a working"><div class="who">${b.char ? avatarHtml(cardById(b.char)) : mono(b.agent)}<b>${esc(b.char ? `${cardById(b.char)?.name || ''} (${aiName(b.agent)})` : aiName(b.agent))}</b>${b.role === 'lead' ? '<span class="star">★ lead</span>' : b.role === 'reviewer' ? '<span>· reviewer</span>' : ''}<span>· working</span>${b.lane ? '<span class="faint">· at the same time, in its own copy</span>' : ''}<span class="dots"><i></i><i></i><i></i></span>${b.note ? `<span class="faint">· ${esc(b.note)}</span>` : ''}</div>${stepsHtml(b.steps, [], true)}</div>`;
+  // claude-look-3: "Gemini is looking for …" with a small spinner while an AI is still working.
+  const clWork = (b) => { const st = (b.steps || []).slice(-1)[0]; return `<div class="msg-a working cl-working"><i class="cl-spin" aria-hidden="true"></i><span>${esc(aiName(b.agent))} ${st ? `· ${esc(st.label)}${st.detail ? ` ${esc(st.detail)}` : ''}` : 'is thinking'}…</span>${b.lane ? '<span class="faint">· at the same time, in its own copy</span>' : ''}</div>`; };
+  const card = (b) => isClaude() && !b.char ? clWork(b) : `<div class="msg-a working"><div class="who">${b.char ? avatarHtml(cardById(b.char)) : mono(b.agent)}<b>${esc(b.char ? `${cardById(b.char)?.name || ''} (${aiName(b.agent)})` : aiName(b.agent))}</b>${b.role === 'lead' ? '<span class="star">★ lead</span>' : b.role === 'reviewer' ? '<span>· reviewer</span>' : ''}<span>· working</span>${b.lane ? '<span class="faint">· at the same time, in its own copy</span>' : ''}<span class="dots"><i></i><i></i><i></i></span>${b.note ? `<span class="faint">· ${esc(b.note)}</span>` : ''}</div>${stepsHtml(b.steps, [], true)}</div>`;
   const all = R?.working?.length ? R.working : b ? [b] : [];
   const working = all.length ? all.map(card).join('') : R?.waiting ? `<div class="msg-s waitline">${icon('clock', 'sm')} Waiting for a free slot: ${runner.queue.active.size} chats are already working (your limit is ${S.settings.maxChats || 3}). This chat starts by itself when one finishes.</div>` : '';
   const empty = !msgs.length && !b ? `<div class="chat-empty"><p>${entry()?.temp ? 'A temporary chat: nothing is saved, and it ends when you close it.' : `Ask the team anything. ${entry()?.repo ? `They work in a temporary copy of <b>${esc(entry().repo)}</b> and push to their own branch.` : 'Connect a repo from the box below to let them change code.'}`}</p></div>` : '';
@@ -1496,7 +1638,8 @@ function chatView() {
   const rpEmpty = c?.rp && !msgs.length && !b ? `<div class="chat-empty"><p>The story starts with your first line.</p></div>` : '';
   const warn = c?.rp ? '' : `<div class="warnline"><span class="wi" aria-hidden="true">⚠</span><span>${warnText(c)}</span></div>`;
   const acts = !c?.rp && msgs.length ? `<div class="crow"><button data-a="chat-clear">${icon('copy', 'sm')}Clear</button><button data-a="chat-regen">${icon('refresh', 'sm')}Regenerate</button>${R?.round && S.mode === 'team' ? `<button data-a="stop">${icon('stop', 'sm')}Stop the team</button>` : ''}</div>` : '';
-  return `<div class="col">${warn}${c?.rp ? rpEmpty : empty}${items}${working}${c?.rp ? sceneJobsHtml(R) : ''}${c?.rp ? '' : turnStrip(R)}${acts}</div>`;
+  if (isClaude() && !S.re && !S.reLoading) { S.reLoading = true; call('reverseStatus').then((r) => { S.re = r || null; if (reProject()) render(); }).catch(() => {}); }
+  return `<div class="col">${isClaude() && reProject() ? reCards() : ''}${warn}${c?.rp ? rpEmpty : empty}${items}${working}${c?.rp ? sceneJobsHtml(R) : ''}${c?.rp ? '' : turnStrip(R)}${acts}</div>`;
 }
 
 // 3.4.1: the one fix for a teammate that couldn't answer, right where it says so.
@@ -1550,7 +1693,7 @@ function controlsHtml(m, owner = false) {
   const ver = m.versions?.length > 1 ? `<span class="ver"><button class="ib sm ghost" data-a="ver" data-m="${esc(m.id)}" data-d="-1" ${(m.v ?? m.versions.length - 1) === 0 ? 'disabled' : ''} aria-label="Previous version">‹</button>${(m.v ?? m.versions.length - 1) + 1}/${m.versions.length}<button class="ib sm ghost" data-a="ver" data-m="${esc(m.id)}" data-d="1" ${(m.v ?? m.versions.length - 1) === m.versions.length - 1 ? 'disabled' : ''} aria-label="Next version">›</button></span>` : '';
   const br = m.branches?.length > 1 ? `<span class="ver"><button class="ib sm ghost" data-a="branch" data-m="${esc(m.id)}" data-d="-1" ${(m.b || 0) === 0 || busy ? 'disabled' : ''} aria-label="Previous version">‹</button>${(m.b || 0) + 1}/${m.branches.length}<button class="ib sm ghost" data-a="branch" data-m="${esc(m.id)}" data-d="1" ${(m.b || 0) === m.branches.length - 1 || busy ? 'disabled' : ''} aria-label="Next version">›</button></span>` : '';
   if (owner) return `<div class="mctl u">${br}<button class="ib sm ghost" data-a="msg-copy" data-m="${esc(m.id)}" title="Copy">${icon('doc', 'sm')}</button>${!S.readOnly ? `<button class="ib sm ghost" data-a="msg-edit" data-m="${esc(m.id)}" title="Edit and resend" ${busy ? 'disabled' : ''}>${icon('pencil', 'sm')}</button>` : ''}</div>`;
-  return `<div class="mctl">${ver}<button class="ib sm ghost" data-a="msg-copy" data-m="${esc(m.id)}" title="Copy">${icon('doc', 'sm')}</button><button class="ib sm ghost" data-a="humanize-msg" data-m="${esc(m.id)}" title="Make it sound human">${icon('user', 'sm')}</button><button class="ib sm ghost ${voice.isReading(m.id) ? 'rec' : ''}" data-a="msg-read" data-m="${esc(m.id)}" title="${voice.isReading(m.id) ? 'Stop reading' : 'Read aloud'}">${icon(voice.isReading(m.id) ? 'stop' : 'mic', 'sm')}</button>${!S.readOnly && AGENTS[m.who] ? `<button class="ib sm ghost" data-a="msg-retry" data-m="${esc(m.id)}" title="Retry (a new version of this answer)" ${busy ? 'disabled' : ''}>${icon('refresh', 'sm')}</button>` : ''}</div>`;
+  return `<div class="mctl">${ver}<button class="ib sm ghost" data-a="msg-copy" data-m="${esc(m.id)}" title="Copy">${icon('doc', 'sm')}</button><button class="ib sm ghost" data-a="humanize-msg" data-m="${esc(m.id)}" title="Make it sound human">${icon('user', 'sm')}</button><button class="ib sm ghost ${voice.isReading(m.id) ? 'rec' : ''}" data-a="msg-read" data-m="${esc(m.id)}" title="${voice.isReading(m.id) ? 'Stop reading' : 'Read aloud'}">${icon(voice.isReading(m.id) ? 'stop' : 'mic', 'sm')}</button>${isClaude() && !S.readOnly ? ['up', 'down'].map((v) => `<button class="ib sm ghost ${m.rating === v ? 'on' : ''}" data-a="msg-rate" data-m="${esc(m.id)}" data-v="${v}" title="${v === 'up' ? 'Good answer' : 'Not a good answer'}" aria-pressed="${m.rating === v}">${icon(v === 'up' ? 'thumbup' : 'thumbdown', 'sm')}</button>`).join('') : ''}${!S.readOnly && AGENTS[m.who] ? `<button class="ib sm ghost" data-a="msg-retry" data-m="${esc(m.id)}" title="Retry (a new version of this answer)" ${busy ? 'disabled' : ''}>${icon('refresh', 'sm')}</button>` : ''}</div>`;
 }
 
 function message(m, latestChanges, last = false) {
@@ -1561,7 +1704,7 @@ function message(m, latestChanges, last = false) {
   if (m.who === 'owner') {
     const atts = (m.attachments || []).map((a) => a.kind === 'image' && !a.huge ? `<img class="att" src="${esc(a.url || '')}" alt="${esc(a.name)}" loading="lazy" decoding="async">` : `<span class="att-f" ${a.huge ? `title="${esc(a.huge)}"` : ''}>${icon('doc', 'sm')}${esc(a.name)}${a.size > 50 * 1024 * 1024 ? ` <span class="faint">${fmtBytes(a.size)}</span>` : ''}</span>`).join('');
     if (S.editing === m.id) return `<div class="msg-u editing" data-msg="${esc(m.id)}"><textarea id="edit-text" rows="3">${esc(m.text)}</textarea><div class="mft"><button class="btn ghost" data-a="edit-cancel">Cancel</button><button class="btn p" data-a="edit-send" data-m="${esc(m.id)}">Save and send</button></div></div>`;
-    return `<div class="uwrap nrow" data-msg="${esc(m.id)}"><div class="lbl you">You:</div><div class="msg-u">${atts ? `<div class="atts">${atts}</div>` : ''}${rich(m.text)}${m.to ? `<div class="fine">only for ${esc(m.to.map(aiName).join(', '))}: not shown to your other AIs</div>` : ''}</div>${controlsHtml(m, true)}</div>`;
+    return `<div class="uwrap nrow" data-msg="${esc(m.id)}"><div class="lbl you">You:</div>${isClaude() ? `<span class="cl-av u">${esc(ownerName().slice(0, 1).toUpperCase())}</span>` : ''}<div class="msg-u">${atts ? `<div class="atts">${atts}</div>` : ''}${rich(m.text)}${m.to ? `<div class="fine">only for ${esc(m.to.map(aiName).join(', '))}: not shown to your other AIs</div>` : ''}</div>${controlsHtml(m, true)}</div>`;
   }
   if (m.who === 'system') return `<div class="msg-s">${rich(m.text)}${mediaHtml(m)}${m.fixes?.length ? `<div class="mft left fixes">${m.fixes.map((f) => fixButton(f.agent, f.fix)).join('')}</div>` : ''}</div>`;
   const role = m.role === 'lead' ? '<span class="star">★ lead</span>' : m.role === 'reviewer' ? '<span>· reviewer</span>' : '';
@@ -1602,6 +1745,7 @@ function previewCard(m, p) {
 }
 
 function changesCard(m, latest) {
+  if (isClaude() && latest && m.changes && !m.changes.merged && entry()?.repo && (m.actions?.state === 'success' || m.changes.pushed) && !m.notYet) return clMergeCard(m);
   const ch = m.changes;
   const files = ch.files || [];
   const base = ch.base || 'main';
@@ -1620,6 +1764,16 @@ function changesCard(m, latest) {
     </div></div>`;
 }
 
+// 3.14 (claude-look-2): what's ready, its checks, and Approve & merge / Look at the changes / Not yet.
+function clMergeCard(m) {
+  const ch = m.changes;
+  const st = m.actions?.state;
+  const checks = st === 'success' ? 'checks passed' : st === 'failure' ? 'checks failed' : st && st !== 'none' ? 'checks running' : 'no checks yet';
+  const n = ch.commits || 1;
+  return `<div class="card cl-merge"><div class="hd">${icon('flag', 'sm')}<b>Ready to merge into ${esc(ch.base || 'main')}</b></div>
+    <div class="fine">${n} commit${n === 1 ? '' : 's'} on ${esc(ch.pushed || ch.branch || 'its branch')} · ${(ch.files || []).length} file${(ch.files || []).length === 1 ? '' : 's'} · ${checks} · nothing reaches main without you.${ch.pr ? ` <a href="${esc(ch.pr.url)}" target="_blank" rel="noopener">Pull request #${esc(ch.pr.number)}</a>` : ''}</div>
+    <div class="ft"><button class="btn p" data-a="card-merge" data-m="${esc(m.id)}" ${m.busy ? 'disabled' : ''}>${m.busy === 'merge' ? 'Merging…' : 'Approve &amp; merge'}</button><button class="btn" data-a="card-diff" data-m="${esc(m.id)}">Look at the changes</button><button class="btn" data-a="not-yet" data-m="${esc(m.id)}">Not yet</button></div></div>`;
+}
 function actionsCard(m) {
   const a = m.actions;
   const label = { queued: 'Waiting for GitHub Actions to start…', pending: 'GitHub Actions is running…', success: 'GitHub Actions passed', failure: 'GitHub Actions failed', none: 'No GitHub Actions ran for this push' }[a.state] || 'GitHub Actions';
@@ -1670,9 +1824,20 @@ function ageBox(c) {
     <div class="fine">${hard ? 'This card has a hard flag, so no age can clear it.' : 'Saved when you press Save, kept in this app only (never in exported card files). An adult age clears soft flags. Leave it empty to remove it.'}</div>`;
 }
 // Reverse Engineering (electron/reverse.cjs): REA, a connector only for these projects' chats.
+// 3.14 (claude-look-9): each project as a card on top (name, file, size, state); its REA chat under them.
+const reProject = (id = S.open) => (S.re?.projects || []).find((p) => p.chatId === id) || null;
+function reCards() {
+  const ps = (S.re?.projects || []).slice().reverse();
+  const state = (p) => !p.exists ? 'file not found' : !p.chat ? 'chat deleted' : p.chatId === S.open ? 'open now' : runner.runtimes.get(p.chatId)?.round ? 'working' : 'its chat';
+  return `<div class="cl-re-cards">${ps.map((p) => `<button class="cl-re-card ${p.chatId === S.open ? 'on' : ''}" ${p.chat ? `data-a="re-open" data-id="${esc(p.chatId)}"` : 'disabled'}><span class="cl-re-ic">${icon('doc', 'sm')}</span><span class="t2"><b>${esc(p.name)}</b><small>${esc([String(p.path || '').split(/[\\/]/).pop(), p.kind, p.size != null ? fmtBytes(p.size) : '', state(p)].filter(Boolean).join(' · '))}</small></span></button>`).join('')}<button class="cl-re-card add" data-a="re-new" ${S.re?.broken ? 'disabled' : ''}><span class="cl-re-ic">${icon('plus', 'sm')}</span><span class="t2"><b>New project</b><small>pick a program</small></span></button></div>`;
+}
 function reverseView() {
   const r = S.re;
   if (!r) return '<div class="col"><div class="fine">Loading…</div></div>';
+  if (isClaude()) return `<div class="col cl-re">${reCards()}${reverseSetup(r)}</div>`;
+  return reverseSetup(r);
+}
+function reverseSetup(r) {
   const ok = (b) => (b ? `<span class="ok">${icon('check', 'sm')}</span>` : `<span class="bad">${icon('x', 'sm')}</span>`);
   const ready = r.node.ok && r.npx;
   return `<div class="col">
@@ -1858,14 +2023,35 @@ function rtabBody(t) {
   }
   return '';
 }
+// 3.14 (claude-look-2): the side panel: a title, Changes / Code / Preview, the diff in mono with + and − coloured.
+// Files, the terminal and the avatar are one click away (⋯ and the face button), as before.
+function clPanelHtml() {
+  const tab = S.clTab || 'changes';
+  const m = [...S.msgs].reverse().find((x) => x.changes);
+  const files = m?.changes?.files || [];
+  const prevs = S.msgs.flatMap((x) => (x.previews || []).map((p) => ({ m: x, p })));
+  const title = files.length ? (files.length === 1 ? files[0].path.split('/').pop() : `${files.length} files changed`) : prevs.length ? prevs[prevs.length - 1].p.name : entry()?.title || 'This chat';
+  if (tab === 'changes' && m && entry() && (!S.clDiff || S.clDiff.chat !== S.open || S.clDiff.msg !== m.id) && !S.clDiffLoading) {
+    S.clDiffLoading = true;
+    call('chatDiff', entry().id).then((d) => { S.clDiff = { chat: S.open, msg: m.id, files: parseDiff(d?.diff || '') }; S.clDiffLoading = false; renderPane(true); }).catch(() => { S.clDiffLoading = false; });
+  }
+  const diff = S.clDiff && S.clDiff.chat === S.open ? S.clDiff.files : null;
+  const line = (l) => `<div class="dl ${l.t === '+' ? 'add' : l.t === '-' ? 'del' : ''}">${esc(l.t === '+' || l.t === '-' ? l.t : ' ')}${esc(l.s ?? l.text ?? '')}</div>`;
+  const body = tab === 'changes' ? (!m ? '<div class="rt-empty">No changes in this chat yet.</div>' : diff ? diff.map((f) => `<div class="cl-df"><div class="cl-dfh mono">${esc(f.path)} <span class="add">+${f.add}</span> <span class="del">−${f.del}</span></div>${f.binary ? '<div class="faint">Binary file</div>' : f.hunks.map((h) => `<div class="cl-hunk mono"><div class="hh">${esc(h.header)}</div>${h.lines.map(line).join('')}</div>`).join('')}</div>`).join('') || '<div class="rt-empty">No changes.</div>' : '<div class="rt-empty">Loading the changes…</div>')
+    : tab === 'code' ? (prevs.filter(({ p }) => p.kind === 'code').map(({ m: x, p }) => `<button class="rt-file" data-a="open-canvas" data-m="${esc(x.id)}" data-p="${esc(p.id)}">${icon('code', 'sm')}<span>${esc(p.name)}</span></button>`).join('') + rtabBody('files'))
+    : rtabBody('browser');
+  return `<div class="rp-top cl-pt"><b class="cl-ptt" title="${esc(title)}">${icon('code', 'sm')}${esc(title)}</b>${[['changes', 'Changes'], ['code', 'Code'], ['preview', 'Preview']].map(([k, l]) => `<button class="cl-tab ${tab === k ? 'on' : ''}" data-a="cl-tab" data-v="${k}">${l}</button>`).join('')}<button class="xb" data-a="rpanel" data-v="tools" title="Files, terminal, browser and Ithil">${icon('dots', 'sm')}</button><button class="xb" data-a="rpanel" data-v="avatar" title="The avatar">${icon('user', 'sm')}</button><button class="xb" data-a="rp-collapse" title="Collapse the panel">⟩</button></div>
+    <div class="rt-body cl-pb">${body}</div>`;
+}
 function rpanelHtml() {
+  if (isClaude() && !S.rpanel) return clPanelHtml();
   if (S.rpanel === 'tools') {
     const tab = S.rtab || 'files';
-    return `<div class="rp-top"><button class="xb" data-a="rpanel" data-v="avatar" title="Back to the avatar">${icon('panel', 'sm')}</button><span class="grow"></span><button class="xb" data-a="toggle-pane" title="Live preview and canvas">${icon('monitor', 'sm')}</button><button class="xb" data-a="rfiles-new" title="Open a folder of this chat">${icon('plus', 'sm')}${icon('chev', 'sm')}</button><button class="xb" data-a="win" data-v="max" title="Maximise">${icon('square', 'sm')}</button><button class="xb" data-a="win" data-v="close" title="Close">${icon('x', 'sm')}</button></div>
+    return `<div class="rp-top"><button class="xb" data-a="rpanel" data-v="${isClaude() ? '' : 'avatar'}" title="${isClaude() ? 'Back to changes, code and preview' : 'Back to the avatar'}">${icon('panel', 'sm')}</button><span class="grow"></span><button class="xb" data-a="toggle-pane" title="Live preview and canvas">${icon('monitor', 'sm')}</button><button class="xb" data-a="rfiles-new" title="Open a folder of this chat">${icon('plus', 'sm')}${icon('chev', 'sm')}</button><button class="xb" data-a="win" data-v="max" title="Maximise">${icon('square', 'sm')}</button><button class="xb" data-a="win" data-v="close" title="Close">${icon('x', 'sm')}</button></div>
       <div class="rtabs">${RTABS.map(([k, ic, l]) => `<button class="${tab === k ? 'on' : ''}" data-a="rtab" data-v="${k}">${icon(ic, 'sm')}<span>${l}</span></button>`).join('')}</div>
       <div class="rt-body">${rtabBody(tab)}${tab === 'files' && S.rpanel === 'tools' ? `<div class="rtabs sub"><button class="on">${icon('code', 'sm')}<span>${S.mode === 'ithil' || team().members.includes('ithil') ? 'Ithil\'s terminal' : 'Terminal'}</span></button></div>${rtabBody('terminal')}` : ''}</div>`;
   }
-  return `<div class="rp-top"><span class="grow"></span><button class="xb ${S.settings.autoRead ? 'on' : ''}" data-a="toggle-autoread" title="Read answers aloud">${icon('speaker', 'sm')}</button><button class="xb" data-a="rpanel" data-v="tools" title="Files, terminal, browser and changes">${icon('panel', 'sm')}</button><button class="xb" data-a="avatar-who" title="Who stands here">${icon('user', 'sm')}</button><button class="xb" data-a="rp-collapse" title="Collapse the panel">⟩</button>${winBtns()}</div>${avatarStage()}`;
+  return `<div class="rp-top">${isClaude() ? `<button class="xb" data-a="rpanel" data-v="" title="Back to changes, code and preview">${icon('chev', 'sm')}</button>` : ''}<span class="grow"></span><button class="xb ${S.settings.autoRead ? 'on' : ''}" data-a="toggle-autoread" title="Read answers aloud">${icon('speaker', 'sm')}</button><button class="xb" data-a="rpanel" data-v="tools" title="Files, terminal, browser and changes">${icon('panel', 'sm')}</button><button class="xb" data-a="avatar-who" title="Who stands here">${icon('user', 'sm')}</button><button class="xb" data-a="rp-collapse" title="Collapse the panel">⟩</button>${winBtns()}</div>${avatarStage()}`;
 }
 
 function renderPane(force = false) {
@@ -1880,7 +2066,7 @@ function renderPane(force = false) {
     if (show && pstate === 'collapsed') { const k2 = `rail|${S.mode}|${S.busy?.agent || ''}|${S.settings.autoRead}|${S.ithil.avatar ? 1 : 0}`; if (force || k2 !== rpanelKey) { rpanelKey = k2; el.innerHTML = railHtml(); } return; }
     document.getElementById('shell')?.classList.toggle('with-pane', show);
     if (!show) { if (rpanelKey) { el.innerHTML = ''; rpanelKey = ''; } return; }
-    const key = `${S.rpanel}|${S.rtab}|${S.open}|${S.msgs.length}|${S.ithil.body ? S.ithil.body.length : 0}|${S.ithil.status?.mood}|${S.ithil.status?.state}|${S.mode}|${S.busy?.agent || ''}|${S.settings.autoRead}|${S.rfiles?.path ?? '-'}|${S.rfiles?.items?.length ?? 0}`;
+    const key = `${S.rpanel}|${S.rtab}|${S.clTab}|${S.clDiff?.msg || ''}|${S.open}|${S.msgs.length}|${S.ithil.body ? S.ithil.body.length : 0}|${S.ithil.status?.mood}|${S.ithil.status?.state}|${S.mode}|${S.busy?.agent || ''}|${S.settings.autoRead}|${S.rfiles?.path ?? '-'}|${S.rfiles?.items?.length ?? 0}`;
     if (!force && key === rpanelKey) return;
     rpanelKey = key; paneKey = '';
     el.innerHTML = rpanelHtml();
@@ -1924,13 +2110,44 @@ function renderOverlay() {
   if (S.pop) html += popHtml();
   if (S.modal) html += modalHtml();
   if (voice.isOpen()) html += voice.viewHtml();
-  if (S.deskAsks?.length) html += deskAsksHtml();
+  if (S.deskAsks?.length && S.view !== 'desktop') html += deskAsksHtml();
   if (S.toast) html += `<div class="toast">${esc(S.toast.text)}${S.toast.undo ? `<button class="mini" data-a="undo">${icon('undo', 'sm')}Undo</button>` : ''}</div>`;
   setRegion('overlay', html);
   if (S.pop?.kind === 'repo') { const el = document.getElementById('repo-q'); if (el && document.activeElement !== el && !S.pop.noFocus) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } }
 }
 
 // Agent Desktop asking to act (electron/desktop.cjs): one card per ask, newest on top.
+// 3.14 (claude-look-10): Agent Desktop as its own page: what it wants to do as accent cards (Allow / Allow for this
+// task / Stop), what was done as ✓ rows. Every action still asks first.
+// The mark over the picture, in the picture's own pixels (the screen's size), once the picture has loaded.
+function placeDeskMark() {
+  const img = document.getElementById('desk-shot');
+  const mk = document.getElementById('desk-mark');
+  if (!img || !mk) return;
+  const put = () => {
+    const W = img.naturalWidth || 1; const H = img.naturalHeight || 1;
+    const n = (k) => Number(mk.dataset[k]) || 0;
+    Object.assign(mk.style, { left: `${(n('x') / W) * 100}%`, top: `${(n('y') / H) * 100}%`, width: `${Math.max(2.5, (n('w') / W) * 100)}%`, height: `${Math.max(2.5, (n('h') / H) * 100)}%` });
+  };
+  if (img.complete) put(); else img.addEventListener('load', put, { once: true });
+}
+function deskView() {
+  const dk = S.desktop || {};
+  const asks = (S.deskAsks || []).slice().reverse();
+  const log = (S.deskLog || []).slice().reverse();
+  const who = (a) => `${entry(a.chat)?.title ? `In “${esc(entry(a.chat).title)}”, ` : ''}${esc(aiName(team().lead))}`;
+  const now = asks[0];
+  // The screen it's using (taken by the app when it asks, shown only here) with where it'll act marked.
+  const pk = now?.peek;
+  const shot = pk?.data && /^image\/(png|jpeg|webp)$/.test(pk.mime) && /^[A-Za-z0-9+/]+=*$/.test(pk.data) ? `data:${pk.mime};base64,${pk.data}` : '';
+  const screen = shot ? `<div class="cl-desk-shot"><img id="desk-shot" src="${shot}" alt="The screen your AI is using">${pk.mark ? `<span class="cl-desk-mark" id="desk-mark" data-x="${pk.mark.x}" data-y="${pk.mark.y}" data-w="${pk.mark.w}" data-h="${pk.mark.h}" aria-hidden="true"></span>` : ''}</div><div class="cl-desk-cap"><b>${esc(now.detail || now.tool)}</b><span class="fine mono">${esc(now.tool)}</span>${pk.mark ? '' : '<span class="fine">· it didn\'t say where on the screen</span>'}</div>`
+    : `<div class="cl-desk-app">${now ? `<b>${esc(now.detail || now.tool)}</b><span class="fine mono">${esc(now.tool)}${now.args ? ` · ${esc(now.args)}` : ''}</span><span class="fine">No picture of the screen this time (Agent Desktop couldn't take one).</span>` : `<span class="fine">${dk.enabled ? 'Nothing is being used right now. When your AI asks to act, the screen it\'s using shows here.' : 'Agent Desktop is off. Turn it on in Settings › Tools & Agent Desktop.'}</span>`}</div>`;
+  return `<div class="cl-desk"><div class="cl-desk-screen">${screen}</div>
+    <aside class="cl-desk-side">${asks.map((a) => `<div class="cl-desk-ask"><b>${who(a)} wants to ${esc(a.tool)}${a.detail ? ` “${esc(a.detail)}”` : ''}</b>${a.args ? `<div class="fine mono">${esc(a.args)}</div>` : ''}<div class="ft"><button class="btn p" data-a="desk-ans" data-id="${esc(a.id)}" data-v="once">Allow</button><button class="btn" data-a="desk-ans" data-id="${esc(a.id)}" data-v="ten" title="For the next 10 minutes in this chat">Allow for this task</button><button class="btn" data-a="desk-ans" data-id="${esc(a.id)}" data-v="no">Stop</button></div></div>`).join('')}
+      ${log.map((a) => `<div class="cl-desk-done ${a.how === 'no' ? 'no' : ''}">${icon(a.how === 'no' ? 'x' : 'check', 'sm')}${esc(a.how === 'no' ? 'Stopped: ' : '')}${esc(a.detail || a.tool)}</div>`).join('')}
+      ${!asks.length && !log.length ? '<p class="fine">Nothing asked yet.</p>' : ''}
+      <button class="mini" data-a="go-set" data-t="tools">Agent Desktop settings</button></aside></div>`;
+}
 function deskAsksHtml() {
   return `<div class="desk-asks" role="alertdialog" aria-label="Your AI wants to use this desktop">${S.deskAsks.slice().reverse().map((a) => `<div class="box desk-ask"><b>${icon('cpu', 'sm')}${esc(entry(a.chat)?.title ? `In “${entry(a.chat).title}”` : 'Your AI')} wants to <span class="mono">${esc(a.tool)}</span>${a.detail ? `: “${esc(a.detail)}”` : ''}</b><div class="fine mono">${esc(a.args)}</div><div class="srow"><button class="btn p" data-a="desk-ans" data-id="${esc(a.id)}" data-v="once">Allow</button><button class="btn" data-a="desk-ans" data-id="${esc(a.id)}" data-v="ten">Allow for 10 minutes in this chat</button><button class="btn ghost" data-a="desk-ans" data-id="${esc(a.id)}" data-v="no">Don't allow</button></div></div>`).join('')}</div>`;
 }
@@ -1979,6 +2196,7 @@ function popHtml() {
       <div class="fine">For the AI teammates in this chat. Characters keep their own voices; the speed is for everyone here.</div>
       <div class="mft left"><button class="btn" data-a="chat-voice-try">${icon('play', 'sm')}Hear it</button>${R.sessions?._voice ? `<button class="btn ghost" data-a="chat-voice-reset">Back to my default</button>` : ''}</div></div>`;
   }
+  if (p.kind === 'team' && isClaude()) return teamPickClaude(p);
   if (p.kind === 'team') {
     const t = team();
     const opt = (v, label, sub) => `<button class="it ${S.mode === v ? 'on' : ''}" data-a="set-mode" data-v="${v}">${label}<small>${sub}</small></button>`;
@@ -2178,10 +2396,10 @@ const TAB_TOP = {
   },
   general: () => {
     const s = S.settings;
-    const design = ['hologram', 'classic'].includes(s.design) ? s.design : 'adwaita';
+    const design = designOf(s);
     const ACC = [['blue', 'Blue'], ['teal', 'Teal'], ['green', 'Green'], ['yellow', 'Yellow'], ['orange', 'Orange'], ['red', 'Red'], ['pink', 'Pink'], ['purple', 'Purple'], ['slate', 'Slate']];
     return [
-      grp('Look', [row('Style', '', `<select data-a="design-pick"><option value="adwaita" ${design === 'adwaita' ? 'selected' : ''}>Dark</option><option value="hologram" ${design === 'hologram' ? 'selected' : ''}>Gold hologram</option><option value="classic" ${design === 'classic' ? 'selected' : ''}>Classic</option></select>`), row('Accent colour', '', `<select data-a="accent-pick" ${design !== 'adwaita' ? 'disabled' : ''}>${ACC.map(([v, l]) => `<option value="${v}" ${(s.accent || 'blue') === v ? 'selected' : ''}>${l}</option>`).join('')}</select>`), row('Text size', '', moreBtn('general', `${s.textSize || 100}%`))]),
+      grp('Look', [row('Style', '', `<select data-a="design-pick"><option value="claude" ${design === 'claude' ? 'selected' : ''}>Claude app</option><option value="adwaita" ${design === 'adwaita' ? 'selected' : ''}>Dark</option><option value="hologram" ${design === 'hologram' ? 'selected' : ''}>Gold hologram</option><option value="classic" ${design === 'classic' ? 'selected' : ''}>Classic</option></select>`), row('Accent colour', '', `<select data-a="accent-pick" ${design !== 'adwaita' ? 'disabled' : ''}>${ACC.map(([v, l]) => `<option value="${v}" ${(s.accent || 'blue') === v ? 'selected' : ''}>${l}</option>`).join('')}</select>`), row('Text size', '', moreBtn('general', `${s.textSize || 100}%`))]),
       grp('Notifications', [row('When a chat needs my answer', '', tog(s.notify !== false, 'notify-toggle')), row('When a task finishes', '', tog(s.notifyDone !== false, 'notify-done')), row('On my phone too', '', tog(s.notifyPhone === true, 'notify-phone'))]),
       grp('App updates', [row(`Hearth AI Command Center ${esc(S.info?.version || '')}`, esc(S.upd?.status?.message || (S.upd?.status?.state === 'available' ? `${S.upd.status.version} is available` : 'Checks for updates by itself')), '<button class="mini" data-a="upd" data-v="check">Check now</button>'), row('Install updates by themselves', 'Downloads each new version by itself; you press Install. Works for the AppImage and the .deb', tog(s.autoUpdate !== false, 'auto-update'))]),
       grp('Home server', [row('AI chat on the home server', 'Your Hearth devices\' local AI (the home server first) can answer in chats', tog(s.homeServerAi !== false, 'home-ai'))]),
@@ -2210,6 +2428,7 @@ function tabOf(k) { return (STABS.find(([t, , , ks]) => t === k || ks.includes(k
 function settingsView() {
   // 3.13 (compact-A1…A8): a side list of tabs, a header with ✕, and a page that scrolls inside the dialog. Buttons that
   // need the full form (＋ Add, See and edit, Change…) open it here as a sub-page with ‹ Back.
+  if (isClaude()) return settingsClaude();
   const tab = tabOf(S.tab);
   const nav = STABS.map(([k, ic, label]) => `<button class="${tab === k ? 'on' : ''}" data-a="tab" data-t="${k}">${icon(ic, 'sm')}<span>${esc(label)}</span></button>`).join('');
   const parts = STABS.find(([t]) => t === tab)[3];
@@ -2218,6 +2437,32 @@ function settingsView() {
   const q = String(S.setQ || '');
   return `<div class="set dlg cmp"><nav class="snav2"><b class="st">Settings</b><input id="set-q" class="sq" placeholder="Search settings" value="${esc(q)}" aria-label="Search settings">${nav}</nav>
     <div class="spane"><div class="sph"><b>${esc(sub ? sub.title : STABS.find(([t]) => t === tab)[2])}</b><span class="grow"></span><button class="xb" data-a="set-close" title="Close" aria-label="Close settings">${icon('x', 'sm')}</button></div>
+    <div class="spage" id="spage">${q ? searchPage(q) : page}</div></div></div>`;
+}
+// claude-look-12: Settings › Accounts: the main AIs and GitHub in one list, each with one button; every other AI
+// and the full account settings under More AIs….
+function accountsClaude() {
+  const gh = S.gh || {};
+  const dot = (a) => `<i class="cl-dot big" style="--c:rgb(${liveCoreOf(a).rgb})"></i>`;
+  const r1 = (a) => {
+    const st = statusOf(a) || {};
+    const ok = ready(a);
+    const btn = ok ? `<button class="mini" data-a="acct-goto" data-v="${esc(a)}">${a === 'ollama' ? 'Connected' : 'Signed in'}</button>` : `<button class="mini p" data-a="acct-goto" data-v="${esc(a)}">${st.state === 'signin' ? 'Sign in' : 'Set up'}</button>`;
+    return row(`${dot(a)}${esc(aiName(a))}`, esc(st.label || (ok ? 'signed in' : 'not set up')), btn);
+  };
+  const ghRow = row(`<i class="cl-dot big" style="--c:rgb(120,120,120)"></i>GitHub`, esc(gh.ghUser ? `${gh.ghUser} · through the GitHub CLI` : 'not signed in'), gh.ghUser ? '<button class="mini" data-a="gh-recheck">Re-check</button>' : '<button class="mini p" data-a="gh-login">Sign in</button>');
+  const ids = ['anthropic', 'openai', 'google'].filter((a) => AGENTS[a]);
+  return `<div class="box cl-acc">${ids.map(r1).join('')}${ghRow}${AGENTS.freebuff ? r1('freebuff') : ''}${AGENTS.ollama ? r1('ollama') : ''}</div>
+    <div class="box">${subBtn('accounts', ['accounts', 'accounts2'], 'More AIs', 'More AIs…')}</div>`;
+}
+function settingsClaude() {
+  const tab = (CTABS.find(([t, , , ks]) => t === S.tab || ks.includes(S.tab)) || CTABS[0])[0];
+  const [, , label, parts] = CTABS.find(([t]) => t === tab);
+  const q = String(S.setQ || '');
+  const sub = S.subpage && S.subpage.tab === tab ? S.subpage : null;
+  const page = sub ? `<button class="mini sub-back" data-a="sub-back">‹ Back</button><div class="subpage">${sub.parts.map((k) => section(k)).join('')}</div>` : tab === 'accounts' ? accountsClaude() : PAGES[tab] ? PAGES[tab]() : parts.map((k) => section(k)).join('');
+  return `<div class="set dlg cmp cl-set"><nav class="snav2"><b class="st">Settings</b><input id="set-q" class="sq" placeholder="Search settings" value="${esc(q)}" aria-label="Search settings">${CTABS.map(([k, ic, l]) => `<button class="${tab === k ? 'on' : ''}" data-a="tab" data-t="${k}">${icon(ic, 'sm')}<span>${esc(l)}</span></button>`).join('')}</nav>
+    <div class="spane"><div class="sph"><h1 class="cl-h">${esc(sub ? sub.title : label)}</h1><span class="grow"></span><button class="xb" data-a="set-close" title="Close" aria-label="Close settings">${icon('x', 'sm')}</button></div>
     <div class="spage" id="spage">${q ? searchPage(q) : page}</div></div></div>`;
 }
 // 3.13: typing in "Search settings" lists every row of every tab whose words match, with its tab.
@@ -2474,7 +2719,7 @@ function section(k) {
     const c = M.conf || {};
     return `${hearthBox()}
       ${comfyBox()}
-      <div class="box"><h3>${icon('phone', 'sm')}Your phone</h3><div class="srow">Phone view<span class="d">your chat on your phone, on your home network only</span><span class="grow"></span>${tog(Boolean(S.phone?.enabled), 'phone-toggle')}</div>${S.phone?.enabled ? `<div class="srow">Address<span class="d mono">${esc((S.phone.urls || []).join(', ') || 'starting…')}</span><span class="grow"></span><button class="mini" data-a="phone-code">Show pairing code</button></div>${S.phone.code ? `<div class="srow">Code<b class="mono big">${esc(S.phone.code)}</b><span class="d">type it on your phone within 5 minutes</span></div>` : ''}` : ''}</div>
+      ${phoneBox()}
       <details class="more-acct" ${S.moreAcct ? 'open' : ''}><summary data-a="more-acct">More account settings</summary><div class="box ac">${accountsList()}</div>
       <div class="box"><h3>FreeBuff on the web</h3><div class="srow">${mono('freebuff')}<b>FreeBuff</b><span class="d">opens freebuff.com in its own window here. Sign in there once with your FreeBuff account; it stays signed in. Your FreeBuff chats live in FreeBuff's cloud, so the ones from your phone are there too.</span><span class="grow"></span><button class="mini" data-a="open-freebuff">Open FreeBuff</button></div>
       <div class="note sub">FreeBuff has no official way for other apps to drive it yet. To have it in team chats, turn on its web sign-in bridge above. The Command Center never reads or copies your FreeBuff login; its windows are sandboxed and get nothing from this app.</div></div>
@@ -2590,15 +2835,19 @@ function section(k) {
       <div class="srow">Open the mini window<span class="d">Super + I anywhere · hold ☰ + Y in Game Mode</span><span class="grow"></span>${tog(s.miniWindow !== false, 'mini-on')}<button class="mini" data-a="mini-open">Open now</button></div>
       <div class="srow">Stay on top<span class="d"></span><span class="grow"></span>${tog(s.miniOnTop !== false, 'mini-top')}</div></div>`;
   }
+  if (k === 'c-studio') return `<h1>Images &amp; Videos</h1>${comfyBox()}<div class="box"><div class="srow"><span class="t2"><b>Online makers</b><span class="d">Venice, Civitai, your GPU servers and more: Accounts</span></span><span class="grow"></span><button class="mini" data-a="tab" data-t="accounts">Open Accounts</button></div></div>`;
+  if (k === 'c-phone') return `<h1>Phone</h1>${phoneBox()}`;
+  if (k === 'c-credits') return `<h1>Credits</h1>${creditsHtml(esc)}`;
   if (k === 'look') {
-    const design = ['hologram', 'classic'].includes(s.design) ? s.design : 'adwaita';
+    const design = designOf(s);
     const holo = design === 'hologram';
     const ACC = [['blue', 'Blue'], ['teal', 'Teal'], ['green', 'Green'], ['yellow', 'Yellow'], ['orange', 'Orange'], ['red', 'Red'], ['pink', 'Pink'], ['purple', 'Purple'], ['slate', 'Slate']];
     // 3.12 (settings-7): Look: Style, Accent colour, Text size.
     return `<h1>Appearance</h1><div class="box"><h3>Look</h3>
-      <div class="srow">Style<span class="d">${design === 'adwaita' ? '' : holo ? 'gold hologram: living cores, always dark, its own colours' : 'classic: calm and warm, follows the theme below'}</span><span class="grow"></span><select data-a="design-pick"><option value="adwaita" ${design === 'adwaita' ? 'selected' : ''}>Dark</option><option value="hologram" ${holo ? 'selected' : ''}>Gold hologram</option><option value="classic" ${design === 'classic' ? 'selected' : ''}>Classic</option></select></div>
-      <div class="srow">Accent colour<span class="d"></span><span class="grow"></span><select data-a="accent-pick" ${design !== 'adwaita' ? 'disabled' : ''}>${ACC.map(([v, l]) => `<option value="${v}" ${(s.accent || 'blue') === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
-      ${design === 'classic' ? '' : '<div class="note sub">Theme and your Hearth OS colours apply when Style is Classic.</div>'}
+      ${design === 'claude' ? lookClaudeRows(s) : ''}<div class="srow ${design === 'claude' ? 'cl-style' : ''}">${design === 'claude' ? '<span class="t2"><b>Style</b><span class="d">Claude app is the default; Gold hologram, Dark (3.12) and Classic are still here</span></span><span class="cl-hide">' : ''}Style${design === 'claude' ? '</span>' : ''}<span class="d ${design === 'claude' ? 'cl-hide' : ''}">${design === 'claude' ? 'The Claude app look is the default; Gold hologram and Dark (3.12) are still here' : design === 'adwaita' ? '' : holo ? 'gold hologram: living cores, always dark, its own colours' : 'classic: calm and warm, follows the theme below'}</span><span class="grow"></span><select data-a="design-pick"><option value="claude" ${design === 'claude' ? 'selected' : ''}>Claude app</option><option value="adwaita" ${design === 'adwaita' ? 'selected' : ''}>Dark</option><option value="hologram" ${holo ? 'selected' : ''}>Gold hologram</option><option value="classic" ${design === 'classic' ? 'selected' : ''}>Classic</option></select></div>
+      ${s.design === 'claude' && !s.designPicked ? '<div class="note sub">3.14 switched the Style to Claude app. Pick Dark, Gold hologram or Classic here to go back; your pick is kept.</div>' : ''}
+      <div class="srow" ${design === 'claude' ? 'hidden' : ''}>Accent colour<span class="d"></span><span class="grow"></span><select data-a="accent-pick" ${design !== 'adwaita' ? 'disabled' : ''}>${ACC.map(([v, l]) => `<option value="${v}" ${(s.accent || 'blue') === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+      ${['classic', 'claude'].includes(design) ? '' : '<div class="note sub">Theme and your Hearth OS colours apply when Style is Classic.</div>'}
       <div class="srow" ${design === 'classic' ? '' : 'hidden'}>Theme<span class="grow"></span>${['hearth', 'dark', 'light', 'system'].map((v) => `<button class="seg ${s.theme === v ? 'on' : ''}" data-a="theme" data-v="${v}">${{ hearth: 'Follow Hearth OS', dark: 'Dark', light: 'Light', system: 'System' }[v]}</button>`).join('')}</div>
       <div class="srow">Draw the app at 100%<span class="d">${S.screen && S.screen.scale > 1.01 ? `your desktop scales this screen to ${Math.round(S.screen.scale * 100)}%, and the app follows it unless this is on` : 'for a screen your desktop scales up (125%, 150%…): the app then ignores that scale'}</span><span class="grow"></span>${tog(s.fitScreen === true, 'fit-screen')}</div>
       <div class="srow">App size<span class="d">everything: text, buttons and panels · Ctrl − and Ctrl + change it, Ctrl 0 goes back to 100%</span><span class="grow"></span>${APP_SIZES.map((v) => `<button class="seg ${s.textSize === v ? 'on' : ''}" data-a="text-size" data-v="${v}">${v}%</button>`).join('')}</div>
@@ -2768,12 +3017,12 @@ async function loadSection(t) {
   render();
 }
 // ---------- Images & Videos (2.2.1; electron/studio.cjs, src/app/studio.mjs) ----------
-const stHtml = () => studioView({ f: S.studio.f, data: S.studio.data || {}, st: S.studio.st, filter: S.studio.filter, models: S.studio.models, shown: S.studio.shown });
+const stHtml = () => studioView({ f: S.studio.f, data: S.studio.data || {}, st: S.studio.st, filter: S.studio.filter, models: S.studio.models, shown: S.studio.shown, look: designOf() });
 // What he typed is kept across re-renders (the page is redrawn when a job moves on).
 function stSync() {
   if (S.view !== 'studio' || !document.getElementById('st-prompt')) return;
   const r = requestFrom(S.studio.f, document);
-  Object.assign(S.studio.f, { prompt: document.getElementById('st-prompt').value, size: r.size, count: r.count, model: r.model, negative: r.negative, seed: document.getElementById('st-seed')?.value ?? S.studio.f.seed, steps: document.getElementById('st-steps')?.value ?? S.studio.f.steps });
+  Object.assign(S.studio.f, { prompt: document.getElementById('st-prompt').value, size: r.size, count: r.count, model: r.model, negative: r.negative, seed: document.getElementById('st-seed')?.value ?? S.studio.f.seed, steps: document.getElementById('st-steps')?.value ?? S.studio.f.steps, strength: Number(document.getElementById('st-strength')?.value) || S.studio.f.strength });
 }
 function stFocus() {
   const a = document.activeElement;
@@ -2994,6 +3243,9 @@ function uncensoredSection() {
     <div class="box"><h3>${icon('flag', 'sm')}Always on, in every mode</h3><p class="fine">These can't be switched off by any setting:</p>
     <ul class="fine unc-list"><li>Nothing sexual involving minors or anyone who looks under 18.</li><li>No sexual or nude pictures or videos of real people, and no real person's likeness.</li><li>A picture file you add starts a video in Uncensored mode only after you confirm, each time, that it isn't a real person (AI-made, drawn or a 3D render) and everyone in it is an adult.</li><li>Minors are left out of every picture and video.</li></ul></div>`;
 }
+function phoneBox() {
+  return `<div class="box"><h3>${icon('phone', 'sm')}Your phone</h3><div class="srow">Phone view<span class="d">your chat on your phone, on your home network only</span><span class="grow"></span>${tog(Boolean(S.phone?.enabled), 'phone-toggle')}</div>${S.phone?.enabled ? `<div class="srow">Address<span class="d mono">${esc((S.phone.urls || []).join(', ') || 'starting…')}</span><span class="grow"></span><button class="mini" data-a="phone-code">Show pairing code</button></div>${S.phone.code ? `<div class="srow">Code<b class="mono big">${esc(S.phone.code)}</b><span class="d">type it on your phone within 5 minutes</span></div>` : ''}` : ''}</div>`;
+}
 function comfyBox() {
   const c = S.settings.comfy || {};
   const t = S.comfyTest?.url === c.url ? S.comfyTest : null;
@@ -3120,11 +3372,13 @@ async function setSettings(patch) {
 function applyTheme() {
   const systemDark = window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? true;
   // 2.9: the gold hologram design (always dark, its own colours) unless Design is Classic.
-  const design = ['hologram', 'classic'].includes(S.settings.design) ? S.settings.design : 'adwaita';
+  const design = designOf();
   const holo = design === 'hologram';
   document.documentElement.dataset.design = design;
+  document.documentElement.dataset.chatfont = ['sans', 'dyslexic'].includes(S.settings.chatFont) ? S.settings.chatFont : 'serif';
   document.documentElement.dataset.accent = S.settings.accent || 'blue';
-  const follow = !holo && S.settings.theme === 'hearth' && S.theme.found;
+  // The Claude app look follows Colour mode like Classic, with its own colours (Hearth's tokens only in Classic).
+  const follow = design === 'classic' && S.settings.theme === 'hearth' && S.theme.found;
   document.documentElement.dataset.mode = holo ? 'dark' : pickMode(S.settings.theme, { ...S.theme, systemDark });
   document.documentElement.classList.toggle('reduce-motion', S.settings.reduceMotion === true);
   const set = (id, css) => { let el = document.getElementById(id); if (!el) { el = document.createElement('style'); el.id = id; document.head.appendChild(el); } el.textContent = css; };
@@ -3230,7 +3484,7 @@ document.addEventListener('click', async (ev) => {
     case 'ithil-chat': { goHome(); S.mode = 'ithil'; return render(true); }
     case 'live': return openLive();
     case 'live-pick': return livePick(d.v);
-    case 'live-mode': S.liveMode = d.v === 'cores' ? 'cores' : 'mesh'; try { localStorage.setItem('hearth.v2.liveMode', S.liveMode); } catch {} return renderMain();
+    case 'live-mode': S.liveMode = ['cores', 'calm'].includes(d.v) ? d.v : 'mesh'; try { localStorage.setItem('hearth.v2.liveMode', S.liveMode); } catch {} return renderMain();
     case 'live-drawer': S.liveDrawer = !S.liveDrawer; try { localStorage.setItem('hearth.v2.liveDrawer', S.liveDrawer ? '1' : '0'); } catch {} return renderMain();
     case 'live-full': if (S.open) return openChat(S.open); return;
     case 'open-freebuff': { const r = await call('openWeb', 'freebuff'); if (r && r.ok === false) toast(r.message || 'FreeBuff couldn\'t open.'); return; }
@@ -3327,7 +3581,19 @@ document.addEventListener('click', async (ev) => {
     case 'temp-end': ev.stopPropagation(); return endTemp(d.id);
     case 'studio': return openStudio();
     case 'reverse': return openReverse();
-    case 'desk-ans': { await call('desktopAnswer', d.id, d.v); S.deskAsks = (S.deskAsks || []).filter((a) => a.id !== d.id); return renderOverlay(); }
+    case 'hab-room': case 'hab-flip': {
+      // Through the Habitat's own controls, so its saved view choices stay the one place they're kept.
+      const bar = document.querySelector('.hab3d-bar');
+      const is3 = document.querySelector('canvas.hab3d-canvas')?.habitat3d?.mode?.() === '3d';
+      if (a.dataset.a === 'hab-flip') { bar?.querySelector(`[data-h3="${is3 ? '2d' : '3d'}"]`)?.click(); return; }
+      if (d.v === 'workroom') { if (is3) bar?.querySelector('[data-h3="2d"]')?.click(); return; }
+      if (!is3) bar?.querySelector('[data-h3="3d"]')?.click();
+      const go = () => { const h = document.querySelector('canvas.hab3d-canvas')?.habitat3d; if (!h?.ready) return setTimeout(go, 300); if (d.v === 'study') bar?.querySelector('[data-h3="study"]')?.click(); else { const sel = document.querySelector('.hab3d-pre'); if (sel) { sel.value = d.v; sel.dispatchEvent(new Event('change')); } } };
+      return go();
+    }
+    case 'hab-act': if (!habitatOwnerAct(d.v)) toast('The Habitat is still starting.'); return;
+    case 'desk-page': S.view = 'desktop'; S.open = null; S.pane = null; S.pop = null; render(true); { const k = await call('desktopStatus'); if (k && typeof k === 'object') S.desktop = { ...(S.desktop || {}), ...k }; } return render();
+    case 'desk-ans': { const a0 = (S.deskAsks || []).find((a) => a.id === d.id); await call('desktopAnswer', d.id, d.v); S.deskAsks = (S.deskAsks || []).filter((a) => a.id !== d.id); if (a0) S.deskLog = [...(S.deskLog || []), { ...a0, how: d.v }].slice(-40); return S.view === 'desktop' ? render() : renderOverlay(); }
     case 're-onoff': { const r = await call('reverseSetEnabled', d.v === '1'); if (r?.ok === false || r?.message) toast(r.message || 'Not saved.'); return openReverse(); }
     case 're-ghidra': { const r = await call('reversePickGhidra'); if (r && !r.canceled && (r.ok === false || r.message)) toast(r.message || 'Not saved.'); return openReverse(); }
     case 're-ghidra-clear': await call('reverseClearGhidra'); return openReverse();
@@ -3335,7 +3601,7 @@ document.addEventListener('click', async (ev) => {
     case 're-open': return openReChat(d.id);
     case 're-remove': await call('reverseRemoveProject', d.id); return openReverse();
     case 'unc-on': { const r = await setSettings({ uncensored: { on: !(S.settings.uncensored?.on === true) } }); if (S.studio.data && r?.uncensored) S.studio.data = { ...S.studio.data, uncensored: r.uncensored.on }; return render(); }
-    case 'st-kind': stSync(); S.studio.f.kind = d.v === 'video' ? 'video' : 'image'; S.studio.f.size = ''; return render();
+    case 'st-kind': stSync(); { const was = S.studio.f.kind; S.studio.f.kind = ['video', 'edit'].includes(d.v) ? d.v : 'image'; if (was !== S.studio.f.kind && (was === 'edit' || S.studio.f.kind === 'edit')) { S.studio.f.start = null; S.studio.f.startName = ''; } } S.studio.f.size = ''; return render();
     case 'st-more': stSync(); S.studio.f.more = !S.studio.f.more; return render();
     case 'st-filter': stSync(); S.studio.filter = d.v; return render();
     case 'st-show': stSync(); S.studio.shown.add(d.id); return render();
@@ -3343,13 +3609,22 @@ document.addEventListener('click', async (ev) => {
     case 'st-start-none': stSync(); S.studio.f.start = null; S.studio.f.startName = ''; return render();
     case 'st-start-file': { stSync(); const r = await call('studioPickImage'); if (r?.ok) { S.studio.f.start = r.token; S.studio.f.startName = r.name; } else if (r?.message) toast(r.message); return render(); }
     case 'st-animate': { stSync(); const it = (S.studio.data?.items || []).find((x) => x.id === d.id); if (!it) return; Object.assign(S.studio.f, { kind: 'video', size: '', start: `item:${it.id}`, startName: it.prompt.slice(0, 60) }); render(); document.getElementById('st-prompt')?.focus(); return; }
+    case 'st-edit': { stSync(); const it = (S.studio.data?.items || []).find((x) => x.id === d.id); if (!it) return; Object.assign(S.studio.f, { kind: 'edit', size: '', start: `item:${it.id}`, startName: it.prompt.slice(0, 60) }); render(); document.getElementById('st-prompt')?.focus(); return; }
+    case 'st-star': { const r = await call('studioStar', d.id); if (r && !r.ok) toast(r.message || 'Not starred.'); else if (r?.ok) { const it = (S.studio.data?.items || []).find((x) => x.id === d.id); if (it) it.starred = r.starred; render(); } return; }
+    case 'st-gallery': {
+      // Every picture in Made so far (18+ ones only when shown), in the same viewer as a chat's pictures.
+      const pics = filterItems(S.studio.data?.items || [], S.studio.filter).filter((x) => x.kind === 'image' && (!x.adult || S.studio.shown.has(x.id)));
+      if (!pics.length) return toast('No pictures to show here.');
+      S.modal = { kind: 'gallery', items: pics.map((x) => ({ url: x.url, view: false, name: x.prompt.slice(0, 80), file: '', size: x.size || 0, width: x.width || null, height: x.height || null, msg: null })), i: 0, zoom: 1, chatId: null };
+      renderOverlay(); galleryFocus(); return;
+    }
     case 'st-make': {
       stSync();
       const req = requestFrom(S.studio.f, document);
       if (!req.prompt) { toast(`Say what the ${req.kind === 'video' ? 'video' : 'picture'} should show.`); return; }
       const r = await call('studioAdd', req);
       if (!r?.ok) { toast(r?.message || r?.error?.message || 'Not started.'); return; }
-      toast(r.jobs.length > 1 ? `${r.jobs.length} pictures are on their way.` : `Your ${req.kind === 'video' ? 'video' : 'picture'} is on its way.`);
+      toast(r.jobs.length > 1 ? `${r.jobs.length} pictures are on their way.` : S.studio.f.kind === 'edit' ? 'Your edited picture is on its way.' : `Your ${req.kind === 'video' ? 'video' : 'picture'} is on its way.`);
       return;
     }
     case 'st-cancel': { const r = await call('studioCancel', d.id); if (r && !r.ok && r.message) toast(r.message); return; }
@@ -3433,6 +3708,7 @@ document.addEventListener('click', async (ev) => {
     case 'composer-opts': S.pop = S.pop?.kind === 'copts' ? null : { kind: 'copts' }; return renderOverlay();
     case 'win': return call('winAct', d.v);
     case 'rpanel': S.rpanel = d.v; if (d.v === 'tools' && (S.rtab || 'files') === 'files') loadRFiles(''); return renderPane(true);
+    case 'cl-tab': S.clTab = d.v; if (d.v === 'code') loadRFiles(S.rfiles?.path || ''); return renderPane(true);
     case 'rtab': S.rtab = d.v; if (d.v === 'files') loadRFiles(S.rfiles?.path || ''); return renderPane(true);
     case 'rfiles-open': return loadRFiles(`${S.rfiles?.path ? `${S.rfiles.path}/` : ''}${d.v}`);
     case 'rfiles-up': return loadRFiles(String(S.rfiles?.path || '').split('/').slice(0, -1).join('/'));
@@ -3552,6 +3828,8 @@ document.addEventListener('click', async (ev) => {
     case 'dismiss': S.notices.splice(Number(d.i), 1); return render();
     case 'open-data': S.view = 'settings'; S.tab = 'data'; render(); return loadSection('data');
     // message controls
+    case 'not-yet': { const m = msgById(d.m); if (m) { m.notYet = true; save(); render(); } return; }
+    case 'msg-rate': { const m = msgById(d.m); if (m) { m.rating = m.rating === d.v ? null : d.v; save(); render(); } return; }
     case 'msg-copy': { const m = msgById(d.m); if (m) { try { await navigator.clipboard.writeText(String(m.text || '')); toast('Copied.'); } catch { toast('Couldn\'t copy.'); } } return; }
     case 'msg-read': return readAloud(msgById(d.m));
     case 'msg-retry': return regenerate(d.m);
@@ -3632,6 +3910,22 @@ document.addEventListener('click', async (ev) => {
     case 'text-size': return setSettings({ textSize: Number(d.v) });
     case 'fit-screen': await setSettings({ fitScreen: S.settings.fitScreen !== true }); S.screen = (await call('screenInfo')) || S.screen; return render();
     case 'reduce-motion': return setSettings({ reduceMotion: !S.settings.reduceMotion });
+    case 'chat-font': return setSettings({ chatFont: d.v });
+    case 'send-enter': return setSettings({ sendOnEnter: S.settings.sendOnEnter === false });
+    case 'composer-cores': return setSettings({ composerCores: S.settings.composerCores === false });
+    case 'go-set': S.view = 'settings'; S.pane = null; S.pop = null; S.tab = d.t || 'team'; render(true); return loadSection(S.tab);
+    case 'cl-solo': S.clSolo = !S.clSolo; return renderOverlay();
+    case 'cl-more': S.clMore = !S.clMore; return renderOverlay();
+    case 'team-off': {
+      // Switched per chat: kept in the chat's own file (sessions._off), never in settings.
+      const R = S.view === 'chat' ? cur() : null;
+      const off = new Set(offIn(R));
+      if (S.mode !== 'team') { S.mode = 'team'; keepPrefs(); }
+      else if (off.has(d.v)) off.delete(d.v); else off.add(d.v);
+      if (team().members.filter(ready).every((a) => off.has(a))) { toast('At least one AI has to work on the chat.'); return; }
+      if (R) { R.sessions._off = [...off]; save(); } else S.homeOff = [...off];
+      return render();
+    }
     case 'notify-toggle': return setSettings({ notify: S.settings.notify === false });
     case 'auto-read': return setSettings({ autoRead: !S.settings.autoRead });
     case 'save-ci': return setSettings({ customInstructions: { about: document.getElementById('ci-about')?.value || '', style: document.getElementById('ci-style')?.value || '' } });
@@ -3641,6 +3935,7 @@ document.addEventListener('click', async (ev) => {
     case 'gh-login': { const r = await call('gitLogin'); toast(r?.ok ? 'GitHub sign-in opened in a terminal. Come back and press Re-check when done.' : r?.message || 'Couldn\'t start the sign-in.'); setTimeout(async () => { S.gh = (await call('gitTools')) || S.gh; S.repos = null; render(); }, 20000); return; }
     case 'install': { const r = await call('agentInstall', d.v); toast(r?.ok ? 'Installing in a terminal. Press Re-check when it\'s done.' : r?.message || 'Couldn\'t start the install.'); return; }
     case 'signin': { const r = await call('agentLogin', d.v); toast(r?.ok ? 'Sign-in opened in a terminal. Press Re-check when done.' : r?.message || 'Couldn\'t start the sign-in.'); return; }
+    case 'gh-recheck': { const g = await call('gitTools'); if (g) S.gh = g; toast(S.gh?.ghUser ? `GitHub: signed in as ${S.gh.ghUser}.` : 'GitHub: not signed in.'); return render(); }
     case 'recheck': S.cli[d.v] = (await call('agentStatus', d.v)) || {}; return render();
     case 'secrets-recheck': { S.prov = (await call('providerStatus')) || S.prov; render(); return toast(S.prov.encryption ? 'A keyring answered: keys can be saved now.' : 'Still no keyring. Unlock or install GNOME Keyring or KWallet, or use basic protection.'); }
     case 'secrets-basic': {
@@ -3836,7 +4131,7 @@ document.addEventListener('keydown', (ev) => {
   if (S.view === 'card' && !S.modal && cardFindKey(ev)) return;
   // In a collection: Delete removes the selected cards, else the focused card (Undo puts them back).
   if (S.view === 'characters' && S.cardColl && ev.key === 'Delete' && !/^(TEXTAREA|SELECT)$/.test(t.tagName || '') && !(t.tagName === 'INPUT' && t.type !== 'checkbox') && t.closest?.('.ccard')) { ev.preventDefault(); collRemove(S.collSel.length ? S.collSel : [t.closest('.ccard').dataset.card]); return; }
-  if (t.id === 'composer' && ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); send(); return; }
+  if (t.id === 'composer' && ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing && (S.settings.sendOnEnter !== false || ev.ctrlKey)) { ev.preventDefault(); send(); return; }
   if (t.id === 'edit-text' && ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); resendEdited(S.editing, t.value); return; }
   if (t.id === 'rename-input') { if (ev.key === 'Enter') { ev.preventDefault(); finishRename(true); } if (ev.key === 'Escape') finishRename(false); return; }
   if (S.modal?.kind === 'gallery' && !ev.ctrlKey && !ev.metaKey && !ev.altKey) { const g = galleryKey(ev.key); if (g) { ev.preventDefault(); galleryDo(g); return; } }

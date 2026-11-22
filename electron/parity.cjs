@@ -89,6 +89,8 @@ function register(d) {
   const teammates = d.teammates || createTeammates({ secrets, file: path.join(dataDir(), 'servers.json'), settings: readSettings });
   // Hearth devices: the AI his Hearth OS machines share (electron/hearth-devices.cjs).
   const hearth = d.hearth || createHearthDevices({ settings: () => readSettings().hearthDevices, secrets, ...(d.fetchImpl ? { fetchImpl: d.fetchImpl } : {}), ...(d.sleep ? { sleep: d.sleep } : {}) });
+  // 3.14: Hearth devices found by themselves on his Tailscale devices (no address needed); not in tests.
+  if (!d.hearth && !d.fetchImpl && d.scan !== false) hearth.startScanning();
   const entryOf = (id) => v2().entryOf(String(id));
   const attachRoot = () => attachments.attachDir(worktreeRoot());
 
@@ -610,6 +612,7 @@ function register(d) {
   handle('studio:cancel', (id) => studio.cancel(id));
   handle('studio:remove', (id) => studio.remove(id));
   handle('studio:again', (id) => studio.again(id));
+  handle('studio:star', (id, on) => studio.star(id, on));
   handle('studio:pickImage', async () => {
     const r = await dialog.showOpenDialog(getWindow(), { title: 'Pick a picture to animate', properties: ['openFile'], filters: [{ name: 'Pictures', extensions: ['png', 'jpg', 'jpeg', 'webp'] }] });
     if (r.canceled || !r.filePaths[0]) return { ok: false, cancelled: true };

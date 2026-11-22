@@ -215,6 +215,7 @@ function frame(ms) {
     update(eng, t, dt, reduced);
     V.gl.renderer.render(V.gl.scene, V.gl.camera);
     V.frames += 1;
+    if (V.frames % 4 === 0 || reduced) namePills(eng);
   }
   const m = motionFor({ reduced, lighter: V.lighter });
   if (reduced && !V.walk.on) V.timer = setTimeout(() => { V.timer = 0; start(); }, 1000 / m.fps);
@@ -319,6 +320,40 @@ function kitchenChat(eng) {
   return new Set(ids.length >= 2 ? ids : []);
 }
 
+// 3.14 (claude-look-8): in the Claude look each AI gets a "name · what they're doing" pill above its head (HTML over
+// the world, moved every few frames; nothing new is drawn in the world itself).
+const DOING = { type: 'coding', sit: 'sitting', sleep: 'asleep', walk: 'walking', stand: 'here' };
+const MODE_WORD = { desk: 'coding', review: 'reviewing', idle: 'idle', out: 'out of usage', signedout: 'signed out', sleep: 'asleep' };
+function namePills(eng) {
+  const on = document.documentElement.dataset.design === 'claude' && !V.walk?.on;
+  let box = V.el?.querySelector('.hab3d-pills');
+  if (!on) { if (box) box.hidden = true; return; }
+  if (!box && V.el) { box = document.createElement('div'); box.className = 'hab3d-pills'; box.setAttribute('aria-hidden', 'true'); V.el.appendChild(box); }
+  if (!box) return;
+  box.hidden = false;
+  const cam = V.gl.camera; const rect = V.gl.canvas.getBoundingClientRect(); const host = V.el.getBoundingClientRect();
+  const v = new THREE.Vector3();
+  const seen = new Set();
+  for (const [id, f] of V.figs) {
+    let el = box.querySelector(`[data-id="${CSS.escape(id)}"]`);
+    if (!f.visible) { if (el) el.hidden = true; continue; }
+    const ps = V.pose?.get(id) || {};
+    f.getWorldPosition(v); v.y += (ps.top || 1.45) + 0.55;
+    v.project(cam);
+    const vis = v.z < 1 && Math.abs(v.x) < 1.05 && Math.abs(v.y) < 1.05;
+    if (!el) { el = document.createElement('span'); el.className = 'hab3d-pill'; el.dataset.id = id; box.appendChild(el); }
+    el.hidden = !vis;
+    if (!vis) continue;
+    const name = eng.agents[id]?.name || id;
+    const word = MODE_WORD[ps.mode] || DOING[ps.pose] || 'here';
+    const text = `${name} · ${word}`;
+    if (el.textContent !== text) el.textContent = text;
+    el.style.left = `${rect.left - host.left + ((v.x + 1) / 2) * rect.width}px`;
+    el.style.top = `${rect.top - host.top + ((1 - v.y) / 2) * rect.height}px`;
+    seen.add(id);
+  }
+  for (const el of box.children) if (!seen.has(el.dataset.id)) el.hidden = true;
+}
 function update(eng, t, dt, reduced) {
   const world = eng.world; const refs = V.lodge.refs; const tms = now();
   const P = (x, y) => tileTo3D(world, x, y);
@@ -369,6 +404,7 @@ function update(eng, t, dt, reduced) {
     let lookYaw = null;
     if (owner && near.has(id)) { const want = Math.atan2(owner.x - a.x, owner.y - a.y); lookYaw = angDiff(want, f.rotation.y); }
     animateFigure(f, vis, t, dt, { reduced, lookYaw, seatY, bedZ });
+    (V.pose || (V.pose = new Map())).set(id, { pose: vis.pose, mode: beh.mode, top: 0.2 + (vis.pose === 'sleep' ? 0.95 : 1.25) });
     const ic = figIcons(f);
     const top = 0.2 + (vis.pose === 'sleep' ? 0.95 : vis.pose === 'type' || vis.pose === 'sit' ? (a.mode === 'desk' || sg ? 1.2 : 0.95) : 1.25);
     setIcon(ic.icon, vis.icon, top);

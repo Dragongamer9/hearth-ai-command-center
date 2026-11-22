@@ -12,7 +12,7 @@ const { createJsonFile } = require('./jsonfile.cjs');
 
 const WAIT_MS = 120000;
 const WINDOW_MS = 10 * 60000;
-const MAX_BODY = 64 * 1024;
+const MAX_BODY = 7 * 1024 * 1024; // 3.14: the screen picture comes with an ask
 
 function summarize(tool, args) {
   const a = args && typeof args === 'object' ? args : {};
@@ -32,12 +32,22 @@ function createDesktop({ file, send, hasWindow = () => true, proxyPath, execPath
   const enabled = () => f.read().enabled === true;
   function setEnabled(on) { f.write({ version: 1, ...f.read(), enabled: on === true }); if (on !== true) { windows.clear(); for (const id of [...pending.keys()]) answer(id, 'no'); } return { ok: true }; }
 
-  function decide(chat, tool, args) {
+  // The screen picture and the element's place (from desktop-proxy.cjs), checked: only PNG/JPEG/WebP base64.
+  function cleanPeek(p) {
+    if (!p || typeof p !== 'object') return null;
+    const out = {};
+    if (typeof p.data === 'string' && /^image\/(png|jpeg|webp)$/.test(p.mime || '') && p.data.length <= 6 * 1024 * 1024 && /^[A-Za-z0-9+/]+=*$/.test(p.data)) { out.data = p.data; out.mime = p.mime; }
+    const m = p.mark;
+    if (m && ['x', 'y', 'w', 'h'].every((k) => Number.isFinite(Number(m[k])))) out.mark = { x: Number(m.x), y: Number(m.y), w: Math.max(1, Number(m.w)), h: Math.max(1, Number(m.h)) };
+    return out.data || out.mark ? out : null;
+  }
+  function decide(chat, tool, args, peek = null) {
     if (!enabled()) return Promise.resolve(false);
     if ((windows.get(chat) || 0) > now()) return Promise.resolve(true);
     if (!hasWindow()) return Promise.resolve(false);
     const id = crypto.randomBytes(6).toString('hex');
-    const ask = { id, chat, ...summarize(tool, args), at: new Date(now()).toISOString() };
+    const pk = cleanPeek(peek);
+    const ask = { id, chat, ...summarize(tool, args), ...(pk ? { peek: pk } : {}), at: new Date(now()).toISOString() };
     return new Promise((resolve) => {
       const timer = setTimeout(() => answer(id, 'no'), waitMs);
       pending.set(id, { resolve, timer, ask });
@@ -72,7 +82,7 @@ function createDesktop({ file, send, hasWindow = () => true, proxyPath, execPath
         req.on('end', async () => {
           let j = null;
           try { j = JSON.parse(body); } catch { return no(400); }
-          const ok = await decide(String(j?.chat || ''), String(j?.tool || ''), j?.args);
+          const ok = await decide(String(j?.chat || ''), String(j?.tool || ''), j?.args, j?.peek);
           res.writeHead(200, { 'content-type': 'application/json' });
           res.end(JSON.stringify({ ok }));
         });

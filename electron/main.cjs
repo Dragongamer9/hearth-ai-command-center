@@ -51,6 +51,10 @@ const API_ONLY = ['perplexity', 'deepseek', ...more.KEYED.filter((a) => a !== 'k
 const TEXT_SIZES = [67, 75, 80, 90, 100, 115, 130, 150];
 const THEMES = ['hearth', 'dark', 'light', 'system'];
 
+// 3.14: start with the password store the keys were saved in, whatever the desktop (electron/keyring-store.cjs).
+const keyringStore = require('./keyring-store.cjs');
+try { keyringStore.applyAtStart({ app, dir: app.getPath('userData') }); } catch (e) { console.error('[hearth-ai] keyring:', e?.message || e); }
+
 if (!app.requestSingleInstanceLock()) {
   app.quit();
   process.exit(0);
@@ -134,7 +138,14 @@ function normalSettings(s) {
     theme: THEMES.includes(s.theme) ? s.theme : 'hearth',
     // 2.9: the gold hologram design unless the owner picks Classic.
     // 3.12: the approved Nyarch-style look ('adwaita') unless the owner picked Gold hologram or Classic himself.
-    design: ['hologram', 'classic'].includes(s.design) ? s.design : 'adwaita',
+    // 3.14: the approved Claude app look ('claude') unless the owner picked another Style himself. 'adwaita' saved
+    // before 3.14 was only ever the 3.12 default, so it counts as picked only when designPicked says so.
+    design: ['hologram', 'classic', 'claude'].includes(s.design) ? s.design : s.design === 'adwaita' && s.designPicked === true ? 'adwaita' : 'claude',
+    designPicked: s.designPicked === true,
+    // 3.14 Appearance: the reading font, Enter sends, and the team's cores in the message box.
+    chatFont: ['serif', 'sans', 'dyslexic'].includes(s.chatFont) ? s.chatFont : 'serif',
+    sendOnEnter: s.sendOnEnter !== false,
+    composerCores: s.composerCores !== false,
     accent: ['blue', 'teal', 'green', 'yellow', 'orange', 'red', 'pink', 'purple', 'slate'].includes(s.accent) ? s.accent : 'blue',
     textSize: TEXT_SIZES.includes(s.textSize) ? s.textSize : 100,
     // 3.4.1: draw the app at true 100% even when the desktop scales the screen (125%, 150%…). Off unless he turns it on.
@@ -562,7 +573,10 @@ function registerIpc() {
     if ('leadActions' in patch) s.leadActions = patch.leadActions === true;
     if ('leadGitHub' in patch) s.leadGitHub = patch.leadGitHub === true;
     if ('theme' in patch && THEMES.includes(patch.theme)) s.theme = patch.theme;
-    if ('design' in patch && ['hologram', 'classic', 'adwaita'].includes(patch.design)) s.design = patch.design;
+    if ('design' in patch && ['hologram', 'classic', 'adwaita', 'claude'].includes(patch.design)) { s.design = patch.design; s.designPicked = true; }
+    if ('chatFont' in patch && ['serif', 'sans', 'dyslexic'].includes(patch.chatFont)) s.chatFont = patch.chatFont;
+    if ('sendOnEnter' in patch) s.sendOnEnter = patch.sendOnEnter !== false;
+    if ('composerCores' in patch) s.composerCores = patch.composerCores !== false;
     if ('accent' in patch && ['blue', 'teal', 'green', 'yellow', 'orange', 'red', 'pink', 'purple', 'slate'].includes(patch.accent)) s.accent = patch.accent;
     if ('textSize' in patch) {
       if (!TEXT_SIZES.includes(patch.textSize)) throw new Error('Invalid text size');
@@ -1397,7 +1411,10 @@ app.whenReady().then(async () => {
   Menu.setApplicationMenu(null);
   secrets = createSecretStore({ safeStorage, dir: dataDir(), allowBasic: () => readSettings().secretsBasic === true });
   // Decrypt saved keys once (async keyring API), so they can be read synchronously afterwards.
-  try { await secrets.load(); } catch (e) { console.error('[hearth-ai] keys:', e?.message || e); }
+  let keysRead = 0;
+  try { keysRead = await secrets.load(); } catch (e) { console.error('[hearth-ai] keys:', e?.message || e); }
+  // 3.14: remember where the keys are; keys saved before 3.14 on another desktop's store: try that store once.
+  try { if (keyringStore.afterLoad({ app, dir: dataDir(), read: keysRead, saved: secrets.saved(), backend: secrets.backend() }) === 'relaunch') return; } catch (e) { console.error('[hearth-ai] keyring:', e?.message || e); }
   // The active project's board (the data from before projects is the default project, in the same file).
   store = createStore(ops.stateFile(dataDir(), readSettings().project, readSettings().projects));
   binding.setActive(ops.activeProjectId());

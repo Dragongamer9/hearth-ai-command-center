@@ -105,7 +105,8 @@ export function createTeamRunner(ctx) {
   async function runTeam(R, text, opts = {}) {
     await ctx.beforeRound?.(R);
     const t = ctx.team();
-    const L0 = ctx.live();
+    // 3.14 (claude-look-4): the AIs switched off for this chat in the team picker don't take part.
+    const L0 = ctx.live().filter((a) => !(R.sessions?._off || []).includes(a));
     const mode = opts.mode || ctx.modeFor(R);
     // 3.11: an AI he picked to answer on its own (her own chat, "who answers") needn't be on the team: Ithil talks
     // whenever she's connected, even asleep or busy (only tasks wait for her to be free).
@@ -422,7 +423,7 @@ export function createTeamRunner(ctx) {
 
   // Side tasks in parallel: each helper works read-only and reports back as a collapsible step.
   async function runHelpers(R, msg, list) {
-    const L = ctx.live();
+    const L = ctx.live().filter((a) => !(R.sessions?._off || []).includes(a));
     const t = ctx.team();
     const picks = list.map((h) => ({ ...h, agent: h.to && L.includes(h.to) && !UNFILTERED.includes(h.to) ? h.to : (t.members.find((a) => a !== msg.who && L.includes(a) && !UNFILTERED.includes(a)) || msg.who) }));
     msg.helpers = picks.map((p) => ({ id: uid(), agent: p.agent, task: p.task, state: 'working' }));

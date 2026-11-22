@@ -924,6 +924,17 @@ function renderPop() {
     return;
   }
   if (!p) { el.hidden = true; el.innerHTML = ''; return; }
+  // 3.14 (claude-look-8): the Habitat journal (every AI's, newest first) and the board, from the pills under the world.
+  if (p.kind === 'alljournal') {
+    const all = Object.entries(H.store.journal || {}).flatMap(([id, list]) => (list || []).map((e) => ({ ...e, id }))).sort((a, b) => String(b.at || '').localeCompare(String(a.at || ''))).slice(0, 30);
+    el.innerHTML = `<b>Habitat journal</b>${all.length ? `<div class="hab-journal">${all.map((e) => `<div><span class="faint">${esc(relDay(e.at, clock().getTime()))}</span> <b>${esc(H.agents[e.id]?.name || e.id)}</b> ${esc(e.text)}</div>`).join('')}</div>` : '<div class="faint">Nothing written yet. Each AI writes a line when it finishes something.</div>'}<div class="hab-row"><button class="btn small" data-hab="close">Close</button></div>`;
+    el.hidden = false; return;
+  }
+  if (p.kind === 'board') {
+    const notes = (H.notes || []).map((n) => `<div><b>${esc(n.kind === 'task' ? `T-${n.id}` : H.agents[n.who]?.name || n.who)}</b> ${esc(n.text)}</div>`);
+    el.innerHTML = `<b>Message board</b>${notes.join('') || '<div class="faint">No notes yet.</div>'}<div class="hab-row"><span class="faint">In 3D, walk up to the board to pin your own note.</span><button class="btn small" data-hab="close">Close</button></div>`;
+    el.hidden = false; return;
+  }
   if (p.kind === 'room') {
     const st = H.store; const name = esc(H.agents[p.id]?.name || p.id);
     const j = (st.journal[p.id] || []).slice(-12).reverse();
@@ -1022,6 +1033,16 @@ export function mountHabitat(el, opts) {
 
 // The 3D lodge (src/habitat3d/) shows this same simulation: it reads the live
 // state here and sends clicks back, so 2D and 3D always agree.
+// 3.14: the owner's own pills under the world: open the journal or the board, or wave (each AI waves back; cosmetic,
+// never saved, like petting the critter).
+export function habitatOwnerAct(kind) {
+  if (!H) return false;
+  if (kind === 'journal') { H.pop = { kind: 'alljournal' }; renderPop(); return true; }
+  if (kind === 'board') { H.pop = { kind: 'board' }; renderPop(); return true; }
+  if (kind === 'wave') { const t = performance.now(); let i = 0; for (const id of H.actors.keys()) H.effects.push({ kind: 'bubble', who: id, icon: 'wave', t0: t + 250 * i++, ttl: 4 }); return true; }
+  return false;
+}
+export const habitatNoteCount = () => (H ? (H.notes || []).length : 0);
 export function habitatEngine() {
   if (!H) return null;
   return {

@@ -20,6 +20,7 @@ const crypto = require('node:crypto');
 const hnet = require('./hearth-net.cjs');
 const comfy = require('./comfy.cjs');
 const speech = require('./speech-servers.cjs');
+const tailnet = require('./tailnet-scan.cjs');
 
 const PORT = 8189;
 const SHARE_HEADER = 'x-hearth-share-code';
@@ -35,6 +36,8 @@ const MAX_CHAT = 2 * 1024 * 1024;
 const MAX_STT = 25 * 1024 * 1024;
 const TIMEOUT = { list: 6000, chat: 120000, stt: 120000 };
 const CACHE_MS = 15000;
+// 3.14: what the Tailscale scan found is kept a minute (a scan asks every device).
+const SCAN_CACHE_MS = 60000;
 
 // ---------- settings (read-time defaults; only what he changes is saved) ----------
 const DEFAULTS = Object.freeze({ url: '', order: [], skipGaming: true, skipBattery: true, tailscale: true, allowHosts: [], models: {}, checkpoints: {} });
@@ -171,25 +174,43 @@ function allowFor(settings) {
 const allowedService = (svc, settings) => allowFor(settings)(hnet.hostOf(svc.url));
 const skipText = (skipped) => skipped.map((x) => `${x.device} (${x.why})`).join(', ');
 
-function createHearthDevices({ settings, secrets, fetchImpl = (...a) => fetch(...a), sleep, maxPolls } = {}) {
+function createHearthDevices({ settings, secrets, fetchImpl = (...a) => fetch(...a), sleep, maxPolls, scanImpl = (o) => tailnet.scan(o) } = {}) {
   const conf = () => cleanSettings(settings());
   const shareHeaders = () => { const c = secrets?.get?.(SHARE_SECRET); return c ? { [SHARE_HEADER]: c } : {}; };
   let cache = null;
+  // 3.14: devices were found (by the Home server or the Tailscale scan), so Hearth devices count as set up.
+  let found = false;
 
-  // The device list from the Home server (cached for a few seconds; fresh on Test).
-  async function discover({ fresh = false } = {}) {
-    const s = conf();
-    if (!s.url) return hnet.fail('Type your Home server\'s address in Settings › Accounts › Hearth devices first.', 'not_set');
-    if (!fresh && cache && cache.url === s.url && Date.now() - cache.at < CACHE_MS) return cache.r;
+  // The device list: from the Home server when he set its address, else (3.14) found by itself on his own Tailscale
+  // devices (tailnet-scan.cjs); a saved address that doesn't answer falls back to the scan. Nothing found is saved.
+  const decorate = (devices, s) => devices.map((d) => ({ ...d, services: d.services.map((x) => ({ ...x, allowed: allowedService(x, s) })) }));
+  async function fromServer(s) {
     const allow = allowFor(s);
     const r = await hnet.fetchJson(`${s.url}/v1/hearth/ai/devices`, { allow, fetchImpl, name: 'The Home server', timeoutMs: TIMEOUT.list, max: MAX_LIST, init: { headers: { accept: 'application/json', ...shareHeaders() } } });
-    let out;
-    if (!r.ok) out = r.kind === 'auth' ? hnet.fail('The Home server wants a share code (or a different one). Type it under Hearth devices.', 'auth') : r.kind === 'not_found' ? hnet.fail(`${s.url} isn't a Hearth AI share (no /v1/hearth/ai/devices). Check the address; the port is ${PORT}.`, 'not_found') : r;
-    else {
-      const devices = cleanDevices(r.json);
-      out = { ok: true, devices: devices.map((d) => ({ ...d, services: d.services.map((x) => ({ ...x, allowed: allowedService(x, s) })) })) };
+    if (!r.ok) return r.kind === 'auth' ? hnet.fail('The Home server wants a share code (or a different one). Type it under Hearth devices.', 'auth') : r.kind === 'not_found' ? hnet.fail(`${s.url} isn't a Hearth AI share (no /v1/hearth/ai/devices). Check the address; the port is ${PORT}.`, 'not_found') : r;
+    return { ok: true, devices: decorate(cleanDevices(r.json), s), found: 'server' };
+  }
+  async function discover({ fresh = false } = {}) {
+    const s = conf();
+    const key = s.url || '(scan)';
+    if (!fresh && cache && cache.url === key && Date.now() - cache.at < (cache.r.found === 'scan' ? SCAN_CACHE_MS : CACHE_MS)) return cache.r;
+    let out = null;
+    let serverFail = null;
+    if (s.url) {
+      out = await fromServer(s);
+      // A share code problem is his to fix; anything else (off, wrong port, not Hearth): look for the devices instead.
+      if (!out.ok && out.kind !== 'auth') { serverFail = out; out = null; }
     }
-    if (out.ok) cache = { at: Date.now(), url: s.url, r: out };
+    if (!out) {
+      const sc = await scanImpl({ fetchImpl });
+      const devices = sc.ok ? cleanDevices({ devices: sc.devices }) : [];
+      if (devices.length) out = { ok: true, devices: decorate(devices, s), found: 'scan', ...(serverFail ? { note: `${serverFail.message} Found your devices on Tailscale instead.` } : {}) };
+      else if (serverFail) out = serverFail;
+      else if (sc.ok) out = hnet.fail(`None of your ${sc.asked} Tailscale device${sc.asked === 1 ? '' : 's'} shares its AI yet. On Hearth OS, Settings › Home server › AI devices › Share this device's AI.`, 'none');
+      else out = sc;
+    }
+    if (out.ok) cache = { at: Date.now(), url: key, r: out };
+    found = out.ok && out.devices.length > 0;
     return out;
   }
   const forget = () => { cache = null; };
@@ -305,13 +326,13 @@ function createHearthDevices({ settings, secrets, fetchImpl = (...a) => fetch(..
   // What the window needs (never the share code itself).
   async function status({ fresh = false, probe = false } = {}) {
     const s = conf();
-    const out = { settings: s, shareCode: Boolean(secrets?.has?.(SHARE_SECRET)), configured: Boolean(s.url) };
-    if (!probe || !s.url) return out;
+    const out = { settings: s, shareCode: Boolean(secrets?.has?.(SHARE_SECRET)), configured: Boolean(s.url) || found };
+    if (!probe) return out;
     const r = await discover({ fresh });
-    if (!r.ok) return { ...out, error: r.message, kind: r.kind };
+    if (!r.ok) return { ...out, configured: Boolean(s.url), error: r.message, kind: r.kind };
     const order = ordered(r.devices, s.order).map((d) => d.device);
     const has = (kind) => r.devices.some((d) => d.services.some((x) => x.kind === kind && x.healthy && x.allowed));
-    return { ...out, devices: r.devices, order, has: Object.fromEntries(KINDS.map((k) => [k, has(k)])) };
+    return { ...out, configured: true, found: r.found, ...(r.note ? { note: r.note } : {}), devices: r.devices, order, has: Object.fromEntries(KINDS.map((k) => [k, has(k)])) };
   }
   async function setShareCode(code) {
     if (code === null || code === '') { secrets.remove(SHARE_SECRET); forget(); return { ok: true, removed: true }; }
@@ -321,8 +342,16 @@ function createHearthDevices({ settings, secrets, fetchImpl = (...a) => fetch(..
     forget();
     return { ok: true };
   }
-  const configured = () => Boolean(conf().url);
-  return { discover, forget, chat, voices, speak, image, transcribe, status, setShareCode, configured };
+  const configured = () => Boolean(conf().url) || found;
+  // 3.14: look for the devices at start and every few minutes (quiet; nothing is saved). Returns a stop function.
+  function startScanning({ everyMs = 5 * 60 * 1000 } = {}) {
+    const run = () => discover({ fresh: true }).catch(() => {});
+    run();
+    const t = setInterval(run, everyMs);
+    t.unref?.();
+    return () => clearInterval(t);
+  }
+  return { discover, forget, chat, voices, speak, image, transcribe, status, setShareCode, configured, startScanning };
 }
 
 module.exports = { createHearthDevices, cleanSettings, mergeSettings, cleanDevices, cleanDevice, ordered, plan, allowFor, isHandheld, onBattery, DEFAULTS, SHARE_HEADER, SHARE_SECRET, PORT };
