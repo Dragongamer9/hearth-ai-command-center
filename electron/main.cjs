@@ -29,6 +29,7 @@ const ops = require('./ops/index.cjs');
 const guard = require('./ops/project-guard.cjs');
 const { createChats } = require('./chats.cjs');
 const v2 = require('./v2.cjs');
+const ideasLib = require('./ideas.cjs');
 const parity = require('./parity.cjs');
 const { diffSettings, applyChanges, createSettingsLog } = require('./settings-log.cjs');
 const teamCheck = require('./team-check.cjs');
@@ -446,6 +447,7 @@ function registerIpc() {
   // ---- chats (many conversations, each linkable to a project) ----
   const chatProjects = () => ops.projectsList().list;
   handle('chats:list', () => ({ list: chats.list(chatProjects(), (id) => ops.projectStateFile(id)), notices: chats.notices(), broken: Boolean(chats.broken()) }));
+  handle('ideas:take', () => ideaQueue.splice(0));
   handle('chats:create', (projectId) => {
     const pid = projectId === null || projectId === undefined ? null : String(projectId);
     if (pid && !chatProjects().some((p) => p.id === pid)) throw new Error('Unknown project.');
@@ -1393,8 +1395,37 @@ function openMini() {
   return true;
 }
 
+// Hearth Ideas' "Build it" and "Open in the Command Center" (electron/ideas.cjs): an idea's chat, made once.
+let ideas = null;
+let pendingIdeas = [];
+function takeIdea(argv) {
+  const file = ideasLib.ideaArg(argv);
+  if (!file) return false;
+  const idea = ideasLib.readIdeaFile(file);
+  if (!idea) { console.error('[hearth-ai] --idea: not an idea file'); return true; }
+  if (!chats || !ideas || !mainWindow) { pendingIdeas = [...pendingIdeas.filter((x) => x.idea.key !== idea.key), { idea, at: Date.now() }]; return true; }
+  openIdea(idea);
+  return true;
+}
+function openIdea(idea) {
+  let chatId = ideas.chatFor(idea.key);
+  let start = false;
+  try { if (chatId && !chats.entry(chatId)) chatId = null; } catch { chatId = null; }
+  if (!chatId) {
+    const e = chats.create({ title: `Idea: ${idea.title}`.slice(0, 120), repo: idea.repo, branch: idea.base });
+    chatId = e.id;
+    try { ideas.remember(idea.key, chatId); } catch (err) { console.error('[hearth-ai] ideas.json:', err?.message || err); }
+    start = true;
+  }
+  ideaQueue.push({ chatId, start, text: start ? ideasLib.messageFor(idea) : '', title: idea.title });
+  send('idea:open', { ready: true });
+  if (mainWindow) { if (mainWindow.isMinimized()) mainWindow.restore(); mainWindow.show(); mainWindow.focus(); }
+}
+const ideaQueue = [];
+
 app.on('second-instance', (_e, argv = []) => {
   if (argv.includes('--mini')) { openMini(); return; }
+  if (takeIdea(argv)) return;
   if (mainWindow) {
     if (mainWindow.isMinimized()) mainWindow.restore();
     mainWindow.focus();
@@ -1427,6 +1458,9 @@ app.whenReady().then(async () => {
   registerIpc();
   createWindow();
   if (process.argv.includes('--mini')) openMini();
+  ideas = ideasLib.createIdeas(dataDir());
+  takeIdea(process.argv);
+  for (const p of pendingIdeas.splice(0)) openIdea(p.idea);
   // Super + I opens the mini window where the desktop lets apps take a shortcut (Hearth OS's own keybind runs --mini).
   if (readSettings().miniWindow !== false) { try { globalShortcut.register('Super+I', () => openMini()); } catch {} }
   app.on('will-quit', () => { try { globalShortcut.unregisterAll(); } catch {} });

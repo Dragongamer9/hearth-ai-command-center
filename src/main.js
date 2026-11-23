@@ -4435,6 +4435,19 @@ async function boot() {
     api.onCopiesRemoved?.(async () => { await loadChats(); renderSide(); });
     api.onOpsPhoneAction?.((a) => onPhone(a));
     api.onNotifyOpen?.((id) => { if (id && entry(id)) openChat(id); });
+    // Hearth Ideas' Build it / Open in the Command Center (electron/ideas.cjs): open the idea's chat; the first time,
+    // its brief goes to the team as the owner's message (he pressed Build it).
+    const takeIdeas = async () => {
+      const list = (await call('ideasTake')) || [];
+      for (const it of Array.isArray(list) ? list : []) {
+        await loadChats();
+        if (!entry(it.chatId)) continue;
+        await openChat(it.chatId);
+        if (it.start && it.text) { S.draft = it.text; await send(); toast(`Idea “${it.title}” sent to your team.`); }
+      }
+    };
+    api.onIdeaOpen?.(() => { takeIdeas(); });
+    takeIdeas();
     // A scheduled task posted into a chat: reload that chat's messages (unless its team is working).
     api.onChatExternal?.(async (e) => {
       const R = e?.chatId ? runner.runtimes.get(e.chatId) : null;

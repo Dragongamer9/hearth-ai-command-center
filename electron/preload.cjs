@@ -231,6 +231,13 @@ contextBridge.exposeInMainWorld('hearth', {
     ipcRenderer.on('notify:open', listener);
     return () => ipcRenderer.removeListener('notify:open', listener);
   },
+  // Hearth Ideas: an idea's chat to open (and, the first time, its brief to send as the owner's message).
+  ideasTake: () => ipcRenderer.invoke('ideas:take'),
+  onIdeaOpen: (cb) => {
+    const listener = (_e, a) => cb(a);
+    ipcRenderer.on('idea:open', listener);
+    return () => ipcRenderer.removeListener('idea:open', listener);
+  },
   onChatExternal: (cb) => {
     const listener = (_e, a) => cb(a);
     ipcRenderer.on('chat:external', listener);
