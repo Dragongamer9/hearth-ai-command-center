@@ -57,7 +57,7 @@
     },
     "publish": {
       "provider": "github",
-      "owner": "Dragongamer9",
+      "owner": "Hearth-Organization",
       "repo": "hearth-ai-command-center",
       "releaseType": "draft"
     },

@@ -7,7 +7,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { execFile, spawn } = require('node:child_process');
 
-const REPO = 'Dragongamer9/hearth-ai-command-center';
+const REPO = 'Hearth-Organization/hearth-ai-command-center';
 const RELEASES_PAGE = `https://github.com/${REPO}/releases`;
 
 function detectInstall({ env = process.env, execPath = process.execPath, dpkgOwns = () => false } = {}) {
