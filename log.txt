@@ -1,0 +1,135 @@
+ok 3.14-1-home-dark.png
+ok 3.14-2-chat-repo.png
+ok 3.14-3-light.png
+ok 3.14-3b-light-copy-and-working.png
+ok 3.14-3c-working.png
+ok 3.14-4-team-picker.png
+ok 3.14-4b-team-switch-off.png
+ok 3.14-5-settings-appearance.png
+ok 3.14-12-settings-accounts.png
+ok 3.14-6-studio.png
+ok 3.14-6b-studio-edit.png
+ok 3.14-7-live.png
+ok 3.14-8-habitat.png
+ok 3.14-8b-habitat-journal.png
+ok 3.14-9-reverse.png
+ok 3.14-9b-reverse-chat.png
+ok 3.14-10-agent-desktop.png
+ok 3.14-11-characters.png
+ok 3.13-A1-settings-team.png
+::notice::3.13-A3-settings-accounts.png (written for the old looks): missing ["Signed in with your account"] errors []
+ok 3.13-A5-settings-ithil.png
+ok 3.13-A6-settings-tools.png
+ok 3.13-A7-settings-memory.png
+ok 3.13-A8-settings-voice.png
+::notice::3.13-A2-settings-general.png: crashed:   - waiting for locator('[data-a="tab"][data-t="general"]') · errors [] · view: main settings-mode · tabs: c-general,c-look,accounts,c-github,team,ithil,tools,voice,memory,c-studio,c-phone,c-updates,c-credits · text: Command Center New chat Chats Repos Images & Videos Live Habitat Reverse Engineering Agent Desktop Characters Temporary chat Starred Hearth OS 1.4 planning hear
+ok 3.13-A9-character-picker.png
+::notice::3.13-A4-panel-collapsed.png (written for the old looks): missing ["Send a message","element [data-a=\"rp-hide\"]"] errors []
+::notice::3.12-n1-chat-avatar.png (written for the old looks): missing ["History","You:","Send a message","element .hist-h","element .newchat-big","element .model-pill","element .nbar .bluesq","element .rp-top [data-a=\"win\"]"] errors []
+ok 3.12-n2-team-tools.png
+ok 3.12-s1-settings-team.png
+ok 3.12-s2-settings-accounts.png
+ok 3.12-s3-settings-ithil.png
+ok 3.12-s4-settings-tools.png
+ok 3.12-s5-settings-memory.png
+ok 3.12-s6-settings-voice.png
+::notice::3.12-s7-settings-general.png: crashed:   - waiting for locator('[data-a="tab"][data-t="general"]') · errors [] · view: main settings-mode · tabs: c-general,c-look,accounts,c-github,team,ithil,tools,voice,memory,c-studio,c-phone,c-updates,c-credits · text: Command Center New chat Chats Repos Images & Videos Live Habitat Reverse Engineering Agent Desktop Characters Temporary chat Starred Hearth OS 1.4 planning hear
+ok 70b-ithil-accounts.png
+::notice::70c-live-mesh-ithil.png (written for the old looks): missing ["Ithil","curious","If a branch never merges","element .mesh-ithil"] errors []
+::notice::70a-live-mesh.png (written for the old looks): missing ["You","Replies","Files","Web","Helpers","Tools","Make","Memory","Coding tools","element .mesh","element .mesh-cap","element .mesh-st"] errors []
+ok 70-live-every-ai.png
+ok 71-settings-accounts-compact.png
+ok 72-settings-accounts-row-open.png
+ok 73-settings-accounts-search.png
+ok 74-team-page-compact.png
+ok 75-test-team-check-words.png
+::notice::76-who-answers-compact.png (written for the old looks): missing ["Who answers","Whole team","not connected","element .wa-grid .wa","element .wa-off"] errors []
+::notice::01-home.png (written for the old looks): missing ["Good ","What should the team work on?","Pinned","Yesterday","Earlier"] errors []
+::notice::02-chat-working-on-a-repo.png (written for the old looks): missing ["Open pull request","Show changes"] errors []
+ok 03-live-preview.png
+ok 04-connect-a-repo-and-attach.png
+::notice::05-settings.png (written for the old looks): missing ["AI team","Voice & avatar"] errors []
+ok 06-chat-light.png
+ok 07-diff-viewer.png
+ok 08-saved-data-temporary-copies.png
+ok 09-actions-failed.png
+::notice::10-app-updates.png: crashed:   - waiting for locator('[data-a="tab"][data-t="general"]') · errors [] · view: main settings-mode · tabs: c-general,c-look,accounts,c-github,team,ithil,tools,voice,memory,c-studio,c-phone,c-updates,c-credits · text: Command Center New chat Chats Repos Images & Videos Live Habitat Reverse Engineering Agent Desktop Characters Temporary chat Starred Hearth OS 1.4 planning hear
+ok 11-send-and-steps.png
+ok 12-habitat-in-sidebar.png
+::notice::40-castle-day.png: {"folk":34,"guards":12,"raid":0,"castle":true}
+ok 40-castle-day.png
+::notice::41-castle-night.png: {"folk":7,"guards":12,"raid":0,"castle":true}
+ok 41-castle-night.png
+::notice::42-great-hall.png: {"folk":34,"guards":12,"raid":0,"castle":true}
+ok 42-great-hall.png
+::notice::43-kings-chambers.png: {"folk":34,"guards":12,"raid":0,"castle":true}
+ok 43-kings-chambers.png
+::notice::44-ai-house.png: {"folk":34,"guards":12,"raid":0,"castle":true}
+ok 44-ai-house.png
+::notice::45-townsfolk-market.png: {"folk":34,"guards":12,"raid":0,"castle":true}
+ok 45-townsfolk-market.png
+::notice::46-raid-at-the-gate.png: {"folk":34,"guards":12,"raid":8,"castle":true}
+ok 46-raid-at-the-gate.png
+::notice::47-characters.png: {"folk":34,"guards":12,"raid":0,"castle":true}
+ok 47-characters.png
+::notice::48-character-creator.png: {"folk":34,"guards":12,"raid":0,"castle":true}
+ok 48-character-creator.png
+ok 13-picture-video-file-in-chat.png
+ok 14-rich-answer.png
+ok 15-controls-sources-followups.png
+ok 16-settings-memory.png
+ok 17-settings-scheduled.png
+ok 18-settings-connectors.png
+ok 19-settings-accounts-teammates.png
+ok 20-two-chats-working-one-unread.png
+ok 21-venice-picture.png
+ok 22-canvas.png
+ok 23-follow-up-chips.png
+ok 24-character-library.png
+ok 25-roleplay-chat-swipe.png
+::notice::26-roleplay-group.png (written for the old looks): missing ["group"] errors []
+ok 27-visual-novel.png
+ok 28-lorebook-editor.png
+ok 29-card-import.png
+ok 30-minor-block.png
+ok 40-voice-view-listening.png
+ok 41-voice-view-speaking-group.png
+ok 42-settings-voice.png
+ok 44-settings-voice-privacy-cloning.png
+ok 45-settings-voice-servers.png
+ok 46-settings-voice-server-test.png
+ok 47-settings-voice-add-server.png
+::notice::48-credits.png: crashed:   - waiting for locator('[data-a="tab"][data-t="general"]') · errors [] · view: main settings-mode · tabs: c-general,c-look,accounts,c-github,team,ithil,tools,voice,memory,c-studio,c-phone,c-updates,c-credits · text: Command Center New chat Chats Repos Images & Videos Live Habitat Reverse Engineering Agent Desktop Characters Temporary chat Starred Hearth OS 1.4 planning hear
+ok 43-character-voice-picker.png
+ok 50-settings-hearth-devices.png
+ok 51-settings-comfyui-server.png
+ok 52-characters-generate-scene.png
+ok 56-settings-comfyui-test.png
+ok 57-characters-scene-saved.png
+ok 58-characters-scene-progress.png
+ok 59-characters-generate-scene-vram.png
+ok 60-generate-scene-1280x720.png
+ok 61-generate-scene-1280x800.png
+ok 62-picture-dialog-1280x720.png
+ok 63-start-roleplay-1280x720.png
+ok 64-persona-1280x720.png
+ok 65-character-find.png
+ok 66-character-find-replaced.png
+ok 67-character-flags-age.png
+ok 68-characters-search.png
+ok 69-collection-remove-undo.png
+ok 53-settings-voice-hearth.png
+ok 31-teammates-failed-with-retry.png
+ok 32-test-team.png
+ok 33-permissions-page.png
+ok 34-missing-tool-warnings.png
+ok 35-cant-push-note.png
+ok 54-big-media-cards-and-gallery.png
+ok 55-gallery-viewer.png
+ok 36-image-in-chat-and-cant-show-reason.png
+::notice::37-settings-change-log.png: crashed:   - waiting for locator('[data-a="tab"][data-t="general"]') · errors [] · view: main settings-mode · tabs: c-general,c-look,accounts,c-github,team,ithil,tools,voice,memory,c-studio,c-phone,c-updates,c-credits · text: Command Center New chat Chats Repos Images & Videos Live Habitat Reverse Engineering Agent Desktop Characters Temporary chat Starred Hearth OS 1.4 planning hear
+ok 38-find-characters.png
+ok 39-character-imported-notice.png
+ok 40-images-and-videos.png
+ok 41-images-and-videos-uncensored-video.png
+::notice::42-settings-uncensored-mode.png: crashed:   - waiting for locator('[data-a="tab"][data-t="general"]') · errors [] · view: main settings-mode · tabs: c-general,c-look,accounts,c-github,team,ithil,tools,voice,memory,c-studio,c-phone,c-updates,c-credits · text: Command Center New chat Chats Repos Images & Videos Live Habitat Reverse Engineering Agent Desktop Characters Temporary chat Starred Hearth OS 1.4 planning hear
